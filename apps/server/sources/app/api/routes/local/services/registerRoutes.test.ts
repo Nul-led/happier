@@ -73,15 +73,20 @@ function createProductionRelayHarness(responseText = "HTTP/1.1 200 OK\r\nContent
             send: (event: typeof PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, envelope: PeerTcpTunnelRelayEnvelope) => {
                 expect(event).toBe(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT);
                 sent.push(envelope);
-                if (envelope.v === 2 && sent.length >= 3) {
+                if (envelope.v === 2) {
                     const decoded = decodePeerTcpTunnelBinaryFrameV2({
                         frame: envelope.frame,
                         maxHeaderBytes: 64 * 1024,
                         maxPayloadBytes: 64 * 1024,
                     });
-                    if (!decoded.ok || !decoded.header.substreamId) return;
+                    if (
+                        !decoded.ok
+                        || decoded.header.kind !== "data"
+                        || decoded.header.direction !== "client_to_daemon"
+                        || !decoded.header.substreamId
+                    ) return;
                     const response = new TextEncoder().encode(responseText);
-                    queueMicrotask(() => {
+                    setImmediate(() => {
                         for (const handler of handlers) {
                             handler({
                                 v: 2,
@@ -371,11 +376,12 @@ describe("local service API route composition", () => {
         await handler({ userId: "user_1", body: preview }, reply);
 
         expect(reply.statusCode).toBe(201);
-        expect(authorizeSessionAccess).toHaveBeenCalledWith({
+        expect(authorizeSessionAccess).toHaveBeenCalledWith(expect.objectContaining({
             userId: "user_1",
             sessionId: "session_1",
             purpose: "register",
-        });
+            authentication: expect.objectContaining({ authority: "present_user" }),
+        }));
         expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
             resource: preview,
             accessUrl: expect.stringContaining("https://app.happier.test/v1/local-services/preview/preview_1/"),
@@ -453,11 +459,12 @@ describe("local service API route composition", () => {
 
         expect(revokeReply.statusCode).toBe(200);
         expect(revokeReply.send).toHaveBeenCalledWith({ ok: true });
-        expect(authorizeSessionAccess).toHaveBeenCalledWith({
+        expect(authorizeSessionAccess).toHaveBeenCalledWith(expect.objectContaining({
             userId: "user_1",
             sessionId: "session_1",
             purpose: "public_revoke",
-        });
+            authentication: expect.objectContaining({ authority: "present_user" }),
+        }));
 
         const accessReply = createReplyStub();
         await getRouteHandler(app, "GET", "/v1/local-services/public/:exposureId/*")({
@@ -1237,7 +1244,6 @@ describe("local service API route composition", () => {
                 open: {
                     routeKind: "server_relay",
                     selectedEncoding: "binary_frame_v2",
-                    allowV1Fallback: false,
                 },
             },
         });
@@ -1323,7 +1329,6 @@ describe("local service API route composition", () => {
                 open: {
                     routeKind: "server_relay",
                     selectedEncoding: "binary_frame_v2",
-                    allowV1Fallback: false,
                 },
             },
         });

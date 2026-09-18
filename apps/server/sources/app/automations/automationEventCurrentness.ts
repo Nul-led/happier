@@ -7,6 +7,7 @@ import {
 import { resolveCurrentClaimablePluginMachineMaterializationTx } from "@/app/plugins/availability/operations";
 import { readCurrentPluginWebhookEndpointTargetTxV1 } from "@/app/plugins/webhooks/endpointStore";
 import type { Tx } from "@/storage/inTx";
+import { persistentMachineWhere } from "@/app/machines/machineSelection";
 
 export type AutomationEventCallerV1 = Readonly<{
     pluginId: string;
@@ -155,6 +156,7 @@ export async function assertCurrentAutomationEventCallerMaterializationTx(params
                 machineId: params.caller.machineId,
                 materializationId: params.caller.materializationId,
             },
+            machine: persistentMachineWhere,
         },
         select: { accountId: true, pluginId: true, version: true },
     });

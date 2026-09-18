@@ -2,6 +2,130 @@
 // Source: prisma/schema.prisma
 // Regenerate: yarn schema:sync
 
+export const HomeRole = {
+    owner: "owner",
+    admin: "admin",
+    member: "member",
+} as const;
+
+export type HomeRole = (typeof HomeRole)[keyof typeof HomeRole];
+
+export const AccountStatus = {
+    active: "active",
+    suspended: "suspended",
+    disabled: "disabled",
+} as const;
+
+export type AccountStatus = (typeof AccountStatus)[keyof typeof AccountStatus];
+
+export const TeamCreationPolicy = {
+    self_service: "self_service",
+    managed_only: "managed_only",
+    disabled: "disabled",
+} as const;
+
+export type TeamCreationPolicy = (typeof TeamCreationPolicy)[keyof typeof TeamCreationPolicy];
+
+export const TeamRole = {
+    owner: "owner",
+    admin: "admin",
+    member: "member",
+    guest: "guest",
+} as const;
+
+export type TeamRole = (typeof TeamRole)[keyof typeof TeamRole];
+
+export const TeamMembershipStatus = {
+    active: "active",
+    suspended: "suspended",
+} as const;
+
+export type TeamMembershipStatus = (typeof TeamMembershipStatus)[keyof typeof TeamMembershipStatus];
+
+export const TeamSessionCreationPolicy = {
+    private_default: "private_default",
+    team_default: "team_default",
+    team_required: "team_required",
+} as const;
+
+export type TeamSessionCreationPolicy = (typeof TeamSessionCreationPolicy)[keyof typeof TeamSessionCreationPolicy];
+
+export const TeamExternalSharingPolicy = {
+    allowed: "allowed",
+    team_admins_only: "team_admins_only",
+    disabled: "disabled",
+} as const;
+
+export type TeamExternalSharingPolicy = (typeof TeamExternalSharingPolicy)[keyof typeof TeamExternalSharingPolicy];
+
+export const SessionHistoryAccess = {
+    all_existing: "all_existing",
+    from_membership: "from_membership",
+} as const;
+
+export type SessionHistoryAccess = (typeof SessionHistoryAccess)[keyof typeof SessionHistoryAccess];
+
+export const TeamAdmissionMode = {
+    invite_only: "invite_only",
+    provisioned: "provisioned",
+    jit: "jit",
+} as const;
+
+export type TeamAdmissionMode = (typeof TeamAdmissionMode)[keyof typeof TeamAdmissionMode];
+
+export const IdentityProviderKind = {
+    oidc: "oidc",
+    workos_sso: "workos_sso",
+    github_app_identity: "github_app_identity",
+} as const;
+
+export type IdentityProviderKind = (typeof IdentityProviderKind)[keyof typeof IdentityProviderKind];
+
+export const TeamDirectorySourceKind = {
+    workos_directory: "workos_directory",
+    github_organization: "github_organization",
+} as const;
+
+export type TeamDirectorySourceKind = (typeof TeamDirectorySourceKind)[keyof typeof TeamDirectorySourceKind];
+
+export const TeamDirectorySourceState = {
+    initializing: "initializing",
+    active: "active",
+    paused: "paused",
+    needs_attention: "needs_attention",
+} as const;
+
+export type TeamDirectorySourceState = (typeof TeamDirectorySourceState)[keyof typeof TeamDirectorySourceState];
+
+export const TeamProvisionedIdentityState = {
+    active: "active",
+    suspended: "suspended",
+    deleted: "deleted",
+} as const;
+
+export type TeamProvisionedIdentityState = (typeof TeamProvisionedIdentityState)[keyof typeof TeamProvisionedIdentityState];
+
+export const TeamDirectoryGroupState = {
+    active: "active",
+    deleted: "deleted",
+} as const;
+
+export type TeamDirectoryGroupState = (typeof TeamDirectoryGroupState)[keyof typeof TeamDirectoryGroupState];
+
+export const TeamExternalGroupBindingMode = {
+    directory_created: "directory_created",
+    native_target: "native_target",
+} as const;
+
+export type TeamExternalGroupBindingMode = (typeof TeamExternalGroupBindingMode)[keyof typeof TeamExternalGroupBindingMode];
+
+export const TeamInvitationEmailDeliveryStatus = {
+    sent: "sent",
+    failed: "failed",
+} as const;
+
+export type TeamInvitationEmailDeliveryStatus = (typeof TeamInvitationEmailDeliveryStatus)[keyof typeof TeamInvitationEmailDeliveryStatus];
+
 export const AccountIdentityEligibilityStatus = {
     unknown: "unknown",
     eligible: "eligible",
@@ -9,6 +133,29 @@ export const AccountIdentityEligibilityStatus = {
 } as const;
 
 export type AccountIdentityEligibilityStatus = (typeof AccountIdentityEligibilityStatus)[keyof typeof AccountIdentityEligibilityStatus];
+
+export const SessionFollowNotificationLevel = {
+    none: "none",
+    important: "important",
+    all_messages: "all_messages",
+} as const;
+
+export type SessionFollowNotificationLevel = (typeof SessionFollowNotificationLevel)[keyof typeof SessionFollowNotificationLevel];
+
+export const SessionFollowDeliveredTurnStatus = {
+    completed: "completed",
+    failed: "failed",
+    cancelled: "cancelled",
+} as const;
+
+export type SessionFollowDeliveredTurnStatus = (typeof SessionFollowDeliveredTurnStatus)[keyof typeof SessionFollowDeliveredTurnStatus];
+
+export const SessionFollowMode = {
+    next_turn: "next_turn",
+    wake_on_human_change: "wake_on_human_change",
+} as const;
+
+export type SessionFollowMode = (typeof SessionFollowMode)[keyof typeof SessionFollowMode];
 
 export const SessionPendingMessageStatus = {
     queued: "queued",
@@ -24,6 +171,13 @@ export const PendingProviderAction = {
 } as const;
 
 export type PendingProviderAction = (typeof PendingProviderAction)[keyof typeof PendingProviderAction];
+
+export const MachineKind = {
+    persistent: "persistent",
+    ephemeral_session_runner: "ephemeral_session_runner",
+} as const;
+
+export type MachineKind = (typeof MachineKind)[keyof typeof MachineKind];
 
 export const AutomationScheduleKind = {
     cron: "cron",
@@ -53,9 +207,46 @@ export const AutomationRunState = {
     skipped: "skipped",
     missed: "missed",
     outcome_uncertain: "outcome_uncertain",
+    pause_requested: "pause_requested",
+    paused: "paused",
+    interrupted: "interrupted",
 } as const;
 
 export type AutomationRunState = (typeof AutomationRunState)[keyof typeof AutomationRunState];
+
+export const WorkflowRunCustodyState = {
+    pending: "pending",
+    settled: "settled",
+} as const;
+
+export type WorkflowRunCustodyState = (typeof WorkflowRunCustodyState)[keyof typeof WorkflowRunCustodyState];
+
+export const WorkflowRunResultDeliveryState = {
+    pending: "pending",
+    accepted: "accepted",
+    unavailable: "unavailable",
+    workflow_outcome_unresolved: "workflow_outcome_unresolved",
+} as const;
+
+export type WorkflowRunResultDeliveryState = (typeof WorkflowRunResultDeliveryState)[keyof typeof WorkflowRunResultDeliveryState];
+
+export const WorkflowInvocationLifecycle = {
+    pending: "pending",
+    waiting_for_capacity: "waiting_for_capacity",
+    admitting: "admitting",
+    running: "running",
+    waiting_for_approval: "waiting_for_approval",
+    needs_attention: "needs_attention",
+    completed: "completed",
+    failed: "failed",
+    skipped: "skipped",
+    cancel_requested: "cancel_requested",
+    cancelled: "cancelled",
+    outcome_uncertain: "outcome_uncertain",
+    superseded: "superseded",
+} as const;
+
+export type WorkflowInvocationLifecycle = (typeof WorkflowInvocationLifecycle)[keyof typeof WorkflowInvocationLifecycle];
 
 export const AutomationTriggerKind = {
     schedule: "schedule",

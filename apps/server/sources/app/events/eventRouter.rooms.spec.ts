@@ -4,6 +4,12 @@ import { register } from "@/app/monitoring/metrics/registry";
 import { applyEnvValues, restoreEnv, snapshotEnv } from "@/testkit/env";
 import { eventRouter } from "./eventRouter";
 
+const { findSession } = vi.hoisted(() => ({ findSession: vi.fn() }));
+
+vi.mock("@/storage/db", () => ({
+    db: { session: { findUnique: findSession } },
+}));
+
 type MetricSample = {
     labels: Record<string, string>;
     value: number;
@@ -28,6 +34,7 @@ describe("eventRouter (rooms)", () => {
 
     afterEach(() => {
         eventRouter.clearIo();
+        vi.restoreAllMocks();
     });
 
     it("throws when HAPPY_SOCKET_ROOMS_ONLY=1 and io is not initialized", () => {
@@ -80,20 +87,21 @@ describe("eventRouter (rooms)", () => {
         expect(emit).toHaveBeenCalledWith("ephemeral", expect.anything());
     });
 
-    it("routes all-interested-in-session to per-account session room + user-scoped rooms (excluding other users)", () => {
+    it("fails closed for protected Session payloads when the Session no longer exists", async () => {
         const ioTo = vi.fn();
         const emit = vi.fn();
         ioTo.mockReturnValue({ emit });
         eventRouter.setIo({ to: ioTo } as any);
+        findSession.mockResolvedValue(null);
 
-        eventRouter.emitUpdate({
+        await eventRouter.emitUpdate({
             userId: "u1",
             payload: { id: "x", seq: 1, body: { t: "new-message" }, createdAt: 0 } as any,
             recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
         });
 
-        expect(ioTo).toHaveBeenCalledWith(["session:s1:u1", "user-scoped:u1"]);
-        expect(emit).toHaveBeenCalledWith("update", expect.anything());
+        expect(ioTo).not.toHaveBeenCalled();
+        expect(emit).not.toHaveBeenCalled();
     });
 
     it("routes machine-scoped-only to machine + user-scoped rooms", () => {
@@ -160,25 +168,25 @@ describe("eventRouter (rooms)", () => {
         expect(emit).toHaveBeenCalledWith("update", expect.anything());
     });
 
-    it("never emits per-account update containers to shared session/machine rooms", () => {
+    it("never emits per-account update containers to shared session/machine rooms", async () => {
         const ioTo = vi.fn();
         const emit = vi.fn();
         ioTo.mockReturnValue({ emit });
         eventRouter.setIo({ to: ioTo } as any);
 
-        eventRouter.emitUpdate({
+        await eventRouter.emitUpdate({
             userId: "u1",
             payload: { id: "x", seq: 1, body: { t: "new-message" }, createdAt: 0 } as any,
             recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
         });
 
-        eventRouter.emitUpdate({
+        await eventRouter.emitUpdate({
             userId: "u1",
             payload: { id: "x", seq: 1, body: { t: "update-machine" }, createdAt: 0 } as any,
             recipientFilter: { type: "machine-scoped-only", machineId: "m1" },
         });
 
-        eventRouter.emitUpdate({
+        await eventRouter.emitUpdate({
             userId: "u1",
             payload: { id: "x", seq: 1, body: { t: "update-machine" }, createdAt: 0 } as any,
             recipientFilter: { type: "machine-only", machineId: "m1" },
@@ -211,10 +219,10 @@ describe("eventRouter (rooms)", () => {
         const ioTo = vi.fn().mockReturnValue({ emit: vi.fn() });
         eventRouter.setIo({ to: ioTo } as any);
 
-        eventRouter.emitUpdate({
+        await eventRouter.emitUpdate({
             userId: "u1",
             payload: { id: "x", seq: 1, body: { t: "new-message" }, createdAt: 0 } as any,
-            recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
+            recipientFilter: { type: "user-scoped-only" },
         });
 
         const samples = await readMetricSamples("event_fanout_emits_total");
@@ -222,7 +230,7 @@ describe("eventRouter (rooms)", () => {
             labels: {
                 dispatch_mode: "room",
                 event_name: "update",
-                filter_type: "all-interested-in-session",
+                filter_type: "user-scoped-only",
             },
             value: 1,
         });
@@ -234,7 +242,7 @@ describe("eventRouter (rooms)", () => {
                     labels: expect.objectContaining({
                         dispatch_mode: "room",
                         event_name: "update",
-                        filter_type: "all-interested-in-session",
+                        filter_type: "user-scoped-only",
                         payload_type: "new-message",
                     }),
                 }),
@@ -247,14 +255,14 @@ describe("eventRouter (rooms)", () => {
         const ioTo = vi.fn().mockReturnValue({ emit: vi.fn() });
         eventRouter.setIo({ to: ioTo } as any);
 
-        eventRouter.emitEphemeral({
+        await eventRouter.emitEphemeral({
             userId: "u1",
             payload: {
                 type: "transcript-stream-segment",
                 sessionId: "s1",
                 message: { accumulatedText: "x".repeat(100_000) },
             } as any,
-            recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
+            recipientFilter: { type: "user-scoped-only" },
         });
 
         const emitSamples = await readMetricSamples("event_fanout_emits_total");
@@ -262,7 +270,7 @@ describe("eventRouter (rooms)", () => {
             labels: {
                 dispatch_mode: "room",
                 event_name: "ephemeral",
-                filter_type: "all-interested-in-session",
+                filter_type: "user-scoped-only",
             },
             value: 1,
         });

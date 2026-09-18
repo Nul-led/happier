@@ -66,6 +66,17 @@ describe("Automation Session lifecycle status projection", () => {
             },
         ]);
         const automationRuns = [
+            // A Workflow run can share the physical AutomationRun table and
+            // trigger identity, but the retained Automation status projection
+            // must never reinterpret its Workflow-only parent state.
+            {
+                id: "workflow-run-interrupted",
+                state: "interrupted",
+                triggerId: "trigger-running",
+                causeSessionLifecycleEvent: "parentTurnCompleted",
+                causeSourceSessionId: "source-session",
+                causeSourceTurnId: "turn-running",
+            },
             // This newer historical Run belongs to a prior registration of
             // the same trigger. It must not project onto the current turn.
             {
@@ -113,19 +124,23 @@ describe("Automation Session lifecycle status projection", () => {
         ];
         const automationRunFindMany = vi.fn(async (query: {
             where: {
+                state?: { in: readonly string[] };
                 OR: Array<{
                     triggerId: string;
                     causeSourceSessionId?: string;
                     causeSourceTurnId?: string;
                 }>;
             };
-        }) => automationRuns.filter((run) => query.where.OR.some((candidate) => (
-            candidate.triggerId === run.triggerId
-            && (candidate.causeSourceSessionId === undefined
-                || candidate.causeSourceSessionId === run.causeSourceSessionId)
-            && (candidate.causeSourceTurnId === undefined
-                || candidate.causeSourceTurnId === run.causeSourceTurnId)
-        ))));
+        }) => automationRuns.filter((run) => (
+            (query.where.state === undefined || query.where.state.in.includes(run.state))
+            && query.where.OR.some((candidate) => (
+                candidate.triggerId === run.triggerId
+                && (candidate.causeSourceSessionId === undefined
+                    || candidate.causeSourceSessionId === run.causeSourceSessionId)
+                && (candidate.causeSourceTurnId === undefined
+                    || candidate.causeSourceTurnId === run.causeSourceTurnId)
+            ))
+        )));
         const activeTriggers = [
             lifecycleTrigger("trigger-waiting", "turn-waiting"),
             lifecycleTrigger("trigger-paused", "turn-paused", false),
@@ -173,6 +188,12 @@ describe("Automation Session lifecycle status projection", () => {
         expect(automationRunFindMany).toHaveBeenCalledTimes(1);
         expect(automationRunFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
+                state: {
+                    in: [
+                        "queued", "claimed", "running", "succeeded", "failed", "cancelled",
+                        "expired", "dispatch_failed", "skipped", "missed", "outcome_uncertain",
+                    ],
+                },
                 OR: expect.arrayContaining([{
                     triggerId: "trigger-finished-without-run",
                     causeSourceSessionId: "source-session",

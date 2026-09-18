@@ -88,7 +88,7 @@ type RedisProvisionalRelayGrantClaim = Readonly<{
 
 export type PeerTcpTunnelRelayCoordinatorConfig =
     | Readonly<{ mode: "memory" }>
-    | Readonly<{ mode: "redis"; redis: Pick<Redis, "duplicate"> }>;
+    | Readonly<{ mode: "redis"; createRelayAdmissionRedis: () => Redis }>;
 
 export type PeerTcpTunnelRelayAdmissionResult =
     | Readonly<{ status: "attached" }>
@@ -156,16 +156,7 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
     config: PeerTcpTunnelRelayCoordinatorConfig;
 }>): PeerTcpTunnelRelayCoordinator {
     const relayAdmissionRedis = input.config.mode === "redis"
-        ? input.config.redis.duplicate({
-            enableOfflineQueue: false,
-            maxRetriesPerRequest: 0,
-            // The parent Socket.IO client delays reconnects to outlive a stale
-            // blocking-read socket timer. Admission never issues blocking reads,
-            // so inheriting that closure can leave a fresh post-restart OPEN
-            // fail-closed after the adapter itself is already healthy.
-            retryStrategy: (attempt) => Math.min(attempt * 50, 2_000),
-            socketTimeout: REDIS_GRANT_ADMISSION_TIMEOUT_MS,
-        })
+        ? input.config.createRelayAdmissionRedis()
         : null;
     const ignoreHandledRedisAdmissionError = (): void => {
         // Admission commands surface their failure through `consumeGrant`; avoid
@@ -634,10 +625,13 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
         let provisionalRedisGrantClaim: RedisProvisionalRelayGrantClaim | null = null;
         let durableGrantClaimCommitted = false;
         try {
-            const room = input.io.in(machineRoom(params.accountId, params.machineId));
-            const localSockets = await room.local.fetchSockets();
-            const localExactSockets = localSockets.filter((socket) =>
-                socket.data.userId === params.accountId
+            // The adapter's `local.fetchSockets()` still calls its Redis-backed
+            // `serverCount()` in Socket.IO 0.3.1. Admission must reserve the
+            // single-use grant while that adapter is recovering, so inspect the
+            // canonical local socket map directly for this local-only branch.
+            const localExactSockets = [...input.io.sockets.sockets.values()].filter((socket) =>
+                socket.connected === true
+                && socket.data.userId === params.accountId
                 && socket.data.clientType === "machine-scoped"
                 && socket.data.machineId === params.machineId,
             );
@@ -650,6 +644,7 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
                 if (input.config.mode !== "redis") {
                     return { status: "rejected", reason: "machine_unavailable" } as const;
                 }
+                const room = input.io.in(machineRoom(params.accountId, params.machineId));
                 // Cross-replica discovery is transported by the Socket.IO adapter. Do not
                 // let its intentionally delayed restart recovery block the independent,
                 // bounded global grant reservation. It is deliberately not durable until the
@@ -663,14 +658,24 @@ export function createPeerTcpTunnelRelayCoordinator(input: Readonly<{
                     return relayAdmissionRejectionReason(reservation.status);
                 }
                 provisionalRedisGrantClaim = reservation.claim;
-                const sockets = await room
-                    .timeout(FETCH_SOCKETS_TIMEOUT_MS)
-                    .fetchSockets();
-                const exactSockets = sockets.filter((socket) =>
-                    socket.data.userId === params.accountId
-                    && socket.data.clientType === "machine-scoped"
-                    && socket.data.machineId === params.machineId,
-                );
+                const discoveryDeadline = Date.now() + FETCH_SOCKETS_TIMEOUT_MS;
+                let exactSockets: readonly Pick<Socket, "id" | "data">[] = [];
+                while (Date.now() < discoveryDeadline) {
+                    const remainingMs = Math.max(1, discoveryDeadline - Date.now());
+                    try {
+                        const sockets = await room.timeout(Math.min(500, remainingMs)).fetchSockets();
+                        exactSockets = sockets.filter((socket) =>
+                            socket.data.userId === params.accountId
+                            && socket.data.clientType === "machine-scoped"
+                            && socket.data.machineId === params.machineId,
+                        );
+                    } catch {
+                        exactSockets = [];
+                    }
+                    if (exactSockets.length === 1) break;
+                    if (exactSockets.length > 1) break;
+                    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+                }
                 if (exactSockets.length !== 1) {
                     return { status: "rejected", reason: "machine_unavailable" } as const;
                 }

@@ -1,7 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
-import { normalizePluginReleaseFactsV1 } from "@happier-dev/protocol";
+import {
+    signAccountContentKeyBindingV1,
+    normalizePluginReleaseFactsV1,
+} from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -370,13 +373,10 @@ describe("Automation conversation target verification database boundary", () => 
                 encryptionMode: "e2ee",
                 publicKey: Buffer.from(signing.publicKey).toString("hex"),
                 contentPublicKey: new Uint8Array(content.publicKey),
-                contentPublicKeySig: new Uint8Array(tweetnacl.sign.detached(
-                    Buffer.concat([
-                        Buffer.from("Happy content key v1\u0000", "utf8"),
-                        Buffer.from(content.publicKey),
-                    ]),
-                    signing.secretKey,
-                )),
+                contentPublicKeySig: new Uint8Array(signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: signing.secretKey,
+                    contentPublicKey: content.publicKey,
+                })),
             },
         });
 

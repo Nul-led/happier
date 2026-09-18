@@ -4,7 +4,6 @@ import {
   DEFAULT_LOCAL_SERVICE_PREVIEW_TOKEN_TTL_MS,
   DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
   DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
-  DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_ALLOW_V1_FALLBACK,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_ACTIVE_TUNNELS_PER_SOCKET,
   DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,
@@ -49,6 +48,10 @@ import { chargePluginWebhookWorkingBytesV1 } from '@/app/plugins/webhooks/admiss
 import { FEATURE_ENV_KEYS, type FeatureEnvKey } from './featureEnvSchema';
 
 export type AutomationsFeatureEnv = Readonly<{
+  enabled: boolean;
+}>;
+
+export type WorkflowsFeatureEnv = Readonly<{
   enabled: boolean;
 }>;
 
@@ -112,6 +115,18 @@ export type SessionDraftsFeatureEnv = Readonly<{
   draftsEnabled: boolean;
 }>;
 
+export type SessionFilteredListingFeatureEnv = Readonly<{
+  filteredListingEnabled: boolean;
+}>;
+
+export type SessionFollowingFeatureEnv = Readonly<{
+  followingEnabled: boolean;
+}>;
+
+export type SessionConversationsFeatureEnv = Readonly<{
+  conversationsEnabled: boolean;
+}>;
+
 export type MachineTransferFeatureEnv = Readonly<{
   directPeerEnabled: boolean;
   serverRoutedEnabled: boolean;
@@ -130,7 +145,6 @@ export type MachineTunnelFeatureEnv = Readonly<{
   serverRoutedMaxFrameBytes: number;
   serverRoutedSupportedEncodings: readonly PeerTcpTunnelEncoding[];
   serverRoutedPreferredEncoding: PeerTcpTunnelEncoding;
-  serverRoutedAllowV1Fallback: boolean;
   serverRoutedMaxBinaryHeaderBytes: number;
   serverRoutedMaxRawPayloadBytes: number;
   serverRoutedMaxFramedMessageBytes: number;
@@ -140,6 +154,8 @@ export type MachineTunnelFeatureEnv = Readonly<{
 export type MachineRpcFeatureEnv = Readonly<{
   directPeerEnabled: boolean;
 }>;
+
+export type MachinePoolsFeatureEnv = Readonly<{ enabled: boolean }>;
 
 export type LocalServicesFeatureEnv = Readonly<{
   // Core product gates (default-allow): the server is the gate for the user-facing product.
@@ -169,6 +185,12 @@ export type ProvidersFeatureEnv = Readonly<{
 
 export type SearchFeatureEnv = Readonly<{
   enabled: boolean;
+}>;
+
+export type TeamsFeatureEnv = Readonly<{
+  enabled: boolean;
+  credentialResourcesEnabled: boolean;
+  credentialResourcesExternalApiEnabled: boolean;
 }>;
 
 export type BrowserFeatureEnv = Readonly<{
@@ -297,6 +319,11 @@ export type AuthFeatureEnv = Readonly<{
   uiAutoRedirectEnabled: boolean;
   uiAutoRedirectProviderId: string;
   uiRecoveryKeyReminderEnabled: boolean;
+}>;
+
+export type AuthEmailPasswordFeatureEnv = Readonly<{
+  enabled: boolean;
+  provisionEnabled: boolean;
 }>;
 
 export type AuthMtlsIdentitySource = "san_email" | "san_upn" | "subject_cn" | "fingerprint";
@@ -490,6 +517,12 @@ export function readAutomationsFeatureEnv(env: NodeJS.ProcessEnv): AutomationsFe
   };
 }
 
+export function readWorkflowsFeatureEnv(env: NodeJS.ProcessEnv): WorkflowsFeatureEnv {
+  return {
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.workflowsEnabled], true),
+  };
+}
+
 export function readBugReportsFeatureEnv(env: NodeJS.ProcessEnv): BugReportsFeatureEnv {
   return {
     enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.bugReportsEnabled], true),
@@ -589,6 +622,10 @@ export function readSessionHandoffFeatureEnv(env: NodeJS.ProcessEnv): SessionHan
   };
 }
 
+export function readSessionEphemeralRunnerFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ ephemeralRunnerEnabled: boolean }> {
+  return { ephemeralRunnerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsEphemeralRunnerEnabled], false) };
+}
+
 export function readSessionAgentSwitchingFeatureEnv(env: NodeJS.ProcessEnv): SessionAgentSwitchingFeatureEnv {
   return {
     agentSwitchingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsAgentSwitchingEnabled], true),
@@ -604,6 +641,39 @@ export function readSessionFoldersFeatureEnv(env: NodeJS.ProcessEnv): SessionFol
 export function readSessionDraftsFeatureEnv(env: NodeJS.ProcessEnv): SessionDraftsFeatureEnv {
   return {
     draftsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsDraftsEnabled], true),
+  };
+}
+
+export function readSessionFilteredListingFeatureEnv(env: NodeJS.ProcessEnv): SessionFilteredListingFeatureEnv {
+  return {
+    filteredListingEnabled: parseBooleanEnv(
+      env[FEATURE_ENV_KEYS.sessionsFilteredListingEnabled],
+      false,
+    ),
+  };
+}
+
+export function readSessionBoardFeatureEnv(env: NodeJS.ProcessEnv) {
+  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsBoardEnabled], false) };
+}
+
+export function readSessionFollowingFeatureEnv(env: NodeJS.ProcessEnv): SessionFollowingFeatureEnv {
+  return {
+    followingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFollowingEnabled], false),
+  };
+}
+
+export function readSessionCollaborationFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ enabled: boolean }> {
+  return {
+    // Broad audience activation requires the composed private-read/delivery gate.
+    // Direct sharing remains available independently of this new capability.
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsCollaborationEnabled], false),
+  };
+}
+
+export function readSessionConversationsFeatureEnv(env: NodeJS.ProcessEnv): SessionConversationsFeatureEnv {
+  return {
+    conversationsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsConversationsEnabled], false),
   };
 }
 
@@ -669,10 +739,6 @@ export function readMachineTunnelFeatureEnv(env: NodeJS.ProcessEnv): MachineTunn
     serverRoutedPreferredEncoding: normalizeMachineTunnelPreferredEncoding(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedPreferredEncoding],
       serverRoutedSupportedEncodings,
-    ),
-    serverRoutedAllowV1Fallback: parseBooleanEnv(
-      env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedAllowV1Fallback],
-      DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_ALLOW_V1_FALLBACK,
     ),
     serverRoutedMaxBinaryHeaderBytes: normalizeMachineTunnelPositiveInt(
       env[FEATURE_ENV_KEYS.machinesTunnelServerRoutedMaxBinaryHeaderBytes],
@@ -787,6 +853,21 @@ export function readSearchFeatureEnv(env: NodeJS.ProcessEnv): SearchFeatureEnv {
   return {
     enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.searchEnabled], true),
   };
+}
+
+export function readTeamsFeatureEnv(env: NodeJS.ProcessEnv): TeamsFeatureEnv {
+  return {
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsEnabled], true),
+    credentialResourcesEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsCredentialResourcesEnabled], false),
+    credentialResourcesExternalApiEnabled: parseBooleanEnv(
+      env[FEATURE_ENV_KEYS.teamsCredentialResourcesExternalApiEnabled],
+      false,
+    ),
+  };
+}
+
+export function readMachinePoolsFeatureEnv(env: NodeJS.ProcessEnv): MachinePoolsFeatureEnv {
+  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.machinesPoolsEnabled], true) };
 }
 
 export function readBrowserFeatureEnv(env: NodeJS.ProcessEnv): BrowserFeatureEnv {
@@ -1061,6 +1142,17 @@ export function readAuthFeatureEnv(env: NodeJS.ProcessEnv): AuthFeatureEnv {
       env[FEATURE_ENV_KEYS.authUiRecoveryKeyReminderEnabled] ?? legacyUiRecoveryKeyReminderEnabled,
       true,
     ),
+  };
+}
+
+/**
+ * Native email/password deployment configuration. Both values default to
+ * disabled so an unset or malformed deployment fails closed.
+ */
+export function readAuthEmailPasswordFeatureEnv(env: NodeJS.ProcessEnv): AuthEmailPasswordFeatureEnv {
+  return {
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordEnabled], false),
+    provisionEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordProvisionEnabled], false),
   };
 }
 

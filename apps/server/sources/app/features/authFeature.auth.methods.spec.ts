@@ -138,4 +138,54 @@ describe("resolveAuthFeature (auth.methods)", () => {
             expect.arrayContaining([{ id: "login", enabled: true, mode: "keyless" }]),
         );
     });
+
+    it("projects built-in and valid deployment providers despite unrelated deployment errors", () => {
+        const feature = resolveAuthFeature({
+            AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([
+                {
+                    id: "github",
+                    type: "oidc",
+                    displayName: "Collision",
+                    issuer: "https://collision.example.test",
+                    clientId: "cid",
+                    clientAuthenticationMethod: "client_secret_post",
+                    clientSecret: "secret",
+                    redirectUrl: "https://server.example.test/v1/oauth/collision/callback",
+                    allow: { usersAllowlist: ["reserved-user"] },
+                },
+                {
+                    id: "broken",
+                    type: "oidc",
+                    displayName: "Broken",
+                    issuer: "not-a-url",
+                    clientId: "cid",
+                    clientAuthenticationMethod: "client_secret_post",
+                    clientSecret: "secret",
+                    redirectUrl: "https://server.example.test/v1/oauth/broken/callback",
+                },
+                {
+                    id: "valid",
+                    type: "oidc",
+                    displayName: "Valid",
+                    issuer: "https://issuer.example.test",
+                    clientId: "cid",
+                    clientAuthenticationMethod: "client_secret_post",
+                    clientSecret: "secret",
+                    redirectUrl: "https://server.example.test/v1/oauth/valid/callback",
+                },
+            ]),
+        } as NodeJS.ProcessEnv);
+
+        expect(getMethod(feature, "github")).not.toBeNull();
+        expect(getMethod(feature, "key_challenge")).not.toBeNull();
+        expect(getMethod(feature, "mtls")).not.toBeNull();
+        expect(getMethod(feature, "valid")).not.toBeNull();
+        expect(getMethod(feature, "broken")).toBeNull();
+        expect(feature.capabilities?.auth?.providers?.github?.offboarding?.enabled).toBe(false);
+        expect(feature.capabilities?.auth?.misconfig).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ code: "auth_providers_config_invalid" }),
+            ]),
+        );
+    });
 });

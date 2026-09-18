@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createDbMocks, installDbModuleMock } from "../api/testkit/dbMocks";
+import { createDbMocks, createDbTransactionMock, installDbModuleMock } from "../api/testkit/dbMocks";
 
 const dbSessionFindMany = vi.hoisted(() => vi.fn());
 const dbAccountPushTokenFindMany = vi.hoisted(() => vi.fn());
@@ -8,16 +8,57 @@ const dbAccountPushTokenDeleteMany = vi.hoisted(() => vi.fn());
 const sendPushNotificationsAsyncSpy = vi.hoisted(() => vi.fn(async (messages: unknown[]) => messages.map(() => ({ status: "ok" }))));
 const getPushNotificationReceiptsAsyncSpy = vi.hoisted(() => vi.fn(async (_ids: string[]) => ({})));
 
+// Badge counting now resolves personal attention through the canonical viewer
+// owners (owner-or-active-Follow tracking plus Discussion attention), so the
+// delegates those owners read must exist here or the migrated path is never
+// exercised: `accountSessionFollow` and `sessionDiscussionReadState` are the
+// Lane 09B/09C tables, `sessionDiscussion.groupBy` the latest-activity read.
 const dbMocks = createDbMocks({
+    account: ["findMany"],
     session: ["findMany"],
+    sessionDiscussion: ["findMany", "groupBy"],
+    sessionDiscussionMessage: ["findMany"],
+    sessionDiscussionReadState: ["findMany"],
+    accountSessionFollow: ["findMany"],
     accountPushToken: ["findMany", "deleteMany"],
 } as const);
 
-dbMocks.db.session.findMany.mockImplementation((...args: unknown[]) => dbSessionFindMany(...args));
+const transactionMock = createDbTransactionMock(() => dbMocks.db);
+
+dbMocks.db.session.findMany.mockImplementation(async (...args: unknown[]) => {
+    const rows = await dbSessionFindMany(...args) as Array<Record<string, unknown>>;
+    return rows.map((row) => {
+        const accountId = String(row.accountId);
+        const cursor = typeof row.lastViewedSessionSeq === "number" ? row.lastViewedSessionSeq : 0;
+        return {
+            primaryTeamId: null,
+            account: { status: "active" },
+            shares: [],
+            teamGrants: [],
+            groupGrants: [],
+            messages: [],
+            accountReadStates: [{ accountId, lastViewedSessionSeq: cursor, unreadSince: null }],
+            accountFollows: [],
+            sessionPins: [],
+            sessionAttentionStandings: [],
+            dataKeyEnvelopes: [],
+            responsibleAccountId: null,
+            encryptionMode: "plain",
+            pendingBlockedCount: 0,
+            latestReadyEventSeq: null,
+            latestTurnStatus: null,
+            lastRuntimeIssue: null,
+            ...row,
+        };
+    });
+});
 dbMocks.db.accountPushToken.findMany.mockImplementation((...args: unknown[]) => dbAccountPushTokenFindMany(...args));
 dbMocks.db.accountPushToken.deleteMany.mockImplementation((...args: unknown[]) => dbAccountPushTokenDeleteMany(...args));
 
-installDbModuleMock({ db: dbMocks.db });
+installDbModuleMock({
+    db: transactionMock.wrapDb(dbMocks.db),
+    getActivePrismaRuntime: () => ({ DbNull: Object.freeze({}) }),
+});
 
 vi.mock("@/utils/logging/log", () => ({
     log: vi.fn(),
@@ -56,6 +97,20 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbAccountPushTokenDeleteMany.mockReset();
         sendPushNotificationsAsyncSpy.mockClear();
         getPushNotificationReceiptsAsyncSpy.mockClear();
+        dbMocks.db.account.findMany.mockReset();
+        dbMocks.db.sessionDiscussion.findMany.mockReset();
+        dbMocks.db.sessionDiscussion.groupBy.mockReset();
+        dbMocks.db.sessionDiscussionMessage.findMany.mockReset();
+        dbMocks.db.sessionDiscussionReadState.findMany.mockReset();
+        dbMocks.db.accountSessionFollow.findMany.mockReset();
+        dbMocks.db.account.findMany.mockResolvedValue([{ id: "a1" }, { id: "a2" }]);
+        dbMocks.db.sessionDiscussion.findMany.mockResolvedValue([]);
+        dbMocks.db.sessionDiscussion.groupBy.mockResolvedValue([]);
+        dbMocks.db.sessionDiscussionMessage.findMany.mockResolvedValue([]);
+        dbMocks.db.sessionDiscussionReadState.findMany.mockResolvedValue([]);
+        // No Follow rows by default: an Account is tracked only where it owns the
+        // Session, which is exactly the quiet-by-default relation under test.
+        dbMocks.db.accountSessionFollow.findMany.mockResolvedValue([]);
     });
 
     afterEach(() => {
@@ -66,6 +121,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,
@@ -76,6 +137,12 @@ describe("refreshAccountActivityBadgePushes", () => {
             },
             {
                 accountId: "a2",
+                id: "s-a2",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 3,
                 pendingCount: 0,
                 lastViewedSessionSeq: 3,
@@ -99,12 +166,28 @@ describe("refreshAccountActivityBadgePushes", () => {
             expect.objectContaining({ to: "ExponentPushToken[a1]", badge: 1, data: { type: "badge_refresh" } }),
             expect.objectContaining({ to: "ExponentPushToken[a2]", badge: 0, data: { type: "badge_refresh" } }),
         ]);
-    }, 30_000);
+        // Account coalescing must reach one set-based candidate scan. A scan
+        // per Account recreates the badge N+1 on every burst. The remaining
+        // Session reads belong to the shared tracked/access owners the count
+        // composes, and are themselves set-oriented over the whole batch.
+        const candidateScans = dbSessionFindMany.mock.calls.filter(
+            ([query]) => (query as { orderBy?: { id?: unknown } } | undefined)?.orderBy?.id === "asc",
+        );
+        expect(candidateScans).toHaveLength(1);
+        for (const [query] of dbSessionFindMany.mock.calls) {
+            const scopedAccountId = (query as { where?: { accountId?: unknown } } | undefined)?.where?.accountId;
+            expect(typeof scopedAccountId === "string").toBe(false);
+        }
+        // Whichever case runs first pays this file's module graph cost; it was
+        // measured at ~28.5s on a loaded shared executor, so the 20s lane
+        // default and a 30s budget both expire before the assertions run.
+    }, 60_000);
 
     it("does not publish badge attention for transcript rows above a partial import ceiling", async () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
                 seq: 9,
                 currentStorageState: "server_partial",
                 acceptedThroughServerSeq: 4,
@@ -137,6 +220,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 2,
                 pendingCount: 0,
                 lastViewedSessionSeq: null,
@@ -164,6 +253,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,
@@ -198,6 +293,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,
@@ -224,6 +325,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,
@@ -234,6 +341,12 @@ describe("refreshAccountActivityBadgePushes", () => {
             },
             {
                 accountId: "a2",
+                id: "s-a2",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,
@@ -248,14 +361,14 @@ describe("refreshAccountActivityBadgePushes", () => {
             { accountId: "a2", token: "ExponentPushToken[a2]" },
         ]);
 
-        const { refreshSessionParticipantBadgePushes } = await import("./refreshAccountActivityBadgePushes");
-        await refreshSessionParticipantBadgePushes({
+        const { scheduleAccountActivityBadgeRefresh } = await import("./refreshAccountActivityBadgePushes");
+        scheduleAccountActivityBadgeRefresh({
             badgeAttentionChanged: true,
-            participantCursors: [{ accountId: "a1" }],
+            accountIds: ["a1"],
         });
-        await refreshSessionParticipantBadgePushes({
+        scheduleAccountActivityBadgeRefresh({
             badgeAttentionChanged: true,
-            participantCursors: [{ accountId: "a2" }, { accountId: "a1" }],
+            accountIds: ["a2", "a1"],
         });
 
         expect(sendPushNotificationsAsyncSpy).not.toHaveBeenCalled();
@@ -274,6 +387,12 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbSessionFindMany.mockResolvedValue([
             {
                 accountId: "a1",
+                id: "s-a1",
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 seq: 5,
                 pendingCount: 0,
                 lastViewedSessionSeq: 1,

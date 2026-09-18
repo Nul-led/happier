@@ -16,14 +16,25 @@ export interface ScopedUsageEventRow {
     modelId: string | null;
     projectKey: string | null;
     workspaceId: string | null;
+    machineId?: string | null;
     source: string | null;
     scope: string;
     isCumulative: boolean;
     turnId: string | null;
+    externalKey?: string | null;
+    requestCount?: number;
+    teamCredentialResourceId?: string | null;
+    teamCredentialActorAccountId?: string | null;
+    teamCredentialExternalApiKeyId?: string | null;
+    teamCredentialSourceCredentialId?: string | null;
+    brokerMachineId?: string | null;
+    credentialDeliveryMode?: string | null;
+    metadata?: unknown;
     contextUsedTokens: number | null;
     contextWindowTokens: number | null;
     tokens: UsageObservationTokens;
     cost: UsageObservationCost;
+    contributingEventIds?: readonly string[];
 }
 
 export interface ScopedUsageContribution extends ScopedUsageEventRow {
@@ -103,7 +114,7 @@ function resolveGroup(rows: readonly ScopedUsageEventRow[]): ResolvedScopedUsage
     ));
 
     if (finalRows.length > 0) {
-        const latest = finalRows.at(-1)!;
+        const latest = finalRows[finalRows.length - 1]!;
         const snapshotRowsThroughFinal = ordered.filter((row) => (
             compareChronologically(row, latest) <= 0
             && (
@@ -119,7 +130,7 @@ function resolveGroup(rows: readonly ScopedUsageEventRow[]): ResolvedScopedUsage
     }
 
     if (cumulativeRows.length > 0) {
-        const latest = cumulativeRows.at(-1)!;
+        const latest = cumulativeRows[cumulativeRows.length - 1]!;
         return {
             totalContributions: [asContribution(latest, latest.tokens, latest.cost, ordered.map((row) => row.id))],
             bucketAttributions: buildSnapshotAttributions(cumulativeRows),

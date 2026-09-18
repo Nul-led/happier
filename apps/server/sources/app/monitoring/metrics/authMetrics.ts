@@ -2,9 +2,9 @@ import { Counter, Histogram } from "prom-client";
 
 import { getOrCreateMetric, register } from "./registry";
 
-type LoginEligibilityCacheName = "positive_result" | "account_snapshot" | "inflight";
+type LoginEligibilityCacheName = "positive_result" | "inflight";
 type LoginEligibilityCacheResult = "hit" | "miss";
-type LoginEligibilityStage = "account_lookup" | "disabled_check" | "provider_checks" | "total";
+type LoginEligibilityStage = "account_lookup" | "provider_checks" | "total";
 type LoginEligibilityStageResult = "ok" | "error";
 type AuthEnrollmentFlow = "account_qr" | "terminal" | "home_approval";
 type AuthEnrollmentOutcome =

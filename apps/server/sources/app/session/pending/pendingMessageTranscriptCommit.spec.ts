@@ -37,6 +37,9 @@ import { createSessionMessageFromPending } from "./pendingMessageTranscriptCommi
 
 const createdAt = new Date("2026-08-09T00:00:00.000Z");
 const tx = {
+    account: {
+        findUnique: vi.fn(),
+    },
     sessionMessage: {
         findFirst: vi.fn(),
         update: vi.fn(),
@@ -50,11 +53,13 @@ describe("Pending transcript commit", () => {
         transcriptWriter.validateSessionTranscriptStoredContent.mockReturnValue({ ok: true });
         transcriptWriter.validateSessionTranscriptWriteAuthorityInTx.mockResolvedValue({ ok: true });
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+        (tx.account.findUnique as ReturnType<typeof vi.fn>).mockImplementation(async ({ where }: { where: { id: string } }) => ({ id: where.id }));
         transcriptWriter.writeSessionTranscriptMessageInTx.mockResolvedValue({
             ok: true,
             message: {
                 id: "message-1",
                 seq: 1,
+            sidechainId: null,
                 localId: "pending-1",
                 messageRole: "user",
                 content: { t: "plain", v: { type: "user", text: "hello" } },
@@ -187,11 +192,59 @@ describe("Pending transcript commit", () => {
         );
     });
 
+    it("retains the original equality evidence for settled Workflow V2 authority content", async () => {
+        const authorityContent = {
+            t: "plain" as const,
+            v: {
+                role: "user",
+                content: { type: "text", text: "continue workflow" },
+                meta: {
+                    happierInputAuthorityV1: {
+                        v: 2,
+                        producer: "workflow",
+                        caller: { kind: "host" },
+                        workflow: {
+                            purpose: "invocation",
+                            runId: "workflow-run-a",
+                            invocationRecordId: "invocation-a",
+                        },
+                        permission: { admittedPermissionCeiling: "default" },
+                    },
+                },
+            },
+        };
+        const requestEqualityEvidenceV1 = {
+            kind: "plainDigest",
+            digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        } as const;
+
+        await expect(createSessionMessageFromPending(tx, {
+            sessionId: "session-1",
+            sessionEncryptionMode: "plain",
+            storagePolicy: "optional",
+            localId: "workflow-v2-settled",
+            content: authorityContent,
+            messageRole: "user",
+            pendingRequestedAction: { v: 1, kind: "enqueue" },
+            inputAdmissionReceipt: { v: 1, issuer: "authenticatedMachine" },
+            requestEqualityEvidenceV1,
+        } as never)).resolves.toMatchObject({ ok: true, didWrite: true });
+
+        expect(transcriptWriter.writeSessionTranscriptMessageInTx).toHaveBeenCalledWith(
+            tx,
+            expect.objectContaining({
+                content: authorityContent,
+                requestEqualityEvidenceV1,
+            }),
+        );
+    });
+
     it("increments the private row revision when completing an existing Pending transcript row", async () => {
         const content = { t: "plain" as const, v: { type: "user", text: "hello" } };
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-existing",
             seq: 1,
+            sidechainId: null,
             localId: "pending-existing",
             messageRole: null,
             content,
@@ -204,6 +257,7 @@ describe("Pending transcript commit", () => {
         (tx.sessionMessage.update as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-existing",
             seq: 1,
+            sidechainId: null,
             localId: "pending-existing",
             messageRole: "user",
             content,
@@ -242,6 +296,7 @@ describe("Pending transcript commit", () => {
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-provider-anchor",
             seq: 1,
+            sidechainId: null,
             localId: "pending-anchor",
             messageRole: "user",
             content,
@@ -254,6 +309,7 @@ describe("Pending transcript commit", () => {
         (tx.sessionMessage.update as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-provider-anchor",
             seq: 1,
+            sidechainId: null,
             localId: "pending-anchor",
             messageRole: "user",
             content,
@@ -288,6 +344,7 @@ describe("Pending transcript commit", () => {
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-other-admission",
             seq: 1,
+            sidechainId: null,
             localId: "pending-other-admission",
             messageRole: "user",
             content,
@@ -330,6 +387,7 @@ describe("Pending transcript commit", () => {
         (tx.sessionMessage.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({
             id: "message-role-conflict",
             seq: 1,
+            sidechainId: null,
             localId: "pending-role-conflict",
             messageRole: "agent",
             content,

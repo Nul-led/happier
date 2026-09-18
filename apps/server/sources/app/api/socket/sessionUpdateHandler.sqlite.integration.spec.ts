@@ -2,15 +2,27 @@ import { randomUUID } from "node:crypto";
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { SESSION_AGENT_TRANSITION_DIVIDER_LOCAL_ID_PREFIX } from "@happier-dev/protocol";
+import {
+    SESSION_AGENT_TRANSITION_DIVIDER_LOCAL_ID_PREFIX,
+    SESSION_DISCUSSION_AGENT_POST_EVENT_V1,
+    SESSION_DISCUSSION_REQUEST_MAX_UTF8_BYTES_V1,
+} from "@happier-dev/protocol";
 
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
 import { sessionUpdateHandler } from "@/app/api/socket/sessionUpdateHandler";
-import { createFakeSocket, getSocketHandler } from "@/app/api/testkit/socketHarness";
+import {
+    createAuthenticatedFakeSocket,
+    createFakeSocket,
+    getSocketHandler,
+} from "@/app/api/testkit/socketHarness";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
+import { createSessionDiscussion } from "@/app/session/discussions/mutations";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 describe("session update handler on SQLite", () => {
     let harness: LightSqliteHarness;
@@ -59,7 +71,7 @@ describe("session update handler on SQLite", () => {
                 data: "encrypted",
             },
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             socket as never,
@@ -101,6 +113,132 @@ describe("session update handler on SQLite", () => {
         })).resolves.toEqual({ active: true });
     });
 
+    it("posts Agent Discussion provenance only through the exact current Session publisher", async () => {
+        process.env.HAPPIER_FEATURE_SESSIONS__ENABLED = "1";
+        process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = "1";
+        process.env.HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED = "1";
+        const owner = await db.account.create({
+            data: { publicKey: `pk-${randomUUID()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = `machine-${randomUUID()}`;
+        await db.machine.create({ data: { id: machineId, accountId: owner.id, metadata: "{}" } });
+        const session = await db.session.create({
+            data: {
+                accountId: owner.id,
+                tag: `session-${randomUUID()}`,
+                encryptionMode: "plain",
+                metadata: JSON.stringify({ t: "plain", v: {} }),
+                active: false,
+                runtimeActivityState: "unknown",
+                runtimeActivityActiveCount: 0,
+                runtimeActivityRevision: 0n,
+            },
+            select: { id: true },
+        });
+        await db.accessKey.create({
+            data: { accountId: owner.id, machineId, sessionId: session.id, data: "encrypted" },
+        });
+        const created = await createSessionDiscussion({
+            authentication,
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            request: {
+                creationLocalId: `discussion-${randomUUID()}`,
+                titleContent: { t: "plain", v: { v: 1, title: "Runtime" } },
+                firstMessage: {
+                    localId: `message-${randomUUID()}`,
+                    content: { t: "plain", v: { v: 1, parts: [{ t: "text", text: "Start" }] } },
+                    mentionedAccountIds: [],
+                },
+            },
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+
+        const presence = createSessionPublisherPresence();
+        const socket = createFakeSocket({
+            id: "discussion-current-publisher",
+            data: { authAuthority: "account_automation" },
+        });
+        sessionUpdateHandler(
+            owner.id,
+            socket as never,
+            { connectionType: "session-scoped", socket, userId: owner.id, sessionId: session.id } as never,
+            { presence, binding: { accountId: owner.id, machineId, sessionId: session.id } },
+        );
+
+        const beforeClaim: unknown[] = [];
+        await getSocketHandler(socket, SESSION_DISCUSSION_AGENT_POST_EVENT_V1)({
+            v: 1,
+            sessionId: session.id,
+            discussionId: created.value.discussion.id,
+            request: {
+                localId: "agent-before-claim",
+                content: { t: "plain", v: { v: 1, parts: [{ t: "text", text: "No" }] } },
+                mentionedAccountIds: [],
+            },
+        }, (value: unknown) => beforeClaim.push(value));
+        expect(beforeClaim).toEqual([{ ok: false, v: 1, error: "session_discussion_post_denied" }]);
+
+        const overBudget: unknown[] = [];
+        await getSocketHandler(socket, SESSION_DISCUSSION_AGENT_POST_EVENT_V1)({
+            v: 1,
+            sessionId: session.id,
+            discussionId: created.value.discussion.id,
+            request: {
+                localId: "agent-over-budget",
+                content: {
+                    t: "plain",
+                    v: {
+                        v: 1,
+                        parts: [{ t: "text", text: "x".repeat(SESSION_DISCUSSION_REQUEST_MAX_UTF8_BYTES_V1) }],
+                    },
+                },
+                mentionedAccountIds: [],
+            },
+        }, (value: unknown) => overBudget.push(value));
+        expect(overBudget).toEqual([{ ok: false, v: 1, error: "session_discussion_invalid_content" }]);
+        expect(await db.sessionDiscussionMessage.count({ where: { localId: "agent-over-budget" } })).toBe(0);
+
+        await getSocketHandler(socket, "session-runtime-activity-snapshot")({
+            sessionId: session.id,
+            mutationId: `runtime-activity-snapshot:${session.id}`,
+            snapshot: { state: "idle", activeCount: 0 },
+        }, () => {});
+
+        const acknowledgements: unknown[] = [];
+        await getSocketHandler(socket, SESSION_DISCUSSION_AGENT_POST_EVENT_V1)({
+            v: 1,
+            sessionId: session.id,
+            discussionId: created.value.discussion.id,
+            runId: "run-1",
+            toolCallId: "tool-1",
+            request: {
+                localId: "agent-after-claim",
+                content: { t: "plain", v: { v: 1, parts: [{ t: "text", text: "Done" }] } },
+                mentionedAccountIds: [],
+            },
+        }, (value: unknown) => acknowledgements.push(value));
+
+        expect(acknowledgements).toEqual([expect.objectContaining({
+            ok: true,
+            v: 1,
+            value: expect.objectContaining({
+                message: expect.objectContaining({
+                    authorAccountId: owner.id,
+                    producerV1: {
+                        v: 1,
+                        kind: "agent",
+                        sessionId: session.id,
+                        runId: "run-1",
+                        toolCallId: "tool-1",
+                    },
+                }),
+            }),
+        })]);
+    });
+
     it("advertises transcript observation support before the Antigravity publisher claim without admitting observations", async () => {
         const owner = await db.account.create({
             // A Session-owning Account is current: terminal turn settlement
@@ -135,7 +273,7 @@ describe("session update handler on SQLite", () => {
         });
 
         const presence = createSessionPublisherPresence();
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             socket as never,
@@ -280,7 +418,7 @@ describe("session update handler on SQLite", () => {
         });
 
         const presence = createSessionPublisherPresence();
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             socket as never,
@@ -378,7 +516,7 @@ describe("session update handler on SQLite", () => {
         let now = new Date("2026-07-22T07:00:01.000Z");
         const presence = createSessionPublisherPresence({ now: () => now });
         const bindPublisher = (socketId: string) => {
-            const socket = createFakeSocket({ id: socketId });
+            const socket = createAuthenticatedFakeSocket({ id: socketId });
             sessionUpdateHandler(
                 owner.id,
                 socket as never,
@@ -476,6 +614,7 @@ describe("session update handler on SQLite", () => {
         const turnId = `turn-${randomUUID()}`;
         await expect(applySessionTurnMutation({
             actorUserId: owner.id,
+            authentication,
             mutation: {
                 v: 1,
                 sessionId: session.id,
@@ -486,7 +625,7 @@ describe("session update handler on SQLite", () => {
             },
         })).resolves.toMatchObject({ ok: true, didApply: true });
 
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             socket as never,
@@ -582,7 +721,7 @@ describe("session update handler on SQLite", () => {
             await db.accessKey.create({
                 data: { accountId: owner.id, machineId, sessionId: session.id, data: "encrypted" },
             });
-            const socket = createFakeSocket();
+            const socket = createAuthenticatedFakeSocket();
             sessionUpdateHandler(
                 owner.id,
                 socket as never,
@@ -666,8 +805,8 @@ describe("session update handler on SQLite", () => {
         const blocker = await createSession();
         const target = await createSession();
         const presence = createSessionPublisherPresence();
-        const blockerSocket = createFakeSocket();
-        const targetSocket = createFakeSocket();
+        const blockerSocket = createAuthenticatedFakeSocket();
+        const targetSocket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             blockerSocket as never,
@@ -772,7 +911,7 @@ describe("session update handler on SQLite", () => {
         });
 
         const presence = createSessionPublisherPresence();
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedFakeSocket();
         sessionUpdateHandler(
             owner.id,
             socket as never,

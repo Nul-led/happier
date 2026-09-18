@@ -18,8 +18,7 @@ export type ProvisioningResponsePolicyResult =
         reason:
             | "invalid_provisioning_response"
             | "provisioning_kind_mismatch"
-            | "provisioning_material_unavailable"
-            | "legacy_provisioning_unavailable";
+            | "provisioning_material_unavailable";
     }>;
 
 /**
@@ -70,11 +69,7 @@ export function evaluateProvisioningResponsePolicy(input: Readonly<{
     }
     const expected = resolveTerminalProvisioningVariantV2({
         encryptionMode: currentness.currentness.encryptionMode,
-        dataKeyMaterialAvailable: inspected.type === "dataKey",
     });
-    if (expected === "legacyProvisioningUnavailable") {
-        return { status: "rejected", reason: "legacy_provisioning_unavailable" };
-    }
     if (expected !== inspected.type) {
         return { status: "rejected", reason: "provisioning_kind_mismatch" };
     }

@@ -106,7 +106,10 @@ export function createHomeSearchIndexer(params: Readonly<{
         params.db.clear();
         let indexed = 0;
         let afterId: string | undefined;
-        do {
+        // The derived projection is rebuildable, so a stopping Home finishes only the page
+        // already in flight and abandons the remaining canonical pages. Shutdown therefore
+        // joins one page of SQLite work instead of the whole reconciliation.
+        while (!stopped) {
             const page = await params.readCanonicalMessagesPage({ afterId, limit: RECONCILE_PAGE_SIZE });
             const indexedMessages: HomeSearchMessage[] = [];
             for (const row of page.messages) {
@@ -119,7 +122,8 @@ export function createHomeSearchIndexer(params: Readonly<{
             indexed += indexedMessages.length;
             if (page.nextAfterId && page.nextAfterId === afterId) throw new Error('Canonical transcript pagination did not advance');
             afterId = page.nextAfterId;
-        } while (afterId);
+            if (!afterId) break;
+        }
         return { indexed, removed: Math.max(0, previousCount - indexed) };
     };
 
@@ -131,7 +135,9 @@ export function createHomeSearchIndexer(params: Readonly<{
             const work = tail.then(runReconcile);
             tail = work.then(() => undefined).catch(markFailed);
             const result = await work;
-            isReady = true;
+            // A reconciliation abandoned at a page boundary by `stop()` leaves a partial
+            // projection; it must never be advertised as a settled index.
+            if (!stopped) isReady = true;
             return result;
         },
         notify(message) { enqueue({ kind: 'upsert', message }); },
@@ -143,7 +149,7 @@ export function createHomeSearchIndexer(params: Readonly<{
             if (started || stopped) return;
             started = true;
             const work = tail.then(runReconcile).then(() => {
-                isReady = true;
+                if (!stopped) isReady = true;
             });
             // `whenReady()` is the caller-visible settlement boundary and must
             // retain reconciliation failure. The serialized mutation tail absorbs

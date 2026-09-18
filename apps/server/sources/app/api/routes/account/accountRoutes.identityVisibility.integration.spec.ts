@@ -48,6 +48,16 @@ describe("Account identity visibility (integration)", () => {
                         profile: githubProfile as any,
                     },
                 });
+                await db.accountIdentity.create({
+                    data: {
+                        accountId: account.id,
+                        provider: "email",
+                        providerUserId: "owner@example.test",
+                        providerLogin: "owner@example.test",
+                        profile: {},
+                        showOnProfile: false,
+                    },
+                });
 
                 const updateRes = await app.inject({
                     method: "PATCH",
@@ -83,6 +93,53 @@ describe("Account identity visibility (integration)", () => {
                         showOnProfile: false,
                     },
                 ]);
+                expect(body.linkedIdentityManagementV1).toEqual([{
+                    v: 1,
+                    providerId: "github",
+                    descriptor: { displayName: "GitHub", iconHint: "github", source: "built_in" },
+                    managedBy: null,
+                    requiredByTeams: [],
+                    canDisconnect: true,
+                    disconnectReason: null,
+                    canPublishProfile: true,
+                    publishProfileReason: null,
+                }]);
+            },
+        );
+    });
+
+    it("rejects native email visibility changes without mutating the login locator", async () => {
+        await withAuthenticatedTestApp(
+            (app) => accountRoutes(app as any),
+            async (app) => {
+                const account = await db.account.create({
+                    data: { publicKey: "pk-native-email-visibility" },
+                    select: { id: true },
+                });
+                await db.accountIdentity.create({
+                    data: {
+                        accountId: account.id,
+                        provider: "email",
+                        providerUserId: "owner@example.test",
+                        providerLogin: "owner@example.test",
+                        profile: {},
+                        showOnProfile: false,
+                    },
+                });
+
+                const response = await app.inject({
+                    method: "PATCH",
+                    url: "/v1/account/identity/email",
+                    headers: { "x-test-user-id": account.id },
+                    payload: { showOnProfile: true },
+                });
+
+                expect(response.statusCode).toBe(404);
+                expect(response.json()).toEqual({ error: "unsupported-provider" });
+                await expect(db.accountIdentity.findFirstOrThrow({
+                    where: { accountId: account.id, provider: "email" },
+                    select: { showOnProfile: true },
+                })).resolves.toEqual({ showOnProfile: false });
             },
         );
     });

@@ -1,4 +1,6 @@
 import * as privacyKit from "privacy-kit";
+import { randomUUID } from "node:crypto";
+import tweetnacl from "tweetnacl";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { auth } from "@/app/auth/auth";
@@ -9,6 +11,13 @@ import {
 } from "@/testkit/lightSqliteHarness";
 
 const MASTER_SECRET = "auth-provenance-integration-secret";
+
+// Golden bearer produced with privacy-kit@0.0.25 using the exact call shape in
+// immutable server-v0.2.11 (98ea8fb76733b1dd785d38c31360179cafa84824): its
+// terminal routes called createToken(accountId, { session: requestId }). The
+// decoded signed payload intentionally has no tokenEpoch or provenance marker.
+const SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH =
+    "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJyZWxlYXNlZC10ZXJtaW5hbC1hdXRoLW5vLWVwb2NoIiwic2Vzc2lvbiI6InRlcm1pbmFsLWF1dGgtcmVxdWVzdC1yZWxlYXNlZC0wLjIuMTEiLCJpYXQiOjE3ODkxOTU1MDEsIm5iZiI6MTc4OTE5NTUwMSwiaXNzIjoiaGFuZHkiLCJqdGkiOiJlM2QyZTFiOC04NGI0LTQxOWEtODVjMS1kZGYwMTIwMmE1ZWEifQ.jL7qNonZslnbKL-fpL3fLvpbp5H8HER8TLoN3sGkrCqPoGqaN1MPArOsP_Fi2EqUDObB4PgkE3FUo_BWrWpCBw";
 
 function decodeJwtPayload(token: string): Record<string, unknown> {
     const encoded = token.split(".")[1];
@@ -33,7 +42,13 @@ describe("auth token provenance (integration)", () => {
     }, 120_000);
 
     afterEach(async () => {
-        await db.account.deleteMany();
+        await harness.resetDbTables([
+            () => db.accessKey.deleteMany(),
+            () => db.ephemeralRunnerActivation.deleteMany(),
+            () => db.session.deleteMany(),
+            () => db.machine.deleteMany(),
+            () => db.account.deleteMany(),
+        ]);
     });
 
     afterAll(async () => {
@@ -46,9 +61,9 @@ describe("auth token provenance (integration)", () => {
             select: { id: true },
         });
         const cases = [
-            { kind: "account" as const, authority: "present_user" as const },
-            { kind: "terminal" as const, authority: "account_automation" as const },
-            { kind: "account_directory" as const, authority: "present_user" as const },
+            { kind: "account" as const, authority: "present_user" as const, authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }] },
+            { kind: "terminal" as const, authority: "account_automation" as const, authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }] },
+            { kind: "account_directory" as const, authority: "present_user" as const, authenticationEvidence: [{ kind: "home_method" as const, methodId: "key_challenge" }] },
         ];
 
         for (const expected of cases) {
@@ -56,7 +71,12 @@ describe("auth token provenance (integration)", () => {
             const payload = decodeJwtPayload(token);
             expect(payload).toMatchObject({
                 sub: account.id,
-                provenance: { v: 1, ...expected },
+                provenance: {
+                    v: 2,
+                    kind: expected.kind,
+                    authority: expected.authority,
+                    evidence: expected.authenticationEvidence,
+                },
             });
             expect(payload.extras).toBeUndefined();
             expect(typeof payload.tokenEpoch).toBe("number");
@@ -65,15 +85,109 @@ describe("auth token provenance (integration)", () => {
                 userId: account.id,
                 authTokenKind: expected.kind,
                 authority: expected.authority,
+                authenticationEvidence: expected.authenticationEvidence,
                 extras: { source: expected.kind },
                 legacy: false,
             });
         }
     });
 
+    it("accepts the immutable server-v0.2.11 terminal bearer that omits tokenEpoch", async () => {
+        const accountId = "released-terminal-auth-no-epoch";
+        await db.account.create({
+            data: { id: accountId, publicKey: "released-terminal-auth-no-epoch-key" },
+        });
+
+        expect(decodeJwtPayload(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).toMatchObject({
+            sub: accountId,
+            session: "terminal-auth-request-released-0.2.11",
+        });
+        expect(decodeJwtPayload(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).not.toHaveProperty("tokenEpoch");
+        expect(decodeJwtPayload(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).not.toHaveProperty("provenance");
+        await expect(auth.verifyToken(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toBeNull();
+        await expect(auth.verifyLegacyHomeToken(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toMatchObject({
+            userId: accountId,
+            extras: { session: "terminal-auth-request-released-0.2.11" },
+            authTokenKind: "terminal",
+            authority: "account_automation",
+            legacy: true,
+        });
+        await expect(auth.verifyTokenForRoute(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toMatchObject({
+            userId: accountId,
+            authTokenKind: "terminal",
+            authority: "account_automation",
+            legacy: true,
+        });
+
+        await db.account.update({
+            where: { id: accountId },
+            data: { tokenEpoch: { increment: 1 } },
+        });
+        await expect(auth.verifyLegacyHomeToken(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toBeNull();
+        await expect(auth.verifyTokenForRoute(SERVER_V0_2_11_TERMINAL_TOKEN_WITHOUT_EPOCH)).resolves.toBeNull();
+    });
+
+    it("admits a Runner credential only while its exact materialized scope remains current", async () => {
+        const account = await db.account.create({ data: { publicKey: "runner-principal-account", encryptionMode: "plain" } });
+        const activationId = randomUUID();
+        const sessionId = "runner-principal-session";
+        const machineId = "runner-principal-machine";
+        const installationId = "runner-principal-installation";
+        const installation = tweetnacl.sign.keyPair();
+        const installationPublicKey = privacyKit.encodeBase64(Uint8Array.from(installation.publicKey), "base64url").replace(/=+$/u, "");
+        await db.session.create({ data: { id: sessionId, accountId: account.id, tag: "runner-principal", metadata: "{}", encryptionMode: "plain", metadataLayoutVersion: 1 } });
+        await db.machine.create({ data: {
+            id: machineId,
+            accountId: account.id,
+            kind: "ephemeral_session_runner",
+            metadata: "{}",
+            installationId,
+            installationPublicKey: Buffer.from(installation.publicKey),
+        } });
+        await db.accessKey.create({ data: { accountId: account.id, sessionId, machineId, data: "runner-scoped-access" } });
+        await db.ephemeralRunnerActivation.create({ data: {
+            id: activationId,
+            creatorAccountId: account.id,
+            creatorTokenEpoch: account.tokenEpoch,
+            draftId: "runner-principal-draft",
+            sessionId,
+            machineId,
+            state: "materialized",
+            workspacePolicy: "choose_on_endpoint",
+            homeServerIdentityId: "srv_runner_principal",
+            activationSigningPublicKey: installationPublicKey,
+            authoringCommitment: "a".repeat(43),
+            artifact: {},
+            endpointFactsRecipient: { mode: "plain", creatorAccountId: account.id },
+        } });
+        const principal = {
+            kind: "ephemeral_session_runner" as const,
+            authority: "session_runtime" as const,
+            accountId: account.id,
+            activationId,
+            sessionId,
+            machineId,
+            installationId,
+            installationPublicKey,
+            creatorTokenEpoch: account.tokenEpoch,
+        };
+        const token = await auth.createToken(account.id, { ephemeralSessionRunnerPrincipal: principal }, {
+            kind: "ephemeral_session_runner",
+            authority: "session_runtime",
+        });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({
+            authTokenKind: "ephemeral_session_runner",
+            authority: "session_runtime",
+            ephemeralSessionRunnerPrincipal: principal,
+        });
+
+        await db.accessKey.delete({ where: { accountId_machineId_sessionId: { accountId: account.id, machineId, sessionId } } });
+        await expect(auth.verifyToken(token)).resolves.toBeNull();
+    });
+
     it("self-attests the restored Home signing secret without exporting the temporary token", async () => {
         const account = await db.account.create({
-            data: { publicKey: "auth-personal-home-readiness" },
+            data: { id: "a-readiness-inactive", publicKey: "auth-personal-home-readiness", homeRole: "owner" },
             select: { id: true },
         });
 
@@ -81,13 +195,15 @@ describe("auth token provenance (integration)", () => {
             authenticated: true,
         });
 
+        await db.account.update({ where: { id: account.id }, data: { status: "suspended" } });
+        await expect(auth.attestPresentUserTokenRoundTrip()).rejects.toThrow();
+        await db.account.create({ data: { id: "z-readiness-active", publicKey: "active-member-readiness" } });
+        await expect(auth.attestPresentUserTokenRoundTrip()).resolves.toEqual({ authenticated: true });
         await db.account.deleteMany();
-        await expect(auth.attestPresentUserTokenRoundTrip()).rejects.toThrow(
-            "initialized Account",
-        );
+        await expect(auth.attestPresentUserTokenRoundTrip()).rejects.toThrow();
     });
 
-    it("keeps signed provenance limited to version, kind, and authority", async () => {
+    it("mints evidence-free credentials as V1 and rejects an explicitly empty V2 evidence set", async () => {
         const account = await db.account.create({
             data: { publicKey: "auth-provenance-authentication-methods" },
             select: { id: true },
@@ -101,12 +217,47 @@ describe("auth token provenance (integration)", () => {
             kind: "account",
             authority: "present_user",
         });
-        await expect(auth.verifyToken(token)).resolves.toEqual(expect.objectContaining({
-            userId: account.id,
-            authTokenKind: "account",
+        expect((await auth.verifyToken(token))?.authenticationEvidence).toBeUndefined();
+
+        await expect(auth.createToken(account.id, undefined, {
+            kind: "account",
             authority: "present_user",
+            authenticationEvidence: [],
+        })).rejects.toThrow();
+    });
+
+    it("round-trips exact authentication evidence through the V2 marker", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "auth-provenance-evidence" },
+            select: { id: true },
+        });
+        const evidence = [{ kind: "home_method" as const, methodId: "key_challenge" }];
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: evidence,
+        });
+        expect(decodeJwtPayload(token).provenance).toEqual({
+            v: 2,
+            kind: "account",
+            authority: "present_user",
+            evidence,
+        });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({
+            userId: account.id,
+            authenticationEvidence: evidence,
             legacy: false,
-        }));
+        });
+
+        const sibling = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
+        });
+        expect((await auth.verifyToken(token))?.authenticationEvidence).toEqual(evidence);
+        expect((await auth.verifyToken(sibling))?.authenticationEvidence).toEqual([
+            { kind: "home_method", methodId: "email_password" },
+        ]);
     });
 
     it("requires an explicit complete provenance decision and rejects non-canonical pairings at mint time", async () => {
@@ -131,19 +282,23 @@ describe("auth token provenance (integration)", () => {
         await expect(auth.createToken(account.id, undefined, {
             kind: "terminal",
             authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         })).rejects.toThrow();
         await expect(auth.createToken(account.id, undefined, {
             kind: "account",
             authority: "account_automation",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         })).rejects.toThrow();
         await expect(auth.createToken(account.id, undefined, {
             kind: "account_directory",
             authority: "account_automation",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         })).rejects.toThrow();
         // API tokens remain exclusively database-minted.
         await expect(auth.createToken(account.id, undefined, {
             kind: "api_token",
             authority: "account_automation",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         })).rejects.toThrow(/createApiToken/);
     });
 
@@ -160,6 +315,7 @@ describe("auth token provenance (integration)", () => {
             { tokenEpoch: 0 },
             { provenance: { v: 1, kind: "account", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 2, kind: "account", authority: "present_user" } },
+            { tokenEpoch: 0, provenance: { v: 3, kind: "account", authority: "present_user", evidence: [{ kind: "home_method", methodId: "key_challenge" }] } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "unknown", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "account" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "account", authority: "present_user", mintOrigin: "unexpected" } },
@@ -169,9 +325,11 @@ describe("auth token provenance (integration)", () => {
             // are individually known.
             { tokenEpoch: 0, provenance: { v: 1, kind: "terminal", authority: "present_user" } },
             { tokenEpoch: 0, provenance: { v: 1, kind: "account", authority: "account_automation" } },
+            { tokenEpoch: 0, provenance: { v: 2, kind: "account", authority: "account_automation", evidence: [{ kind: "home_method", methodId: "key_challenge" }] } },
             // `api_token` is a database-backed bearer credential; a signed
             // token claiming that kind is always rejected.
             { tokenEpoch: 0, provenance: { v: 1, kind: "api_token", authority: "account_automation" } },
+            { tokenEpoch: 0, provenance: { v: 2, kind: "api_token", authority: "account_automation", evidence: [{ kind: "home_method", methodId: "key_challenge" }] } },
         ];
 
         for (const extras of candidates) {
@@ -199,28 +357,6 @@ describe("auth token provenance (integration)", () => {
             legacy: true,
         });
 
-        // Stable and preview 0.2 servers issued terminal credentials as the
-        // same pre-marker signed token with a non-empty session extra. The
-        // named ordinary-Home compatibility boundary must retain that released
-        // credential while preserving its narrower automation authority.
-        const releasedLegacyTerminalToken = await generator.new({
-            user: account.id,
-            extras: { tokenEpoch: 0, session: "terminal-auth-request-1" },
-        });
-        await expect(auth.verifyToken(releasedLegacyTerminalToken)).resolves.toBeNull();
-        await expect(auth.verifyLegacyHomeToken(releasedLegacyTerminalToken)).resolves.toMatchObject({
-            userId: account.id,
-            authTokenKind: "terminal",
-            authority: "account_automation",
-            legacy: true,
-        });
-        await expect(auth.verifyTokenForRoute(releasedLegacyTerminalToken)).resolves.toMatchObject({
-            userId: account.id,
-            authTokenKind: "terminal",
-            authority: "account_automation",
-            legacy: true,
-        });
-
         // A malformed new marker is never reinterpreted as a legacy credential.
         const futureMarkerToken = await generator.new({
             user: account.id,
@@ -232,19 +368,30 @@ describe("auth token provenance (integration)", () => {
             extras: { tokenEpoch: 0, provenance: { v: 1, kind: "terminal", authority: "present_user" } },
         });
         await expect(auth.verifyLegacyHomeToken(nonCanonicalPairingToken)).resolves.toBeNull();
-        const syntheticHistoricalMarker = await generator.new({
+        // String-valued library metadata is part of the released pre-marker
+        // shape, not a current provenance marker or authentication evidence.
+        const legacyTokenWithOpaqueProvenanceMetadata = await generator.new({
             user: account.id,
-            extras: { tokenEpoch: 0, provenance: "privacy-kit-0.0.25-node" },
+            extras: { tokenEpoch: 0, provenance: "opaque-library-build-metadata" },
         });
-        await expect(auth.verifyLegacyHomeToken(syntheticHistoricalMarker)).resolves.toBeNull();
+        await expect(auth.verifyToken(legacyTokenWithOpaqueProvenanceMetadata)).resolves.toBeNull();
+        await expect(auth.verifyLegacyHomeToken(legacyTokenWithOpaqueProvenanceMetadata)).resolves.toMatchObject({
+            userId: account.id,
+            extras: { provenance: "opaque-library-build-metadata" },
+            authTokenKind: "account",
+            authority: "present_user",
+            legacy: true,
+        });
 
         const directoryToken = await auth.createToken(account.id, undefined, {
             kind: "account_directory",
             authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         });
         const currentHomeToken = await auth.createToken(account.id, undefined, {
             kind: "account",
             authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         });
         await expect(auth.verifyLegacyHomeToken(currentHomeToken)).resolves.toBeNull();
         await expect(auth.verifyLegacyHomeToken(directoryToken)).resolves.toBeNull();
@@ -263,6 +410,7 @@ describe("auth token provenance (integration)", () => {
         const token = await auth.createToken(account.id, undefined, {
             kind: "account_directory",
             authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         });
 
         await expect(auth.verifyToken(token)).resolves.toMatchObject({
@@ -279,6 +427,7 @@ describe("auth token provenance (integration)", () => {
         const currentToken = await auth.createToken(account.id, undefined, {
             kind: "account_directory",
             authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
         });
         await expect(auth.verifyToken(currentToken)).resolves.toMatchObject({
             userId: account.id,

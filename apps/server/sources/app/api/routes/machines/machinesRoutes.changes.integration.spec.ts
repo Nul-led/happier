@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createDbMocks, installDbModuleMock } from "../../testkit/dbMocks";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createInTxHarness } from "../../testkit/txHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 const emitUpdate = vi.fn();
 const buildNewMachineUpdate = vi.fn((_created: any, updSeq: number, updId: string) => ({
@@ -58,9 +59,9 @@ vi.mock("@/storage/inTx", () => {
 
 describe("machinesRoutes (AccountChange integration)", () => {
     it("marks machine create once and emits new-machine + update-machine using the same cursor", async () => {
+        const accountContentBinding = createSignedAccountContentBinding();
         dbMocks.db.account.findUnique.mockResolvedValue({
-            contentPublicKey: null,
-            publicKey: "account-signing-key",
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         dbMocks.db.machine.findFirst.mockResolvedValue(null);

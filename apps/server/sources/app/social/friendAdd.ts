@@ -1,5 +1,5 @@
 import { Context } from "@/context";
-import { buildUserProfile, toSocialIdentities, UserProfile } from "./type";
+import { buildUserProfile, describeIdentityPresentation, toSocialIdentities, UserProfile } from "./type";
 import { inTx } from "@/storage/inTx";
 import { relationshipSet } from "./relationshipSet";
 import { relationshipGet } from "./relationshipGet";
@@ -114,7 +114,8 @@ export async function friendAdd(ctx: Context, uid: string): Promise<UserProfile 
 
             // Return the target user profile
             const identities = toSocialIdentities(targetUser.AccountIdentity);
-            return buildUserProfile(targetUser as any, RelationshipStatus.friend, identities);
+            return buildUserProfile(targetUser as any, RelationshipStatus.friend, identities,
+                await describeIdentityPresentation(identities));
         }
 
         // Case 2: If status is none or rejected, create a new request (since other side is not in requested state)
@@ -135,11 +136,13 @@ export async function friendAdd(ctx: Context, uid: string): Promise<UserProfile 
 
             // Return the target user profile
             const identities = toSocialIdentities(targetUser.AccountIdentity);
-            return buildUserProfile(targetUser as any, RelationshipStatus.requested, identities);
+            return buildUserProfile(targetUser as any, RelationshipStatus.requested, identities,
+                await describeIdentityPresentation(identities));
         }
 
         // Do not change anything and return the target user profile
         const identities = toSocialIdentities(targetUser.AccountIdentity);
-        return buildUserProfile(targetUser as any, currentUserRelationship, identities);
+        return buildUserProfile(targetUser as any, currentUserRelationship, identities,
+            await describeIdentityPresentation(identities));
     });
 }

@@ -8,6 +8,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { acquirePgliteDirLock } from "./locks/pgliteLock";
 import { resolveLightSqliteBusyTimeoutMsFromEnv } from "@/flavors/light/sqliteConnectionConfig";
+import { log, warn } from "@/utils/logging/log";
 export type TransactionClient = PrismaNamespace.TransactionClient;
 export type PrismaClientType = PrismaClientInstance;
 
@@ -278,6 +279,22 @@ export async function initDbSqlite(): Promise<void> {
         throw new Error("Database client is not initialized after initDbFromGeneratedClient(sqlite).");
     }
     await applySqliteRuntimePragmas(_db, process.env);
+    const diagnostics = resolveSqliteStartupDiagnosticsFromEnv(process.env);
+    log(
+        { module: "storage", event: "sqlite-startup-diagnostics", sqlite: diagnostics },
+        "SQLite startup diagnostics",
+    );
+    if (diagnostics.ignoredDatabaseUrlQueryParameters.length > 0) {
+        warn(
+            {
+                module: "storage",
+                event: "sqlite-unsupported-url-query-parameters",
+                ignoredDatabaseUrlQueryParameters: diagnostics.ignoredDatabaseUrlQueryParameters,
+                databaseUrlPoolAcquisitionTimeoutStatus: diagnostics.databaseUrlPoolAcquisitionTimeoutStatus,
+            },
+            "SQLite ignores unsupported database URL query parameters; pool acquisition remains unbounded",
+        );
+    }
 }
 
 function resolveLightPgliteDirFromEnv(env: NodeJS.ProcessEnv): string {
@@ -422,6 +439,21 @@ export type SqliteRuntimePragmas = Readonly<{
     journalSizeLimitBytes: number;
 }>;
 
+export type SqliteDatabaseUrlConnectionLimitStatus = "configured" | "missing" | "invalid";
+
+export type SqliteStartupDiagnostics = Readonly<{
+    provider: "sqlite";
+    journalMode: SqliteJournalMode;
+    synchronous: SqliteSynchronousMode;
+    busyTimeoutMs: number;
+    journalSizeLimitBytes: number;
+    databaseUrlSocketTimeoutSeconds: number | null;
+    databaseUrlConnectionLimit: number | null;
+    databaseUrlConnectionLimitStatus: SqliteDatabaseUrlConnectionLimitStatus;
+    databaseUrlPoolAcquisitionTimeoutStatus: "unbounded";
+    ignoredDatabaseUrlQueryParameters: readonly string[];
+}>;
+
 // Cap the WAL file retained after a checkpoint. SQLite's default (-1) means
 // "no limit", so this is a safety net alongside the active checkpoint worker.
 const DEFAULT_SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -476,6 +508,48 @@ export function resolveSqliteRuntimePragmasFromEnv(env: NodeJS.ProcessEnv): Sqli
         synchronous: resolveSqliteSynchronousModeFromEnv(env),
         busyTimeoutMs: resolveSqliteBusyTimeoutMsFromEnv(env),
         journalSizeLimitBytes: resolveSqliteJournalSizeLimitBytesFromEnv(env),
+    };
+}
+
+function parsePositiveInteger(value: string | null): number | null {
+    if (value === null) return null;
+    const trimmed = value.trim();
+    if (!/^\d+$/.test(trimmed)) return null;
+    const parsed = Number(trimmed);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function readSqliteDatabaseUrlSearchParam(env: NodeJS.ProcessEnv, key: string): string | null {
+    const rawUrl = String(env.DATABASE_URL ?? "").trim();
+    if (!rawUrl) return null;
+    try {
+        return new URL(rawUrl).searchParams.get(key);
+    } catch {
+        return null;
+    }
+}
+
+export function resolveSqliteStartupDiagnosticsFromEnv(env: NodeJS.ProcessEnv): SqliteStartupDiagnostics {
+    const pragmas = resolveSqliteRuntimePragmasFromEnv(env);
+    const rawConnectionLimit = readSqliteDatabaseUrlSearchParam(env, "connection_limit");
+    const databaseUrlConnectionLimit = parsePositiveInteger(rawConnectionLimit);
+    const databaseUrlConnectionLimitStatus: SqliteDatabaseUrlConnectionLimitStatus =
+        rawConnectionLimit === null ? "missing" : databaseUrlConnectionLimit === null ? "invalid" : "configured";
+    const ignoredDatabaseUrlQueryParameters = [
+        ...(readSqliteDatabaseUrlSearchParam(env, "pool_timeout") !== null ? ["pool_timeout"] : []),
+    ];
+
+    return {
+        provider: "sqlite",
+        journalMode: pragmas.journalMode,
+        synchronous: pragmas.synchronous,
+        busyTimeoutMs: pragmas.busyTimeoutMs,
+        journalSizeLimitBytes: pragmas.journalSizeLimitBytes,
+        databaseUrlSocketTimeoutSeconds: parsePositiveInteger(readSqliteDatabaseUrlSearchParam(env, "socket_timeout")),
+        databaseUrlConnectionLimit,
+        databaseUrlConnectionLimitStatus,
+        databaseUrlPoolAcquisitionTimeoutStatus: "unbounded",
+        ignoredDatabaseUrlQueryParameters,
     };
 }
 

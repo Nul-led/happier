@@ -17,7 +17,8 @@ export type MachineAccountEncryptionMigrationResult =
     | Readonly<{ status: "applied" }>
     | Readonly<{ status: "not_empty" }>
     | Readonly<{ status: "migration_incomplete" }>
-    | Readonly<{ status: "invalid_content" }>;
+    | Readonly<{ status: "invalid_content" }>
+    | Readonly<{ status: "unsupported_machine_kind" }>;
 
 export type MachineAccountEncryptionMigrationPostStateResult =
     | Readonly<{ status: "matched" }>
@@ -25,6 +26,7 @@ export type MachineAccountEncryptionMigrationPostStateResult =
 
 type MachineAccountEncryptionMigrationRow = Readonly<{
     id: string;
+    kind: "persistent" | "ephemeral_session_runner";
     metadata: string;
     metadataVersion: number;
     daemonState: string | null;
@@ -41,6 +43,7 @@ async function readMachineAccountEncryptionMigrationRowsInTx(
         where: { accountId },
         select: {
             id: true,
+            kind: true,
             metadata: true,
             metadataVersion: true,
             daemonState: true,
@@ -152,6 +155,13 @@ export async function migrateMachineAccountEncryptionInTx(params: Readonly<{
         return rows.length === 0
             ? { status: "applied" }
             : { status: "not_empty" };
+    }
+
+    // Runner Machines own a creator-bound content key that the public Account
+    // migration directive cannot authenticate or safely replace. Reject the
+    // whole inventory before validating replacements or writing any Machine.
+    if (rows.some((row) => row.kind === "ephemeral_session_runner")) {
+        return { status: "unsupported_machine_kind" };
     }
 
     const itemsById = new Map(

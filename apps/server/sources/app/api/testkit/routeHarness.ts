@@ -15,6 +15,7 @@ export type FakeRouteApp = {
     routes: Map<string, RouteEntry>;
     register: (plugin: (app: FakeRouteApp) => unknown) => void;
     after: (listener: (error: Error | null) => void) => void;
+    addHook: (name: string, listener: (...args: any[]) => unknown) => void;
     rateLimit: ReturnType<typeof vi.fn>;
     addContentTypeParser: (...args: any[]) => void;
     removeContentTypeParser: (...args: any[]) => void;
@@ -70,12 +71,17 @@ function resolveOptsAndHandler(
 export function createFakeRouteApp(): FakeRouteApp {
     const routes = new Map<string, RouteEntry>();
     const sharedRateLimitHandler = vi.fn();
+    const authenticate = vi.fn((request: Record<string, unknown>) => {
+        if (typeof request.userId !== "string") return;
+        request.authTokenKind ??= "account";
+        request.authAuthority ??= "present_user";
+    });
     const register = (method: RouteMethod, path: string, opts: RouteOpts, handler: RouteHandler) => {
         routes.set(`${method} ${path}`, { opts, handler });
     };
 
     return {
-        authenticate: vi.fn(),
+        authenticate,
         routes,
         register(plugin) {
             void plugin(this);
@@ -83,6 +89,7 @@ export function createFakeRouteApp(): FakeRouteApp {
         after(listener) {
             listener(null);
         },
+        addHook() {},
         rateLimit: vi.fn(() => sharedRateLimitHandler),
         addContentTypeParser() {},
         removeContentTypeParser() {},
@@ -140,6 +147,7 @@ export function getRouteHandler(
     const preHandlers = resolvePreHandlers(entry.opts.preHandler);
 
     return async (request, reply) => {
+        request.routeOptions ??= entry.opts;
         for (const handler of [...onRequestHandlers, ...preHandlers]) {
             const result = await handler(request, reply);
             if (reply?.sent === true) {

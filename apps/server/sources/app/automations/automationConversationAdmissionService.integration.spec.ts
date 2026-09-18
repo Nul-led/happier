@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import tweetnacl from "tweetnacl";
 
 import {
+    signAccountContentKeyBindingV1,
     MAX_NON_TERMINAL_EVENT_CONVERSATION_RUNS_PER_ACCOUNT,
     AutomationConversationAdmitInputV1Schema,
     automationReplyHandoffIdForRunV1,
@@ -211,10 +212,7 @@ async function configureE2eeAccount(params: Readonly<{
 }> = {}): Promise<E2eeAccountFixture> {
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const contentKeyBinding = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(content.publicKey),
-    ]);
+
     await db.account.update({
         where: { id: ACCOUNT_ID },
         data: {
@@ -222,7 +220,10 @@ async function configureE2eeAccount(params: Readonly<{
             publicKey: Buffer.from(signing.publicKey).toString("hex"),
             contentPublicKey: new Uint8Array(content.publicKey),
             contentPublicKeySig: new Uint8Array(
-                tweetnacl.sign.detached(contentKeyBinding, signing.secretKey),
+                signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: signing.secretKey,
+                    contentPublicKey: content.publicKey,
+                }),
             ),
         },
     });

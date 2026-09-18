@@ -881,6 +881,26 @@ describe("public plugin webhook ingress route", () => {
         expect(ingest).not.toHaveBeenCalled();
     });
 
+    it("fails closed on a light-server route when the distributed admission owner is unavailable", async () => {
+        const ingest = vi.fn();
+        const app = await createApp({
+            env: { ...ENABLED_ENV, HAPPIER_SERVER_FLAVOR: "light" },
+            ingest,
+            processAdmission: createPluginWebhookProcessAdmissionV1({ maxRequests: 1, maxWorkingBytes: TEST_PROCESS_WORKING_BYTES }),
+        });
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/plugins/webhooks/opaque-1",
+            headers: { "content-type": "application/octet-stream" },
+            payload: Buffer.from("{}"),
+        });
+
+        expect(response.statusCode).toBe(503);
+        expect(response.headers["retry-after"]).toBe("5");
+        expect(ingest).not.toHaveBeenCalled();
+    });
+
     it("rejects transfer-encoded framing with the public unsupported-media response before ingest", async () => {
         const ingest = vi.fn();
         const app = await createApp({

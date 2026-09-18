@@ -3,6 +3,7 @@ import { MACHINE_PLAIN_DATA_KEY_MARKER } from "@happier-dev/protocol";
 import { createDbMocks, installDbModuleMock } from "../../testkit/dbMocks";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createInTxHarness } from "../../testkit/txHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 const markAccountChanged = vi.fn(async () => 123);
 vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
@@ -48,9 +49,9 @@ describe("machinesRoutes (machine id conflict)", () => {
         vi.clearAllMocks();
         dbMocks.reset();
         txDbMocks.reset();
+        const accountContentBinding = createSignedAccountContentBinding();
         dbMocks.db.account.findUnique.mockResolvedValue({
-            contentPublicKey: null,
-            publicKey: "account-signing-key",
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         dbMocks.db.machine.findFirst.mockResolvedValue(null);

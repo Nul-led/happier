@@ -8,6 +8,10 @@ import { Server } from "socket.io";
 import { io as createClient, type Socket as ClientSocket } from "socket.io-client";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startRedisAdapterRecoveryCluster } from "@/testkit/redisAdapterRecoveryCluster";
+
+import { readRedisStreamsAdapterOptionsFromEnv } from "@/config/socketAdapter";
+
 import { resolveRedisAdapterValidationRedisUrl } from "../../../../scripts/resolveRedisAdapterValidationRedisUrl";
 import { registerSocketRpcHandlers } from "./rpc/registerSocketRpcHandlers";
 import { buildRpcMethodRoom } from "./rpc/rpcMethodRoom";
@@ -58,13 +62,13 @@ async function startCluster(): Promise<StartedCluster> {
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisA),
+        adapter: createAdapter(redisA, readRedisStreamsAdapterOptionsFromEnv({})),
     });
     const ioB = new Server(httpB, {
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisB),
+        adapter: createAdapter(redisB, readRedisStreamsAdapterOptionsFromEnv({})),
     });
 
     ioA.on("connection", (socket) => {
@@ -168,6 +172,43 @@ describe("rpcHandler redis adapter integration", () => {
             await startedClusters.pop()?.close();
         }
     });
+
+    it.each(["restart", "silent partition"] as const)("recovers remote RPC discovery, calls and no-target after Redis %s", async (failure) => {
+        const cluster = await startRedisAdapterRecoveryCluster();
+        const [nodeA, nodeB] = cluster.nodes;
+        nodeA.io.on("connection", (socket) => registerSocketRpcHandlers({ userId: USER_ID, socket, io: nodeA.io }));
+        nodeB.io.on("connection", (socket) => registerSocketRpcHandlers({ userId: USER_ID, socket, io: nodeB.io }));
+        const caller = await connectClient(nodeA.port);
+        const listener = await connectClient(nodeB.port);
+        try {
+            const callerId = caller.id;
+            const listenerId = listener.id;
+            const method = "agent.recovery";
+            const room = buildRpcMethodRoom({ userId: USER_ID, method });
+            listener.on(SOCKET_RPC_EVENTS.REQUEST, (request, respond) => respond(request.params));
+            const registered = waitForEvent(listener, SOCKET_RPC_EVENTS.REGISTERED);
+            listener.emit(SOCKET_RPC_EVENTS.REGISTER, { method });
+            await registered;
+            const assertCall = async (phase: string) => {
+                expect((await nodeA.io.in(room).fetchSockets()).map((socket) => socket.id)).toEqual([listenerId]);
+                expect(await emitWithAck(caller, SOCKET_RPC_EVENTS.CALL, { method, params: { phase } }))
+                    .toEqual({ ok: true, result: { phase } });
+            };
+            await assertCall("before");
+            await cluster.recover(failure);
+            expect(caller.id).toBe(callerId);
+            expect(listener.id).toBe(listenerId);
+            await assertCall("after");
+            listener.disconnect();
+            await waitForCondition(async () => (await nodeA.io.in(room).fetchSockets()).length === 0);
+            expect(await emitWithAck(caller, SOCKET_RPC_EVENTS.CALL, { method, params: {} }))
+                .toMatchObject({ ok: false, errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE });
+        } finally {
+            caller.disconnect();
+            listener.disconnect();
+            await cluster.close();
+        }
+    }, 60_000);
 
     it("routes room-based RPC calls across redis-adapter-backed server instances", async () => {
         const cluster = await startCluster();

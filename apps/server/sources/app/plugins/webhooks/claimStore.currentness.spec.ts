@@ -66,8 +66,21 @@ describe("plugin webhook settlement target currentness", () => {
             firstClaimAt: new Date(NOW.getTime() - 1_000),
             executionStartedAt: new Date(NOW.getTime() - 500),
             leaseExpiresAt: new Date(NOW.getTime() + 60_000),
+            endpointId: "endpoint-1",
+            endpointRevision: 1,
+            endpointWebhookContributionId: "github-events",
+            endpointHandlerActionId: "handle-webhook",
+            endpointSourceInstanceId: "source-1",
+            targetPluginId: TARGET.materialization.pluginId,
             targetPluginVersion: "1.0.0",
-            endpoint: { enabled: true, revokedAt: null, releasedAt: null },
+            endpoint: {
+                id: "endpoint-1",
+                routingKind: "accountEndpoint",
+                enabled: true,
+                revokedAt: null,
+                releasedAt: null,
+                route: { enabled: true, revokedAt: null, verifierKind: "github_hmac_sha256_v1" },
+            },
         });
 
         await expect(renewPluginWebhookDeliveryV1({
@@ -112,7 +125,7 @@ describe("plugin webhook settlement target currentness", () => {
         expect(mocks.updateMany).toHaveBeenCalledTimes(2);
     });
 
-    it("permits only content-unavailable dead-letter settlement before execution starts", async () => {
+    it("permits content-unavailable dead-letter settlement after start or under the exact pre-execution exception", async () => {
         mocks.findFirst.mockResolvedValue({ attemptCount: 0 });
 
         await expect(failPluginWebhookDeliveryV1({
@@ -126,13 +139,22 @@ describe("plugin webhook settlement target currentness", () => {
 
         expect(mocks.findFirst).toHaveBeenCalledWith({
             where: expect.objectContaining({
-                executionStartedAt: null,
+                OR: [
+                    { executionStartedAt: { not: null } },
+                    { executionStartedAt: null, attemptCount: 0 },
+                ],
                 leaseExpiresAt: { gt: NOW },
             }),
             select: { attemptCount: true },
         });
         expect(mocks.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({ executionStartedAt: null }),
+            where: expect.objectContaining({
+                OR: [
+                    { executionStartedAt: { not: null } },
+                    { executionStartedAt: null, attemptCount: 0 },
+                ],
+                leaseExpiresAt: { gt: NOW },
+            }),
         }));
     });
 

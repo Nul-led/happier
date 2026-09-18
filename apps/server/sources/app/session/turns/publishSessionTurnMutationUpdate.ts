@@ -3,7 +3,7 @@ import {
     type ClientConnection,
     eventRouter,
 } from "@/app/events/eventRouter";
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import {
     loadSessionTranscriptPublicationRecipientProjection,
     projectSessionTranscriptPublicationRealtimeProjection,
@@ -31,13 +31,17 @@ export async function publishSessionTurnMutationUpdate(params: {
     const skipSenderConnection = resolveSessionTurnUpdateSkipSenderConnection(params.connection);
     const session = await loadSessionTranscriptPublicationRecipientProjection(params.sessionId);
     if (session) {
-        await Promise.all(params.result.participantCursors.map(async ({ accountId, cursor }) => {
+        await Promise.all(params.result.recipientCursors.map(async ({ accountId, cursor }) => {
             const projection = projectSessionTranscriptPublicationRealtimeProjection(
                 {
                     latestTurnId: params.result.latestTurnId,
                     latestTurnStatus: params.result.latestTurnStatus,
                     latestTurnStatusObservedAt: params.result.latestTurnStatusObservedAt,
                     lastRuntimeIssue: params.result.lastRuntimeIssue,
+                    ...('rollbackEligibleTurnStarts' in params.result
+                        && params.result.rollbackEligibleTurnStarts !== undefined
+                        ? { rollbackEligibleTurnStarts: params.result.rollbackEligibleTurnStarts }
+                        : {}),
                 },
                 session,
                 accountId,
@@ -51,7 +55,7 @@ export async function publishSessionTurnMutationUpdate(params: {
                 undefined,
                 projection.value,
             );
-            eventRouter.emitUpdate({
+            await eventRouter.emitUpdate({
                 userId: accountId,
                 payload,
                 recipientFilter: { type: "all-interested-in-session", sessionId: params.sessionId },
@@ -59,8 +63,8 @@ export async function publishSessionTurnMutationUpdate(params: {
             });
         }));
     }
-    await refreshSessionParticipantBadgePushes({
+    await refreshTrackedSessionAccountBadgePushes({
         badgeAttentionChanged: params.result.badgeAttentionChanged,
-        participantCursors: params.result.participantCursors,
+        sessionId: params.sessionId,
     });
 }

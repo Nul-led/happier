@@ -1,7 +1,7 @@
 import { z } from "zod";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
-import { verifyHomeQrRendezvousSecretV2 } from "@happier-dev/protocol";
+import { HomeQrPairingStatusV2Schema, verifyHomeQrRendezvousSecretV2 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
 import { isPrismaUniqueConstraintError } from "@/storage/prisma";
@@ -49,13 +49,18 @@ export function registerPairingAuthRoutes(app: Fastify): void {
         direction: z.literal("trusted_home_displays"),
         secretHash: canonicalBase64Url32,
     }).strict();
+    // Immutable server-v0.2.11 clients sent exactly `{ secretHash }`. This is
+    // a recognition-only refusal adapter: it never recreates the V1 lifecycle.
+    const releasedV1StartBody = z.object({
+        secretHash: z.string().min(8).max(128),
+    }).strict();
     const reverseStartBody = z.object({
         direction: z.literal("requester_displays"),
         secretHash: canonicalBase64Url32,
         pairId: canonicalBase64Url32,
         expiresAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
     }).strict();
-    const startBody = z.union([forwardStartBody, reverseStartBody]);
+    const startBody = z.union([forwardStartBody, reverseStartBody, releasedV1StartBody]);
     const startResponse = z.object({ pairId: z.string(), expiresAt: z.string() }).strict();
     const invalidProposedExpiry = z.object({ error: z.literal("invalid_proposed_expiry") }).strict();
     const requestValidationError = z.object({
@@ -64,6 +69,7 @@ export function registerPairingAuthRoutes(app: Fastify): void {
         message: z.string().min(1),
     }).passthrough();
     const pairIdConflict = z.object({ error: z.literal("pair_id_conflict") }).strict();
+    const clientUpdateRequired = z.object({ error: z.literal("client_update_required") }).strict();
     gated.post(
         "/v1/auth/pairing/start",
         {
@@ -76,10 +82,14 @@ export function registerPairingAuthRoutes(app: Fastify): void {
                     400: z.union([invalidProposedExpiry, requestValidationError]),
                     403: PresentUserRequiredResponseSchema,
                     409: pairIdConflict,
+                    426: clientUpdateRequired,
                 },
             },
         },
         async (request, reply) => {
+            if (!("direction" in request.body)) {
+                return reply.code(426).send({ error: "client_update_required" });
+            }
             const now = new Date();
             await cleanupExpiredAuthPairingSessions({ now, flow: "direct_qr" }).catch(() => {});
 
@@ -251,20 +261,6 @@ export function registerPairingAuthRoutes(app: Fastify): void {
     );
 
     const statusQuery = z.object({ pairId: z.string().min(1).max(128) }).strict();
-    const statusPending = z.object({
-        state: z.literal("pending"),
-        pairId: z.string(),
-        expiresAt: z.string(),
-    }).strict();
-    const statusRequested = z.object({
-        state: z.literal("requested"),
-        pairId: z.string(),
-        expiresAt: z.string(),
-        homeServerIdentityId: z.string(),
-        requestedPublicKey: z.string(),
-        bindingProof: canonicalBase64Url32,
-        requestedDeviceLabel: z.string().nullable(),
-    }).strict();
     gated.get(
         "/v1/auth/pairing/status",
         {
@@ -273,7 +269,7 @@ export function registerPairingAuthRoutes(app: Fastify): void {
             schema: {
                 querystring: statusQuery,
                 response: {
-                    200: z.union([statusPending, statusRequested]),
+                    200: HomeQrPairingStatusV2Schema,
                     403: PresentUserRequiredResponseSchema,
                     404: notFound,
                     503: serverIdentityUnavailable,

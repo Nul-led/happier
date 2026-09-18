@@ -12,6 +12,15 @@ import { encryptString } from "@/modules/encrypt";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { enableAuthentication } from "../../utils/enableAuthentication";
+import { resolveEffectiveHomeAuthMethods } from "@/app/auth/methods/effectiveHomeAuthMethods";
+import { digestTeamInvitationToken, mintTeamInvitationToken } from "@/app/teams/invitations/token";
+
+vi.mock("@/app/net/outboundIdentityFetch", () => ({
+    createOutboundIdentityFetch: vi.fn(() => ({
+        fetch: (input: string | URL, init?: RequestInit) => globalThis.fetch(input, init),
+        close: vi.fn(async () => undefined),
+    })),
+}));
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -55,6 +64,10 @@ describe("authRoutes (auth policy) (integration)", () => {
         await closeTrackedApps();
         harness.resetEnv();
         vi.unstubAllGlobals();
+        await db.teamInvitation.deleteMany();
+        await db.teamMembership.deleteMany();
+        await db.team.deleteMany();
+        await db.homeGovernancePolicy.deleteMany();
         await db.accountIdentity.deleteMany();
         await db.account.deleteMany();
     });
@@ -84,6 +97,73 @@ describe("authRoutes (auth policy) (integration)", () => {
         expect(res.json()).toEqual({ error: "signup-disabled" });
         await expect(db.account.count()).resolves.toBe(0);
 
+        await app.close();
+    });
+
+    it("uses the exact Team invitation to atomically provision a key Account and membership on a closed Home", async () => {
+        harness.resetEnv({
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
+        });
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                authenticationPolicy: {
+                    v: 1,
+                    enabledMethodIds: ["key_challenge"],
+                    admission: "invitation_only",
+                },
+            },
+        });
+        const owner = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" },
+        });
+        const team = await db.team.create({
+            data: {
+                name: "Key invitation Team",
+                admissionMode: "invite_only",
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            },
+        });
+        await db.teamMembership.create({
+            data: { teamId: team.id, accountId: owner.id, role: "owner" },
+        });
+        const invitationToken = mintTeamInvitationToken();
+        await db.teamInvitation.create({
+            data: {
+                teamId: team.id,
+                tokenHash: Buffer.from(digestTeamInvitationToken(invitationToken)),
+                role: "member",
+                historyAccess: "from_membership",
+                createdByAccountId: owner.id,
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        const { body, publicKeyHex } = createAuthBody(31);
+        const app = createTestApp();
+        authRoutes(app);
+        await app.ready();
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: {
+                ...body,
+                admission: { kind: "team_invitation", token: invitationToken },
+            },
+        });
+
+        expect(response.statusCode, response.body).toBe(200);
+        const account = await db.account.findUniqueOrThrow({
+            where: { publicKey: publicKeyHex },
+        });
+        await expect(db.teamMembership.findUnique({
+            where: { teamId_accountId: { teamId: team.id, accountId: account.id } },
+        })).resolves.toMatchObject({ role: "member" });
         await app.close();
     });
 
@@ -143,6 +223,60 @@ describe("authRoutes (auth policy) (integration)", () => {
         await app.close();
     });
 
+    it("rejects a direct key-challenge login when persisted Home policy disables the method", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+            HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+        });
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                authenticationPolicy: { v: 1, enabledMethodIds: ["email_password"] },
+            },
+        });
+        const { body, publicKeyHex } = createAuthBody();
+        await db.account.create({ data: { publicKey: publicKeyHex, encryptionMode: "e2ee" } });
+
+        const app = createTestApp();
+        authRoutes(app);
+        await app.ready();
+
+        const response = await app.inject({ method: "POST", url: "/v1/auth", payload: body });
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toEqual({ error: "method_not_available" });
+        await app.close();
+    });
+
+    it("refuses startup when persisted Home policy disables every configured authentication method", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "0",
+            AUTH_SIGNUP_PROVIDERS: "",
+        });
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                revision: 1,
+                teamCreationPolicy: "managed_only",
+                authenticationPolicy: { v: 1, enabledMethodIds: ["email_password"] },
+            },
+        });
+        const effective = await resolveEffectiveHomeAuthMethods({ env: process.env });
+        expect(effective.status).toBe("ready");
+        if (effective.status !== "ready") throw new Error("Expected readable Home policy");
+        expect(effective.decisions.every((method) => method.actions.every((action) => !action.enabled))).toBe(true);
+
+        const app = createTestApp();
+        authRoutes(app);
+        // Do not let the assertion printer inspect a resolved Fastify instance:
+        // its address getter requires a listening socket.
+        const startupError = await app.ready().then(() => null, (error: unknown) => error);
+        expect(startupError).toBeInstanceOf(Error);
+        expect((startupError as Error).message).toMatch(/no login methods/i);
+    });
+
     it("fails fast when key-challenge login is disabled and no other login methods are available", async () => {
         harness.resetEnv({
             HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0",
@@ -151,7 +285,10 @@ describe("authRoutes (auth policy) (integration)", () => {
         });
 
         const app = createTestApp();
-        expect(() => authRoutes(app as any)).toThrow(/no login methods/i);
+        authRoutes(app);
+        const startupError = await app.ready().then(() => null, (error: unknown) => error);
+        expect(startupError).toBeInstanceOf(Error);
+        expect((startupError as Error).message).toMatch(/no login methods/i);
         await app.close();
     });
 
@@ -170,7 +307,8 @@ describe("authRoutes (auth policy) (integration)", () => {
         });
 
         const app = createTestApp();
-        expect(() => authRoutes(app as any)).not.toThrow();
+        authRoutes(app);
+        await app.ready();
         await app.close();
     });
 

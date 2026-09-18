@@ -1,4 +1,6 @@
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import type { Prisma } from "@prisma/client";
+import type { FastifyRequest } from "fastify";
 import { z } from "zod";
 
 import { buildMessageUpdatedUpdate, buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
@@ -9,6 +11,8 @@ import {
     MessageActionDurableResolutionV1Schema,
     MessageActionReferenceV1Schema,
     ExternalShareableActorV1Schema,
+    SessionMessageAccountActorV1Schema,
+    SESSION_TRANSCRIPT_MAX_PAGE_ROWS_V1,
     EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_PAGE_ROWS_V1,
     EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_REFERENCED_USER_ROWS_V1,
     EXTERNAL_SHAREABLE_TRANSCRIPT_MAX_SNAPSHOT_TURNS_V1,
@@ -26,6 +30,10 @@ import {
     importHistoricalSessionTranscript,
     type HistoricalSessionTranscriptImportItem,
 } from "@/app/session/importHistoricalSessionTranscript";
+import {
+    projectSessionMessageAccountActors,
+    resolveSessionMessageAccountActor,
+} from "@/app/session/messages/projectSessionMessageAccountActors";
 import { createSessionMessage } from "@/app/session/sessionWriteService";
 import { parseSessionMessageSidechainId } from "@/app/session/parseSessionMessageSidechainId";
 import {
@@ -50,19 +58,63 @@ import {
     type SessionTurnProjectionSeqs,
 } from "./resolveSessionTurnProjectionSeqs";
 import { publishSessionReadyProjectionUpdate } from "@/app/session/ready/publishSessionReadyProjectionUpdate";
-import { buildCurrentSessionParticipantWhere, checkSessionAccess } from "@/app/share/accessControl";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import { db } from "@/storage/db";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
+import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 
 type SessionStoredMessageContent = z.infer<typeof SessionStoredMessageContentSchema>;
 
 const SessionTranscriptStoredContentUnavailableResponseSchema = z.object({
     error: z.literal("session_transcript_stored_content_unavailable"),
 }).strict();
+
+type SessionListPreviewQuery = Readonly<{
+    scope?: unknown;
+    sidechainId?: unknown;
+    limit?: number;
+    beforeSeq?: number;
+    afterSeq?: number;
+    role?: unknown;
+    roles?: unknown;
+    projection?: unknown;
+}>;
+
+/**
+ * `session.list` needs one current main-chain user/agent row for its optional preview. The
+ * Machine signature proves who may make the request; this route-owned projection keeps that
+ * proof from becoming general transcript pagination authority.
+ */
+function isAdmittedSessionListPreviewRequest(input: Readonly<{
+    request: Pick<FastifyRequest,
+        "externalActionExecutionAuthorized" | "externalActionEffectActionId" | "externalActionExecutionTarget">;
+    sessionId: string;
+    query: SessionListPreviewQuery | undefined;
+}>): boolean {
+    if (
+        input.request.externalActionExecutionAuthorized !== true
+        || input.request.externalActionEffectActionId !== "session.list"
+    ) {
+        return true;
+    }
+    const target = input.request.externalActionExecutionTarget;
+    if (!target) return false;
+    if (target.kind === "session" && target.sessionId !== input.sessionId) return false;
+    const query = input.query;
+    return query?.limit === 1
+        && query.scope === "main"
+        && query.roles === "user,agent"
+        && query.sidechainId === undefined
+        && query.beforeSeq === undefined
+        && query.afterSeq === undefined
+        && query.role === undefined
+        && query.projection === undefined;
+}
 
 const SessionTranscriptMessagePageResponseSchema = z.object({
     messages: z.array(z.object({
@@ -79,6 +131,12 @@ const SessionTranscriptMessagePageResponseSchema = z.object({
         sourceUpdatedAt: z.number().int().min(0).optional(),
         transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
         externalShareableActor: ExternalShareableActorV1Schema.optional(),
+        /**
+         * Authenticated-reader only. External/public-link projections keep their
+         * deliberately coarse `externalShareableActor` contract and never carry
+         * an Account identity or profile.
+         */
+        accountActor: SessionMessageAccountActorV1Schema.nullable().optional(),
         messageActionReference: MessageActionReferenceV1Schema.optional(),
     }).strict()),
     hasMore: z.boolean(),
@@ -220,15 +278,18 @@ export function registerSessionMessageRoutes(app: Fastify) {
             body: MessageActionReferenceV1Schema,
             response: {
                 200: MessageActionDurableResolutionV1Schema,
+                404: z.object({ error: z.string() }).strict(),
             },
         },
         preHandler: app.authenticate,
         config: {
+            ephemeralSessionRunnerOperation: "session_runtime",
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
         },
     }, async (request, reply) => {
         const { sessionId } = request.params;
         const reference = request.body;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
 
         // The caller supplies one opaque reference only. A mismatched route
         // segment never becomes a second Message identity or an existence
@@ -243,15 +304,12 @@ export function registerSessionMessageRoutes(app: Fastify) {
             messageId: reference.messageId,
             reference,
             readAccess: async (actorUserId, ownedSessionId) =>
-                (await checkSessionAccess(actorUserId, ownedSessionId, tx)) !== null,
+                (await resolveSessionAccessForOperation(tx, { accountId: actorUserId, sessionId: ownedSessionId, authentication })).status === "allowed",
             readMessage: async (ownedSessionId, messageId) => await tx.sessionMessage.findFirst({
                 where: {
                     id: messageId,
                     sessionId: ownedSessionId,
-                    session: buildCurrentSessionParticipantWhere({
-                        userId: request.userId,
-                        sessionId: ownedSessionId,
-                    }),
+                    session: { AND: [{ id: ownedSessionId }, await buildSessionAccessWhere({ tx, accountId: request.userId, capability: 'readTranscript', mode: 'effective_access_v1', authentication })] },
                 },
                 select: {
                     id: true,
@@ -262,12 +320,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 },
             }),
             readPublication: async (ownedSessionId) => {
-                if (!await checkSessionAccess(request.userId, ownedSessionId, tx)) return null;
+                if ((await resolveSessionAccessForOperation(tx, { accountId: request.userId, sessionId: ownedSessionId, authentication })).status !== "allowed") return null;
                 return await tx.session.findFirst({
-                    where: buildCurrentSessionParticipantWhere({
-                        userId: request.userId,
-                        sessionId: ownedSessionId,
-                    }),
+                    where: { AND: [{ id: ownedSessionId }, await buildSessionAccessWhere({ tx, accountId: request.userId, capability: 'readTranscript', mode: 'effective_access_v1', authentication })] },
                     select: SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 });
             },
@@ -296,27 +351,35 @@ export function registerSessionMessageRoutes(app: Fastify) {
                         sourceCreatedAt: z.number().int().min(0).optional(),
                         sourceUpdatedAt: z.number().int().min(0).optional(),
                         transcriptObservationProvenance: SessionTranscriptObservationProvenanceV1Schema.optional(),
+                        accountActor: SessionMessageAccountActorV1Schema.nullable(),
                     }).passthrough(),
                 }).passthrough(),
                 404: z.object({ error: z.string() }).passthrough(),
+                403: z.union([
+                    z.object({ error: z.literal("team_authentication_required") }).strict(),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                ]),
+                503: z.object({ error: z.literal("team_authentication_unavailable") }).strict(),
             },
         },
         preHandler: app.authenticate,
         config: {
+            ephemeralSessionRunnerOperation: "session_runtime",
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages.byLocalId"),
         },
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId, localId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
 
-        const { row, currentlyAccessible } = await inTx(async (tx) => {
+        const { row, accessDecision } = await inTx(async (tx) => {
             const publication = await loadSessionTranscriptPublication(tx, sessionId);
             const row = await tx.sessionMessage.findFirst({
                 where: buildSessionMessagePublicationWhere({
                     where: {
                         sessionId,
                         localId,
-                        session: buildCurrentSessionParticipantWhere({ userId, sessionId }),
+                        session: { AND: [{ id: sessionId }, await buildSessionAccessWhere({ tx, accountId: userId, capability: 'readTranscript', mode: 'effective_access_v1', authentication })] },
                     },
                     publication,
                 }),
@@ -333,14 +396,22 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     sourceCreatedAt: true,
                     sourceUpdatedAt: true,
                     transcriptObservationProvenance: true,
+                    inputAdmissionReceipt: true,
+                    authorAccountId: true,
                 },
             });
             return {
                 row,
-                currentlyAccessible: (await checkSessionAccess(userId, sessionId, tx)) !== null,
+                accessDecision: await resolveSessionAccessForOperation(tx, { accountId: userId, sessionId, authentication }),
             };
         });
-        if (!currentlyAccessible) {
+        if (accessDecision.status === "authentication_required") {
+            return reply.code(403).send({ error: "team_authentication_required" });
+        }
+        if (accessDecision.status === "authentication_unavailable") {
+            return reply.code(503).send({ error: "team_authentication_unavailable" });
+        }
+        if (accessDecision.status !== "allowed") {
             return reply.code(404).send({ error: 'Session not found' });
         }
         if (!row) {
@@ -356,6 +427,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 ...(typeof row.sidechainId === "string" && row.sidechainId ? { sidechainId: row.sidechainId } : {}),
                 ...(messageRole ? { messageRole } : {}),
                 content: row.content,
+                accountActor: await resolveSessionMessageAccountActor(db, row),
                 ...(() => {
                     const deliveryResolution = parseSessionMessageDeliveryResolutionV1(row.deliveryResolution);
                     return deliveryResolution ? { deliveryResolution } : {};
@@ -380,7 +452,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
             querystring: z.object({
                 scope: z.enum(["main", "sidechain", "all"]).optional(),
                 sidechainId: z.string().min(1).optional(),
-                limit: z.coerce.number().int().min(1).max(500).optional(),
+                limit: z.coerce.number().int().min(1).max(SESSION_TRANSCRIPT_MAX_PAGE_ROWS_V1).optional(),
                 beforeSeq: z.coerce.number().int().min(1).optional(),
                 afterSeq: z.coerce.number().int().min(0).optional(),
                 role: SessionMessageRoleSchema.optional(),
@@ -431,29 +503,34 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     error: z.string(),
                     code: z.string(),
                 }).passthrough(),
+                403: z.union([
+                    z.object({ error: z.literal("team_authentication_required") }).strict(),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                ]),
                 404: z.object({ error: z.string() }).strict(),
-                503: SessionTranscriptStoredContentUnavailableResponseSchema,
+                503: z.union([
+                    SessionTranscriptStoredContentUnavailableResponseSchema,
+                    z.object({ error: z.literal("team_authentication_unavailable") }).strict(),
+                ]),
             },
         },
         preHandler: app.authenticate,
         config: {
+            ephemeralSessionRunnerOperation: "session_runtime",
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
         },
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
         const query = request.query as
-            | Readonly<{
-                  scope?: unknown;
-                  sidechainId?: unknown;
-                  limit?: number;
-                  beforeSeq?: number;
-                  afterSeq?: number;
-                  role?: unknown;
-                  roles?: unknown;
-                  projection?: unknown;
-              }>
+            | SessionListPreviewQuery
             | undefined;
+        if (!isAdmittedSessionListPreviewRequest({ request, sessionId, query })) {
+            return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
+        }
+        const sessionListPreviewProjection = request.externalActionExecutionAuthorized === true
+            && request.externalActionEffectActionId === "session.list";
         const externalShareableProjection = query?.projection === "externalShareableV1";
         // Served from the MATERIALISED turn anchors, and only once the anchor projection has
         // been operator-activated — before that, `SessionTurn` rows may still be v0 and their
@@ -504,11 +581,11 @@ export function registerSessionMessageRoutes(app: Fastify) {
             hasMore,
             publicationBlocked,
             externalShareableSnapshot,
-            currentlyAccessible,
+            accessDecision,
             turnProjectionNextBeforeSeq,
         } = await inTx(async (tx) => {
             const publication = await loadSessionTranscriptPublication(tx, sessionId);
-            const currentParticipantWhere = buildCurrentSessionParticipantWhere({ userId, sessionId });
+            const currentParticipantWhere = { AND: [{ id: sessionId }, await buildSessionAccessWhere({ tx, accountId: userId, capability: 'readTranscript', mode: 'effective_access_v1', authentication })] };
 
             // TURN PROJECTION: each prompt plus that turn's final reply, read from the anchors
             // `SessionTurn` already materialises. Constraining `where` HERE (rather than
@@ -571,6 +648,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     sourceUpdatedAt: true,
                     transcriptObservationProvenance: true,
                     inputAdmissionReceipt: true,
+                    authorAccountId: true,
                 },
             });
             const hasMore = turnProjectionPaging !== null
@@ -748,11 +826,17 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 publicationBlocked: externalShareableProjection
                     && isSessionTranscriptPublicationBlocked(publication),
                 externalShareableSnapshot,
-                currentlyAccessible: (await checkSessionAccess(userId, sessionId, tx)) !== null,
+                accessDecision: await resolveSessionAccessForOperation(tx, { accountId: userId, sessionId, authentication }),
                 turnProjectionNextBeforeSeq: turnProjectionPaging?.nextBeforeSeq ?? null,
             };
         });
-        if (!currentlyAccessible) {
+        if (accessDecision.status === "authentication_required") {
+            return reply.code(403).send({ error: "team_authentication_required" });
+        }
+        if (accessDecision.status === "authentication_unavailable") {
+            return reply.code(503).send({ error: "team_authentication_unavailable" });
+        }
+        if (accessDecision.status !== "allowed") {
             return reply.code(404).send({ error: 'Session not found' });
         }
 
@@ -787,37 +871,54 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     : null
                 : null;
 
+        // Authenticated readers get one bounded unique-id profile lookup for the
+        // whole page. The external/public projection deliberately keeps only its
+        // coarse actor contract, so it never resolves Account identity at all.
+        const pageAccountActors = externalShareableProjection || sessionListPreviewProjection
+            ? resultMessages.map(() => null)
+            : await projectSessionMessageAccountActors(db, resultMessages.map((v) => ({
+                messageRole: v.messageRole,
+                inputAdmissionReceipt: v.inputAdmissionReceipt,
+                authorAccountId: v.authorAccountId,
+            })));
+
         return reply.send({
             messages: resultMessages.map((v, index) => ({
                 id: v.id,
                 seq: v.seq,
                 content: parsedResultContents[index]!,
-                ...(() => {
+                ...(!sessionListPreviewProjection ? (() => {
                     const reference = issueSessionMessageActionReference({
                         sessionId,
                         messageId: v.id,
                         updatedAt: v.updatedAt,
                     });
                     return reference ? { messageActionReference: reference } : {};
-                })(),
-                ...(() => {
+                })() : {}),
+                ...(!sessionListPreviewProjection ? (() => {
                     const deliveryResolution = parseSessionMessageDeliveryResolutionV1(v.deliveryResolution);
                     return deliveryResolution ? { deliveryResolution } : {};
-                })(),
+                })() : {}),
                 localId: v.localId,
-                ...(typeof v.sidechainId === "string" && v.sidechainId ? { sidechainId: v.sidechainId } : {}),
+                ...(!sessionListPreviewProjection && typeof v.sidechainId === "string" && v.sidechainId
+                    ? { sidechainId: v.sidechainId }
+                    : {}),
                 ...(() => {
                     const messageRole = parseSessionMessageRole(v.messageRole);
                     return messageRole ? { messageRole } : {};
                 })(),
                 createdAt: v.createdAt.getTime(),
                 updatedAt: v.updatedAt.getTime(),
-                ...(v.sourceCreatedAt ? { sourceCreatedAt: v.sourceCreatedAt.getTime() } : {}),
-                ...(v.sourceUpdatedAt ? { sourceUpdatedAt: v.sourceUpdatedAt.getTime() } : {}),
-                ...(() => {
+                ...(!sessionListPreviewProjection && v.sourceCreatedAt
+                    ? { sourceCreatedAt: v.sourceCreatedAt.getTime() }
+                    : {}),
+                ...(!sessionListPreviewProjection && v.sourceUpdatedAt
+                    ? { sourceUpdatedAt: v.sourceUpdatedAt.getTime() }
+                    : {}),
+                ...(!sessionListPreviewProjection ? (() => {
                     const provenance = SessionTranscriptObservationProvenanceV1Schema.safeParse(v.transcriptObservationProvenance);
                     return provenance.success ? { transcriptObservationProvenance: provenance.data } : {};
-                })(),
+                })() : {}),
                 ...(() => {
                     if (!externalShareableProjection) return {};
                     const externalShareableActor = deriveExternalShareableActor({
@@ -827,13 +928,21 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     });
                     return externalShareableActor ? { externalShareableActor } : {};
                 })(),
+                // Explicit object-or-null: a current server always states whether
+                // it proved an Account actor, so a client can retract stale
+                // attribution. Omission is reserved for older producers.
+                ...(externalShareableProjection || sessionListPreviewProjection
+                    ? {}
+                    : { accountActor: pageAccountActors[index] ?? null }),
             })),
-            hasMore: hasMore
-                || publicationBlocked
-                || externalShareableSnapshot?.publicationBlockedFromSeq !== undefined
-                || externalShareableSnapshot?.turnSettlementBlockedFromSeq !== undefined,
-            nextBeforeSeq,
-            nextAfterSeq,
+            hasMore: sessionListPreviewProjection
+                ? false
+                : hasMore
+                    || publicationBlocked
+                    || externalShareableSnapshot?.publicationBlockedFromSeq !== undefined
+                    || externalShareableSnapshot?.turnSettlementBlockedFromSeq !== undefined,
+            nextBeforeSeq: sessionListPreviewProjection ? null : nextBeforeSeq,
+            nextAfterSeq: sessionListPreviewProjection ? null : nextAfterSeq,
             ...(externalShareableProjection ? { publicationBlocked, externalShareableSnapshot } : {}),
         });
     });
@@ -869,6 +978,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
         }>;
         const result = await importHistoricalSessionTranscript({
             actorUserId: request.userId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
             sessionId,
             items: body.items,
         });
@@ -906,6 +1016,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     sidechainId: z.string().min(1).nullable().optional(),
                     messageRole: z.unknown().optional(),
                     sessionEventType: z.literal("ready").optional(),
+                    // Released callers may still send this retired hint. It is
+                    // parsed only for compatibility and never selects admission.
+                    transcriptOnly: z.boolean().optional(),
                 }),
                 z.object({
                     content: SessionStoredMessageContentSchema,
@@ -913,6 +1026,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
                     sidechainId: z.string().min(1).nullable().optional(),
                     messageRole: z.unknown().optional(),
                     sessionEventType: z.literal("ready").optional(),
+                    // See the encrypted arm above. Public writes always retain
+                    // authenticated Account authorship.
+                    transcriptOnly: z.boolean().optional(),
                 }),
             ]),
             response: {
@@ -942,6 +1058,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
             sidechainId?: string | null;
             messageRole?: unknown;
             sessionEventType?: "ready";
+            transcriptOnly?: boolean;
         } & ({ ciphertext: string } | { content: SessionStoredMessageContent })>;
         const trustedSessionEventType = body.sessionEventType === "ready" ? "ready" : undefined;
         const localId = typeof body.localId === "string" ? body.localId : undefined;
@@ -971,10 +1088,18 @@ export function registerSessionMessageRoutes(app: Fastify) {
             });
         }
 
+        // This public route is an authenticated Account boundary. Transcript-only
+        // observation is reserved for the existing publisher/runtime owners; a
+        // caller-controlled flag must never suppress immutable human authorship.
+        const inputAdmission = {
+            inputAdmission: "authenticatedAccount" as const,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
+        };
         const result =
             "content" in body
                 ? await createSessionMessage({
                       actorUserId: userId,
+                      ...inputAdmission,
                       sessionId,
                       content: body.content,
                       localId: effectiveLocalId,
@@ -984,6 +1109,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
                   })
                 : await createSessionMessage({
                       actorUserId: userId,
+                      ...inputAdmission,
                       sessionId,
                       ciphertext: body.ciphertext,
                       localId: effectiveLocalId,
@@ -998,17 +1124,25 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 if ("code" in result && typeof result.code === "string") payload.code = result.code;
                 return reply.code(400).send(payload);
             }
+            if (result.error === "local-id-conflict") return reply.code(400).send({ error: "Invalid parameters", code: "session_input_idempotency_conflict" });
             if (result.error === "forbidden") return reply.code(403).send({ error: "Forbidden" });
             if (result.error === "session-not-found") return reply.code(404).send({ error: "Session not found" });
             return reply.code(500).send({ error: "Failed to create message" });
         }
 
+        // One evaluation per publication: every recipient of this row sees the
+        // same actor semantics the authenticated page would return.
+        const publishedMessage = {
+            ...result.message,
+            accountActor: await resolveSessionMessageAccountActor(db, result.message),
+        };
+
         if (result.didWrite) {
-            await Promise.all(result.participantCursors.map(async ({ accountId, cursor }) => {
+            await Promise.all(result.recipientCursors.map(async ({ accountId, cursor }) => {
                 const options = result.attentionImpact ? { attentionImpact: result.attentionImpact } : undefined;
                 const payload = options
-                    ? buildNewMessageUpdate(result.message, sessionId, cursor, randomKeyNaked(12), options)
-                    : buildNewMessageUpdate(result.message, sessionId, cursor, randomKeyNaked(12));
+                    ? buildNewMessageUpdate(publishedMessage, sessionId, cursor, randomKeyNaked(12), options)
+                    : buildNewMessageUpdate(publishedMessage, sessionId, cursor, randomKeyNaked(12));
                 eventRouter.emitUpdate({
                     userId: accountId,
                     payload,
@@ -1020,11 +1154,11 @@ export function registerSessionMessageRoutes(app: Fastify) {
                 readyProjection: result.readyProjection,
             });
         } else if (result.didUpdate) {
-            await Promise.all(result.participantCursors.map(async ({ accountId, cursor }) => {
+            await Promise.all(result.recipientCursors.map(async ({ accountId, cursor }) => {
                 const options = result.attentionImpact ? { attentionImpact: result.attentionImpact } : undefined;
                 const payload = options
-                    ? buildMessageUpdatedUpdate(result.message, sessionId, cursor, randomKeyNaked(12), options)
-                    : buildMessageUpdatedUpdate(result.message, sessionId, cursor, randomKeyNaked(12));
+                    ? buildMessageUpdatedUpdate(publishedMessage, sessionId, cursor, randomKeyNaked(12), options)
+                    : buildMessageUpdatedUpdate(publishedMessage, sessionId, cursor, randomKeyNaked(12));
                 eventRouter.emitUpdate({
                     userId: accountId,
                     payload,
@@ -1033,9 +1167,9 @@ export function registerSessionMessageRoutes(app: Fastify) {
             }));
         }
 
-        await refreshSessionParticipantBadgePushes({
+        await refreshTrackedSessionAccountBadgePushes({
             badgeAttentionChanged: result.badgeAttentionChanged,
-            participantCursors: result.participantCursors,
+            sessionId,
         });
 
         return reply.send({

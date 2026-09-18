@@ -37,7 +37,10 @@ export function createRouteTestBuilder(options: RouteTestBuilderOptions) {
         createAuthenticatedRouteRequest(mergeRouteRequestOverrides(options.defaultRequest, overrides));
 
     const invoke = async (overrides: RouteRequestOverrides = {}) => {
-        const request = createRequest(overrides);
+        const merged = mergeRouteRequestOverrides(options.defaultRequest, overrides);
+        const request = typeof merged.userId === "string"
+            ? createAuthenticatedRouteRequest(merged)
+            : createRouteRequest(merged);
         const reply = createReplyStub();
         const response = await handler(request, reply);
         return { request, reply, response };

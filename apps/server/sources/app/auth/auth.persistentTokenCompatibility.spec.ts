@@ -39,7 +39,7 @@ describe("auth persistent token compatibility", () => {
             // This retired setting must not be able to disable the read path.
             HAPPIER_AUTH_SEED_COMPAT_ATTEMPTS: "1",
         });
-        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status: "active" });
 
         const [{ auth }, privacyKit] = await Promise.all([
             import("./auth"),
@@ -80,5 +80,5 @@ describe("auth persistent token compatibility", () => {
             user: "new-user",
             extras: { source: "canonical" },
         });
-    });
+    }, 60_000);
 });

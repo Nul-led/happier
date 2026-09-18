@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
@@ -7,6 +7,8 @@ import * as privacyKit from "privacy-kit";
 import { db } from "@/storage/db";
 import { connectRoutes } from "./connectRoutes";
 import { auth } from "@/app/auth/auth";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
+import { createExternalAuthorizeAttempt } from "./oauthExternal/createExternalAuthorizeUrl";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { startOidcStubServer, type OidcStubServer } from "../../testkit/oidcStub";
 
@@ -69,6 +71,128 @@ describe("connectRoutes (OIDC callback) external auth flow (integration)", () =>
         await harness.close();
         globalThis.fetch = originalFetch;
         await oidcStub.close();
+    });
+
+    it("returns sanitized OIDC test diagnostics even when eligibility denies sign-in, without Account writes", async () => {
+        harness.resetEnv({
+            AUTH_SIGNUP_PROVIDERS: "okta",
+            AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([{
+                id: "okta", type: "oidc", displayName: "Acme Okta",
+                issuer: oidcIssuer, clientId: "oidc_client", clientSecret: "oidc_secret",
+                redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+                allow: { emailDomains: ["example.test"], groupsAny: ["eng"] },
+            }]),
+            HAPPIER_WEBAPP_URL: "https://app.example.test",
+        });
+        const runtime = await resolveOAuthRuntimeById(process.env, "okta", { kind: "home" }, "identity_connection_test");
+        expect(runtime).not.toBeNull();
+        const attempt = await createExternalAuthorizeAttempt({
+            flow: "connect", env: process.env, providerId: "okta",
+            provider: runtime!.provider, reference: runtime!.reference,
+            userId: "initiating-admin", purpose: "identity_connection_test",
+            webAppOAuthReturnUrl: "https://app.example.test/settings/authentication",
+        });
+        expect(attempt).not.toBeNull();
+        const authorize = await fetch(attempt!.url, { redirect: "manual" });
+        expect(authorize.status).toBe(302);
+        const callback = new URL(authorize.headers.get("location")!);
+        const app = createTestApp();
+        connectRoutes(app);
+        await app.ready();
+        const response = await app.inject({ method: "GET", url: `${callback.pathname}${callback.search}` });
+        expect(response.statusCode).toBe(302);
+        const redirect = new URL(response.headers.location as string);
+        expect(redirect.searchParams.get("error")).toBeNull();
+        const resultHandle = redirect.searchParams.get("resultHandle");
+        expect(resultHandle).toBeTruthy();
+        const stored = await db.repeatKey.findUnique({ where: { key: `oauth_identity_connection_test_result_${resultHandle}` } });
+        expect(JSON.parse(stored!.value).diagnostics).toEqual({
+            subjectPresent: true, loginAvailable: true, emailAvailable: true, emailVerified: false,
+            groups: { state: "complete", count: 1 },
+            eligibility: { status: "ineligible", rules: [
+                { kind: "email_domains", matched: false }, { kind: "groups_any", matched: true },
+            ] },
+            mappedGroups: [],
+        });
+        expect(stored!.value).not.toContain("acme_user");
+        expect(stored!.value).not.toContain("at_1");
+        expect(await db.account.count()).toBe(0);
+        expect(await db.accountIdentity.count()).toBe(0);
+    });
+
+    it.each([
+        ["callback", "rotation"],
+        ["finalize", "rotation"],
+        ["callback", "removal"],
+        ["finalize", "removal"],
+    ] as const)("consumes a stale deployment OAuth %s after %s before network or Account mutations", async (phase, change) => {
+        const config = {
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+        };
+        harness.resetEnv({
+            AUTH_SIGNUP_PROVIDERS: "okta",
+            AUTH_PROVIDERS_CONFIG_JSON: JSON.stringify([config]),
+            HAPPIER_WEBAPP_URL: "https://app.example.test",
+        });
+        const kp = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(8));
+        const publicKey = privacyKit.encodeBase64(new Uint8Array(kp.publicKey));
+        const app = createTestApp();
+        connectRoutes(app);
+        await app.ready();
+        const params = await app.inject({
+            method: "GET",
+            url: `/v1/auth/external/okta/params?publicKey=${encodeURIComponent(publicKey)}`,
+        });
+        expect(params.statusCode, params.body).toBe(200);
+        const authorize = await fetch(params.json().url, { redirect: "manual" });
+        expect(authorize.status).toBe(302);
+        const callback = new URL(authorize.headers.get("location")!);
+
+        const changeConfiguration = () => {
+            process.env.AUTH_PROVIDERS_CONFIG_JSON = JSON.stringify(change === "removal"
+                ? []
+                : [{ ...config, clientSecret: "rotated_secret" }]);
+        };
+        const network = vi.fn(originalFetch);
+        if (phase === "callback") {
+            changeConfiguration();
+            globalThis.fetch = network;
+        }
+        const response = await app.inject({ method: "GET", url: `${callback.pathname}${callback.search}` });
+        expect(response.statusCode).toBe(302);
+        const redirect = new URL(response.headers.location as string);
+        if (phase === "callback") {
+            expect(redirect.searchParams.get("error")).toBe("auth_provider_configuration_changed");
+        } else {
+            const pending = redirect.searchParams.get("pending");
+            expect(pending, response.headers.location).toBeTruthy();
+            changeConfiguration();
+            globalThis.fetch = network;
+            const challenge = new Uint8Array(32).fill(9);
+            const finalized = await app.inject({
+                method: "POST",
+                url: "/v1/auth/external/okta/finalize",
+                payload: {
+                    pending,
+                    publicKey,
+                    challenge: privacyKit.encodeBase64(challenge),
+                    signature: privacyKit.encodeBase64(new Uint8Array(tweetnacl.sign.detached(challenge, kp.secretKey))),
+                    username: "oidcuser",
+                },
+            });
+            expect(finalized.statusCode, finalized.body).toBe(409);
+            expect(finalized.json()).toEqual({ error: "auth_provider_configuration_changed" });
+        }
+        expect(network).not.toHaveBeenCalled();
+        expect(await db.repeatKey.count()).toBe(0);
+        expect(await db.account.count()).toBe(0);
+        expect(await db.accountIdentity.count()).toBe(0);
     });
 
     it("creates a pending auth record for an OIDC provider and redirects without creating an account", async () => {
@@ -225,6 +349,17 @@ describe("connectRoutes (OIDC callback) external auth flow (integration)", () =>
             purpose:
                 "account_encryption_first_key",
             provider: "okta",
+            securityBinding: {
+                provider: {
+                    id: "okta",
+                    source: "deployment",
+                    runtimeFingerprint: expect.any(String),
+                    context: { kind: "home" },
+                },
+                connection: null,
+                admission: null,
+                purpose: "account_encryption_first_key",
+            },
             userId: account.id,
             providerUserId: "user_1",
             proofHash,

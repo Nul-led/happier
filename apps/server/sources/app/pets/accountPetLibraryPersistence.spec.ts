@@ -1,3 +1,4 @@
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
@@ -23,15 +24,15 @@ function deferred(): Readonly<{
 function createAccountContentKeyBinding() {
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const payload = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(content.publicKey),
-    ]);
+
     return {
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         contentPublicKey: new Uint8Array(content.publicKey),
         contentPublicKeySig: new Uint8Array(
-            tweetnacl.sign.detached(payload, signing.secretKey),
+            signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey,
+                contentPublicKey: content.publicKey,
+            }),
         ),
     };
 }

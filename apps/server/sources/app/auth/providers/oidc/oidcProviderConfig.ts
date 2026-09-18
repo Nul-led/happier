@@ -8,6 +8,8 @@ export type OidcAuthProviderInstanceConfig = Readonly<{
     issuer: string;
     clientId: string;
     clientSecret: string;
+    /** Explicit after parsing; legacy deployment input is normalized to client_secret_post. */
+    clientAuthenticationMethod: "client_secret_post" | "client_secret_basic";
     redirectUrl: string;
     scopes: string;
     httpTimeoutSeconds: number;
@@ -69,6 +71,17 @@ function parseBoolean(value: unknown, fallback: boolean): boolean {
     return fallback;
 }
 
+function parseClientAuthenticationMethod(
+    value: unknown,
+    providerId: string,
+    errors: string[],
+): OidcAuthProviderInstanceConfig["clientAuthenticationMethod"] | null {
+    if (value === undefined) return "client_secret_post";
+    if (value === "client_secret_post" || value === "client_secret_basic") return value;
+    errors.push(`Invalid clientAuthenticationMethod for ${providerId}: expected "client_secret_post" or "client_secret_basic"`);
+    return null;
+}
+
 function validateIssuerUrl(issuer: string, providerId: string, errors: string[]): boolean {
     let url: URL;
     try {
@@ -122,36 +135,72 @@ function parseClaims(raw: unknown): OidcAuthProviderInstanceConfig["claims"] {
     });
 }
 
-function parseStringList(raw: unknown): string[] {
-    if (!Array.isArray(raw)) return [];
+function parseStringList(
+    raw: unknown,
+    field: string,
+    providerId: string,
+    errors: string[],
+): string[] | null {
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) {
+        errors.push(`Invalid allow.${field} for ${providerId}: expected an array of strings`);
+        return null;
+    }
     const out: string[] = [];
-    for (const v of raw) {
-        if (typeof v !== "string") continue;
-        const trimmed = v.trim();
+    for (const value of raw) {
+        if (typeof value !== "string") {
+            errors.push(`Invalid allow.${field} for ${providerId}: expected an array of strings`);
+            return null;
+        }
+        const trimmed = value.trim();
         if (!trimmed) continue;
         out.push(trimmed);
     }
     return out;
 }
 
-function parseLowercaseIdList(raw: unknown): string[] {
-    return parseStringList(raw).map((v) => v.toLowerCase());
+function parseLowercaseIdList(
+    raw: unknown,
+    field: string,
+    providerId: string,
+    errors: string[],
+): string[] | null {
+    return parseStringList(raw, field, providerId, errors)?.map((v) => v.toLowerCase()) ?? null;
 }
 
-function parseEmailDomainList(raw: unknown): string[] {
-    return parseStringList(raw)
+function parseEmailDomainList(
+    raw: unknown,
+    providerId: string,
+    errors: string[],
+): string[] | null {
+    const values = parseStringList(raw, "emailDomains", providerId, errors);
+    if (!values) return null;
+    return values
         .map((v) => v.trim().toLowerCase())
         .map((v) => (v.startsWith("@") ? v.slice(1) : v))
         .filter(Boolean);
 }
 
-function parseAllow(raw: unknown): OidcAuthProviderInstanceConfig["allow"] {
-    const record = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>) : {};
+function parseAllow(
+    raw: unknown,
+    providerId: string,
+    errors: string[],
+): OidcAuthProviderInstanceConfig["allow"] | null {
+    if (raw !== undefined && (typeof raw !== "object" || raw === null || Array.isArray(raw))) {
+        errors.push(`Invalid allow for ${providerId}: expected object`);
+        return null;
+    }
+    const record = (raw ?? {}) as Record<string, unknown>;
+    const usersAllowlist = parseLowercaseIdList(record.usersAllowlist, "usersAllowlist", providerId, errors);
+    const emailDomains = parseEmailDomainList(record.emailDomains, providerId, errors);
+    const groupsAny = parseLowercaseIdList(record.groupsAny, "groupsAny", providerId, errors);
+    const groupsAll = parseLowercaseIdList(record.groupsAll, "groupsAll", providerId, errors);
+    if (!usersAllowlist || !emailDomains || !groupsAny || !groupsAll) return null;
     return Object.freeze({
-        usersAllowlist: Object.freeze(parseLowercaseIdList(record.usersAllowlist)),
-        emailDomains: Object.freeze(parseEmailDomainList(record.emailDomains)),
-        groupsAny: Object.freeze(parseLowercaseIdList(record.groupsAny)),
-        groupsAll: Object.freeze(parseLowercaseIdList(record.groupsAll)),
+        usersAllowlist: Object.freeze(usersAllowlist),
+        emailDomains: Object.freeze(emailDomains),
+        groupsAny: Object.freeze(groupsAny),
+        groupsAll: Object.freeze(groupsAll),
     });
 }
 
@@ -200,7 +249,19 @@ export function resolveAuthProviderInstancesFromEnv(env: NodeJS.ProcessEnv): Res
     }
 
     const instances: OidcAuthProviderInstanceConfig[] = [];
-    const seen = new Set<string>();
+    const idCounts = new Map<string, number>();
+    for (const entry of parsed) {
+        if (typeof entry !== "object" || entry === null) continue;
+        const normalizedId = normalizeProviderId((entry as Record<string, unknown>).id);
+        if (!normalizedId) continue;
+        idCounts.set(normalizedId, (idCounts.get(normalizedId) ?? 0) + 1);
+    }
+    const duplicateIds = new Set(
+        [...idCounts.entries()]
+            .filter(([, count]) => count > 1)
+            .map(([id]) => id),
+    );
+    const reportedDuplicateIds = new Set<string>();
 
     for (const entry of parsed) {
         if (typeof entry !== "object" || entry === null) {
@@ -214,11 +275,13 @@ export function resolveAuthProviderInstancesFromEnv(env: NodeJS.ProcessEnv): Res
             errors.push("Invalid id: expected non-empty string");
             continue;
         }
-        if (seen.has(normalizedId)) {
-            errors.push(`Duplicate provider id: ${normalizedId}`);
+        if (duplicateIds.has(normalizedId)) {
+            if (!reportedDuplicateIds.has(normalizedId)) {
+                errors.push(`Duplicate provider id: ${normalizedId}`);
+                reportedDuplicateIds.add(normalizedId);
+            }
             continue;
         }
-        seen.add(normalizedId);
 
         const type = record.type;
         if (type !== "oidc") {
@@ -226,21 +289,40 @@ export function resolveAuthProviderInstancesFromEnv(env: NodeJS.ProcessEnv): Res
             continue;
         }
 
-        const displayName = expectString(record.displayName, `displayName for ${normalizedId}`, errors);
-        const issuer = expectString(record.issuer, `issuer for ${normalizedId}`, errors);
-        const clientId = expectString(record.clientId, `clientId for ${normalizedId}`, errors);
-        const clientSecret = expectString(record.clientSecret, `clientSecret for ${normalizedId}`, errors);
-        const redirectUrl = expectString(record.redirectUrl, `redirectUrl for ${normalizedId}`, errors);
+        const entryErrors: string[] = [];
+        const displayName = expectString(record.displayName, `displayName for ${normalizedId}`, entryErrors);
+        const issuer = expectString(record.issuer, `issuer for ${normalizedId}`, entryErrors);
+        const clientId = expectString(record.clientId, `clientId for ${normalizedId}`, entryErrors);
+        const clientSecret = expectString(record.clientSecret, `clientSecret for ${normalizedId}`, entryErrors);
+        const redirectUrl = expectString(record.redirectUrl, `redirectUrl for ${normalizedId}`, entryErrors);
 
-        if (!displayName || !issuer || !clientId || !clientSecret || !redirectUrl) continue;
-        if (!validateIssuerUrl(issuer, normalizedId, errors)) continue;
+        if (!displayName || !issuer || !clientId || !clientSecret || !redirectUrl) {
+            errors.push(...entryErrors);
+            continue;
+        }
+        if (!validateIssuerUrl(issuer, normalizedId, entryErrors)) {
+            errors.push(...entryErrors);
+            continue;
+        }
 
-        const scopes = parseScopes(record.scopes, errors, normalizedId);
-        if (!scopes) continue;
+        const scopes = parseScopes(record.scopes, entryErrors, normalizedId);
+        const clientAuthenticationMethod = parseClientAuthenticationMethod(
+            record.clientAuthenticationMethod,
+            normalizedId,
+            entryErrors,
+        );
+        if (!scopes || !clientAuthenticationMethod) {
+            errors.push(...entryErrors);
+            continue;
+        }
 
         const httpTimeoutSeconds = parseHttpTimeoutSeconds(record.httpTimeoutSeconds);
         const claims = parseClaims(record.claims);
-        const allow = parseAllow(record.allow);
+        const allow = parseAllow(record.allow, normalizedId, entryErrors);
+        if (!allow) {
+            errors.push(...entryErrors);
+            continue;
+        }
         const fetchUserInfo = parseBoolean(record.fetchUserInfo, false);
         const storeRefreshToken = parseBoolean(record.storeRefreshToken, false);
         const ui = parseUi(record.ui);
@@ -252,6 +334,7 @@ export function resolveAuthProviderInstancesFromEnv(env: NodeJS.ProcessEnv): Res
             issuer,
             clientId,
             clientSecret,
+            clientAuthenticationMethod,
             redirectUrl,
             scopes,
             httpTimeoutSeconds,
@@ -263,7 +346,5 @@ export function resolveAuthProviderInstancesFromEnv(env: NodeJS.ProcessEnv): Res
         });
     }
 
-    if (errors.length > 0) return { instances: [], errors };
-
-    return { instances, errors: [] };
+    return { instances, errors };
 }

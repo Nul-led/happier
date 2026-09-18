@@ -2,6 +2,8 @@ import {
     ACCOUNT_DIRECTORY_ERROR_CODES_V1,
     type AccountDirectoryErrorCodeV1,
 } from "@happier-dev/protocol";
+import type { FastifyError, FastifyReply } from "fastify";
+import { InactiveAccountError } from "@/app/auth/accountStatus";
 
 export type AccountDirectoryErrorCode =
     | "invalid_request"
@@ -20,6 +22,7 @@ export type AccountDirectoryErrorCode =
     | "invalid_subject"
     | "home_redemption_unavailable"
     | "home_unavailable"
+    | "account_disabled"
     | "approval_rejected"
     | "approval_expired"
     | "approval_invalid";
@@ -41,6 +44,7 @@ const STATUS_BY_CODE = {
     invalid_subject: 401,
     home_redemption_unavailable: 503,
     home_unavailable: 401,
+    account_disabled: 403,
     approval_rejected: 401,
     approval_expired: 401,
     approval_invalid: 401,
@@ -56,6 +60,17 @@ export class AccountDirectoryError extends Error {
         this.code = code;
         this.statusCode = statusCode ?? STATUS_BY_CODE[code];
     }
+}
+
+export function accountDirectoryAuthErrorHandler(error: FastifyError, _request: unknown, reply: FastifyReply): void {
+    if (error instanceof InactiveAccountError) {
+        reply.code(403).send({ error: "account-disabled" });
+        return;
+    }
+    if (!(error instanceof AccountDirectoryError)) throw error;
+    const mapped = accountDirectoryProtocolErrorResponse(error);
+    if (!mapped) throw error;
+    reply.code(mapped.statusCode).send(mapped.body);
 }
 
 /**
@@ -83,6 +98,7 @@ export const ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE: Readonly<
     invalid_subject: ACCOUNT_DIRECTORY_ERROR_CODES_V1.invalidSubject,
     home_redemption_unavailable: ACCOUNT_DIRECTORY_ERROR_CODES_V1.homeUnavailable,
     home_unavailable: ACCOUNT_DIRECTORY_ERROR_CODES_V1.homeUnavailable,
+    account_disabled: ACCOUNT_DIRECTORY_ERROR_CODES_V1.accountDisabled,
     approval_rejected: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalRejected,
     approval_expired: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalExpired,
     approval_invalid: ACCOUNT_DIRECTORY_ERROR_CODES_V1.approvalInvalid,

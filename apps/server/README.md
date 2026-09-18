@@ -69,7 +69,7 @@ meaning of either mode.
 
 Happier Server supports two flavors that share the same API + internal logic. Flavors are **presets** (defaults); you can override individual backends via env vars.
 
-- **full** (default, recommended for production): Postgres (default) or MySQL 8.0.16+ + Redis (required for multi-replica Socket.IO) + S3/Minio-compatible public file storage (default) or local files (`HAPPIER_FILES_BACKEND=local`).
+- **full** (default, recommended for production): Postgres (default) or MySQL 8.0.17+ + Redis (required for multi-replica Socket.IO) + S3/Minio-compatible public file storage (default) or local files (`HAPPIER_FILES_BACKEND=local`).
 - **light** (recommended for self-hosting/testing): SQLite (default) or embedded Postgres via PGlite + local public file storage served by the server under `GET /files/*`.
 
 ## Required environment (full flavor)
@@ -84,7 +84,7 @@ The full flavor expects these env vars to be set:
 - `HAPPIER_DB_PROVIDER` (optional, defaults to `postgres`). Supported: `postgres`, `mysql`, `pglite`, `sqlite`.
 - `DATABASE_URL`, for example:
   - Postgres: `postgresql://user:pass@db.example.com:5432/happy?sslmode=require`
-  - MySQL 8.0.16+: `mysql://user:pass@db.example.com:3306/happy`
+  - MySQL 8.0.17+: `mysql://user:pass@db.example.com:3306/happy`
 - `HANDY_MASTER_SECRET` (used to derive auth/encryption secrets). Keep it stable and
   back it up with the database; the current server has no multi-key read or automatic
   re-seal rotation path.
@@ -243,10 +243,22 @@ To explicitly disable it (single-process mode), leave it unset or set:
 This enables:
 
 - room-based fanout for `update` / `ephemeral` events
-- cluster-aware Socket.IO RPC routing through room discovery plus the Redis Streams backplane
+- cluster-aware Socket.IO RPC routing: ordinary room fanout uses Redis Streams,
+  while cross-node request/discovery and acknowledgement traffic uses Redis
+  Pub/Sub
 - adapter / RPC / presence / runtime metrics on `/metrics`
 - socket auth / reconnect / disconnect / transport-upgrade metrics on `/metrics`
 - fanout and app-owned Redis command metrics on `/metrics`
+
+Each Redis-backed API process opens four transport connections: the root
+publisher/command client, one blocking Stream reader, one Pub/Sub subscriber,
+and one dedicated exact relay-admission client named
+`happier-socket-cluster:relay-admission`. Include all four per API replica when
+sizing a managed Redis connection limit. The adapter-only ACL is not enough
+for relay admission, which also needs its narrow one-time claim key and
+`SET`/`GET`/`DEL`/`EVAL` command surface. See the canonical
+[Socket.IO Redis cluster transport](../../docs/deployment.md#socketio-redis-cluster-transport)
+runbook before deploying more than one API replica.
 
 Presence stream (when Redis adapter is enabled):
 
@@ -412,7 +424,7 @@ Migrations are provider-specific:
 - SQLite:
   - migrations: `prisma/sqlite/migrations/*`
   - deploy: `yarn migrate:sqlite:deploy` (expects `DATABASE_URL=file:...`)
-- MySQL 8.0.16+:
+- MySQL 8.0.17+:
   - migrations: `prisma/mysql/migrations/*`
   - deploy: `yarn migrate:mysql:deploy`
   - Before first applying

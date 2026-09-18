@@ -4,6 +4,7 @@ import {
     AUTOMATION_RUN_CANCELLED_AFTER_DISPATCH_PERMITTED_CAUSE_V1,
     AUTOMATION_RUN_CANCELLED_WHILE_RUNNING_CAUSE_V1,
     AutomationRunResultStoredV1Schema,
+    AutomationRunStateV2Schema,
     deriveSessionCreationTagV1,
     parseAutomationRunExecutionRecipeV1,
     sameAutomationAccountContentIdentityV1,
@@ -17,15 +18,18 @@ import {
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import { readMachineAvailabilityStateInTx } from "@/app/machines/machineStateGuards";
 import { retireAutomationPendingInputInTx } from "@/app/session/pending/pendingMessageService";
+import { cancelWorkflowRunTx, WorkflowRunServiceError } from "@/app/workflows/workflowRunService";
 
 import { emitAutomationRunTransition } from "./automationChangePublisher";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
 import { automationRunItemSelect } from "./automationPersistenceSelect";
 import {
     decodeAutomationRunCause,
+    projectAutomationOriginRun,
     retainedV2OriginKindForRun,
 } from "./automationRunCauseCodec";
 import { advanceAutomationScheduleCursorAfterTerminalRunTx } from "./automationRunQueueService";
+import { applyAutomationRunSucceededTx } from "./automationRunSucceeded";
 import { sanitizeAutomationErrorMessage } from "./automationSummaryService";
 import {
     assertAutomationRunFailureDetailEnvelopeOuterForMode,
@@ -140,13 +144,17 @@ async function fetchRunForAccount(params: {
     accountId: string;
     runId: string;
 }) {
-    return await params.tx.automationRun.findFirst({
+    const row = await params.tx.automationRun.findFirst({
         where: {
             id: params.runId,
             accountId: params.accountId,
+            originKind: "automation",
+            automationId: { not: null },
+            causeKind: { not: null },
         },
         select: automationRunItemSelect,
     });
+    return row ? projectAutomationOriginRun(row) : null;
 }
 
 async function markRunAutomationChanged(params: { tx: any; accountId: string; automationId: string }) {
@@ -181,10 +189,12 @@ async function resolveProducedSessionIdTx(params: {
  * incumbent same-Account validation, so this does not alter predecessor flows.
  */
 function deriveStrictNewSessionCreationTag(params: {
-    automationId: string;
+    originKind: string;
+    automationId: string | null;
     runId: string;
     executionInputEnvelope: string | null;
 }): string | null {
+    if (params.originKind !== "automation" || params.automationId === null) return null;
     const recipe = parseAutomationRunExecutionRecipeV1(params.executionInputEnvelope);
     if (recipe.kind !== "available" || recipe.recipe.target.kind !== "newSession") return null;
     return deriveSessionCreationTagV1({
@@ -196,13 +206,22 @@ function deriveStrictNewSessionCreationTag(params: {
 async function findStrictNewSessionByRunCreationTagTx(params: {
     tx: any;
     accountId: string;
-    automationId: string;
+    originKind: string;
+    automationId: string | null;
     runId: string;
     executionInputEnvelope: string | null;
 }): Promise<{ id: string } | null> {
     const sessionCreationTag = deriveStrictNewSessionCreationTag(params);
     if (!sessionCreationTag) return null;
-    return await findNewSessionByRunCreationTagTx(params);
+    return await params.tx.session.findUnique({
+        where: {
+            accountId_tag: {
+                accountId: params.accountId,
+                tag: sessionCreationTag,
+            },
+        },
+        select: { id: true },
+    });
 }
 
 async function findNewSessionByRunCreationTagTx(params: {
@@ -229,7 +248,8 @@ async function findNewSessionByRunCreationTagTx(params: {
 async function resolveStrictNewSessionProducedSessionIdTx(params: {
     tx: any;
     accountId: string;
-    automationId: string;
+    originKind: string;
+    automationId: string | null;
     runId: string;
     executionInputEnvelope: string | null;
     producedSessionId: string | null | undefined;
@@ -243,11 +263,13 @@ async function resolveStrictNewSessionProducedSessionIdTx(params: {
 async function resolveProducedSessionIdForRunTx(params: {
     tx: any;
     accountId: string;
-    automationId: string;
+    originKind: string;
+    automationId: string | null;
     runId: string;
     executionInputEnvelope: string | null;
     producedSessionId: string | null | undefined;
 }): Promise<string | null> {
+    if (params.originKind !== "automation" || params.automationId === null) return null;
     const recipe = parseAutomationRunExecutionRecipeV1(params.executionInputEnvelope);
     return recipe.kind === "available" && recipe.recipe.target.kind === "newSession"
         ? await resolveStrictNewSessionProducedSessionIdTx(params)
@@ -275,7 +297,10 @@ async function resolveAutomationPendingInputSessionIdTx(params: Readonly<{
         return session?.id ?? null;
     }
     if (recipe.kind === "available" && recipe.recipe.target.kind === "newSession") {
-        const session = await findStrictNewSessionByRunCreationTagTx(params);
+        const session = await findStrictNewSessionByRunCreationTagTx({
+            ...params,
+            originKind: "automation",
+        });
         return session?.id ?? null;
     }
     if (recipe.kind === "available") return null;
@@ -326,6 +351,7 @@ export async function retainAutomationRunProducedSession(params: {
                 accountId: params.accountId,
                 claimedByMachineId: params.machineId,
                 attempt: params.attempt,
+                workflowCustodyState: null,
                 // Cancellation of a running Run settles outcome-uncertain, so
                 // a Session the target committed around that cancellation
                 // retains its exact canonical identity in that terminal state
@@ -333,6 +359,7 @@ export async function retainAutomationRunProducedSession(params: {
                 state: { in: ["running", "cancelled", "outcome_uncertain"] },
             },
             select: {
+                originKind: true,
                 automationId: true,
                 state: true,
                 executionInputEnvelope: true,
@@ -345,6 +372,7 @@ export async function retainAutomationRunProducedSession(params: {
         const session = await findStrictNewSessionByRunCreationTagTx({
             tx,
             accountId: params.accountId,
+            originKind: run.originKind,
             automationId: run.automationId,
             runId: params.runId,
             executionInputEnvelope: run.executionInputEnvelope,
@@ -374,6 +402,7 @@ export async function retainAutomationRunProducedSession(params: {
                 state: run.state,
                 revision: run.revision,
                 executionInputEnvelope: run.executionInputEnvelope,
+                workflowCustodyState: null,
                 producedSessionId: null,
             },
             data: {
@@ -555,10 +584,14 @@ async function settleSucceededAutomationRun(params: {
             { allowLegacy: params.allowLegacyResultEnvelope },
         );
         const resultEnvelope = parsedResultEnvelope?.raw ?? null;
-        const preflight = await tx.automationRun.findFirst({
+        const preflightRow = await tx.automationRun.findFirst({
             where: {
                 id: params.runId,
                 accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
+                workflowCustodyState: null,
                 claimedByMachineId: params.machineId,
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
                 // A current success reports an effect the server authorized at
@@ -585,6 +618,7 @@ async function settleSucceededAutomationRun(params: {
             },
             select: automationRunItemSelect,
         });
+        const preflight = preflightRow ? projectAutomationOriginRun(preflightRow) : null;
         if (!preflight) return null;
         // The candidate is loaded under the exact Run authority first, then the
         // witness is judged by the Run's state. A `running` success reports an
@@ -610,6 +644,7 @@ async function settleSucceededAutomationRun(params: {
             return null;
         }
         const strictNewSession = deriveStrictNewSessionCreationTag({
+            originKind: preflight.originKind,
             automationId: preflight.automationId,
             runId: params.runId,
             executionInputEnvelope: preflight.executionInputEnvelope,
@@ -617,6 +652,7 @@ async function settleSucceededAutomationRun(params: {
         const producedSessionId = await resolveProducedSessionIdForRunTx({
             tx,
             accountId: params.accountId,
+            originKind: preflight.originKind,
             automationId: preflight.automationId,
             runId: params.runId,
             executionInputEnvelope: preflight.executionInputEnvelope,
@@ -716,6 +752,7 @@ async function settleSucceededAutomationRun(params: {
                 attempt: preflight.attempt,
                 state: preflight.state,
                 revision: preflight.revision,
+                workflowCustodyState: null,
                 ...(params.requireV2RunRepresentability
                     ? { executionInputEnvelope: preflight.executionInputEnvelope }
                     : {}),
@@ -767,39 +804,17 @@ async function settleSucceededAutomationRun(params: {
             runId: params.runId,
         });
         if (!run) return null;
-        await appendRunEventTx({
+        return await applyAutomationRunSucceededTx({
             tx,
+            accountId: params.accountId,
             runId: run.id,
-            type: "run_succeeded",
+            previousState: preflight.state,
             now,
-            payload: {
+            eventPayload: {
                 machineId: params.machineId,
                 producedSessionId: producedSessionId ?? null,
             },
         });
-
-        await tx.automation.update({
-            where: { id: run.automationId },
-            data: { lastRunAt: now },
-        });
-        await advanceAutomationScheduleCursorAfterTerminalRunTx({
-            tx,
-            run: run as AutomationRunItem,
-            now,
-        });
-
-        const cursor = await markRunAutomationChanged({ tx, accountId: params.accountId, automationId: run.automationId });
-
-        afterTx(tx, () => {
-            emitAutomationRunTransition({
-                accountId: params.accountId,
-                run: run as AutomationRunItem,
-                previousState: preflight.state,
-                cursor,
-            });
-        });
-
-        return run as AutomationRunItem;
     });
 }
 
@@ -828,10 +843,14 @@ async function startAutomationRunInternal(params: {
             return null;
         }
         const now = new Date();
-        const candidate = await tx.automationRun.findFirst({
+        const candidateRow = await tx.automationRun.findFirst({
             where: {
                 id: params.runId,
                 accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
+                workflowCustodyState: null,
                 claimedByMachineId: params.machineId,
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
                 state: "claimed",
@@ -839,6 +858,7 @@ async function startAutomationRunInternal(params: {
             },
             select: automationRunItemSelect,
         });
+        const candidate = candidateRow ? projectAutomationOriginRun(candidateRow) : null;
         if (!candidate) return null;
         if (
             params.requireV2RunRepresentability
@@ -864,12 +884,16 @@ async function startAutomationRunInternal(params: {
                 where: {
                     id: params.runId,
                     accountId: params.accountId,
+                    originKind: "automation",
+                    automationId: { not: null },
+                    causeKind: { not: null },
                     revision: candidate.revision,
                     claimedByMachineId: params.machineId,
                     attempt: candidate.attempt,
                     state: "claimed",
                     leaseExpiresAt: { gt: now },
                     executionInputEnvelope: candidate.executionInputEnvelope,
+                    workflowCustodyState: null,
                     executionDispatchState: "retryWaiting",
                     executionAttempt: candidate.executionAttempt,
                     account: { is: { seq: accountFence.account.version } },
@@ -925,6 +949,7 @@ async function startAutomationRunInternal(params: {
                 state: "claimed",
                 leaseExpiresAt: { gt: now },
                 executionInputEnvelope: candidate.executionInputEnvelope,
+                workflowCustodyState: null,
                 ...(isExecutionRun
                     ? {
                         executionDispatchState: candidate.executionDispatchState,
@@ -1070,11 +1095,15 @@ async function retainSupersededExecutionDispatchIdentityTx(params: Readonly<{
         where: {
             id: params.runId,
             accountId: params.accountId,
+            originKind: "automation",
+            automationId: { not: null },
+            causeKind: { not: null },
             claimedByMachineId: params.machineId,
             attempt: params.attempt,
             state: "outcome_uncertain",
             executionDispatchState: "outcomeUnknown",
             executionNativeRunId: null,
+            workflowCustodyState: null,
         },
         select: { revision: true },
     });
@@ -1083,11 +1112,15 @@ async function retainSupersededExecutionDispatchIdentityTx(params: Readonly<{
         where: {
             id: params.runId,
             accountId: params.accountId,
+            originKind: "automation",
+            automationId: { not: null },
+            causeKind: { not: null },
             claimedByMachineId: params.machineId,
             attempt: params.attempt,
             state: "outcome_uncertain",
             executionDispatchState: "outcomeUnknown",
             executionNativeRunId: null,
+            workflowCustodyState: null,
             revision: superseded.revision,
         },
         data: {
@@ -1163,11 +1196,15 @@ export async function settleAutomationExecutionDispatch(params: Readonly<{
             where: {
                 id: params.runId,
                 accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
                 claimedByMachineId: params.machineId,
                 attempt: params.attempt,
                 state: "running",
                 leaseExpiresAt: { gt: now },
                 executionDispatchState: "dispatchPermitted",
+                workflowCustodyState: null,
             },
             select: {
                 automationId: true,
@@ -1210,6 +1247,9 @@ export async function settleAutomationExecutionDispatch(params: Readonly<{
             where: {
                 id: params.runId,
                 accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
                 revision: candidate.revision,
                 claimedByMachineId: params.machineId,
                 attempt: params.attempt,
@@ -1217,6 +1257,7 @@ export async function settleAutomationExecutionDispatch(params: Readonly<{
                 leaseExpiresAt: { gt: now },
                 executionDispatchState: "dispatchPermitted",
                 executionAttempt: candidate.executionAttempt,
+                workflowCustodyState: null,
             },
             data: shouldRetry
                 ? {
@@ -1343,6 +1384,7 @@ export async function markAbandonedAutomationExecutionDispatchOutcomeUnknownTx(p
             revision: params.runRevision,
             executionInputEnvelope: params.executionInputEnvelope,
             executionDispatchState: params.expectedExecutionDispatchState,
+            workflowCustodyState: null,
             leaseExpiresAt: { lt: params.now },
         },
         data: {
@@ -1471,6 +1513,7 @@ export async function failInvalidAutomationRunBeforeClaimTx(params: {
             state: params.state,
             revision: params.runRevision,
             executionInputEnvelope: params.executionInputEnvelope,
+            workflowCustodyState: null,
             account: {
                 is: { seq: params.accountCurrentness.version },
             },
@@ -1522,10 +1565,14 @@ async function failAutomationRunInternal(params: {
             requireV2RunRepresentability: params.requireV2RunRepresentability,
         })) return null;
         const now = new Date();
-        const previousRun = await tx.automationRun.findFirst({
+        const previousRunRow = await tx.automationRun.findFirst({
             where: {
                 id: params.runId,
                 accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
+                workflowCustodyState: null,
                 claimedByMachineId: params.machineId,
                 ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
                 state: { in: ["claimed", "running"] },
@@ -1540,6 +1587,7 @@ async function failAutomationRunInternal(params: {
             },
             select: automationRunItemSelect,
         });
+        const previousRun = previousRunRow ? projectAutomationOriginRun(previousRunRow) : null;
         if (!previousRun) {
             // Cancellation may race a completed canonical Session create. The
             // incumbent fail/cancel owner retains only that known new-Session
@@ -1547,16 +1595,21 @@ async function failAutomationRunInternal(params: {
             // receipt/settlement path. A running cancellation is
             // `outcome_uncertain`, so a late failure acknowledgement can
             // attach the same canonical Session without rewriting uncertainty.
-            const cancelledRun = await tx.automationRun.findFirst({
+            const cancelledRunRow = await tx.automationRun.findFirst({
                 where: {
                     id: params.runId,
                     accountId: params.accountId,
+                    originKind: "automation",
+                    automationId: { not: null },
+                    causeKind: { not: null },
+                    workflowCustodyState: null,
                     claimedByMachineId: params.machineId,
                     ...(params.attempt === undefined ? {} : { attempt: params.attempt }),
                     state: { in: ["cancelled", "outcome_uncertain"] },
                 },
                 select: automationRunItemSelect,
             });
+            const cancelledRun = cancelledRunRow ? projectAutomationOriginRun(cancelledRunRow) : null;
             if (!cancelledRun) return null;
             if (!await hasCompatibleAutomationAccountEncryptionTx({
                 tx,
@@ -1579,6 +1632,7 @@ async function failAutomationRunInternal(params: {
             const producedSessionId = await resolveProducedSessionIdForRunTx({
                 tx,
                 accountId: params.accountId,
+                originKind: cancelledRun.originKind,
                 automationId: cancelledRun.automationId,
                 runId: params.runId,
                 executionInputEnvelope: cancelledRun.executionInputEnvelope,
@@ -1603,6 +1657,7 @@ async function failAutomationRunInternal(params: {
                     state: cancelledRun.state,
                     revision: cancelledRun.revision,
                     executionInputEnvelope: cancelledRun.executionInputEnvelope,
+                    workflowCustodyState: null,
                     producedSessionId: null,
                 },
                 data: {
@@ -1673,6 +1728,7 @@ async function failAutomationRunInternal(params: {
             });
         }
         const retainedStrictSessionId = deriveStrictNewSessionCreationTag({
+            originKind: previousRun.originKind,
             automationId: previousRun.automationId,
             runId: params.runId,
             executionInputEnvelope: previousRun.executionInputEnvelope,
@@ -1682,6 +1738,7 @@ async function failAutomationRunInternal(params: {
         const producedSessionId = await resolveProducedSessionIdForRunTx({
             tx,
             accountId: params.accountId,
+            originKind: previousRun.originKind,
             automationId: previousRun.automationId,
             runId: params.runId,
             executionInputEnvelope: previousRun.executionInputEnvelope,
@@ -1698,6 +1755,7 @@ async function failAutomationRunInternal(params: {
                 attempt: previousRun.attempt,
                 state: previousRun.state,
                 revision: previousRun.revision,
+                workflowCustodyState: null,
                 ...(params.requireV2RunRepresentability
                     ? {
                         executionInputEnvelope: previousRun.executionInputEnvelope,
@@ -1987,6 +2045,27 @@ export async function cancelAutomationRun(params: {
             runId: params.runId,
         });
         if (!previousRun) return null;
+        if (previousRun.workflowCustodyState !== null) {
+            if (
+                params.requireV2RunRepresentability
+                && !AutomationRunStateV2Schema.safeParse(previousRun.state).success
+            ) return null;
+            try {
+                await cancelWorkflowRunTx(tx, {
+                    accountId: params.accountId,
+                    runId: params.runId,
+                    expectedRevision: previousRun.revision,
+                });
+            } catch (error) {
+                if (error instanceof WorkflowRunServiceError && error.code === "currentness_conflict") return null;
+                throw error;
+            }
+            return await fetchRunForAccount({
+                tx,
+                accountId: params.accountId,
+                runId: params.runId,
+            });
+        }
         const result = await cancelAutomationRunRowTx({
             tx,
             accountId: params.accountId,

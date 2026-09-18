@@ -57,6 +57,71 @@ const source = {
 describe("qualified Connected Account V4 route family (integration)", () => {
     let harness: LightSqliteHarness;
 
+    it("masks disabled automatic quota spending without losing the saved pool choice", async () => {
+        const account = await db.account.create({ data: { publicKey: "quota-reset-policy" }, select: { id: true } });
+        const headers = { "x-test-user-id": account.id };
+        await withAuthenticatedTestApp(registerQualifiedConnectedAccountCredentialRoutesV4, async (app) => {
+            const created = await app.inject({ method: "POST", url: "/v4/connect/qualified/groups", headers, payload: {
+                service, group: { groupId: "quota-reset", policy: {
+                    autoUseQuotaResetsWhenExhausted: true,
+                    autoDisablePlanInvalidAccounts: true,
+                    quotaLimitSelection: { mode: "selected", providerLimitIds: ["weekly"] },
+                } },
+            } });
+            expect(created.statusCode, created.body).toBe(200);
+            expect(created.json().group.policy.autoUseQuotaResetsWhenExhausted).toBe(true);
+            expect(created.json().group.policy.autoDisablePlanInvalidAccounts).toBe(true);
+            expect(created.json().group.policy.quotaLimitSelection).toEqual({ mode: "selected", providerLimitIds: ["weekly"] });
+            const url = "/v4/connect/qualified/groups?service=" + encodeURIComponent(
+                encodeQualifiedConnectedAccountV4StructuredQueryValue(QualifiedConnectedAccountServiceRefSchema, service),
+            );
+            process.env.HAPPIER_FEATURE_CONNECTED_SERVICES_QUOTAS__ENABLED = "0";
+            const disabled = await app.inject({ method: "GET", url, headers });
+            expect(disabled.statusCode, disabled.body).toBe(200);
+            expect(disabled.json().groups[0].policy).not.toHaveProperty("autoUseQuotaResetsWhenExhausted");
+            expect(disabled.json().groups[0].policy).not.toHaveProperty("quotaLimitSelection");
+            const disabledGroup = disabled.json().groups[0];
+            const rejectedOptIn = await app.inject({ method: "PATCH", url: "/v4/connect/qualified/group", headers, payload: {
+                service, groupId: "quota-reset",
+                expectedGeneration: disabledGroup.generation,
+                expectedIncarnation: disabledGroup.incarnation,
+                policy: { ...disabledGroup.policy, autoUseQuotaResetsWhenExhausted: true },
+            } });
+            expect(rejectedOptIn.statusCode, rejectedOptIn.body).toBe(400);
+            const rejectedLimitSelection = await app.inject({ method: "PATCH", url: "/v4/connect/qualified/group", headers, payload: {
+                service, groupId: "quota-reset",
+                expectedGeneration: disabledGroup.generation,
+                expectedIncarnation: disabledGroup.incarnation,
+                policy: { ...disabledGroup.policy, quotaLimitSelection: { mode: "selected", providerLimitIds: ["weekly"] } },
+            } });
+            expect(rejectedLimitSelection.statusCode, rejectedLimitSelection.body).toBe(400);
+            const edited = await app.inject({ method: "PATCH", url: "/v4/connect/qualified/group", headers, payload: {
+                service, groupId: "quota-reset",
+                expectedGeneration: disabledGroup.generation,
+                expectedIncarnation: disabledGroup.incarnation,
+                policy: { ...disabledGroup.policy, cooldownMs: 45_000 },
+            } });
+            expect(edited.statusCode, edited.body).toBe(200);
+            expect(edited.json().group.policy).not.toHaveProperty("autoUseQuotaResetsWhenExhausted");
+            expect(edited.json().group.policy).not.toHaveProperty("quotaLimitSelection");
+            process.env.HAPPIER_FEATURE_CONNECTED_SERVICES_QUOTAS__ENABLED = "1";
+            const restored = await app.inject({ method: "GET", url, headers });
+            expect(restored.json().groups[0].policy.autoUseQuotaResetsWhenExhausted).toBe(true);
+            expect(restored.json().groups[0].policy.quotaLimitSelection).toEqual({ mode: "selected", providerLimitIds: ["weekly"] });
+            expect(restored.json().groups[0].policy.cooldownMs).toBe(45_000);
+            process.env.HAPPIER_FEATURE_CONNECTED_SERVICES_ACCOUNT_FALLBACK__ENABLED = "0";
+            const fallbackDisabled = await app.inject({ method: "GET", url, headers });
+            expect(fallbackDisabled.json().groups[0].policy).not.toHaveProperty("autoDisablePlanInvalidAccounts");
+            const rejectedAutoDisable = await app.inject({ method: "PATCH", url: "/v4/connect/qualified/group", headers, payload: {
+                service, groupId: "quota-reset",
+                expectedGeneration: fallbackDisabled.json().groups[0].generation,
+                expectedIncarnation: fallbackDisabled.json().groups[0].incarnation,
+                policy: { ...fallbackDisabled.json().groups[0].policy, autoDisablePlanInvalidAccounts: true },
+            } });
+            expect(rejectedAutoDisable.statusCode, rejectedAutoDisable.body).toBe(400);
+        });
+    });
+
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
             tempDirPrefix: "happier-qualified-connected-account-v4-routes-",
@@ -984,6 +1049,30 @@ describe("qualified Connected Account V4 route family (integration)", () => {
                     generation: group.generation,
                 });
 
+                const autoDisabledMember = await app.inject({
+                    method: "PATCH",
+                    url: "/v4/connect/qualified/group/member",
+                    headers,
+                    payload: {
+                        group: groupRef,
+                        connectedAccountId: ref.accountId,
+                        expectedGeneration: group.generation,
+                        expectedIncarnation: group.incarnation,
+                        expectedRuntimeStateRevision:
+                            group.runtimeStateRevision,
+                        enabled: false,
+                        state: {
+                            autoDisabledReason: "model_not_entitled",
+                            lastFailureCode: "model_not_entitled",
+                            modelUnavailableUntilMsByModelId: {
+                                "gpt-5.6-sol": 86_400_000,
+                            },
+                        },
+                    },
+                });
+                expect(autoDisabledMember.statusCode, autoDisabledMember.body).toBe(200);
+                group = autoDisabledMember.json().group;
+
                 const updatedMember = await app.inject({
                     method: "PATCH",
                     url: "/v4/connect/qualified/group/member",
@@ -1001,6 +1090,25 @@ describe("qualified Connected Account V4 route family (integration)", () => {
                 });
                 expect(updatedMember.statusCode).toBe(200);
                 group = updatedMember.json().group;
+                expect(group.members.find((member) =>
+                    member.connectedAccountId === ref.accountId,
+                )?.state).toEqual({});
+                const reactivatedMember = await app.inject({
+                    method: "POST",
+                    url: "/v4/connect/qualified/group/active-account",
+                    headers,
+                    payload: {
+                        group: groupRef,
+                        connectedAccountId: ref.accountId,
+                        expectedGeneration: group.generation,
+                        expectedIncarnation: group.incarnation,
+                        expectedRuntimeStateRevision:
+                            group.runtimeStateRevision,
+                        overrideRuntimeCooldown: true,
+                    },
+                });
+                expect(reactivatedMember.statusCode).toBe(200);
+                group = reactivatedMember.json().group;
 
                 const staleMemberDeleteMutation = {
                     group: groupRef,

@@ -75,6 +75,7 @@ export function mapSessionAttentionStanding(row: SessionAttentionStandingRecord)
     return {
         sessionId: row.sessionId,
         standing: row.standing,
+        ...(row.remindAt ? { remindAt: row.remindAt.getTime() } : {}),
         updatedAt: row.updatedAt.getTime(),
     };
 }

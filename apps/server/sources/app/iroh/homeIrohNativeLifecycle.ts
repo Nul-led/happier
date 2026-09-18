@@ -1,6 +1,8 @@
-import type { NativeIrohModule } from '@happier-dev/iroh-native';
-import type { IrohRelayPolicy } from '@happier-dev/iroh-native';
-import { loadIrohNodeNative } from '@happier-dev/iroh-native/node';
+import {
+    loadIrohNodeNative,
+    type IrohRelayPolicy,
+    type NativeIrohModule,
+} from '@happier-dev/iroh-native/node';
 
 /**
  * Server-side adapter over the exact `@happier-dev/iroh-native` Node/Bun

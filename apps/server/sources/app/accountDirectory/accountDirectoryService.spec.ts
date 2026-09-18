@@ -24,12 +24,15 @@ type Row = Record<string, unknown>;
 type FindArgs = { where: unknown; select?: unknown; data?: unknown };
 
 const mocks = vi.hoisted(() => ({
+    repeatKeyFindUnique: vi.fn(),
     dbAccountFindUnique: vi.fn(),
+    dbAccountFindUniqueOrThrow: vi.fn(),
     dbEntryFindUnique: vi.fn(),
     dbEntryFindMany: vi.fn(),
     dbLinkFindUnique: vi.fn(),
     dbLinkFindFirst: vi.fn(),
     txAccountFindUnique: vi.fn(),
+    txAccountFindUniqueOrThrow: vi.fn(),
     txAccountUpdateMany: vi.fn(),
     txEntryFindUnique: vi.fn(),
     txEntryFindFirst: vi.fn(),
@@ -50,7 +53,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/storage/db", () => ({
     db: {
-        account: { findUnique: mocks.dbAccountFindUnique },
+        repeatKey: { findUnique: mocks.repeatKeyFindUnique },
+        account: {
+            findUnique: mocks.dbAccountFindUnique,
+            findUniqueOrThrow: mocks.dbAccountFindUniqueOrThrow,
+        },
         accountHomeDirectoryEntry: { findUnique: mocks.dbEntryFindUnique, findMany: mocks.dbEntryFindMany },
         accountDirectoryLink: { findUnique: mocks.dbLinkFindUnique, findFirst: mocks.dbLinkFindFirst },
     },
@@ -61,8 +68,10 @@ vi.mock("@/storage/db", () => ({
 // reads, so any service write that bypasses the transaction fails loudly.
 vi.mock("@/storage/inTx", () => ({
     inTx: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+        repeatKey: { findUnique: mocks.repeatKeyFindUnique },
         account: {
             findUnique: mocks.txAccountFindUnique,
+            findUniqueOrThrow: mocks.txAccountFindUniqueOrThrow,
             updateMany: mocks.txAccountUpdateMany,
         },
         accountHomeDirectoryEntry: {
@@ -169,14 +178,19 @@ describe("Account Directory service", () => {
     beforeEach(() => {
         state.preferredHomeServerIdentityId = null;
         for (const mock of Object.values(mocks)) mock.mockReset();
+        mocks.repeatKeyFindUnique.mockResolvedValue(null);
         mocks.txAccountFindUnique.mockImplementation(async () => ({
             id: "account-1",
+            status: "active",
             preferredHomeServerIdentityId: state.preferredHomeServerIdentityId,
         }));
+        mocks.txAccountFindUniqueOrThrow.mockResolvedValue({ id: "account-1", status: "active" });
         mocks.dbAccountFindUnique.mockImplementation(async () => ({
             id: "account-1",
+            status: "active",
             preferredHomeServerIdentityId: state.preferredHomeServerIdentityId,
         }));
+        mocks.dbAccountFindUniqueOrThrow.mockResolvedValue({ id: "account-1", status: "active" });
         mocks.txEntryFindMany.mockImplementation((args) => mocks.dbEntryFindMany(args));
         mocks.txAccountUpdateMany.mockImplementation(async (args: FindArgs) => {
             const data = args.data as { preferredHomeServerIdentityId: string | null } | undefined;
@@ -323,8 +337,8 @@ describe("Account Directory service", () => {
             expect(mocks.txEntryUpdate).not.toHaveBeenCalled();
         });
 
-        it("uses the V2 revision exception only for relocation publication", async () => {
-            const { publishAccountHomeDirectoryDescriptor } = await import("./accountDirectoryService");
+        it("stores the exact destination revision on relocation publication", async () => {
+            const { upsertAccountHomeDirectoryEntry } = await import("./accountDirectoryService");
             const current = entryRow("srv_home_a", {
                 connectionDescriptor: descriptorAtRevision("srv_home_a", 7),
             });
@@ -334,20 +348,18 @@ describe("Account Directory service", () => {
                 ...(args.data as Row),
             }));
 
-            const result = await publishAccountHomeDirectoryDescriptor({
+            const result = await upsertAccountHomeDirectoryEntry({
                 accountId: "account-1",
                 homeServerIdentityId: "srv_home_a",
                 label: "Moved Home",
-                minimumOuterRevisionExclusive: 7,
-                canonicalServerUrl: "https://destination.example.test",
-                endpoints: [{ kind: "https", url: "https://destination.example.test" }],
+                connectionDescriptor: descriptorAtRevision("srv_home_a", 27, "https://destination.example.test"),
             });
 
             expect(result.connectionDescriptor).toEqual({
                 v: 1,
                 homeServerIdentityId: "srv_home_a",
                 canonicalServerUrl: "https://destination.example.test",
-                revision: 8,
+                revision: 27,
                 endpoints: [{ kind: "https", url: "https://destination.example.test" }],
             });
         });

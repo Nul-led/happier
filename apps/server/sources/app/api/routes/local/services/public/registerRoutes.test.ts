@@ -7,8 +7,13 @@ import type {
 import { auth } from "@/app/auth/auth";
 import { createFakeRouteApp, createReplyStub, getRouteEntry, getRouteHandler } from "@/app/api/testkit/routeHarness";
 import { createPeerMediationWebSocketEvent } from "@/app/api/socket/peer/mediation/observability/events";
+import {
+    isRestrictedAuthTokenDeniedForRoute,
+    PRESENT_USER_REQUIRED_ERROR,
+} from "@/app/api/utils/apiTokenRouteAdmission";
 import { describe, expect, it, vi } from "vitest";
 import type { RegisterLocalServicePublicRoutesOptions } from "./registerRoutes";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 
 const dbAccountFindUniqueMock = vi.hoisted(() => vi.fn());
 vi.mock("@/storage/db", () => ({
@@ -196,8 +201,17 @@ describe("local service public exposure routes", () => {
         });
 
         expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.preHandler).toBe(app.authenticate);
+        expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.config).toMatchObject({
+            ephemeralSessionRunnerOperation: "session_machine_runtime",
+        });
         expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.preHandler).toBe(app.authenticate);
+        expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.config).toMatchObject({
+            ephemeralSessionRunnerOperation: "session_machine_runtime",
+        });
         expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.preHandler).toBe(app.authenticate);
+        expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.config).toMatchObject({
+            ephemeralSessionRunnerOperation: "session_machine_runtime",
+        });
         const rootReadRoute = getRouteEntry(app, "GET", "/v1/local-services/public/:exposureId");
         expect(rootReadRoute.opts.preHandler).toBeUndefined();
         expect(rootReadRoute.opts.exposeHeadRoute).toBe(false);
@@ -215,9 +229,10 @@ describe("local service public exposure routes", () => {
 
         const app = createFakeRouteApp();
         const createExposure = vi.fn(() => ({ ok: true as const, exposure }));
+        const resolvePreview = vi.fn(() => preview);
         const authorizeSessionAccess = allowSessionAccess();
         mod.registerLocalServicePublicRoutes(app as never, {
-            resolvePreview: vi.fn(() => preview),
+            resolvePreview,
             createExposure,
             revokeExposure: vi.fn(() => ({ ok: true as const })),
             validateAccess: vi.fn(() => ({ ok: true as const, preview })),
@@ -229,6 +244,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             body: {
                 machineId: "machine_1",
@@ -251,12 +267,141 @@ describe("local service public exposure routes", () => {
             rateLimitProfileId: "default",
         });
         expect(authorizeSessionAccess).toHaveBeenCalledWith({
+            authentication: expect.objectContaining({ authority: "present_user" }),
             userId: "user_1",
             sessionId: "session_1",
             purpose: "public_exposure",
         });
         expect(reply.statusCode).toBe(201);
         expect(reply.send).toHaveBeenCalledWith({ exposure });
+    });
+
+    it("rejects every restricted Runner public-preview control request for a sibling Session before resource lookup", async () => {
+        const mod = await loadPublicRoutesModule();
+        expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
+        if (!mod?.registerLocalServicePublicRoutes) return;
+
+        const app = createFakeRouteApp();
+        app.authenticate.mockImplementation((request, reply) => {
+            if (isRestrictedAuthTokenDeniedForRoute(request)) {
+                return reply.code(403).send({ error: PRESENT_USER_REQUIRED_ERROR });
+            }
+        });
+        const createExposure = vi.fn(() => ({ ok: true as const, exposure }));
+        const resolvePreview = vi.fn(() => preview);
+        const resolveExposure = vi.fn(() => exposure);
+        const getStatus = vi.fn(() => ({
+            v: 1 as const,
+            machineId: "machine_1",
+            sessionId: "session_1",
+            generatedAt: 1,
+            refreshState: "idle" as const,
+            policy: {
+                enabled: true,
+                allowedModes: ["secret_link" as const],
+                dnsTlsRequired: false,
+                auditRequired: true,
+                rateLimitProfileIds: [],
+            },
+            exposures: [],
+            diagnostics: [],
+        }));
+        const authorizeSessionAccess = allowSessionAccess();
+        mod.registerLocalServicePublicRoutes(app as never, {
+            resolvePreview,
+            createExposure,
+            resolveExposure,
+            getStatus,
+            revokeExposure: vi.fn(() => ({ ok: true as const })),
+            validateAccess: vi.fn(() => ({ ok: true as const, preview })),
+            authorizeSessionAccess,
+            proxyHttp: vi.fn(async () => ({ ok: true as const })),
+            dnsTlsValid: true,
+        });
+
+        const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
+        const reply = createReplyStub();
+        await handler({
+            authTokenKind: "ephemeral_session_runner",
+            authAuthority: "account_automation",
+            userId: "user_1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "user_1",
+                activationId: "activation_1",
+                sessionId: "different_session",
+                machineId: "machine_1",
+                installationId: "installation_1",
+                installationPublicKey: "installation_public_key",
+                creatorTokenEpoch: 1,
+            },
+            body: {
+                machineId: "machine_1",
+                sessionId: "session_1",
+                previewId: "preview_1",
+                mode: "secret_link",
+                ttlMs: 120_000,
+                confirmation: { acknowledged: true },
+            },
+        }, reply);
+
+        expect(createExposure).not.toHaveBeenCalled();
+        expect(resolvePreview).not.toHaveBeenCalled();
+        expect(authorizeSessionAccess).not.toHaveBeenCalled();
+        expect(reply.statusCode).toBe(403);
+        expect(reply.send).toHaveBeenCalledWith({ error: PRESENT_USER_REQUIRED_ERROR });
+
+        const statusReply = createReplyStub();
+        await getRouteHandler(app, "POST", "/v1/local-services/public/status")({
+            authTokenKind: "ephemeral_session_runner",
+            authAuthority: "account_automation",
+            userId: "user_1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "user_1",
+                activationId: "activation_1",
+                sessionId: "different_session",
+                machineId: "machine_1",
+                installationId: "installation_1",
+                installationPublicKey: "installation_public_key",
+                creatorTokenEpoch: 1,
+            },
+            body: { machineId: "machine_1", sessionId: "session_1", previewId: "preview_1" },
+        }, statusReply);
+
+        expect(resolvePreview).not.toHaveBeenCalled();
+        expect(getStatus).not.toHaveBeenCalled();
+        expect(statusReply.statusCode).toBe(403);
+
+        const revokeReply = createReplyStub();
+        await getRouteHandler(app, "DELETE", "/v1/local-services/public/:exposureId")({
+            authTokenKind: "ephemeral_session_runner",
+            authAuthority: "account_automation",
+            userId: "user_1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "user_1",
+                activationId: "activation_1",
+                sessionId: "different_session",
+                machineId: "machine_1",
+                installationId: "installation_1",
+                installationPublicKey: "installation_public_key",
+                creatorTokenEpoch: 1,
+            },
+            params: { exposureId: "public_preview_1" },
+            body: {
+                machineId: "machine_1",
+                sessionId: "session_1",
+                previewId: "preview_1",
+                exposureId: "public_preview_1",
+            },
+        }, revokeReply);
+
+        expect(resolveExposure).not.toHaveBeenCalled();
+        expect(revokeReply.statusCode).toBe(403);
     });
 
     it("rejects public exposure creation when confirmation acknowledgement is missing", async () => {
@@ -278,6 +423,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             body: {
                 machineId: "machine_1",
@@ -316,6 +462,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             body: {
                 machineId: "machine_2",
@@ -356,6 +503,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public/status");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             body: {
                 machineId: "machine_1",
@@ -365,6 +513,7 @@ describe("local service public exposure routes", () => {
         }, reply);
 
         expect(authorizeSessionAccess).toHaveBeenCalledWith({
+            authentication: expect.objectContaining({ authority: "present_user" }),
             userId: "user_1",
             sessionId: "session_1",
             purpose: "public_status",
@@ -449,6 +598,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             body: {
                 machineId: "machine_1",
@@ -484,6 +634,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "POST", "/v1/local-services/public");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_2",
             body: {
                 machineId: "machine_1",
@@ -522,6 +673,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "DELETE", "/v1/local-services/public/:exposureId");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_2",
             params: { exposureId: "public_preview_1" },
             body: {
@@ -560,6 +712,7 @@ describe("local service public exposure routes", () => {
         const handler = getRouteHandler(app, "DELETE", "/v1/local-services/public/:exposureId");
         const reply = createReplyStub();
         await handler({
+            authAuthority: "present_user",
             userId: "user_1",
             params: { exposureId: "public_preview_1" },
             body: {
@@ -1033,7 +1186,7 @@ describe("local service public exposure routes", () => {
 
         const previousMasterSecret = process.env.HANDY_MASTER_SECRET;
         process.env.HANDY_MASTER_SECRET = "public-preview-route-auth-secret";
-        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status: "active" });
         await auth.init();
         const token = await auth.createToken("user_1", undefined, { kind: "account", authority: "present_user" });
         const app = createFakeRouteApp();
@@ -1075,17 +1228,20 @@ describe("local service public exposure routes", () => {
         expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
         if (!mod?.registerLocalServicePublicRoutes) return;
 
-        const verifyToken = vi.spyOn(auth, "verifyTokenForRoute").mockResolvedValue({
-            userId: "user_1",
-            authTokenKind: "api_token",
-            authority: "account_automation",
-            legacy: false,
-            apiTokenPrincipal: {
-                accountId: "user_1",
-                principalId: "user_1",
-                credentialId: "pat_1",
+        const verifyToken = vi.spyOn(auth, "verifyTokenDisposition").mockResolvedValue({
+            status: "verified",
+            credential: {
+                userId: "user_1",
+                authTokenKind: "api_token",
                 authority: "account_automation",
-                expiresAt: null,
+                legacy: false,
+                apiTokenPrincipal: {
+                    accountId: "user_1",
+                    principalId: "user_1",
+                    credentialId: "pat_1",
+                    authority: "account_automation",
+                    expiresAt: null,
+                },
             },
         });
         const app = createUpgradeRouteApp();
@@ -1136,6 +1292,76 @@ describe("local service public exposure routes", () => {
         expect(authorizeSessionAccess).not.toHaveBeenCalled();
     });
 
+    it.each([
+        {
+            currentness: "current",
+            disposition: {
+                status: "verified" as const,
+                credential: {
+                    userId: "user_1",
+                    authTokenKind: "ephemeral_session_runner" as const,
+                    authority: "session_runtime" as const,
+                    legacy: false,
+                },
+            },
+        },
+        {
+            currentness: "revoked",
+            disposition: {
+                status: "rejected_restricted" as const,
+                authTokenKind: "ephemeral_session_runner" as const,
+            },
+        },
+    ])("rejects a $currentness Runner bearer before public preview HTTP or WebSocket access", async ({ disposition }) => {
+        const mod = await loadPublicRoutesModule();
+        expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
+        if (!mod?.registerLocalServicePublicRoutes) return;
+
+        const verifyToken = vi.spyOn(auth, "verifyTokenDisposition").mockResolvedValue(disposition);
+        const app = createUpgradeRouteApp();
+        const validateAccess = vi.fn(() => ({ ok: true as const, preview }));
+        const authorizeSessionAccess = allowSessionAccess();
+        mod.registerLocalServicePublicRoutes(app as never, {
+            resolvePreview: vi.fn(() => preview),
+            resolveExposure: vi.fn(() => exposure),
+            createExposure: vi.fn(() => ({ ok: true as const, exposure })),
+            revokeExposure: vi.fn(() => ({ ok: true as const })),
+            validateAccess,
+            authorizeSessionAccess,
+            proxyHttp: vi.fn(async () => ({ ok: true as const })),
+            proxyWebSocket: vi.fn(async () => ({ ok: true as const })),
+        });
+
+        const reply = createReplyStub();
+        const socket = createUpgradeSocket();
+        try {
+            await getRouteHandler(app, "GET", "/v1/local-services/public/:exposureId/*")({
+                params: { exposureId: "public_preview_1", "*": "" },
+                query: {},
+                headers: { authorization: "Bearer runner" },
+                method: "GET",
+            }, reply);
+
+            await app.upgradeHandlers[0]?.({
+                url: "/v1/local-services/public/public_preview_1/socket",
+                headers: {
+                    host: "preview.happier.test",
+                    upgrade: "websocket",
+                    connection: "Upgrade",
+                    authorization: "Bearer runner",
+                },
+                rawHeaders: [],
+            }, socket, new Uint8Array());
+        } finally {
+            verifyToken.mockRestore();
+        }
+
+        expect(reply.statusCode).toBe(403);
+        expect(new TextDecoder().decode(socket.write.mock.calls[0]?.[0])).toContain("403 Forbidden");
+        expect(validateAccess).not.toHaveBeenCalled();
+        expect(authorizeSessionAccess).not.toHaveBeenCalled();
+    });
+
     it("does not treat a signed account_directory token as authenticated on public preview HTTP or WebSocket data planes", async () => {
         const mod = await loadPublicRoutesModule();
         expect(mod?.registerLocalServicePublicRoutes).toBeTypeOf("function");
@@ -1143,7 +1369,7 @@ describe("local service public exposure routes", () => {
 
         const previousMasterSecret = process.env.HANDY_MASTER_SECRET;
         process.env.HANDY_MASTER_SECRET = "public-preview-route-auth-secret";
-        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status: "active" });
         await auth.init();
         const directoryToken = await auth.createToken("user_directory_1", undefined, {
             kind: "account_directory",
@@ -1629,7 +1855,10 @@ describe("local service public exposure routes", () => {
             revokeExposure: vi.fn(() => ({ ok: true as const })),
             validateAccess,
             authorizeSessionAccess,
-            readOptionalUserId: async () => "co_tenant_user",
+            readOptionalAuthenticatedUser: async () => ({
+                userId: "co_tenant_user",
+                authentication: createPresentUserSessionAccessAuthentication(),
+            }),
             proxyHttp: vi.fn(async () => ({ ok: true as const })),
         });
 
@@ -1643,6 +1872,7 @@ describe("local service public exposure routes", () => {
         }, createReplyStub());
 
         expect(authorizeSessionAccess).toHaveBeenCalledWith({
+            authentication: expect.objectContaining({ authority: "present_user" }),
             userId: "co_tenant_user",
             sessionId: "session_1",
             purpose: "public_access",
@@ -1670,7 +1900,10 @@ describe("local service public exposure routes", () => {
             revokeExposure: vi.fn(() => ({ ok: true as const })),
             validateAccess,
             authorizeSessionAccess,
-            readOptionalUserId: async () => "co_tenant_user",
+            readOptionalAuthenticatedUser: async () => ({
+                userId: "co_tenant_user",
+                authentication: createPresentUserSessionAccessAuthentication(),
+            }),
             proxyHttp: vi.fn(async () => ({ ok: true as const })),
             proxyWebSocket: vi.fn(async () => ({ ok: true as const })),
         } as never);
@@ -1687,6 +1920,7 @@ describe("local service public exposure routes", () => {
         }, socket, new Uint8Array());
 
         expect(authorizeSessionAccess).toHaveBeenCalledWith({
+            authentication: expect.objectContaining({ authority: "present_user" }),
             userId: "co_tenant_user",
             sessionId: "session_1",
             purpose: "public_access",

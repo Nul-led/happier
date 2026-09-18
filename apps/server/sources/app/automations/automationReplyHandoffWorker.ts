@@ -73,6 +73,7 @@ function buildDispatchRequest(claim: Awaited<ReturnType<typeof claimNextAutomati
             occurrenceKey: claim.occurrenceKey,
             cause: claim.cause,
             accountCurrentness: claim.accountCurrentness,
+            recipeKind: claim.recipeKind,
             resultEnvelope,
             replyContextEnvelope,
         },
@@ -199,10 +200,13 @@ export function startAutomationReplyHandoffWorker(params: Readonly<{
             : nextDueAt.getTime() <= now.getTime() && !lastPass.progressed
                 ? idlePollMs
                 : Math.max(0, nextDueAt.getTime() - now.getTime());
+        // A future retry belongs to that handoff, not to newly ready rows
+        // committed while this worker sleeps (including by another API).
+        const delay = Math.min(dueDelay, idlePollMs);
         timer = setTimeout(() => {
             timer = null;
             void trigger();
-        }, dueDelay);
+        }, delay);
         timer.unref?.();
     };
 

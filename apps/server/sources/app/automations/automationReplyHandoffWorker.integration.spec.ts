@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AutomationReplyHandoffDispatchRequestV1 } from "@happier-dev/protocol";
 
@@ -9,7 +9,7 @@ import {
     DEFAULT_AUTOMATION_REPLY_HANDOFF_RETRY_AFTER_MS,
     retryBlockedAutomationReplyHandoff,
 } from "./automationReplyHandoffService";
-import { runAutomationReplyHandoffWorkerPass } from "./automationReplyHandoffWorker";
+import { runAutomationReplyHandoffWorkerPass, startAutomationReplyHandoffWorker } from "./automationReplyHandoffWorker";
 
 const ACCOUNT_ID = "account-reply-handoff-worker";
 const AUTOMATION_ID = "automation-reply-handoff-worker";
@@ -124,6 +124,70 @@ describe("Automation reply handoff worker", () => {
         expect(account.encryptionMode).toBe("plain");
         return { mode: "plain" as const, version: account.seq, contentKeyFingerprint: null };
     }
+
+    it("discovers a newly ready handoff while an unrelated future retry is sleeping", async () => {
+        await seedReadyHandoff();
+        const retryAt = new Date(Date.now() + 60_000);
+        const futureRun = await db.automationRun.update({
+            where: { id: RUN_ID },
+            data: { replyHandoffDueAt: retryAt, replyHandoffAttempt: 3 },
+        });
+        const idlePollMs = 100;
+        const timers = vi.spyOn(globalThis, "setTimeout");
+        const worker = startAutomationReplyHandoffWorker({
+            idlePollMs,
+            dispatch: async () => ({
+                kind: "settled",
+                settlement: { kind: "accepted" },
+                accountCurrentness: await readCurrentness(),
+            }),
+        });
+        try {
+            // Observe the real worker entering its discovery sleep before the
+            // database commit; no in-process wake or service mock rescues it.
+            await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => (
+                delay === idlePollMs || (typeof delay === "number" && delay > 10_000)
+            ))).toBe(true), { interval: 20 });
+            const runId = `${RUN_ID}-new`;
+            const handoffId = `${HANDOFF_ID}-new`;
+            const occurrenceKey = `${"B".repeat(42)}A`;
+            await db.automationRun.create({
+                data: {
+                    ...futureRun,
+                    id: runId,
+                    occurrenceKey,
+                    replyHandoffId: handoffId,
+                    replyHandoffDueAt: new Date(),
+                    replyHandoffAttempt: 0,
+                    resultEnvelope: JSON.stringify({
+                        ...RESULT_ENVELOPE,
+                        v: { ...RESULT_ENVELOPE.v, correspondence: {
+                            ...RESULT_ENVELOPE.v.correspondence, runId, handoffId,
+                        } },
+                    }),
+                    replyContextEnvelope: JSON.stringify({
+                        ...REPLY_CONTEXT_ENVELOPE,
+                        v: { ...REPLY_CONTEXT_ENVELOPE.v, correspondence: {
+                            automationId: AUTOMATION_ID, occurrenceKey,
+                        } },
+                    }),
+                },
+            });
+            await vi.waitFor(async () => {
+                await expect(db.automationRun.findUniqueOrThrow({
+                    where: { id: runId },
+                    select: { replyHandoffState: true, replyHandoffAttempt: true },
+                })).resolves.toEqual({ replyHandoffState: "accepted", replyHandoffAttempt: 1 });
+            }, { timeout: 2_000, interval: 20 });
+            await expect(db.automationRun.findUniqueOrThrow({
+                where: { id: RUN_ID },
+                select: { replyHandoffState: true, replyHandoffDueAt: true, replyHandoffAttempt: true },
+            })).resolves.toEqual({ replyHandoffState: "ready", replyHandoffDueAt: retryAt, replyHandoffAttempt: 3 });
+        } finally {
+            await worker.stop();
+            timers.mockRestore();
+        }
+    });
 
     it("routes only the frozen target and opaque stored envelopes, then persists accepted custody", async () => {
         await seedReadyHandoff();

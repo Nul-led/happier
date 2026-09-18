@@ -1,7 +1,6 @@
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 import { sessionCacheCounter, databaseUpdatesSkippedCounter, recordPresenceFlushRetry } from "@/app/monitoring/metrics/index";
-import { checkSessionAccess } from "@/app/share/accessControl";
 import { isRetryableSqliteWriteError } from "@/storage/sqliteRetryClassifier";
 
 interface SessionCacheEntry {
@@ -173,45 +172,22 @@ class ActivityCache {
         
         // Cache miss - check database
         try {
-            const access = await checkSessionAccess(userId, sessionId);
-            
-            if (access) {
-                const lastActiveAt = access.sessionLastActiveAt ?? null;
-                if (!lastActiveAt) {
-                    const session = await db.session.findUnique({
-                        where: { id: sessionId },
-                        select: { lastActiveAt: true, active: true },
-                    });
-                    if (!session?.lastActiveAt) {
-                        // Fail closed: presence should not mark unknown sessions as valid.
-                        return false;
-                    }
-
-                    // Cache the result
-                    this.sessionCache.set(
-                        cacheKey,
-                        this.buildSeededSessionEntry(sessionId, userId, {
-                            userId,
-                            active: session.active,
-                            lastActiveAt: session.lastActiveAt,
-                        }),
-                    );
-                    return true;
-                }
-
-                // Cache the result
-                this.sessionCache.set(
-                    cacheKey,
-                    this.buildSeededSessionEntry(sessionId, userId, {
-                        userId,
-                        active: access.sessionActive ?? true,
-                        lastActiveAt,
-                    }),
-                );
-                return true;
-            }
-            
-            return false;
+            const session = await db.session.findUnique({
+                where: { id: sessionId },
+                select: { accountId: true, active: true, lastActiveAt: true },
+            });
+            // This cache records execution-publisher activity, not human access.
+            // Exact machine/session proof remains owned by sessionScopedBinding.
+            if (!session || session.accountId !== userId || !session.lastActiveAt) return false;
+            this.sessionCache.set(
+                cacheKey,
+                this.buildSeededSessionEntry(sessionId, userId, {
+                    userId,
+                    active: session.active,
+                    lastActiveAt: session.lastActiveAt,
+                }),
+            );
+            return true;
         } catch (error) {
             log({ module: 'session-cache', level: 'error' }, `Error validating session ${sessionId}: ${error}`);
             return false;

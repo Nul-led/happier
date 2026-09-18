@@ -3,11 +3,24 @@ import { buildPluginDomainAccountChangeEntityId } from "@happier-dev/protocol/ch
 
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
+import {
+    assertHomeOwnershipSurvivesTransitionInTx,
+    authorizeHomeAccountErasureActorInTx,
+    authorizeHomeGovernanceMutationInTx,
+} from "@/app/home/governance/homeCapabilities";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
+import { publishHomeGovernanceChangedInTx } from "@/app/home/governance/governanceChanges";
 import { readPluginsFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { admitAccountDataEraseThroughEncryptionTransitionInTx } from "@/app/encryption/accountEncryptionTransitionCoordinator";
 import { cleanupPluginWebhooksForAccountDeletionTxV1 } from "@/app/plugins/webhooks/accountDeletion";
 import { deleteDefaultAccountPetPrivateObject } from "@/app/pets/accountPetLibraryRuntime";
-import { deleteSessionTree } from "@/app/session/delete/deleteSessionTree";
+import { deleteSessionWithRecipientsInTx } from "@/app/session/delete/deleteOwnedSession";
+import { SessionDeleteConditionLostError } from "@/app/session/delete/deleteSessionTree";
+import { eraseSessionAccessGrantsForAccountInTx } from "@/app/session/access/sessionAccessGrantService";
+import { assertTeamOwnershipAllowsAccountErasureInTx } from "@/app/teams/memberships/erasurePrecondition";
+import { publishAccountTeamMembershipsChangedInTx } from "@/app/teams/teamChanges";
+import { clearSessionResponsibilitiesForAccountRemovalInTx } from "@/app/session/access/sessionResponsibilityService";
+import { erasePrematerializedEphemeralRunnerActivationsForAccountInTx } from "@/app/ephemeralRunner/activationLifecycle";
 import {
     buildPluginAccountStoragePhysicalKey,
     buildPluginDeclarativeSettingsPhysicalKey,
@@ -419,8 +432,67 @@ export type DeleteAccountForErasureResult =
     | Readonly<{ status: "already-deleted" }>
     | Readonly<{
         status: "failed";
-        code: "account_erasure_blob_delete_failed" | "account_erasure_locator_mismatch";
+        code:
+            | "account_erasure_blob_delete_failed"
+            | "account_erasure_locator_mismatch"
+            // The Account was reactivated after Phase A retired it, so this
+            // erasure is no longer the current intent for that Account.
+            | "account_erasure_not_retired"
+            | "home_owner_transfer_required"
+            // A live, staffed Team would lose its last owner. Team ownership is
+            // decided by its own owner; this composition only refuses to erase.
+            | "team_owner_transfer_required"
+            | "home_governance_forbidden"
+            | "home_account_not_found";
     }>;
+
+/**
+ * Who admitted this erasure.
+ *
+ * This is an internal caller context established by the entry point that
+ * already authenticated a principal — never a field parsed from a request
+ * body. `self` is the released present-user erasure of one's own Account and
+ * carries no authority over anyone else, so it is also the safe default for
+ * trusted internal cleanup compositions. `home_administration` is the only way
+ * to erase a different Account, and it must name the verified actor so both
+ * protected transactions can reread that actor's current authority.
+ */
+export type AccountErasureActor =
+    | Readonly<{ kind: "self" }>
+    | Readonly<{ kind: "home_administration"; actorAccountId: string }>;
+
+type AccountErasureActorRejection = "home_governance_forbidden" | "home_account_not_found";
+
+/**
+ * Rereads an administrative actor's current `eraseAccounts` authority inside
+ * the deciding transaction.
+ *
+ * An admitted self-erasure is deliberately not rechecked: Phase A revokes that
+ * Account's own credentials on purpose, and its own intentional revocation must
+ * not make the invocation it already admitted impossible to finish. A later
+ * self request cannot reach here at all, because those credentials no longer
+ * authenticate.
+ */
+async function admitAccountErasureActorInTx(tx: Tx, input: Readonly<{
+    actor: AccountErasureActor;
+    accountId: string;
+}>): Promise<AccountErasureActorRejection | null> {
+    if (input.actor.kind === "self") return null;
+    const admission = await authorizeHomeGovernanceMutationInTx(tx, {
+        actorAccountId: input.actor.actorAccountId,
+        request: { operation: "erase_account", targetAccountId: input.accountId },
+    });
+    return admission.status === "authorized" ? null : admission.code;
+}
+
+async function admitAccountErasureActorForAbsentTargetInTx(
+    tx: Tx,
+    actor: AccountErasureActor,
+): Promise<"home_governance_forbidden" | null> {
+    if (actor.kind === "self") return null;
+    const admission = await authorizeHomeAccountErasureActorInTx(tx, actor.actorAccountId);
+    return admission.status === "authorized" ? null : admission.code;
+}
 
 type AccountErasurePublicBlobLocator = Readonly<{
     id: string;
@@ -496,19 +568,79 @@ async function deleteAccountErasureBlobLocators(
 export async function deleteAccountForErasure(input: Readonly<{
     accountId: string;
     now?: Date;
+    /** Defaults to the released present-user erasure of one's own Account. */
+    actor?: AccountErasureActor;
 }>): Promise<DeleteAccountForErasureResult> {
-    const capturedLocators = await inTx(async (tx) => {
+    const actor: AccountErasureActor = input.actor ?? { kind: "self" };
+    const preflight = await inTx(async (tx) => {
         const fence = await acquireAccountEncryptionTransitionFenceInTx(
             tx,
             input.accountId,
         );
-        if (fence.status === "account_not_found") return null;
+        if (fence.status === "account_not_found") {
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            return actorRejection
+                ? { status: "rejected" as const, code: actorRejection }
+                : { status: "already-deleted" as const };
+        }
         if (fence.status === "account_inconsistent") {
             throw new Error("Plugin Account deletion requires a consistent Account encryption mode.");
         }
-        return await captureAccountErasureBlobLocatorsInTx(tx, input.accountId);
+        // The actor's authority is decided from current database state, before
+        // anything is retired or deleted. A demotion that landed after the
+        // request was admitted is honored here.
+        const actorRejection = await admitAccountErasureActorInTx(tx, { actor, accountId: input.accountId });
+        if (actorRejection) return { status: "rejected" as const, code: actorRejection };
+        // Ownership is decided before any irreversible external deletion, and
+        // it applies to every entry point: a Home must never be left without an
+        // active owner because one of its owners erased their Account.
+        const ownership = await assertHomeOwnershipSurvivesTransitionInTx(tx, {
+            targetAccountId: input.accountId,
+            removesAccount: true,
+        });
+        if (ownership.status === "rejected") {
+            return { status: "rejected" as const, code: ownership.code };
+        }
+        // The same question for every Team this Account owns, answered by the
+        // Team membership owner. It runs before the terminal disable for the
+        // same reason as the Home check: a refused erasure must leave the
+        // Account exactly as it found it.
+        const teamOwnership = await assertTeamOwnershipAllowsAccountErasureInTx(tx, {
+            accountId: input.accountId,
+        });
+        if (teamOwnership.status === "rejected") {
+            return { status: "rejected" as const, code: teamOwnership.code };
+        }
+
+        // Terminal disable and credential revocation commit before the first
+        // irreversible external delete. This is what makes the final deletion
+        // safe to attempt: once the Account is inactive it can no longer be
+        // assigned a Home role, promoted to Team owner, or named as a
+        // provisioning target, so it cannot acquire required ownership while
+        // its blobs are being removed. A retry of an already-retired Account
+        // reports `unchanged` and proceeds.
+        const retired = await setAccountStatusInTx(tx, {
+            actorAccountId: input.accountId,
+            targetAccountId: input.accountId,
+            status: "disabled",
+            authority: "account_erasure",
+        });
+        if (retired.status === "rejected") {
+            return retired.code === "home_owner_transfer_required"
+                ? { status: "rejected" as const, code: "home_owner_transfer_required" as const }
+                : { status: "already-deleted" as const };
+        }
+        await erasePrematerializedEphemeralRunnerActivationsForAccountInTx(tx, {
+            creatorAccountId: input.accountId,
+        });
+        return {
+            status: "captured" as const,
+            locators: await captureAccountErasureBlobLocatorsInTx(tx, input.accountId),
+        };
     });
-    if (!capturedLocators) return { status: "already-deleted" };
+    if (preflight.status === "already-deleted") return { status: "already-deleted" };
+    if (preflight.status === "rejected") return { status: "failed", code: preflight.code };
+    const capturedLocators = preflight.locators;
 
     const blobsDeleted = await deleteAccountErasureBlobLocators(capturedLocators);
     if (!blobsDeleted) {
@@ -521,24 +653,77 @@ export async function deleteAccountForErasure(input: Readonly<{
             input.accountId,
         );
         if (fence.status === "account_not_found") {
-            return { status: "already-deleted" };
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            return actorRejection
+                ? { status: "failed", code: actorRejection }
+                : { status: "already-deleted" };
         }
         if (fence.status === "account_inconsistent") {
             throw new Error("Plugin Account deletion requires a consistent Account encryption mode.");
+        }
+        // The Account must still be the one Phase A retired. A reactivated
+        // Account is a partially erased Account that something restored, and
+        // deleting it here would silently finish an erasure its owner may have
+        // since revoked.
+        const lifecycle = await tx.account.findUnique({
+            where: { id: input.accountId },
+            select: { status: true },
+        });
+        if (!lifecycle) {
+            const actorRejection = await admitAccountErasureActorForAbsentTargetInTx(tx, actor);
+            return actorRejection
+                ? { status: "failed", code: actorRejection }
+                : { status: "already-deleted" };
+        }
+        if (lifecycle.status !== "disabled") {
+            return { status: "failed", code: "account_erasure_not_retired" };
+        }
+        // This transaction is the one that destroys rows, so an independent
+        // administrative actor must still hold `eraseAccounts` right now. The
+        // target stays terminally retired for a currently authorized retry.
+        const actorRejection = await admitAccountErasureActorInTx(tx, { actor, accountId: input.accountId });
+        if (actorRejection) return { status: "failed", code: actorRejection };
+        // Ownership is rechecked defensively: another transaction may have
+        // demoted or retired the remaining owners while the external objects
+        // were being deleted.
+        const ownership = await assertHomeOwnershipSurvivesTransitionInTx(tx, {
+            targetAccountId: input.accountId,
+            removesAccount: true,
+        });
+        if (ownership.status === "rejected") {
+            return { status: "failed", code: ownership.code };
+        }
+        // Rechecked for the same reason as Home ownership: another transaction
+        // may have removed or retired the Team's remaining owners while the
+        // external objects were being deleted.
+        const teamOwnership = await assertTeamOwnershipAllowsAccountErasureInTx(tx, {
+            accountId: input.accountId,
+        });
+        if (teamOwnership.status === "rejected") {
+            return { status: "failed", code: teamOwnership.code };
         }
         const currentLocators = await captureAccountErasureBlobLocatorsInTx(tx, input.accountId);
         if (!sameAccountErasureBlobLocators(capturedLocators, currentLocators)) {
             return { status: "failed", code: "account_erasure_locator_mismatch" };
         }
 
-        const sessions = await tx.session.findMany({ where: { accountId: input.accountId }, select: { id: true, updatedAt: true }, orderBy: { id: "asc" } });
+        const sessions = await tx.session.findMany({ where: { accountId: input.accountId }, select: { id: true }, orderBy: { id: "asc" } });
         await tx.sessionShareAccessLog.deleteMany({ where: { userId: input.accountId } });
         await tx.publicShareAccessLog.deleteMany({ where: { userId: input.accountId } });
-        await tx.sessionShare.deleteMany({ where: { OR: [{ sharedByUserId: input.accountId }, { sharedWithUserId: input.accountId }] } });
+        await eraseSessionAccessGrantsForAccountInTx(tx, { accountId: input.accountId });
         await tx.publicSessionShare.deleteMany({ where: { createdByUserId: input.accountId } });
         for (const session of sessions) {
-            await deleteSessionTree(tx, { sessionId: session.id, sessionUpdatedAt: session.updatedAt, actorAccountId: input.accountId, reason: "user_request", sessionDeleteWhere: { accountId: input.accountId } });
+            const deleted = await deleteSessionWithRecipientsInTx(tx, {
+                sessionId: session.id,
+                ownerAccountId: input.accountId,
+                reason: "user_request",
+            });
+            if (!deleted.ok) throw new SessionDeleteConditionLostError();
         }
+        await erasePrematerializedEphemeralRunnerActivationsForAccountInTx(tx, {
+            creatorAccountId: input.accountId,
+        });
+        await clearSessionResponsibilitiesForAccountRemovalInTx(tx, { accountId: input.accountId });
         await tx.accessKey.deleteMany({ where: { accountId: input.accountId } });
         await tx.usageReport.deleteMany({ where: { accountId: input.accountId } });
         await tx.accountPushToken.deleteMany({ where: { accountId: input.accountId } });
@@ -550,6 +735,19 @@ export async function deleteAccountForErasure(input: Readonly<{
         await cleanupPluginWebhooksForAccountDeletionTxV1(tx, {
             accountId: input.accountId,
             ...(input.now ? { now: input.now } : {}),
+        });
+        // Publish the physical removal in the same transaction. The existing
+        // AccountChange owner schedules its socket wake after commit, so no
+        // observer can refresh between this marker and the row deletion.
+        await publishHomeGovernanceChangedInTx(tx, {
+            excludeAccountIds: [input.accountId],
+        });
+        // Membership rows disappear with the Account. Publish while they still
+        // identify the exact affected Teams, through the ordinary Team-change
+        // audience owner, so every retained Team view observes the removal.
+        await publishAccountTeamMembershipsChangedInTx(tx, {
+            accountId: input.accountId,
+            excludeAccountIds: [input.accountId],
         });
         await tx.account.delete({ where: { id: input.accountId } });
         return { status: "deleted" };

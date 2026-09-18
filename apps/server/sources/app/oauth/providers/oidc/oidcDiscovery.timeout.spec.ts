@@ -4,7 +4,16 @@ vi.mock("openid-client", async () => {
     const actual = await vi.importActual<any>("openid-client");
     return {
         ...actual,
-        discovery: vi.fn(async () => ({ mocked: true })),
+        ClientSecretBasic: vi.fn(actual.ClientSecretBasic),
+        ClientSecretPost: vi.fn(actual.ClientSecretPost),
+        discovery: vi.fn(async (issuer: URL) => ({
+            serverMetadata: () => ({
+                issuer: issuer.href.replace(/\/$/, ""),
+                authorization_endpoint: `${issuer.origin}/authorize`,
+                response_types_supported: ["code"],
+                code_challenge_methods_supported: ["S256"],
+            }),
+        })),
     };
 });
 
@@ -13,6 +22,7 @@ describe("oidcDiscovery", () => {
         vi.resetModules();
         const oidcClient = await import("openid-client");
         const { discoverOidcConfiguration } = await import("./oidcDiscovery");
+        vi.clearAllMocks();
 
         await discoverOidcConfiguration({
             id: "okta",
@@ -29,11 +39,40 @@ describe("oidcDiscovery", () => {
             storeRefreshToken: false,
             ui: { buttonColor: null, iconHint: null },
             httpTimeoutSeconds: 5,
-        } as any);
+        } as any, "test-runtime");
 
         const call = (oidcClient as any).discovery.mock.calls[0];
         expect(call).toBeTruthy();
+        expect(call[3]).toEqual(expect.any(Function));
         expect(call[4]).toMatchObject({ timeout: 5 });
+    });
+
+    it("uses the configured supported confidential-client authentication method", async () => {
+        vi.resetModules();
+        const oidcClient = await import("openid-client");
+        const { discoverOidcConfiguration } = await import("./oidcDiscovery");
+        vi.clearAllMocks();
+
+        await discoverOidcConfiguration({
+            id: "basic",
+            type: "oidc",
+            displayName: "Basic",
+            issuer: "https://basic.example.test",
+            clientId: "cid",
+            clientSecret: "secret",
+            clientAuthenticationMethod: "client_secret_basic",
+            redirectUrl: "https://server.example.test/v1/oauth/basic/callback",
+            scopes: "openid",
+            claims: { login: "sub", email: "email", groups: "groups" },
+            allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
+            fetchUserInfo: false,
+            storeRefreshToken: false,
+            ui: { buttonColor: null, iconHint: null },
+            httpTimeoutSeconds: 5,
+        }, "basic-runtime");
+
+        expect(oidcClient.ClientSecretBasic).toHaveBeenCalledWith("secret");
+        expect(oidcClient.ClientSecretPost).not.toHaveBeenCalled();
     });
 
     it("throws a descriptive error when issuer is not a valid URL", async () => {
@@ -41,25 +80,29 @@ describe("oidcDiscovery", () => {
         const oidcClient = await import("openid-client");
         (oidcClient as any).discovery?.mockClear?.();
         const { discoverOidcConfiguration } = await import("./oidcDiscovery");
+        const { OutboundIdentityEndpointError } = await import("@/app/net/outboundIdentityNetworkPolicy");
 
-        await expect(
-            discoverOidcConfiguration({
-                id: "bad",
-                type: "oidc",
-                displayName: "Bad",
-                issuer: "not a url",
-                clientId: "cid-bad",
-                clientSecret: "secret",
-                redirectUrl: "https://server.example.test/v1/oauth/bad/callback",
-                scopes: "openid",
-                claims: { login: "sub", email: "email", groups: "groups" },
-                allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
-                fetchUserInfo: false,
-                storeRefreshToken: false,
-                ui: { buttonColor: null, iconHint: null },
-                httpTimeoutSeconds: 5,
-            } as any),
-        ).rejects.toThrow("Invalid OIDC issuer URL: not a url");
+        const error = await discoverOidcConfiguration({
+            id: "bad",
+            type: "oidc",
+            displayName: "Bad",
+            issuer: "not a url?client_secret=super-secret",
+            clientId: "cid-bad",
+            clientSecret: "secret",
+            redirectUrl: "https://server.example.test/v1/oauth/bad/callback",
+            scopes: "openid",
+            claims: { login: "sub", email: "email", groups: "groups" },
+            allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
+            fetchUserInfo: false,
+            storeRefreshToken: false,
+            ui: { buttonColor: null, iconHint: null },
+            httpTimeoutSeconds: 5,
+        } as any, "test-runtime").then(() => null, (caught: unknown) => caught);
+
+        expect(error).toBeInstanceOf(OutboundIdentityEndpointError);
+        if (!(error instanceof OutboundIdentityEndpointError)) throw new Error("expected typed outbound error");
+        expect(error.code).toBe("outbound_scheme_forbidden");
+        expect(error.message).not.toContain("super-secret");
 
         expect((oidcClient as any).discovery).not.toHaveBeenCalled();
     });

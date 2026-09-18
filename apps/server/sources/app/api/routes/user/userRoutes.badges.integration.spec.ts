@@ -6,6 +6,8 @@ import { db } from "@/storage/db";
 import { userRoutes } from "./userRoutes";
 import { auth } from "@/app/auth/auth";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import tweetnacl from "tweetnacl";
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 
 function createTestApp() {
     const app = Fastify();
@@ -102,6 +104,44 @@ describe("userRoutes (profile badges) (integration)", () => {
         expect(res.statusCode).toBe(200);
         const body = res.json() as any;
         expect(body.user?.publicKey).toBeNull();
+
+        await app.close();
+    });
+
+    it("projects a Plain recipient as key-unavailable even when legacy binding columns remain", async () => {
+        const app = createTestApp();
+        await userRoutes(app as any);
+        await app.ready();
+
+        const viewer = await db.account.create({ data: { publicKey: "pk-viewer-readiness", username: "viewer_readiness" }, select: { id: true } });
+        const signing = tweetnacl.sign.keyPair();
+        const content = tweetnacl.box.keyPair();
+        const signature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: content.publicKey,
+        });
+        const target = await db.account.create({
+            data: {
+                encryptionMode: "plain",
+                publicKey: Buffer.from(signing.publicKey).toString("hex"),
+                contentPublicKey: Buffer.from(content.publicKey),
+                contentPublicKeySig: Buffer.from(signature),
+                username: "target_plain_retained_binding",
+            },
+            select: { id: true },
+        });
+
+        const res = await app.inject({
+            method: "GET",
+            url: `/v1/user/${encodeURIComponent(target.id)}`,
+            headers: { "x-test-user-id": viewer.id },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json().user?.recipientEnvelopeReadiness).toEqual({
+            status: "unavailable",
+            reason: "plain_account",
+        });
 
         await app.close();
     });

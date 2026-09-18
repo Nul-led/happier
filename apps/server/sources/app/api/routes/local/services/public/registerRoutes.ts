@@ -14,9 +14,12 @@ import {
     DaemonLocalServicePublicPreviewStatusResponseV1Schema,
     isLocalServicePublicPreviewCreateConfirmed,
 } from "@happier-dev/protocol";
+import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
-import { auth } from "@/app/auth/auth";
-import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
+import {
+    SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR,
+} from "@/app/api/utils/apiTokenRouteAdmission";
+import { readOptionalPublicAuthDisposition } from "@/app/api/utils/optionalPublicAuth";
 import type { Fastify } from "@/app/api/types";
 import {
     proxyLocalServicePreviewHttpRequest,
@@ -32,6 +35,7 @@ import {
     readLocalServicePublicClientKey,
     resolveLocalServicePublicAccessIdentity,
     type LocalServicePublicAccessPurpose,
+    type LocalServicePublicAuthenticatedUser,
 } from "@/app/local/services/public/accessAuthorization";
 import {
     createPublicExposureObservabilityEmitter,
@@ -57,6 +61,7 @@ export type RegisterLocalServicePublicRoutesOptions = Readonly<{
         userId: string;
         sessionId: string;
         purpose: "public_exposure" | "public_revoke" | "public_status" | LocalServicePublicAccessPurpose;
+        authentication: SessionAccessAuthentication;
     }>) => boolean | Promise<boolean>;
     getStatus?: (request: DaemonLocalServicePublicPreviewStatusRequestV1) => LocalServicePublicPreviewSnapshotV1;
     createExposure: (input: Readonly<{
@@ -86,7 +91,7 @@ export type RegisterLocalServicePublicRoutesOptions = Readonly<{
         rawToken: string | null;
     }>) => LocalServicePublicRuntimeExchangeResult;
     dnsTlsValid?: boolean;
-    readOptionalUserId?: (request: unknown) => Promise<string | null>;
+    readOptionalAuthenticatedUser?: (request: unknown) => Promise<LocalServicePublicAuthenticatedUser | null>;
     openTunnel?: OpenLocalServicePreviewTunnel;
     featureEnabled?: () => boolean;
     observability?: LocalServicePublicWebSocketUpgradeOptions["observability"];
@@ -103,6 +108,10 @@ type RouteRequest = Readonly<{
     headers?: Record<string, unknown>;
     body?: unknown;
     userId?: string;
+    authAuthority?: "present_user" | "account_automation";
+    authTokenKind?: "account" | "account_directory" | "terminal" | "api_token" | "ephemeral_session_runner";
+    sessionRuntimePrincipal?: SessionAccessAuthentication["sessionRuntimePrincipal"];
+    authTokenAuthenticationEvidence?: readonly import("@happier-dev/protocol").AuthTokenAuthenticationEvidenceV1[];
 }>;
 
 type RouteReply = {
@@ -369,7 +378,11 @@ function isPublicPreviewFeatureEnabled(options: RegisterLocalServicePublicRoutes
 async function isSessionAuthorized(
     request: RouteRequest,
     options: RegisterLocalServicePublicRoutesOptions,
-    input: Readonly<{ sessionId: string; purpose: "public_exposure" | "public_revoke" | "public_status" }>,
+    input: Readonly<{
+        sessionId: string;
+        machineId: string;
+        purpose: "public_exposure" | "public_revoke" | "public_status";
+    }>,
 ): Promise<boolean> {
     const userId = readString(request.userId);
     if (!userId || !options.authorizeSessionAccess) {
@@ -379,6 +392,7 @@ async function isSessionAuthorized(
         userId,
         sessionId: input.sessionId,
         purpose: input.purpose,
+        authentication: readSessionAccessAuthenticationFromRequest(request),
     });
 }
 
@@ -420,6 +434,7 @@ async function handleGetStatus(
 
     if (!await isSessionAuthorized(request, options, {
         sessionId: statusRequest.sessionId,
+        machineId: statusRequest.machineId,
         purpose: "public_status",
     })) {
         sendError(reply, 403, "public_preview_denied", "session_not_authorized");
@@ -431,21 +446,6 @@ async function handleGetStatus(
         protocolVersion: 1,
         snapshot,
     }));
-}
-
-async function readOptionalBearerUserId(request: RouteRequest): Promise<string | null> {
-    const authorization = request.headers?.authorization;
-    if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) {
-        return null;
-    }
-    try {
-        const verified = await auth.verifyTokenForRoute(authorization.slice("Bearer ".length));
-        return verified && !isRestrictedAuthTokenKind(verified.authTokenKind)
-            ? verified.userId
-            : null;
-    } catch {
-        return null;
-    }
 }
 
 async function handleCreateExposure(
@@ -478,7 +478,11 @@ async function handleCreateExposure(
         sendError(reply, 403, "public_preview_denied", "preview_binding_mismatch");
         return;
     }
-    if (!await isSessionAuthorized(request, options, { sessionId: createRequest.sessionId, purpose: "public_exposure" })) {
+    if (!await isSessionAuthorized(request, options, {
+        sessionId: createRequest.sessionId,
+        machineId: createRequest.machineId,
+        purpose: "public_exposure",
+    })) {
         sendError(reply, 403, "public_preview_denied", "session_not_authorized");
         return;
     }
@@ -531,7 +535,11 @@ async function handleRevokeExposure(
         sendError(reply, 403, "public_preview_denied", "exposure_binding_mismatch");
         return;
     }
-    if (!await isSessionAuthorized(request, options, { sessionId: revokeRequest.sessionId, purpose: "public_revoke" })) {
+    if (!await isSessionAuthorized(request, options, {
+        sessionId: revokeRequest.sessionId,
+        machineId: revokeRequest.machineId,
+        purpose: "public_revoke",
+    })) {
         sendError(reply, 403, "public_preview_denied", "session_not_authorized");
         return;
     }
@@ -560,9 +568,23 @@ async function handlePublicPreviewRequest(
         return undefined;
     }
 
-    const userId = options.readOptionalUserId
-        ? await options.readOptionalUserId(request)
-        : await readOptionalBearerUserId(request);
+    const bearerAuth = await readOptionalPublicAuthDisposition(request.headers?.authorization);
+    if (bearerAuth.status === "session_runtime_forbidden") {
+        sendError(reply, 403, "public_preview_access_denied", SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR);
+        return undefined;
+    }
+    const principal = bearerAuth.status === "authenticated"
+        ? {
+            userId: bearerAuth.principal.userId,
+            authentication: {
+                env: process.env,
+                authority: bearerAuth.principal.authority,
+                authenticationEvidence: bearerAuth.principal.authenticationEvidence,
+            },
+        }
+        : options.readOptionalAuthenticatedUser
+            ? await options.readOptionalAuthenticatedUser(request)
+            : null;
     const queryToken = readLocalServicePublicQueryToken(request.query);
     if (queryToken) {
         const exchanged = options.exchangeAccessToken?.({
@@ -586,7 +608,7 @@ async function handlePublicPreviewRequest(
     // is not authorization to reach it. S-5: bucket the rate limiter per client, not per exposure.
     const identity = await resolveLocalServicePublicAccessIdentity({
         exposureId,
-        userId,
+        principal,
         resolveExposure: options.resolveExposure,
         authorizeSessionAccess: options.authorizeSessionAccess,
     });
@@ -631,18 +653,21 @@ export function registerLocalServicePublicRoutes(
 
     app.post(PUBLIC_CONTROL_ROUTE_PATH, {
         preHandler: app.authenticate,
+        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
     }, async (request, reply) => {
         await handleCreateExposure(request as RouteRequest, reply as RouteReply, options);
     });
 
     app.post(PUBLIC_STATUS_ROUTE_PATH, {
         preHandler: app.authenticate,
+        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
     }, async (request, reply) => {
         await handleGetStatus(request as RouteRequest, reply as RouteReply, options);
     });
 
     app.delete(PUBLIC_RESOURCE_ROUTE_PATH, {
         preHandler: app.authenticate,
+        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
     }, async (request, reply) => {
         await handleRevokeExposure(request as RouteRequest, reply as RouteReply, options);
     });

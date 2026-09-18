@@ -1,0 +1,544 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { db } from "@/storage/db";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import type { MachineDaemonPresenceSocketServer } from "@/app/machines/machineDaemonPresence";
+import { createAuthenticatedTestApp } from "../../../testkit/sqliteFastify";
+import { registerMachinePoolRoutes } from "./registerMachinePoolRoutes";
+
+const accountId = "pool-http-owner";
+const otherAccountId = "pool-http-other";
+const machineId = "pool-http-machine";
+const fallbackMachineId = "pool-http-fallback";
+const foreignMachineId = "pool-http-foreign";
+const poolId = "72ca3a14-59d7-4aef-bcd3-589a84605545";
+
+const headers = { "x-test-user-id": accountId };
+const otherHeaders = { "x-test-user-id": otherAccountId };
+
+/**
+ * Socket.IO is the only genuine system boundary faked here: everything below the route — the
+ * Machine Pool domain service, its transaction, the selector and SQLite persistence — is real.
+ */
+function presenceOf(connectedMachineIds: readonly string[]): MachineDaemonPresenceSocketServer {
+    return {
+        in: () => ({
+            fetchSockets: async () => connectedMachineIds.map((connectedId) => ({
+                data: { clientType: "machine-scoped", userId: accountId, machineId: connectedId },
+            })),
+        }),
+    };
+}
+
+async function withPoolRoutes(
+    run: (app: ReturnType<typeof createAuthenticatedTestApp>) => Promise<void>,
+    io: MachineDaemonPresenceSocketServer = presenceOf([machineId]),
+): Promise<void> {
+    const app = createAuthenticatedTestApp();
+    registerMachinePoolRoutes(app, { io });
+    await app.ready();
+    try {
+        await run(app);
+    } finally {
+        await app.close();
+    }
+}
+
+async function seedAccounts(): Promise<void> {
+    await db.account.createMany({
+        data: [
+            { id: accountId, publicKey: null, encryptionMode: "plain" },
+            { id: otherAccountId, publicKey: null, encryptionMode: "plain" },
+        ],
+    });
+    await db.machine.createMany({
+        data: [
+            { id: machineId, accountId, metadata: "{}", active: false },
+            { id: fallbackMachineId, accountId, metadata: "{}", active: false },
+            { id: foreignMachineId, accountId: otherAccountId, metadata: "{}", active: false },
+        ],
+    });
+}
+
+async function countOwnerChanges(): Promise<number> {
+    return await db.accountChange.count({ where: { accountId, kind: "machinePool" } });
+}
+
+describe("Machine Pool HTTP routes (SQLite integration)", () => {
+    let harness: LightSqliteHarness;
+
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({ tempDirPrefix: "happier-machine-pool-http-", initAuth: false });
+    }, 120_000);
+
+    afterAll(async () => await harness.close());
+
+    afterEach(async () => {
+        delete process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED;
+        await harness.resetDbTables([
+            () => db.accountChange.deleteMany(),
+            () => db.machinePoolMember.deleteMany(),
+            () => db.machinePool.deleteMany(),
+            () => db.machine.deleteMany(),
+            () => db.account.deleteMany(),
+        ]);
+    });
+
+    it("creates, lists, gets, resolves, updates and deletes one aggregate through the authenticated contract", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            const created = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: {
+                    poolId,
+                    name: "  HTTP pool  ",
+                    description: "   ",
+                    members: [
+                        { machineId: fallbackMachineId, priorityTier: 3, enabled: true },
+                        { machineId, priorityTier: 0, enabled: true },
+                    ],
+                },
+            });
+            expect(created.statusCode).toBe(200);
+            expect(created.json()).toEqual({
+                pool: {
+                    id: poolId,
+                    name: "HTTP pool",
+                    description: null,
+                    revision: 0,
+                    createdAt: expect.any(Number),
+                    updatedAt: expect.any(Number),
+                    members: [
+                        { machineId, priorityTier: 0, enabled: true, state: "connected" },
+                        { machineId: fallbackMachineId, priorityTier: 3, enabled: true, state: "offline" },
+                    ],
+                },
+                availability: { state: "known", enabledCount: 2, connectedCount: 1 },
+            });
+            expect(await db.machinePoolMember.count({ where: { poolId } })).toBe(2);
+            expect(await countOwnerChanges()).toBe(1);
+
+            const listed = await app.inject({ method: "POST", url: "/v1/machines/pools/list", headers, payload: {} });
+            expect(listed.statusCode).toBe(200);
+            expect(listed.json()).toEqual({ pools: [created.json()] });
+
+            const fetched = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/get",
+                headers,
+                payload: { poolId },
+            });
+            expect(fetched.statusCode).toBe(200);
+            expect(fetched.json()).toEqual(created.json());
+
+            const resolved = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/resolve",
+                headers,
+                payload: { poolId, requestKey: "http-request" },
+            });
+            expect(resolved.statusCode).toBe(200);
+            expect(resolved.json()).toEqual({ kind: "resolved", poolId, machineId, priorityTier: 0 });
+
+            const updated = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/update",
+                headers,
+                payload: {
+                    poolId,
+                    expectedRevision: 0,
+                    name: "Renamed pool",
+                    description: "Primary then fallback",
+                    members: [{ machineId: fallbackMachineId, priorityTier: 0, enabled: true }],
+                },
+            });
+            expect(updated.statusCode).toBe(200);
+            expect(updated.json()).toMatchObject({
+                pool: {
+                    revision: 1,
+                    name: "Renamed pool",
+                    description: "Primary then fallback",
+                    members: [{ machineId: fallbackMachineId, priorityTier: 0, enabled: true, state: "offline" }],
+                },
+                availability: { state: "known", enabledCount: 1, connectedCount: 0 },
+            });
+            expect(await db.machinePoolMember.count({ where: { poolId } })).toBe(1);
+            // AccountChange is the canonical coalesced per-entity projection: each
+            // mutation advances Account.seq and replaces this Pool's one change row.
+            expect(await countOwnerChanges()).toBe(1);
+
+            // A pool whose members are all disconnected is a successful observation, not an HTTP failure.
+            const unavailable = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/resolve",
+                headers,
+                payload: { poolId, requestKey: "http-request" },
+            });
+            expect(unavailable.statusCode).toBe(200);
+            expect(unavailable.json()).toEqual({ kind: "unavailable", poolId, reason: "no_available_machine" });
+
+            const deleted = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/delete",
+                headers,
+                payload: { poolId, expectedRevision: 1 },
+            });
+            expect(deleted.statusCode).toBe(200);
+            expect(deleted.json()).toEqual({ poolId, deleted: true });
+            expect(await db.machinePool.findUnique({ where: { id: poolId } })).toBeNull();
+            expect(await db.machinePoolMember.count({ where: { poolId } })).toBe(0);
+            expect(await countOwnerChanges()).toBe(1);
+            expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { seq: true } }))
+                .toEqual({ seq: 3 });
+        });
+    });
+
+    it("settles a lost-response retry of the same create and delete without duplicating durable effects", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            const payload = {
+                poolId,
+                name: "Retried pool",
+                members: [{ machineId, priorityTier: 0, enabled: true }],
+            };
+            const first = await app.inject({ method: "POST", url: "/v1/machines/pools/create", headers, payload });
+            expect(first.statusCode).toBe(200);
+
+            const replay = await app.inject({ method: "POST", url: "/v1/machines/pools/create", headers, payload });
+            expect(replay.statusCode).toBe(200);
+            expect(replay.json()).toEqual(first.json());
+            expect(await db.machinePool.count({ where: { accountId } })).toBe(1);
+            expect(await countOwnerChanges()).toBe(1);
+
+            // The same ID carrying a different definition is a conflict, never a silent overwrite.
+            const diverged = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { ...payload, name: "Different definition" },
+            });
+            expect(diverged.statusCode).toBe(409);
+            expect(diverged.json()).toMatchObject({
+                code: "pool_changed",
+                current: { pool: { name: "Retried pool", revision: 0 } },
+            });
+
+            for (const attempt of [0, 1]) {
+                const deleted = await app.inject({
+                    method: "POST",
+                    url: "/v1/machines/pools/delete",
+                    headers,
+                    payload: { poolId, expectedRevision: 0 },
+                });
+                expect(deleted.statusCode, `delete attempt ${attempt}`).toBe(200);
+                expect(deleted.json()).toEqual({ poolId, deleted: true });
+            }
+            expect(await countOwnerChanges()).toBe(1);
+            expect(await db.account.findUniqueOrThrow({ where: { id: accountId }, select: { seq: true } }))
+                .toEqual({ seq: 2 });
+        });
+    });
+
+    it("maps stale revisions to 409 and rolls the whole aggregate back on an ineligible member", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { poolId, name: "Guarded", members: [{ machineId, priorityTier: 0, enabled: true }] },
+            });
+            await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/update",
+                headers,
+                payload: {
+                    poolId,
+                    expectedRevision: 0,
+                    name: "Guarded v1",
+                    members: [{ machineId, priorityTier: 1, enabled: true }],
+                },
+            });
+
+            const staleUpdate = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/update",
+                headers,
+                payload: {
+                    poolId,
+                    expectedRevision: 0,
+                    name: "Stale writer",
+                    members: [{ machineId, priorityTier: 9, enabled: false }],
+                },
+            });
+            expect(staleUpdate.statusCode).toBe(409);
+            expect(staleUpdate.json()).toMatchObject({
+                code: "pool_changed",
+                current: { pool: { name: "Guarded v1", revision: 1 } },
+            });
+
+            const staleDelete = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/delete",
+                headers,
+                payload: { poolId, expectedRevision: 0 },
+            });
+            expect(staleDelete.statusCode).toBe(409);
+            expect(staleDelete.json()).toMatchObject({ code: "pool_changed", current: { pool: { revision: 1 } } });
+
+            const ineligible = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/update",
+                headers,
+                payload: {
+                    poolId,
+                    expectedRevision: 1,
+                    name: "Must roll back",
+                    members: [
+                        { machineId: fallbackMachineId, priorityTier: 0, enabled: true },
+                        { machineId: foreignMachineId, priorityTier: 1, enabled: true },
+                    ],
+                },
+            });
+            expect(ineligible.statusCode).toBe(400);
+            expect(ineligible.json()).toEqual({
+                code: "member_machine_not_eligible",
+                machineIds: [foreignMachineId],
+            });
+
+            const unchanged = await db.machinePool.findUniqueOrThrow({
+                where: { id: poolId },
+                include: { members: true },
+            });
+            expect(unchanged).toMatchObject({ name: "Guarded v1", revision: 1 });
+            expect(unchanged.members).toEqual([
+                expect.objectContaining({ machineId, priorityTier: 1, enabled: true }),
+            ]);
+            expect(await countOwnerChanges()).toBe(1);
+
+            const missing = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/get",
+                headers,
+                payload: { poolId: "9dd3f4bb-0f2b-4f0e-a34c-7b52c0d7f5b6" },
+            });
+            expect(missing.statusCode).toBe(404);
+            expect(missing.json()).toEqual({ code: "pool_not_found" });
+        });
+    });
+
+    it("keeps another Account's Pool undiscoverable and unmutable", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            const foreign = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers: otherHeaders,
+                payload: { poolId, name: "Private pool", members: [] },
+            });
+            expect(foreign.statusCode).toBe(200);
+
+            const read = await app.inject({ method: "POST", url: "/v1/machines/pools/get", headers, payload: { poolId } });
+            expect(read.statusCode).toBe(404);
+            expect(read.json()).toEqual({ code: "pool_not_found" });
+
+            const listed = await app.inject({ method: "POST", url: "/v1/machines/pools/list", headers, payload: {} });
+            expect(listed.statusCode).toBe(200);
+            expect(listed.json()).toEqual({ pools: [] });
+
+            const collision = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { poolId, name: "Mine now", members: [] },
+            });
+            expect(collision.statusCode).toBe(409);
+            // The nondisclosing conflict carries no data owned by the other Account.
+            expect(collision.json()).toEqual({ code: "pool_changed" });
+
+            const hijack = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/update",
+                headers,
+                payload: { poolId, expectedRevision: 0, name: "Hijacked", members: [] },
+            });
+            expect(hijack.statusCode).toBe(404);
+            expect(hijack.json()).toEqual({ code: "pool_not_found" });
+
+            const resolve = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/resolve",
+                headers,
+                payload: { poolId, requestKey: "foreign" },
+            });
+            expect(resolve.statusCode).toBe(404);
+            expect(resolve.json()).toEqual({ code: "pool_not_found" });
+
+            const destroy = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/delete",
+                headers,
+                payload: { poolId, expectedRevision: 0 },
+            });
+            expect(destroy.statusCode).toBe(200);
+            expect(destroy.json()).toEqual({ poolId, deleted: true });
+
+            expect(await db.machinePool.findUniqueOrThrow({ where: { id: poolId } }))
+                .toMatchObject({ accountId: otherAccountId, name: "Private pool" });
+            expect(await countOwnerChanges()).toBe(0);
+        });
+    });
+
+    it("refuses malformed and unknown-field requests before the domain owner runs", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            const malformedId = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/get",
+                headers,
+                payload: { poolId: "not-a-uuid" },
+            });
+            expect(malformedId.statusCode).toBe(400);
+            expect(malformedId.json()).toMatchObject({ code: "invalid_request" });
+
+            const unknownField = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: {
+                    poolId,
+                    name: "Unknown field",
+                    accountId: otherAccountId,
+                    members: [{ machineId, priorityTier: 0, enabled: true }],
+                },
+            });
+            expect(unknownField.statusCode).toBe(400);
+            expect(unknownField.json()).toMatchObject({ code: "invalid_request" });
+
+            const unknownMemberField = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: {
+                    poolId,
+                    name: "Unknown member field",
+                    members: [{ machineId, priorityTier: 0, enabled: true, weight: 5 }],
+                },
+            });
+            expect(unknownMemberField.statusCode).toBe(400);
+
+            const duplicateMember = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: {
+                    poolId,
+                    name: "Duplicate member",
+                    members: [
+                        { machineId, priorityTier: 0, enabled: true },
+                        { machineId, priorityTier: 1, enabled: true },
+                    ],
+                },
+            });
+            expect(duplicateMember.statusCode).toBe(400);
+
+            const blankName = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { poolId, name: "   ", members: [] },
+            });
+            expect(blankName.statusCode).toBe(400);
+
+            const missingRevision = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/delete",
+                headers,
+                payload: { poolId },
+            });
+            expect(missingRevision.statusCode).toBe(400);
+
+            expect(await db.machinePool.count()).toBe(0);
+            expect(await countOwnerChanges()).toBe(0);
+        });
+    });
+
+    it("rejects unauthenticated callers on every Pool operation without touching persistence", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { poolId, name: "Owned", members: [{ machineId, priorityTier: 0, enabled: true }] },
+            });
+
+            for (const [url, payload] of [
+                ["/v1/machines/pools/list", {}],
+                ["/v1/machines/pools/get", { poolId }],
+                ["/v1/machines/pools/create", { poolId, name: "Anonymous", members: [] }],
+                ["/v1/machines/pools/update", { poolId, expectedRevision: 0, name: "Anonymous", members: [] }],
+                ["/v1/machines/pools/delete", { poolId, expectedRevision: 0 }],
+                ["/v1/machines/pools/resolve", { poolId, requestKey: "anonymous" }],
+            ] as const) {
+                const response = await app.inject({ method: "POST", url, payload });
+                expect(response.statusCode, url).toBe(401);
+            }
+
+            expect(await db.machinePool.findUniqueOrThrow({ where: { id: poolId }, include: { members: true } }))
+                .toMatchObject({ name: "Owned", revision: 0, members: [expect.objectContaining({ machineId })] });
+            expect(await countOwnerChanges()).toBe(1);
+        });
+    });
+
+    it("fails closed for an authenticated owner while the Machine Pool feature is disabled", async () => {
+        await seedAccounts();
+
+        await withPoolRoutes(async (app) => {
+            await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: { poolId, name: "Existing", members: [{ machineId, priorityTier: 0, enabled: true }] },
+            });
+
+            process.env.HAPPIER_FEATURE_MACHINES_POOLS__ENABLED = "0";
+
+            const listed = await app.inject({ method: "POST", url: "/v1/machines/pools/list", headers, payload: {} });
+            expect(listed.statusCode).toBe(404);
+            expect(listed.json()).toEqual({ error: "not_found" });
+
+            const created = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/create",
+                headers,
+                payload: {
+                    poolId: "6e8b8e8f-6b1a-4c53-9f0b-6bd47a58f4d2",
+                    name: "Blocked",
+                    members: [],
+                },
+            });
+            expect(created.statusCode).toBe(404);
+
+            const destroyed = await app.inject({
+                method: "POST",
+                url: "/v1/machines/pools/delete",
+                headers,
+                payload: { poolId, expectedRevision: 0 },
+            });
+            expect(destroyed.statusCode).toBe(404);
+
+            expect(await db.machinePool.count({ where: { accountId } })).toBe(1);
+            expect(await db.machinePool.findUniqueOrThrow({ where: { id: poolId } })).toMatchObject({ name: "Existing" });
+            expect(await countOwnerChanges()).toBe(1);
+        });
+    });
+});

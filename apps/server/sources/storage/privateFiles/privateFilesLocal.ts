@@ -2,7 +2,7 @@ import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
 import { resolveLightDataDir } from "@/flavors/light/env";
-import { resolvePersonalHomePrivateFilesDir } from "@happier-dev/cli-common/firstPartyRuntime";
+import { resolvePersonalHomePrivateFilesDir } from "@happier-dev/cli-common/firstPartyRuntime/server";
 
 import { normalizePrivateFileKey } from "./privateFileKeys";
 import type { PrivateFilesBackend } from "./privateFiles";

@@ -1,3 +1,7 @@
+import {
+    ACCOUNT_IDENTITY_PROVIDER_LOGIN_MAX_CODE_UNITS,
+    ACCOUNT_IDENTITY_PROVIDER_USER_ID_MAX_CODE_UNITS,
+} from "@/app/auth/providers/accountIdentityBounds";
 import { readAuthMtlsFeatureEnv, type AuthMtlsIdentitySource } from "@/app/features/catalog/readFeatureEnv";
 
 function readSingleHeader(headers: Record<string, unknown>, headerNameLower: string): string | null {
@@ -86,10 +90,17 @@ export function resolveMtlsIdentityFromForwardedHeaders(params: {
         fingerprint,
     });
     if (!providerUserId) return null;
+    // Forwarded certificate values reach AccountIdentity unchanged, so they must satisfy the same
+    // semantic ceilings the other provider leaves enforce. Refusing an over-long value here keeps
+    // two distinct certificate subjects from being rejected by, or truncated into, one stored row.
+    const publishesLogin = mtlsEnv.identitySource === "san_email";
+    if (providerUserId.length > (publishesLogin
+        ? ACCOUNT_IDENTITY_PROVIDER_LOGIN_MAX_CODE_UNITS
+        : ACCOUNT_IDENTITY_PROVIDER_USER_ID_MAX_CODE_UNITS)) return null;
 
     return {
         providerUserId,
-        providerLogin: mtlsEnv.identitySource === "san_email" ? providerUserId : null,
+        providerLogin: publishesLogin ? providerUserId : null,
         profile: {
             email,
             upn,

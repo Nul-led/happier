@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import {
     consumeAccountEncryptionFirstKeyStepUpPendingInTx,
 } from "./connectRoutes.oauthPending";
@@ -35,6 +36,7 @@ describe("OAuth pending first-key step-up consumption", () => {
     });
 
     afterEach(async () => {
+        harness.resetEnv();
         await harness.resetDbTables([
             () => db.accountIdentity.deleteMany(),
             () => db.repeatKey.deleteMany(),
@@ -49,7 +51,14 @@ describe("OAuth pending first-key step-up consumption", () => {
     async function createFixture(params?: {
         expiresAt?: Date;
         requestDigest?: string;
+        purpose?: "account_encryption_first_key" | "account_password_enrollment";
     }) {
+        harness.resetEnv({
+            GITHUB_CLIENT_ID: "client",
+            GITHUB_CLIENT_SECRET: "secret",
+            GITHUB_REDIRECT_URL: "https://api.example.test/v1/oauth/github/callback",
+        });
+        const runtime = (await resolveOAuthRuntimeById(process.env, "github"))!;
         const account = await db.account.create({
             data: { publicKey: null, encryptionMode: "plain" },
             select: { id: true },
@@ -64,17 +73,23 @@ describe("OAuth pending first-key step-up consumption", () => {
         });
         const proof = "fresh-browser-proof";
         const pending = "oauth_pending_stepup123";
-        const requestDigest =
-            params?.requestDigest
-            ?? `aemrb1_${"A".repeat(43)}`;
+        const purpose = params?.purpose ?? "account_encryption_first_key";
+        const requestDigest = params?.requestDigest
+            ?? (purpose === "account_password_enrollment" ? "A".repeat(43) : `aemrb1_${"A".repeat(43)}`);
         await db.repeatKey.create({
             data: {
                 key: pending,
                 value: JSON.stringify({
                     v: 3,
                     flow: "auth",
-                    purpose: "account_encryption_first_key",
+                    purpose,
                     provider: "github",
+                    securityBinding: {
+                        provider: runtime.reference,
+                        connection: null,
+                        admission: null,
+                        purpose,
+                    },
                     userId: account.id,
                     providerUserId: "provider-user-1",
                     proofHash: sha256Hex(proof),
@@ -93,6 +108,31 @@ describe("OAuth pending first-key step-up consumption", () => {
             requestDigest,
         };
     }
+
+    it("keeps enrollment proof purpose-bound and rolls consumption back with credential writes", async () => {
+        const fixture = await createFixture({ purpose: "account_password_enrollment" });
+        expect(await inTx((tx) => consumeAccountEncryptionFirstKeyStepUpPendingInTx(tx, fixture)))
+            .toMatchObject({ ok: false });
+        const { consumeAccountPasswordEnrollmentExternalAuthProofInTx } =
+            await import("@/app/auth/accountEncryptionFirstKeyExternalAuthProof");
+        const input = {
+            accountId: fixture.accountId,
+            requestDigest: fixture.requestDigest,
+            externalAuthProof: { provider: fixture.provider, pending: fixture.pending, proof: fixture.proof },
+        };
+        expect(await inTx((tx) => consumeAccountPasswordEnrollmentExternalAuthProofInTx(tx, {
+            ...input, requestDigest: "B".repeat(42) + "A",
+        }))).toMatchObject({ ok: false });
+        await expect(inTx(async (tx) => {
+            expect(await consumeAccountPasswordEnrollmentExternalAuthProofInTx(tx, input)).toMatchObject({ ok: true });
+            throw new Error("credential-write-rejected");
+        })).rejects.toThrow("credential-write-rejected");
+        expect(await db.repeatKey.findUnique({ where: { key: fixture.pending } })).not.toBeNull();
+        expect(await inTx((tx) => consumeAccountPasswordEnrollmentExternalAuthProofInTx(tx, input)))
+            .toEqual({ ok: true, provider: "github", providerUserId: "provider-user-1" });
+        expect(await inTx((tx) => consumeAccountPasswordEnrollmentExternalAuthProofInTx(tx, input)))
+            .toEqual({ ok: false, reason: "invalid_or_consumed" });
+    });
 
     it("atomically consumes the existing pending row after every binding matches", async () => {
         const fixture = await createFixture();
@@ -147,6 +187,23 @@ describe("OAuth pending first-key step-up consumption", () => {
             provider: "github",
             providerUserId: "provider-user-1",
         });
+    });
+
+    it("consumes a first-key proof missing its configuration binding without touching the Account or identity", async () => {
+        const fixture = await createFixture();
+        const row = await db.repeatKey.findUniqueOrThrow({ where: { key: fixture.pending } });
+        const value: Record<string, unknown> = JSON.parse(row.value);
+        delete value.securityBinding;
+        await db.repeatKey.update({ where: { key: fixture.pending }, data: { value: JSON.stringify(value) } });
+        const accountBefore = await db.account.findUnique({ where: { id: fixture.accountId } });
+        const identitiesBefore = await db.accountIdentity.findMany({ where: { accountId: fixture.accountId } });
+
+        expect(await inTx((tx) => consumeAccountEncryptionFirstKeyStepUpPendingInTx(tx, fixture))).toEqual({
+            ok: false, reason: "configuration_changed",
+        });
+        expect(await db.repeatKey.findUnique({ where: { key: fixture.pending } })).toBeNull();
+        expect(await db.account.findUnique({ where: { id: fixture.accountId } })).toEqual(accountBefore);
+        expect(await db.accountIdentity.findMany({ where: { accountId: fixture.accountId } })).toEqual(identitiesBefore);
     });
 
     it.each([

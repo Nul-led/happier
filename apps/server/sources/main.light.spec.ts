@@ -12,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   shutdownDbClient: vi.fn(async () => {}),
   materializeHomeIrohEndpointDescriptor: vi.fn(async () => ({
     status: 'ready' as const,
-    minimumOuterRevisionExclusive: 7,
     endpoint: { endpointId: 'a'.repeat(64) },
   })),
   continuityStore: { read: vi.fn(), write: vi.fn() },
@@ -143,7 +142,6 @@ describe('runLightServerMain', () => {
     expect(mocks.applyPackagedLightRuntimeSqliteDefaults).toHaveBeenCalledWith(process.env);
     expect(mocks.materializeHomeIrohEndpointDescriptor).toHaveBeenCalledWith({
       env: process.env,
-      sourceDescriptorRevision: 7,
       continuityStore: mocks.continuityStore,
     });
     expect(mocks.reserveRelocatedHomeConnectionDescriptor).toHaveBeenCalledWith({
@@ -156,8 +154,7 @@ describe('runLightServerMain', () => {
     expect(mocks.shutdownDbClient).toHaveBeenCalledOnce();
     expect(output).toHaveBeenCalledWith(`${JSON.stringify({
       status: 'ready',
-      minimumOuterRevisionExclusive: 7,
-      endpoint: { endpointId: 'a'.repeat(64) },
+      connectionDescriptor: await mocks.reserveRelocatedHomeConnectionDescriptor.mock.results[0].value,
     })}\n`);
     expect(mocks.initializeServerSentry).not.toHaveBeenCalled();
     expect(mocks.registerProcessHandlers).not.toHaveBeenCalled();

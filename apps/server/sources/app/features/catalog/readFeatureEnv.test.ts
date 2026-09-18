@@ -8,9 +8,12 @@ import {
   readMachineTransferFeatureEnv,
   readPluginsFeatureEnv,
   readSessionAgentSwitchingFeatureEnv,
+  readSessionConversationsFeatureEnv,
+  readSessionFollowingFeatureEnv,
   readSessionHandoffFeatureEnv,
   readSessionUsageLimitRecoveryFeatureEnv,
   readTerminalFeatureEnv,
+  readTeamsFeatureEnv,
 } from './readFeatureEnv';
 
 async function loadFeatureEnvModule(): Promise<Record<string, any>> {
@@ -64,6 +67,37 @@ describe('readPluginsFeatureEnv Collection deployment limits', () => {
     ]) {
       expect(() => readPluginsFeatureEnv(env as NodeJS.ProcessEnv)).toThrow(/HAPPIER_COLLECTION_/u);
     }
+  });
+});
+
+describe('readTeamsFeatureEnv', () => {
+  it('enables Teams by default and respects the canonical operator opt-out', () => {
+    expect(readTeamsFeatureEnv({}).enabled).toBe(true);
+    expect(readTeamsFeatureEnv({ HAPPIER_FEATURE_TEAMS__ENABLED: 'false' }).enabled).toBe(false);
+  });
+});
+
+describe('readSessionConversationsFeatureEnv', () => {
+  it('defaults off, accepts explicit enablement, and treats malformed input as disabled', () => {
+    expect(readSessionConversationsFeatureEnv({}).conversationsEnabled).toBe(false);
+    expect(readSessionConversationsFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '1',
+    }).conversationsEnabled).toBe(true);
+    expect(readSessionConversationsFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: 'not-a-boolean',
+    }).conversationsEnabled).toBe(false);
+  });
+});
+
+describe('readSessionFollowingFeatureEnv', () => {
+  it('defaults off, accepts explicit enablement, and treats malformed input as disabled', () => {
+    expect(readSessionFollowingFeatureEnv({}).followingEnabled).toBe(false);
+    expect(readSessionFollowingFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true',
+    }).followingEnabled).toBe(true);
+    expect(readSessionFollowingFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'not-a-boolean',
+    }).followingEnabled).toBe(false);
   });
 });
 
@@ -312,9 +346,8 @@ describe('readMachineTunnelFeatureEnv', () => {
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BYTES: '4096',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_ACTIVE_TUNNELS_PER_SOCKET: '2',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAME_BYTES: '1024',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__SUPPORTED_ENCODINGS: 'binary_frame_v2,json_base64_v1',
+      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__SUPPORTED_ENCODINGS: 'binary_frame_v2',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__PREFERRED_ENCODING: 'binary_frame_v2',
-      HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ALLOW_V1_FALLBACK: '0',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BINARY_HEADER_BYTES: '512',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_RAW_PAYLOAD_BYTES: '2048',
       HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_FRAMED_MESSAGE_BYTES: '4096',
@@ -331,9 +364,8 @@ describe('readMachineTunnelFeatureEnv', () => {
     expect(res.serverRoutedMaxBytes).toBe(4096);
     expect(res.serverRoutedMaxActiveTunnelsPerSocket).toBe(2);
     expect(res.serverRoutedMaxFrameBytes).toBe(1024);
-    expect(res.serverRoutedSupportedEncodings).toEqual(['binary_frame_v2', 'json_base64_v1']);
+    expect(res.serverRoutedSupportedEncodings).toEqual(['binary_frame_v2']);
     expect(res.serverRoutedPreferredEncoding).toBe('binary_frame_v2');
-    expect(res.serverRoutedAllowV1Fallback).toBe(false);
     expect(res.serverRoutedMaxBinaryHeaderBytes).toBe(512);
     expect(res.serverRoutedMaxRawPayloadBytes).toBe(2048);
     expect(res.serverRoutedMaxFramedMessageBytes).toBe(4096);

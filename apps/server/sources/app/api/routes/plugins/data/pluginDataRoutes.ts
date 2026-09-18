@@ -33,7 +33,7 @@ import {
     PluginCollectionReadErrorV1Schema,
     PluginCollectionUiQueryErrorV1Schema,
     PluginCollectionUiQueryRequestV1Schema,
-    PluginCollectionUiQueryResultV1Schema,
+    PluginCollectionUiQueryTransportResultV1Schema,
 } from "@happier-dev/protocol";
 
 import {
@@ -64,6 +64,7 @@ import {
     readCurrentPluginCollectionContract,
 } from "@/app/plugins/data/collections/uiQuery";
 import { Fastify } from "../../../types";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
 const PLUGIN_COLLECTION_UI_QUERY_PATH_V1 = "/v1/plugins/data/ui-query";
 
@@ -338,6 +339,7 @@ export function pluginDataRoutes(app: Fastify): void {
             return await reply.send(await mutatePluginCollection({
                 accountId: request.userId,
                 request: request.body,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             }));
         } catch (error) {
             if (error instanceof PluginCollectionMutationOperationError) {
@@ -454,7 +456,7 @@ export function pluginDataRoutes(app: Fastify): void {
         schema: {
             body: PluginCollectionUiQueryRequestV1Schema,
             response: {
-                200: PluginCollectionUiQueryResultV1Schema,
+                200: PluginCollectionUiQueryTransportResultV1Schema,
                 400: PluginCollectionUiQueryErrorV1Schema,
                 404: PluginCollectionUiQueryErrorV1Schema,
                 409: PluginCollectionUiQueryErrorV1Schema,

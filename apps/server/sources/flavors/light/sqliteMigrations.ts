@@ -1,3 +1,4 @@
+import { RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS } from '@happier-dev/cli-common/firstPartyRuntime/server';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
@@ -407,7 +408,7 @@ export async function applySqliteMigrationsFromEnvironment(params: Readonly<{
   if (!migrationsDir || !existsSync(migrationsDir)) {
     throw new Error(`SQLite migrations directory is missing: ${migrationsDir || '<empty>'}`);
   }
-  if (existsSync(join(migrationsDir, '20260725100000_activate_qualified_connected_accounts_v4'))) {
+  if (RELAY_RUNTIME_IRREVERSIBLE_MIGRATIONS.some(({ name }) => existsSync(join(migrationsDir, name)))) {
     assertForwardRecoveryCapableUpdater(params.env);
   }
   const databaseUrl = String(params.env.DATABASE_URL ?? '').trim();

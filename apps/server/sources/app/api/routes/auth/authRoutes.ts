@@ -7,28 +7,28 @@ import { registerAccountApiTokenManagementRoutes } from "./registerAccountApiTok
 import { registerAccountSessionsSignOutEverywhereRoute } from "./registerAccountSessionsSignOutEverywhereRoute";
 import { registerAccountErasureRoute } from "./registerAccountErasureRoute";
 import { resolveTerminalAuthRequestPolicyFromEnv } from "./terminalAuthRequestPolicy";
-import { readAuthFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
-import { resolveAuthFeature } from "@/app/features/authFeature";
+import { resolveEffectiveHomeAuthMethods } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { resolveAuthMethodRegistry } from "@/app/auth/methods/registry";
 import { z } from "zod";
 import { registerHomeLoginRoute } from "@/app/accountDirectory/accountDirectoryRoutes";
 import type { HomeConnectionDescriptorResolver } from "@/app/accountDirectory/accountDirectoryService";
 import { registerHomeLoginApprovalRoutes } from "./homeApprovalGate";
-
-function hasAnyViableNonKeyChallengeAuthMethod(env: NodeJS.ProcessEnv): boolean {
-    const feature = resolveAuthFeature(env);
-    const methods = feature.capabilities?.auth?.methods ?? [];
-    return methods.some((m: any) => {
-        const id = String(m?.id ?? "").trim().toLowerCase();
-        if (!id || id === "key_challenge") return false;
-        const actions = Array.isArray(m?.actions) ? m.actions : [];
-        return actions.some((a: any) => a?.enabled === true && (a?.id === "login" || a?.id === "provision"));
-    });
-}
+import { registerAuthEntryRoute } from "./registerAuthEntryRoute";
+import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
+import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
+import type { ResolveAuthEmailApplicationLinkTarget } from "@/app/auth/email/nativeAuthEmailOperations";
 
 export function authRoutes(app: Fastify, params: Readonly<{
     resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+    isEmailDeliveryReady?: () => boolean;
+    authEmailDelivery?: AuthEmailDelivery;
+    resolveApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
+    const authEmailDelivery = params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env);
+    const isEmailDeliveryReady = params.isEmailDeliveryReady
+        ?? (() => authEmailDelivery.isReady);
+    const resolveApplicationLinkTarget = params.resolveApplicationLinkTarget
+        ?? (async () => ({ applicationOrigin: null, homeTarget: null, serverId: null }));
     app.get(
         "/v1/auth/ping",
         {
@@ -44,6 +44,8 @@ export function authRoutes(app: Fastify, params: Readonly<{
         },
     );
 
+    registerAuthEntryRoute(app, { isEmailDeliveryReady });
+
     registerApiTokenIntrospectionRoute(app);
     registerAccountApiTokenManagementRoutes(app);
     registerAccountSessionsSignOutEverywhereRoute(app);
@@ -55,17 +57,19 @@ export function authRoutes(app: Fastify, params: Readonly<{
         return ageMs > terminalAuthPolicy.ttlMs;
     };
 
-    const authFeatureEnv = readAuthFeatureEnv(process.env);
-    if (!authFeatureEnv.loginKeyChallengeEnabled) {
-        if (!hasAnyViableNonKeyChallengeAuthMethod(process.env)) {
-            throw new Error(
-                "No login methods are available: HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED=0, no viable AUTH_SIGNUP_PROVIDERS are configured, and no other login providers are enabled.",
-            );
+    app.addHook("onReady", async () => {
+        const methods = await resolveEffectiveHomeAuthMethods({
+            env: process.env,
+            emailDeliveryReady: isEmailDeliveryReady(),
+        });
+        if (methods.status !== "ready" || !methods.decisions.some((method) =>
+            method.actions.some((action) => action.enabled && (action.id === "login" || action.id === "provision")))) {
+            throw new Error("No login methods are available under the effective Home authentication policy.");
         }
-    }
+    });
     const authMethodRegistry = resolveAuthMethodRegistry(process.env);
     for (const method of authMethodRegistry) {
-        method.registerRoutes(app);
+        method.registerRoutes(app, { isEmailDeliveryReady, authEmailDelivery, resolveApplicationLinkTarget });
     }
     registerTerminalAuthRequestRoutes(app, { terminalAuthPolicy, isTerminalAuthExpired });
     registerAccountAuthRoutes(app);

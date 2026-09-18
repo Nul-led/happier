@@ -208,20 +208,7 @@ function createOpenEnvelope(
 }
 
 function createDataEnvelope(tunnelId: string, payload: string, sequence = 0) {
-    return {
-        v: 1,
-        scopeUserId: 'user_1',
-        sender: { kind: 'user' },
-        recipient: { kind: 'machine', machineId: 'machine_1' },
-        frame: {
-            v: 1,
-            kind: 'data',
-            tunnelId,
-            direction: 'client_to_daemon',
-            sequence,
-            payloadBase64: Buffer.from(payload).toString('base64'),
-        },
-    } as const;
+    return createBinaryEnvelope({ tunnelId, payload: new TextEncoder().encode(payload), sequence });
 }
 
 function createMachineDataEnvelope(
@@ -233,36 +220,18 @@ function createMachineDataEnvelope(
         recipient?: { kind: 'user'; socketId?: string };
     }>,
 ) {
-    return {
-        v: 1,
-        scopeUserId: 'user_1',
+    return createBinaryEnvelope({
+        tunnelId,
+        payload: new TextEncoder().encode(payload),
+        sequence,
+        direction: 'daemon_to_client',
         sender: { kind: 'machine', machineId: overrides?.senderMachineId ?? 'machine_1' },
         recipient: overrides?.recipient ?? { kind: 'user' },
-        frame: {
-            v: 1,
-            kind: 'data',
-            tunnelId,
-            direction: 'daemon_to_client',
-            sequence,
-            payloadBase64: Buffer.from(payload).toString('base64'),
-        },
-    } as const;
+    });
 }
 
 function createCloseEnvelope(tunnelId: string) {
-    return {
-        v: 1,
-        scopeUserId: 'user_1',
-        sender: { kind: 'user' },
-        recipient: { kind: 'machine', machineId: 'machine_1' },
-        frame: {
-            v: 1,
-            kind: 'close',
-            tunnelId,
-            halfClose: false,
-            reasonCode: 'client_closed',
-        },
-    } as const;
+    return createBinaryEnvelope({ tunnelId, kind: 'close', halfClose: false, reasonCode: 'client_closed' });
 }
 
 function createBinaryEnvelope(input: Readonly<{
@@ -275,6 +244,7 @@ function createBinaryEnvelope(input: Readonly<{
     substreamId?: string;
     halfClose?: boolean;
     reasonCode?: string;
+    sequence?: number;
 }>) {
     const sender = input.sender ?? { kind: 'user' as const };
     return {
@@ -292,7 +262,7 @@ function createBinaryEnvelope(input: Readonly<{
                 ...(input.kind === 'open'
                     ? {}
                     : { direction: input.direction ?? (sender.kind === 'user' ? 'client_to_daemon' as const : 'daemon_to_client' as const) }),
-                ...((input.kind ?? 'data') === 'data' ? { sequence: 0 } : {}),
+                ...((input.kind ?? 'data') === 'data' ? { sequence: input.sequence ?? 0 } : {}),
                 ...(input.halfClose !== undefined ? { halfClose: input.halfClose } : {}),
                 ...(input.reasonCode ? { reasonCode: input.reasonCode } : {}),
                 payloadLength: input.payload?.byteLength ?? 0,
@@ -315,6 +285,29 @@ function findBinaryAbortForSubstream(io: ReturnType<typeof createIo>, substreamI
             && decoded.header.kind === 'abort'
             && decoded.header.substreamId === substreamId
             && decoded.header.reasonCode === 'relay_cap_exceeded';
+    });
+}
+
+function findBinaryFrame(
+    io: ReturnType<typeof createIo>,
+    expected: Readonly<{
+        tunnelId: string;
+        kind: 'open' | 'data' | 'ack' | 'close' | 'abort';
+        direction?: 'client_to_daemon' | 'daemon_to_client';
+    }>,
+): boolean {
+    return io.roomEmit.mock.calls.some(([, payload]) => {
+        const envelope = payload as { v?: number; frame?: Uint8Array };
+        if (envelope.v !== 2 || !(envelope.frame instanceof Uint8Array)) return false;
+        const decoded = decodePeerTcpTunnelBinaryFrameV2({
+            frame: envelope.frame,
+            maxHeaderBytes: 1024,
+            maxPayloadBytes: 1024 * 1024,
+        });
+        return decoded.ok
+            && decoded.header.tunnelId === expected.tunnelId
+            && decoded.header.kind === expected.kind
+            && (expected.direction === undefined || decoded.header.direction === expected.direction);
     });
 }
 
@@ -438,20 +431,7 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
             coordinator: createRelayTestCoordinator(io, 'user_1'),
         });
 
-        await socket.trigger('peer:tunnel:v1', {
-            v: 1,
-            scopeUserId: 'user_1',
-            sender: { kind: 'user' },
-            recipient: { kind: 'machine', machineId: 'machine_1' },
-            frame: {
-                v: 1,
-                kind: 'data',
-                tunnelId: 'tun_1',
-                direction: 'client_to_daemon',
-                sequence: 0,
-                payloadBase64: Buffer.from('hello').toString('base64'),
-            },
-        });
+        await socket.trigger('peer:tunnel:v1', createDataEnvelope('tun_1', 'hello'));
 
         expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
             frame: expect.objectContaining({
@@ -480,13 +460,11 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
         });
 
         await socket.trigger('peer:tunnel:v1', createOpenEnvelope('tun_direction'));
-        await socket.trigger('peer:tunnel:v1', {
-            ...createDataEnvelope('tun_direction', 'spoof'),
-            frame: {
-                ...createDataEnvelope('tun_direction', 'spoof').frame,
-                direction: 'daemon_to_client',
-            },
-        });
+        await socket.trigger('peer:tunnel:v1', createBinaryEnvelope({
+            tunnelId: 'tun_direction',
+            payload: new TextEncoder().encode('spoof'),
+            direction: 'daemon_to_client',
+        }));
 
         expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
             frame: expect.objectContaining({
@@ -495,12 +473,11 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
                 reasonCode: 'direction_not_allowed',
             }),
         }));
-        expect(io.roomEmit).not.toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
-            frame: expect.objectContaining({
-                kind: 'data',
-                direction: 'daemon_to_client',
-            }),
-        }));
+        expect(findBinaryFrame(io, {
+            tunnelId: 'tun_direction',
+            kind: 'data',
+            direction: 'daemon_to_client',
+        })).toBe(false);
 
         await socket.trigger('disconnect');
     });
@@ -528,13 +505,13 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
         });
 
         await userSocket.trigger('peer:tunnel:v1', createOpenEnvelope('tun_machine_direction'));
-        await machineSocket.trigger('peer:tunnel:v1', {
-            ...createMachineDataEnvelope('tun_machine_direction', 'spoof'),
-            frame: {
-                ...createMachineDataEnvelope('tun_machine_direction', 'spoof').frame,
-                direction: 'client_to_daemon',
-            },
-        });
+        await machineSocket.trigger('peer:tunnel:v1', createBinaryEnvelope({
+            tunnelId: 'tun_machine_direction',
+            payload: new TextEncoder().encode('spoof'),
+            direction: 'client_to_daemon',
+            sender: { kind: 'machine', machineId: 'machine_1' },
+            recipient: { kind: 'user' },
+        }));
 
         expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
             frame: expect.objectContaining({
@@ -543,12 +520,11 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
                 reasonCode: 'direction_not_allowed',
             }),
         }));
-        expect(io.roomEmit).not.toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
-            frame: expect.objectContaining({
-                kind: 'data',
-                direction: 'client_to_daemon',
-            }),
-        }));
+        expect(findBinaryFrame(io, {
+            tunnelId: 'tun_machine_direction',
+            kind: 'data',
+            direction: 'client_to_daemon',
+        })).toBe(false);
 
         await userSocket.trigger('disconnect');
         await machineSocket.trigger('disconnect');
@@ -1570,7 +1546,7 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
         await socket.trigger('disconnect');
     });
 
-    it('rejects binary_frame_v2 frames for tunnels that did not negotiate binary encoding', async () => {
+    it('defaults an open without an explicit selection to binary_frame_v2', async () => {
         const mod = await loadRegisterRelayModule();
         const socket = createSocket();
         const io = createIo();
@@ -1581,54 +1557,18 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
             serverRoutedEnabled: true,
             allowedPorts: [3000],
             relayAuthorizationTrustRoots,
-            coordinator: createRelayTestCoordinator(io, 'user_1'),
-        });
-
-        await socket.trigger('peer:tunnel:v1', createOpenEnvelope('tun_v1_only'));
-        await socket.trigger('peer:tunnel:v1', createBinaryEnvelope({
-            tunnelId: 'tun_v1_only',
-            payload: new Uint8Array([1]),
-        }));
-
-        expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
-            frame: expect.objectContaining({
-                kind: 'abort',
-                tunnelId: 'tun_v1_only',
-                reasonCode: 'encoding_unsupported',
-            }),
-        }));
-
-        await socket.trigger('disconnect');
-    });
-
-    it('rejects implicit V1 opens when V1 fallback is disabled', async () => {
-        const mod = await loadRegisterRelayModule();
-        const socket = createSocket();
-        const io = createIo();
-        expect(mod?.registerPeerTcpTunnelRelaySocketHandler).toBeTypeOf('function');
-
-        mod?.registerPeerTcpTunnelRelaySocketHandler('user_1', socket, {
-            io,
-            serverRoutedEnabled: true,
-            allowedPorts: [3000],
-            relayAuthorizationTrustRoots,
-            supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2, 'json_base64_v1'],
-            allowV1Fallback: false,
+            supportedEncodings: [PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2],
             coordinator: createRelayTestCoordinator(io, 'user_1'),
         });
 
         await socket.trigger('peer:tunnel:v1', createOpenEnvelope('tun_v1_implicit'));
+        const binaryEnvelope = createBinaryEnvelope({
+            tunnelId: 'tun_v1_implicit',
+            payload: new Uint8Array([1]),
+        });
+        await socket.trigger('peer:tunnel:v1', binaryEnvelope);
 
-        expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
-            frame: expect.objectContaining({
-                kind: 'abort',
-                tunnelId: 'tun_v1_implicit',
-                reasonCode: 'encoding_unsupported',
-            }),
-        }));
-        expect(io.roomEmit).not.toHaveBeenCalledWith('peer:tunnel:v1', expect.objectContaining({
-            frame: expect.objectContaining({ kind: 'open' }),
-        }));
+        expect(io.roomEmit).toHaveBeenCalledWith('peer:tunnel:v1', binaryEnvelope);
 
         await socket.trigger('disconnect');
     });
@@ -2259,7 +2199,7 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
                     kind: 'flow.closed',
                     flow: expect.objectContaining({ flowId: 'tun_idle_timer' }),
                     data: expect.objectContaining({
-                        carrierEncoding: 'json_base64_v1',
+                        carrierEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                         signedFlowKind: 'tcp_tunnel',
                         cleanupSettled: true,
                         reasonCode: 'relay_cap_exceeded',
@@ -2353,7 +2293,7 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
                 kind: 'flow.closed',
                 flow: expect.objectContaining({ flowId: 'tun_disconnect_receipt' }),
                 data: expect.objectContaining({
-                    carrierEncoding: 'json_base64_v1',
+                    carrierEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                     signedFlowKind: 'tcp_tunnel',
                     cleanupSettled: true,
                     reasonCode: 'relay_socket_disconnected',
@@ -2511,15 +2451,11 @@ describe('registerPeerTcpTunnelRelaySocketHandler', () => {
                 ),
             );
             await vi.waitFor(() => {
-                expect(userReplicaIo.localRoomEmit).toHaveBeenCalledWith(
-                    PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
-                    expect.objectContaining({
-                        frame: expect.objectContaining({
-                            kind: 'data',
-                            tunnelId: 'tun_remote_recipient_disconnect',
-                        }),
-                    }),
-                );
+                expect(findBinaryFrame(userReplicaIo, {
+                    tunnelId: 'tun_remote_recipient_disconnect',
+                    kind: 'data',
+                    direction: 'daemon_to_client',
+                })).toBe(true);
             });
             userReplicaIo.roomEmit.mockClear();
             userReplicaIo.localRoomEmit.mockClear();

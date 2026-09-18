@@ -76,7 +76,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 agentState: "owner-private-agent-state",
                 agentStateVersion: 9,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -134,7 +133,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
                 seq: 9,
                 currentStorageState: "snapshot_complete",
                 acceptedThroughServerSeq: 4,
@@ -213,7 +211,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 agentState: "owner-private-agent-state",
                 agentStateVersion: 9,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -270,7 +267,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                     externalSessionOperationPresentationV1,
                 }),
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -325,7 +321,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                     ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                     metadata: STORED_SHARED_METADATA_V1,
                     agentState: null,
-                    dataEncryptionKey: null,
                     currentStorageState,
                     acceptedThroughServerSeq: currentStorageState === "server_partial" ? 0 : null,
                 },
@@ -379,7 +374,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: "ciphertext",
                 agentState: null,
-                dataEncryptionKey: Buffer.from([1, 2, 3]),
             },
             select: { id: true },
         });
@@ -421,7 +415,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: "ciphertext",
                 agentState: null,
-                dataEncryptionKey: Buffer.from([1, 2, 3]),
             },
             select: { id: true },
         });
@@ -471,7 +464,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: "ciphertext",
                 agentState: null,
-                dataEncryptionKey: Buffer.from([1, 2, 3]),
             },
             select: { id: true },
         });
@@ -521,7 +513,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: "ciphertext",
                 agentState: null,
-                dataEncryptionKey: Buffer.from([1, 2, 3]),
             },
             select: { id: true },
         });
@@ -578,7 +569,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -647,7 +637,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -743,7 +732,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -806,7 +794,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -862,7 +849,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -913,7 +899,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -991,7 +976,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -1059,7 +1043,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                 ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                 metadata: STORED_SHARED_METADATA_V1,
                 agentState: null,
-                dataEncryptionKey: null,
             },
             select: { id: true },
         });
@@ -1130,7 +1113,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                         ? STORED_SHARED_METADATA_V1
                         : "ciphertext",
                     agentState: null,
-                    dataEncryptionKey: encryptionMode === "plain" ? null : Buffer.from([1, 2, 3]),
                 },
                 select: { id: true },
             });
@@ -1216,7 +1198,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                     ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                     agentState: null,
                     agentStateVersion: 0,
-                    dataEncryptionKey: null,
                 },
                 select: { id: true },
             }),
@@ -1231,7 +1212,6 @@ describe("publicShareRoutes plaintext sessions (integration)", () => {
                     ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
                     agentState: null,
                     agentStateVersion: 0,
-                    dataEncryptionKey: null,
                 },
                 select: { id: true },
             }),

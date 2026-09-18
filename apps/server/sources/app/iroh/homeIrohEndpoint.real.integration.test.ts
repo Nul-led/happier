@@ -295,7 +295,6 @@ describe("composed Home Iroh application bytes", () => {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -310,7 +309,7 @@ describe("composed Home Iroh application bytes", () => {
 
     afterAll(async () => {
         await stopHomeIrohEndpoint();
-        await harness.close();
+        if (harness) await harness.close();
     });
 
     it.each([
@@ -464,6 +463,7 @@ describe("composed Home Iroh application bytes", () => {
             const token = await auth.createToken(account.id, undefined, {
                 kind: "account",
                 authority: "present_user",
+                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
             });
             const authorization = `Bearer ${token}`;
             const pingResponse = await fetch(`${runtimeOrigin}/v1/auth/ping`, {
@@ -625,15 +625,10 @@ describe("composed Home Iroh application bytes", () => {
             const featuresResponse = await requestOverTls({ ingress, url: `${httpsOrigin}/v1/features` });
             expect(featuresResponse.status).toBe(200);
             const featuresPayload = FeaturesResponseSchema.parse(featuresResponse.body);
-            const publishedDescriptor = featuresPayload.homeConnectionDescriptor;
-            if (!publishedDescriptor) throw new Error("Standard Home feature response omitted its public descriptor");
-            expect(publishedDescriptor).toMatchObject({
-                homeServerIdentityId: expect.any(String),
-                canonicalServerUrl: CANONICAL_HOME_URL,
-                revision: expect.any(Number),
-            });
-            expect(publishedDescriptor.endpoints.map((endpoint) => endpoint.kind)).toEqual(["https"]);
-            expect(publishedDescriptor.endpoints[0]).toEqual({ kind: "https", url: httpsOrigin });
+            // Public discovery is read-only: it must not manufacture and
+            // commit descriptor continuity from live endpoint facts. The
+            // authenticated route below is the canonical publication owner.
+            expect(featuresPayload.homeConnectionDescriptor).toBeUndefined();
 
             const missingAuthResponse = await requestOverTls({ ingress, url: `${httpsOrigin}/v1/auth/ping` });
             expect(missingAuthResponse.status).toBe(401);
@@ -651,6 +646,7 @@ describe("composed Home Iroh application bytes", () => {
             const token = await auth.createToken(account.id, undefined, {
                 kind: "account",
                 authority: "present_user",
+                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
             });
             const authorization = `Bearer ${token}`;
 
@@ -665,7 +661,7 @@ describe("composed Home Iroh application bytes", () => {
             if (!authenticatedDescriptor) throw new Error("Standard Home feature response omitted its authenticated descriptor");
             expect(authenticatedDescriptor).toEqual({
                 v: 1,
-                homeServerIdentityId: publishedDescriptor.homeServerIdentityId,
+                homeServerIdentityId: expect.any(String),
                 canonicalServerUrl: CANONICAL_HOME_URL,
                 revision: expect.any(Number),
                 endpoints: [{ kind: "https", url: httpsOrigin }],

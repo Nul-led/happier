@@ -5,6 +5,7 @@ import { io as ioClient } from 'socket.io-client';
 import { createAdapter } from '@socket.io/redis-streams-adapter';
 import { Redis } from 'ioredis';
 
+import { readRedisStreamsAdapterOptionsFromEnv } from '../sources/config/socketAdapter';
 import { resolveRedisAdapterValidationRedisUrl } from './resolveRedisAdapterValidationRedisUrl';
 
 const ROOM = 'user:test-user';
@@ -37,7 +38,7 @@ async function main(): Promise<void> {
     path: '/v1/updates',
     transports: ['websocket'],
     serveClient: false,
-    adapter: createAdapter(redisA),
+    adapter: createAdapter(redisA, readRedisStreamsAdapterOptionsFromEnv(process.env)),
   });
 
   const httpB = http.createServer();
@@ -45,7 +46,7 @@ async function main(): Promise<void> {
     path: '/v1/updates',
     transports: ['websocket'],
     serveClient: false,
-    adapter: createAdapter(redisB),
+    adapter: createAdapter(redisB, readRedisStreamsAdapterOptionsFromEnv(process.env)),
   });
 
   ioA.on('connection', (socket) => {

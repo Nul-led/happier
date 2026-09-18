@@ -1,7 +1,6 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { installDbModuleMock } from "../api/testkit/dbMocks";
-import { eventRouter } from "../events/eventRouter";
 
 const transaction = vi.fn();
 installDbModuleMock(() => ({
@@ -11,6 +10,7 @@ installDbModuleMock(() => ({
 }));
 
 type MarkAccountChangedParams = Parameters<typeof import("./markAccountChanged").markAccountChanged>[1];
+type MarkAccountsChangedParams = Parameters<typeof import("./markAccountChanged").markAccountsChanged>[1];
 
 async function runMarkAccountChanged(tx: object, params: MarkAccountChangedParams): Promise<number> {
     transaction.mockImplementationOnce(async (fn: (transactionTx: object) => Promise<number>) => await fn(tx));
@@ -21,8 +21,25 @@ async function runMarkAccountChanged(tx: object, params: MarkAccountChangedParam
     return await inTx(async (transactionTx) => await markAccountChanged(transactionTx, params));
 }
 
+async function runMarkAccountsChanged(
+    tx: object,
+    params: MarkAccountsChangedParams,
+): Promise<ReadonlyArray<{ accountId: string; cursor: number }>> {
+    transaction.mockImplementationOnce(async (fn: (transactionTx: object) => Promise<ReadonlyArray<{ accountId: string; cursor: number }>>) => await fn(tx));
+    const [{ inTx }, { markAccountsChanged }] = await Promise.all([
+        import("@/storage/inTx"),
+        import("./markAccountChanged"),
+    ]);
+    return await inTx(async (transactionTx) => await markAccountsChanged(transactionTx, params));
+}
+
 describe("markAccountChanged", () => {
     const originalDbProvider = process.env.HAPPIER_DB_PROVIDER;
+    let eventRouter: typeof import("../events/eventRouter").eventRouter;
+
+    beforeEach(async () => {
+        ({ eventRouter } = await import("../events/eventRouter"));
+    });
 
     afterEach(() => {
         process.env.HAPPIER_DB_PROVIDER = originalDbProvider;
@@ -261,5 +278,79 @@ describe("markAccountChanged", () => {
 
         expect(tx.account.update).not.toHaveBeenCalled();
         expect(tx.accountChange.upsert).not.toHaveBeenCalled();
+    });
+
+    it("publishes one Account projection change to a recipient set with bounded database operations", async () => {
+        process.env.HAPPIER_DB_PROVIDER = "sqlite";
+        const tx: any = {
+            account: {
+                updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+                findMany: vi.fn().mockResolvedValue([
+                    { id: "a1", seq: 11 },
+                    { id: "a2", seq: 24 },
+                ]),
+            },
+            accountChange: {
+                deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
+                createMany: vi.fn().mockResolvedValue({ count: 2 }),
+            },
+        };
+
+        const cursors = await runMarkAccountsChanged(tx, {
+            accountIds: ["a2", "a1", "a2"],
+            entityId: "teams",
+        });
+
+        expect(cursors).toEqual([
+            { accountId: "a1", cursor: 11 },
+            { accountId: "a2", cursor: 24 },
+        ]);
+        expect(tx.account.updateMany).toHaveBeenCalledTimes(1);
+        expect(tx.account.findMany).toHaveBeenCalledTimes(1);
+        expect(tx.accountChange.deleteMany).toHaveBeenCalledTimes(1);
+        expect(tx.accountChange.createMany).toHaveBeenCalledTimes(1);
+        expect(tx.accountChange.createMany).toHaveBeenCalledWith({
+            data: [
+                expect.objectContaining({ accountId: "a1", kind: "account", entityId: "teams", cursor: 11 }),
+                expect.objectContaining({ accountId: "a2", kind: "account", entityId: "teams", cursor: 24 }),
+            ],
+        });
+    });
+
+    it("publishes a Saved Secret resource invalidation to the recipient set without a Session foreign key", async () => {
+        process.env.HAPPIER_DB_PROVIDER = "sqlite";
+        const tx: any = {
+            account: {
+                updateMany: vi.fn().mockResolvedValue({ count: 2 }),
+                findMany: vi.fn().mockResolvedValue([
+                    { id: "owner", seq: 12 },
+                    { id: "recipient", seq: 25 },
+                ]),
+            },
+            accountChange: {
+                deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+                createMany: vi.fn().mockResolvedValue({ count: 2 }),
+            },
+        };
+
+        await runMarkAccountsChanged(tx, {
+            accountIds: ["recipient", "owner"],
+            kind: "savedSecretResource",
+            entityId: "resource-1",
+        });
+
+        expect(tx.accountChange.deleteMany).toHaveBeenCalledWith({
+            where: {
+                accountId: { in: ["owner", "recipient"] },
+                kind: "savedSecretResource",
+                entityId: "resource-1",
+            },
+        });
+        expect(tx.accountChange.createMany).toHaveBeenCalledWith({
+            data: [
+                expect.objectContaining({ accountId: "owner", kind: "savedSecretResource", entityId: "resource-1", cursor: 12 }),
+                expect.objectContaining({ accountId: "recipient", kind: "savedSecretResource", entityId: "resource-1", cursor: 25 }),
+            ],
+        });
     });
 });

@@ -1,0 +1,295 @@
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+
+vi.mock("openid-client", async () => {
+    const actual = await vi.importActual<typeof import("openid-client")>("openid-client");
+    return {
+        ...actual,
+        discovery: vi.fn(async (issuer: URL) => ({
+            serverMetadata: () => ({
+                issuer: issuer.href.replace(/\/$/u, ""),
+                authorization_endpoint: `${issuer.origin}/authorize`,
+                response_types_supported: ["code"],
+                code_challenge_methods_supported: ["S256"],
+            }),
+        })),
+    };
+});
+
+import { resolveOAuthRuntimeById, resolveRuntime } from "@/app/auth/providers/identityProviderCatalog";
+import { db } from "@/storage/db";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { inTx } from "@/storage/inTx";
+
+import {
+    createHomeManagedOidcProvider,
+    listHomeManagedIdentityProviders,
+    replaceHomeManagedIdentityProviderSecret,
+    setHomeManagedIdentityProviderEnabled,
+    updateHomeManagedIdentityProvider,
+} from "./homeManagedIdentityProviders";
+import { setHomeGovernancePolicyInTx } from "./governancePolicy";
+import { resolveEffectiveHomeAuthMethods } from "@/app/auth/methods/effectiveHomeAuthMethods";
+import { TEAM_CHANGE_ENTITY_ID } from "@/app/teams/teamChanges";
+import { createTeamIdentityConnectionInTx } from "@/app/teams/identity/teamIdentityConnectionLifecycle";
+
+let harness: LightSqliteHarness;
+let sequence = 0;
+const originalPublicServerUrl = process.env.HAPPIER_PUBLIC_SERVER_URL;
+
+const oidcConfig = {
+    issuer: "https://id.example.test",
+    clientId: "happier",
+    clientAuthenticationMethod: "client_secret_post" as const,
+    scopes: "openid profile email",
+    httpTimeoutSeconds: 30,
+    claims: { login: "preferred_username", email: "email", groups: "groups" },
+    allow: { usersAllowlist: [], emailDomains: [], groupsAny: [], groupsAll: [] },
+    fetchUserInfo: true,
+    storeRefreshToken: false,
+    ui: { buttonColor: null, iconHint: "oidc" },
+};
+
+async function account(homeRole: "owner" | "member"): Promise<string> {
+    sequence += 1;
+    return (await db.account.create({
+        data: { publicKey: `managed-home-${sequence}`, homeRole, status: "active" },
+        select: { id: true },
+    })).id;
+}
+
+beforeAll(async () => {
+    process.env.HAPPIER_PUBLIC_SERVER_URL = "https://home.example.test";
+    harness = await createLightSqliteHarness({
+        tempDirPrefix: "happier-home-managed-identity-",
+        initAuth: false,
+        initEncrypt: true,
+        initFiles: false,
+    });
+});
+afterAll(async () => {
+    if (originalPublicServerUrl === undefined) delete process.env.HAPPIER_PUBLIC_SERVER_URL;
+    else process.env.HAPPIER_PUBLIC_SERVER_URL = originalPublicServerUrl;
+    await harness.close();
+});
+afterEach(async () => {
+    await db.teamIdentityConnection.deleteMany({});
+    await db.identityProviderInstance.deleteMany({});
+    await db.teamMembership.deleteMany({});
+    await db.team.deleteMany({});
+    await db.homeGovernancePolicy.deleteMany({});
+    await db.account.deleteMany({});
+});
+
+describe("Home managed OIDC consumed lifecycle", () => {
+    it("publishes Team currentness when a Team-owned provider changes", async () => {
+        const owner = await account("owner");
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                teamProviderPolicy: {
+                    v: 1,
+                    allowedTeamProviderKinds: ["oidc"],
+                    teamJitAllowed: false,
+                    approvedGitHubEnterpriseOrigins: [],
+                },
+            },
+        });
+        const team = await db.team.create({ data: { name: "Team provider currentness" } });
+        await db.teamMembership.create({
+            data: { teamId: team.id, accountId: owner, role: "owner", status: "active" },
+        });
+
+        const created = await createHomeManagedOidcProvider({
+            actorAccountId: owner,
+            owner: { kind: "team", teamId: team.id },
+            displayName: "Team login",
+            config: oidcConfig,
+            clientSecret: "team-secret",
+        });
+        expect(created.status).toBe("created");
+        await expect(db.accountChange.findUnique({
+            where: {
+                accountId_kind_entityId: {
+                    accountId: owner,
+                    kind: "account",
+                    entityId: TEAM_CHANGE_ENTITY_ID,
+                },
+            },
+        })).resolves.not.toBeNull();
+    });
+
+    it("publishes one Team invalidation when a Home-owned provider used by that Team changes", async () => {
+        const owner = await account("owner");
+        const team = await db.team.create({ data: { name: "Home provider consumer" } });
+        await db.teamMembership.create({
+            data: { teamId: team.id, accountId: owner, role: "owner", status: "active" },
+        });
+        const created = await createHomeManagedOidcProvider({
+            actorAccountId: owner,
+            displayName: "Shared login",
+            config: oidcConfig,
+            clientSecret: "shared-secret",
+        });
+        expect(created.status).toBe("created");
+        if (created.status !== "created") return;
+        await inTx(async (tx) => {
+            const connection = await createTeamIdentityConnectionInTx(tx, {
+                teamId: team.id,
+                providerInstanceId: created.instance.id,
+                externalReference: { v: 1, kind: "oidc" },
+                settings: {
+                    v: 1,
+                    kind: "oidc",
+                    allowedUsers: [],
+                    allowedEmailDomains: [],
+                    groupsAny: [],
+                    groupsAll: [],
+                },
+                createdByAccountId: owner,
+            });
+            expect(connection.status).toBe("created");
+        });
+        const before = await db.account.findUniqueOrThrow({
+            where: { id: owner },
+            select: { seq: true },
+        });
+
+        await expect(updateHomeManagedIdentityProvider({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: created.instance.revision,
+            displayName: "Shared login renamed",
+        })).resolves.toMatchObject({ status: "applied" });
+
+        const change = await db.accountChange.findUniqueOrThrow({
+            where: {
+                accountId_kind_entityId: {
+                    accountId: owner,
+                    kind: "account",
+                    entityId: TEAM_CHANGE_ENTITY_ID,
+                },
+            },
+        });
+        expect(change.cursor).toBeGreaterThan(before.seq);
+        await expect(db.account.findUniqueOrThrow({ where: { id: owner }, select: { seq: true } }))
+            .resolves.toMatchObject({ seq: change.cursor });
+    });
+
+    it("authorizes the Home owner, keeps secrets redacted, and invalidates a bound runtime on rotation", async () => {
+        const owner = await account("owner");
+        const member = await account("member");
+
+        await expect(createHomeManagedOidcProvider({
+            actorAccountId: member,
+            displayName: "Company login",
+            config: oidcConfig,
+            clientSecret: "member-secret",
+        })).resolves.toEqual({ status: "forbidden" });
+        await expect(db.accountChange.findUnique({
+            where: {
+                accountId_kind_entityId: {
+                    accountId: member,
+                    kind: "account",
+                    entityId: "home-governance",
+                },
+            },
+        })).resolves.toBeNull();
+
+        const created = await createHomeManagedOidcProvider({
+            actorAccountId: owner,
+            displayName: "Company login",
+            config: oidcConfig,
+            clientSecret: "owner-secret",
+        });
+        expect(created.status).toBe("created");
+        if (created.status !== "created") return;
+        expect(JSON.stringify(created.instance)).not.toContain("owner-secret");
+        const enabled = await setHomeManagedIdentityProviderEnabled({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: 1,
+            expectedSecurityRevision: 1,
+            enabled: true,
+        });
+        expect(enabled).toMatchObject({
+            status: "applied",
+            instance: { enabled: true, revision: 2, securityRevision: 2 },
+        });
+        if (enabled.status !== "applied") return;
+
+        const env = { HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test" };
+        const effective = await resolveEffectiveHomeAuthMethods({ env });
+        expect(effective.status).toBe("ready");
+        if (effective.status !== "ready") return;
+        expect(effective.decisions.find((decision) => decision.id === created.instance.id)?.actions)
+            .toEqual(expect.arrayContaining([
+                expect.objectContaining({ id: "connect", enabled: true, mode: "either" }),
+                expect.objectContaining({ id: "provision", enabled: true, mode: "keyed" }),
+            ]));
+        const runtime = await resolveOAuthRuntimeById(env, created.instance.id);
+        expect(runtime?.provider.resolveRedirectUrl(env)).toBe(
+            `https://home.example.test/v1/oauth/${created.instance.id}/callback`,
+        );
+
+        const renamed = await updateHomeManagedIdentityProvider({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: 2,
+            displayName: "Company SSO",
+            config: { v: 1, kind: "oidc", ...oidcConfig },
+        });
+        expect(renamed).toMatchObject({
+            status: "applied",
+            instance: { revision: 3, securityRevision: 2, displayName: "Company SSO" },
+        });
+        if (renamed.status !== "applied") return;
+        await expect(resolveRuntime({
+            env,
+            reference: runtime!.reference,
+            purpose: "oauth_callback",
+        })).resolves.toMatchObject({ ok: true });
+
+        // The save-time validator fails closed unless this deployment ceiling
+        // explicitly permits private identity networks.
+        const privateNetworkEnv = {
+            ...env,
+            HAPPIER_FEATURE_AUTH_MANAGED_IDENTITY__PRIVATE_NETWORK_ENABLED: "true",
+        };
+        await expect(inTx(async (tx) => await setHomeGovernancePolicyInTx(tx, {
+            actorAccountId: owner,
+            env: privateNetworkEnv,
+            patch: {
+                expectedRevision: 0,
+                identityNetworkPolicy: {
+                    v: 1,
+                    mode: "private_allowlist",
+                    hostnames: ["id.example.test"],
+                    cidrs: ["10.20.0.0/16"],
+                    ports: [443],
+                },
+            },
+        }))).resolves.toMatchObject({ status: "applied" });
+        const cloudRuntime = await resolveOAuthRuntimeById(env, created.instance.id);
+        expect(cloudRuntime?.reference.runtimeFingerprint).toBe(runtime?.reference.runtimeFingerprint);
+        const privateRuntime = await resolveOAuthRuntimeById(privateNetworkEnv, created.instance.id);
+        expect(privateRuntime?.reference.runtimeFingerprint).not.toBe(runtime?.reference.runtimeFingerprint);
+
+        const rotated = await replaceHomeManagedIdentityProviderSecret({
+            actorAccountId: owner,
+            id: created.instance.id,
+            expectedRevision: 3,
+            clientSecret: "rotated-secret",
+        });
+        expect(rotated).toMatchObject({
+            status: "applied",
+            instance: { revision: 4, securityRevision: 3 },
+        });
+        expect(JSON.stringify(await listHomeManagedIdentityProviders({ actorAccountId: owner })))
+            .not.toContain("rotated-secret");
+        await expect(resolveRuntime({
+            env,
+            reference: runtime!.reference,
+            purpose: "oauth_callback",
+        })).resolves.toEqual({ ok: false, code: "auth_provider_configuration_changed" });
+    });
+});

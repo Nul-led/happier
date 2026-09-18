@@ -16,6 +16,7 @@ export function buildSessionOrganizationHint(params: Readonly<{
     sessionIds?: readonly string[];
     folderIds?: readonly string[];
     tagIds?: readonly string[];
+    deletedTagIds?: readonly string[];
     scopeKeys?: readonly string[];
 }>) {
     return {
@@ -24,6 +25,7 @@ export function buildSessionOrganizationHint(params: Readonly<{
         ...(params.sessionIds ? { sessionIds: [...params.sessionIds] } : {}),
         ...(params.folderIds ? { folderIds: [...params.folderIds] } : {}),
         ...(params.tagIds ? { tagIds: [...params.tagIds] } : {}),
+        ...(params.deletedTagIds ? { deletedTagIds: [...params.deletedTagIds] } : {}),
         ...(params.scopeKeys ? { scopeKeys: [...params.scopeKeys] } : {}),
     };
 }
@@ -75,6 +77,7 @@ export async function markSessionOrganizationChanged(
         sessionIds?: readonly string[];
         folderIds?: readonly string[];
         tagIds?: readonly string[];
+        deletedTagIds?: readonly string[];
         scopeKeys?: readonly string[];
     }>,
 ): Promise<number> {

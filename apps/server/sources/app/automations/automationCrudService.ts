@@ -10,9 +10,15 @@ import {
     deriveAccountEncryptionCurrentnessFromRow,
 } from "@/app/encryption/accountContentKeyAdmission";
 import type {
+    AccountEncryptionMigrateAutomationInventoryItem,
+    AccountEncryptionMigrateAutomationStageItem,
     AccountEncryptionMigrateAutomationsDirective,
     AccountEncryptionMigrateAutomationsDirectiveInput,
 } from "@happier-dev/protocol";
+import {
+    assertWorkflowStoredEnvelopeOuterForMode,
+    WorkflowStoredContentError,
+} from "@/app/workflows/runs/storedContent";
 import {
     ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS,
     ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS,
@@ -29,6 +35,7 @@ import {
     parseAutomationStoredDefinitionExecutionRecipeV1,
     pluginJsonValuesEqual,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
+    serializeAutomationStoredWorkflowDefinitionRecipeV2,
     sealAutomationTriggerDefinitionStoredEnvelopeV1,
     openAutomationTriggerDefinitionStoredEnvelopeV1,
     parseAutomationRunFailureDetailStoredEnvelopeV1,
@@ -43,6 +50,7 @@ import {
     type AutomationSessionLifecycleTrigger,
     type AutomationDefinitionReconcileRequest,
     type AutomationStoredDefinitionExecutionRecipeV1,
+    type AutomationStoredWorkflowDefinitionRecipeV2,
     type AutomationTriggerCreateRequest,
     type AutomationTriggerPatchRequest,
     type AutomationTriggerDefinition,
@@ -60,6 +68,7 @@ import {
 import { assertAutomationAssignmentLiveness, replaceAutomationAssignmentsTx } from "./automationAssignmentService";
 import { ensureAutomationScheduleCursorsTx } from "./automationRunQueueService";
 import { admitAutomationRunTx } from "./automationRunAdmissionService";
+import type { AutomationRecipeFeaturePolicy } from "./automationRecipeFeaturePolicy";
 import { validateExistingSessionAutomationTargetTx } from "./automationExistingSessionValidation";
 import { fetchAutomationAccountCurrentnessWitnessTx } from "./automationAccountCurrentness";
 import {
@@ -98,11 +107,13 @@ import {
     readAutomationTriggerDefinitionBinding,
     validateAutomationStoredContentEnvelopeOuterForMode,
     validateAutomationTriggerDefinitionEnvelopeOuterForMode,
-    assertAutomationRunFailureDetailEnvelopeOuterForMode,
+    validateAutomationRunFailureDetailEnvelopeOuterForMode,
 } from "./automationStoredContentRead";
 import {
     decodeAutomationRunCause,
     encodeAutomationRunCause,
+    isAutomationCauseRow,
+    projectAutomationOriginRun,
 } from "./automationRunCauseCodec";
 import {
     validateSessionLifecycleExecutionTargetInequality,
@@ -119,6 +130,7 @@ import {
     isAutomationCurrentPatchInput,
     isAutomationCurrentUpsertInput,
     isAutomationLegacyTargetType,
+    isAutomationRunState,
 } from "./automationTypes";
 import type {
     AutomationLegacyTemplateEnvelopeAdmission,
@@ -191,7 +203,7 @@ function toCurrentAutomationDefinitionTargetType(
 async function normalizeCurrentAutomationDefinitionWriteTx(params: Readonly<{
     tx: Tx;
     accountId: string;
-    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1;
+    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1 | AutomationStoredWorkflowDefinitionRecipeV2;
     expectedTemplateVersion: number;
 }>): Promise<CurrentAutomationDefinitionWrite> {
     const fence = await acquireAccountEncryptionTransitionFenceInTx(params.tx, params.accountId);
@@ -209,6 +221,30 @@ async function normalizeCurrentAutomationDefinitionWriteTx(params: Readonly<{
     if (!accountCurrentness) {
         throw new Error("Account encryption state is inconsistent");
     }
+    if (params.executionRecipe.v === 2) {
+        const serialized = serializeAutomationStoredWorkflowDefinitionRecipeV2(params.executionRecipe);
+        if (serialized.kind !== "available") {
+            throw new AutomationValidationError("Automation workflow recipe is invalid");
+        }
+        if (serialized.recipe.templateVersion !== params.expectedTemplateVersion) {
+            throw new AutomationValidationError(
+                "Automation execution recipe version must match the next template version",
+            );
+        }
+        const workflowOuter = validateAutomationStoredContentEnvelopeOuterForMode({
+            raw: createCanonicalJsonSigningInput(serialized.recipe.workflow),
+            mode: accountCurrentness.mode,
+        });
+        if (workflowOuter.kind !== "available") {
+            throw new AutomationValidationError("Automation workflow recipe does not match the Account");
+        }
+        return {
+            targetType: null,
+            templateCiphertext: serialized.serialized,
+            accountMode: accountCurrentness.mode,
+        };
+    }
+
     const serialized = serializeAutomationStoredDefinitionExecutionRecipeV1(params.executionRecipe);
     if (serialized.kind !== "available") {
         throw new AutomationValidationError("Automation execution recipe is invalid");
@@ -1244,6 +1280,8 @@ export type AutomationAccountEncryptionTransitionRunSourceContent = Readonly<{
     triggerEvidenceEnvelope: string | null;
     occurrenceEvidenceEqualityTag: string | null;
     executionInputEnvelope: string | null;
+    workflowAcceptedSnapshotEnvelope: string | null;
+    workflowCheckpointEnvelope: string | null;
     resultEnvelope: string | null;
     replyContextEnvelope: string | null;
     failureDetailEnvelope: string | null;
@@ -1255,41 +1293,13 @@ export type AutomationAccountEncryptionTransitionRunTargetContent = Readonly<
 >;
 
 export type AutomationAccountEncryptionTransitionInventoryItem =
-    | Readonly<{
-        kind: "definition";
-        automationId: string;
-        revision: number;
-        source: AutomationAccountEncryptionTransitionDefinitionContent;
-    }>
-    | Readonly<{
-        kind: "run";
-        runId: string;
-        automationId: string;
-        revision: number;
-        cause: AutomationRunCause;
-        source: AutomationAccountEncryptionTransitionRunSourceContent;
-    }>;
+    AccountEncryptionMigrateAutomationInventoryItem;
 
 export type AutomationAccountEncryptionTransitionStageItem =
-    | Readonly<{
-        kind: "definition";
-        automationId: string;
-        expectedRevision: number;
-        source: AutomationAccountEncryptionTransitionDefinitionContent;
-        target: AutomationAccountEncryptionTransitionDefinitionContent;
-    }>
-    | Readonly<{
-        kind: "run";
-        runId: string;
-        automationId: string;
-        expectedRevision: number;
-        cause: AutomationRunCause;
-        source: AutomationAccountEncryptionTransitionRunSourceContent;
-        target: AutomationAccountEncryptionTransitionRunTargetContent;
-    }>;
+    AccountEncryptionMigrateAutomationStageItem;
 
 export type AutomationAccountEncryptionTransitionSourceCursor = Readonly<{
-    kind: "definition" | "run";
+    kind: "definition" | "run" | "workflow_invocation";
     participantId: string;
 }>;
 
@@ -1318,7 +1328,7 @@ function transitionInventoryDefinition(
                         );
                     }
                     return {
-                        triggerId: trigger.id,
+                        triggerId: AutomationTriggerIdSchema.parse(trigger.id),
                         triggerRevision: trigger.revision,
                         envelope: trigger.definitionEnvelope,
                     };
@@ -1347,6 +1357,8 @@ function automationRunHasMigrationPrivateContent(
     return row.triggerEvidenceEnvelope !== null
         || row.occurrenceEvidenceEqualityTag !== null
         || row.executionInputEnvelope !== null
+        || row.workflowAcceptedSnapshotEnvelope !== null
+        || row.workflowCheckpointEnvelope !== null
         || row.resultEnvelope !== null
         || row.replyContextEnvelope !== null
         || currentAutomationRunFailureDetailEnvelope(row) !== null
@@ -1364,6 +1376,8 @@ function automationRunMigrationCandidateWhere(
             { triggerEvidenceEnvelope: { not: null } },
             { occurrenceEvidenceEqualityTag: { not: null } },
             { executionInputEnvelope: { not: null } },
+            { workflowAcceptedSnapshotEnvelope: { not: null } },
+            { workflowCheckpointEnvelope: { not: null } },
             { resultEnvelope: { not: null } },
             { replyContextEnvelope: { not: null } },
             // Released V2 public error text shares this column. The strict
@@ -1377,14 +1391,20 @@ function automationRunMigrationCandidateWhere(
 const automationRunMigrationParticipantSelect = {
     ...automationRunCauseSelect,
     id: true,
+    accountId: true,
+    originKind: true,
+    originSessionId: true,
     automationId: true,
     occurrenceEvidenceEqualityTag: true,
     triggerEvidenceEnvelope: true,
     executionInputEnvelope: true,
+    workflowAcceptedSnapshotEnvelope: true,
+    workflowCheckpointEnvelope: true,
     resultEnvelope: true,
     replyContextEnvelope: true,
     errorMessage: true,
     summaryCiphertext: true,
+    workflowCustodyState: true,
     revision: true,
 } satisfies Prisma.AutomationRunSelect;
 
@@ -1392,24 +1412,91 @@ type AutomationAccountEncryptionMigrationRunRow = Prisma.AutomationRunGetPayload
     select: typeof automationRunMigrationParticipantSelect;
 }>;
 
+const workflowInvocationMigrationParticipantSelect = {
+    id: true,
+    runId: true,
+    sequence: true,
+    parentRecordId: true,
+    memberOrdinal: true,
+    attempt: true,
+    contentEnvelope: true,
+} satisfies Prisma.WorkflowRunInvocationSelect;
+
+type WorkflowInvocationEncryptionMigrationRow =
+    Prisma.WorkflowRunInvocationGetPayload<{
+        select: typeof workflowInvocationMigrationParticipantSelect;
+    }>;
+
+function workflowInvocationStoredBinding(
+    accountId: string,
+    row: WorkflowInvocationEncryptionMigrationRow,
+) {
+    return {
+        v: 1 as const,
+        purpose: "invocation_progress" as const,
+        accountId,
+        runId: row.runId,
+        recordId: row.id,
+        sequence: row.sequence.toString(),
+        parentRecordId: row.parentRecordId,
+        memberOrdinal: row.memberOrdinal.toString(),
+        attempt: row.attempt.toString(),
+    };
+}
+
+function transitionInventoryWorkflowInvocation(
+    row: WorkflowInvocationEncryptionMigrationRow,
+): Extract<AutomationAccountEncryptionTransitionInventoryItem, {
+    kind: "workflow_invocation";
+}> {
+    return {
+        kind: "workflow_invocation",
+        runId: row.runId,
+        invocationRecordId: row.id,
+        source: { contentEnvelope: row.contentEnvelope },
+    };
+}
+
 function transitionInventoryRun(
     row: AutomationAccountEncryptionMigrationRunRow,
 ): Extract<AutomationAccountEncryptionTransitionInventoryItem, { kind: "run" }> {
+    const source = {
+        triggerEvidenceEnvelope: row.triggerEvidenceEnvelope,
+        occurrenceEvidenceEqualityTag: row.occurrenceEvidenceEqualityTag === null
+            ? null
+            : AutomationOccurrenceEvidenceEqualityTagV1Schema.parse(
+                row.occurrenceEvidenceEqualityTag,
+            ),
+        executionInputEnvelope: row.executionInputEnvelope,
+        workflowAcceptedSnapshotEnvelope: row.workflowAcceptedSnapshotEnvelope,
+        workflowCheckpointEnvelope: row.workflowCheckpointEnvelope,
+        resultEnvelope: row.resultEnvelope,
+        replyContextEnvelope: row.replyContextEnvelope,
+        failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
+        summaryCiphertext: row.summaryCiphertext,
+    };
+    if (row.originKind === "direct") {
+        return {
+            kind: "run",
+            runId: row.id,
+            origin: {
+                kind: "direct",
+                ...(row.originSessionId ? { originSessionId: row.originSessionId } : {}),
+            },
+            revision: row.revision,
+            source,
+        };
+    }
+    if (!isAutomationCauseRow(row)) {
+        throw new AutomationValidationError("Automation-origin Run has invalid origin correspondence");
+    }
     return {
         kind: "run",
         runId: row.id,
-        automationId: row.automationId,
+        origin: { kind: "automation", automationId: row.automationId },
         revision: row.revision,
         cause: decodeAutomationRunCause(row),
-        source: {
-            triggerEvidenceEnvelope: row.triggerEvidenceEnvelope,
-            occurrenceEvidenceEqualityTag: row.occurrenceEvidenceEqualityTag,
-            executionInputEnvelope: row.executionInputEnvelope,
-            resultEnvelope: row.resultEnvelope,
-            replyContextEnvelope: row.replyContextEnvelope,
-            failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
-            summaryCiphertext: row.summaryCiphertext,
-        },
+        source,
     };
 }
 
@@ -1417,6 +1504,52 @@ function transitionInventoryItemEncodedBytes(
     item: AutomationAccountEncryptionTransitionInventoryItem,
 ): bigint {
     return BigInt(new TextEncoder().encode(JSON.stringify(item)).byteLength);
+}
+
+function transitionSourcePage(
+    items: readonly AutomationAccountEncryptionTransitionInventoryItem[],
+    runCount: number,
+    nextCursor?: AutomationAccountEncryptionTransitionSourceCursor,
+) {
+    return {
+        status: "complete" as const,
+        page: {
+            items,
+            sourceEncodedBytes: items.reduce(
+                (total, item) => total + transitionInventoryItemEncodedBytes(item),
+                0n,
+            ),
+            runCount,
+            ...(nextCursor ? { nextCursor } : {}),
+        },
+    };
+}
+
+function assertAutomationRunTransitionSourceForMode(
+    row: AutomationAccountEncryptionMigrationRunRow,
+    mode: "plain" | "e2ee",
+): void {
+    assertAutomationRunStoredContentForAccountMode({
+        row,
+        mode,
+        content: automationRunMigrationStoredContent(row),
+        allowLegacyResultSource: true,
+    });
+}
+
+function assertAutomationRunTransitionTargetForMode(
+    row: AutomationAccountEncryptionMigrationRunRow,
+    content: Extract<AutomationAccountEncryptionTransitionStageItem, {
+        kind: "run";
+    }>["target"],
+    mode: "plain" | "e2ee",
+): void {
+    assertAutomationRunStoredContentForAccountMode({ row, mode, content });
+}
+
+function isAutomationTransitionInvalidContentError(error: unknown): boolean {
+    return error instanceof AutomationValidationError
+        || error instanceof WorkflowStoredContentError;
 }
 
 function assertAutomationDefinitionStoredContentForAccountMode(params: Readonly<{
@@ -1540,6 +1673,23 @@ async function loadAutomationAccountEncryptionMigrationRunPageInTx(
     return participants.slice(0, take);
 }
 
+async function loadWorkflowInvocationEncryptionMigrationPageInTx(
+    tx: Tx,
+    accountId: string,
+    afterId: string | undefined,
+    take: number,
+): Promise<WorkflowInvocationEncryptionMigrationRow[]> {
+    return await tx.workflowRunInvocation.findMany({
+        where: {
+            run: { accountId },
+            ...(afterId ? { id: { gt: afterId } } : {}),
+        },
+        select: workflowInvocationMigrationParticipantSelect,
+        orderBy: { id: "asc" },
+        take,
+    });
+}
+
 /**
  * One bounded all-cause Automation source page for the Account transition.
  * Definitions are deliberately first so the durable stage's closed identity
@@ -1557,85 +1707,87 @@ export async function inspectAutomationAccountEncryptionTransitionInTx(
     | Readonly<{ status: "invalid_content" }>
 > {
     const pageLimit = ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS;
-    const definitionRows = params.cursor?.kind === "run"
-        ? []
-        : await loadAutomationAccountEncryptionMigrationDefinitionPageInTx(
-            params.tx,
-            params.accountId,
-            params.cursor?.kind === "definition"
-                ? params.cursor.participantId
-                : undefined,
-            pageLimit + 1,
-        );
-    const definitions = definitionRows.slice(0, pageLimit);
-    const definitionHasMore = definitionRows.length > definitions.length;
     const items: AutomationAccountEncryptionTransitionInventoryItem[] = [];
     try {
-        for (const row of definitions) {
-            assertAutomationDefinitionStoredContentForAccountMode({
-                row,
-                mode: params.sourceMode,
-            });
-            items.push(transitionInventoryDefinition(row));
+        if (!params.cursor || params.cursor.kind === "definition") {
+            const rows = await loadAutomationAccountEncryptionMigrationDefinitionPageInTx(
+                params.tx,
+                params.accountId,
+                params.cursor?.kind === "definition"
+                    ? params.cursor.participantId
+                    : undefined,
+                pageLimit + 1,
+            );
+            const selected = rows.slice(0, pageLimit);
+            for (const row of selected) {
+                assertAutomationDefinitionStoredContentForAccountMode({
+                    row,
+                    mode: params.sourceMode,
+                });
+                items.push(transitionInventoryDefinition(row));
+            }
+            if (selected.length === pageLimit) {
+                return transitionSourcePage(items, 0, {
+                    kind: "definition",
+                    participantId: selected.at(-1)!.id,
+                });
+            }
         }
-        if (!definitionHasMore) {
-            const remaining = pageLimit - items.length;
-            const runRows = await loadAutomationAccountEncryptionMigrationRunPageInTx(
+
+        let runCount = 0;
+        if (items.length < pageLimit && params.cursor?.kind !== "workflow_invocation") {
+            const rows = await loadAutomationAccountEncryptionMigrationRunPageInTx(
                 params.tx,
                 params.accountId,
                 params.cursor?.kind === "run"
                     ? params.cursor.participantId
                     : undefined,
-                remaining + 1,
+                pageLimit - items.length + 1,
             );
-            const runs = runRows.slice(0, remaining);
-            for (const row of runs) {
-                assertAutomationRunStoredContentForAccountMode({
-                    row,
-                    mode: params.sourceMode,
-                    content: automationRunMigrationStoredContent(row),
-                    allowLegacyResultSource: true,
-                });
+            const remaining = pageLimit - items.length;
+            const selected = rows.slice(0, remaining);
+            for (const row of selected) {
+                assertAutomationRunTransitionSourceForMode(row, params.sourceMode);
                 items.push(transitionInventoryRun(row));
             }
-            const runHasMore = runRows.length > runs.length;
-            const lastRun = runs.at(-1);
-            const lastDefinition = definitions.at(-1);
-            const nextCursor = runHasMore && lastRun
-                ? { kind: "run" as const, participantId: lastRun.id }
-                : definitionRows.length === pageLimit && lastDefinition && runRows.length > 0
-                    ? { kind: "definition" as const, participantId: lastDefinition.id }
-                    : undefined;
-            return {
-                status: "complete",
-                page: {
-                    items,
-                    sourceEncodedBytes: items.reduce(
-                        (total, item) => total + transitionInventoryItemEncodedBytes(item),
-                        0n,
-                    ),
-                    runCount: runs.length,
-                    ...(nextCursor ? { nextCursor } : {}),
-                },
-            };
+            runCount = selected.length;
+            if (selected.length === remaining) {
+                return transitionSourcePage(items, runCount, {
+                    kind: "run",
+                    participantId: selected.at(-1)!.id,
+                });
+            }
         }
-        const last = definitions.at(-1);
-        return {
-            status: "complete",
-            page: {
-                items,
-                sourceEncodedBytes: items.reduce(
-                    (total, item) => total + transitionInventoryItemEncodedBytes(item),
-                    0n,
-                ),
-                runCount: 0,
-                ...(last
-                    ? { nextCursor: { kind: "definition" as const, participantId: last.id } }
-                    : {}),
-            },
-        };
+
+        if (items.length < pageLimit) {
+            const rows = await loadWorkflowInvocationEncryptionMigrationPageInTx(
+                params.tx,
+                params.accountId,
+                params.cursor?.kind === "workflow_invocation"
+                    ? params.cursor.participantId
+                    : undefined,
+                pageLimit - items.length + 1,
+            );
+            const remaining = pageLimit - items.length;
+            const selected = rows.slice(0, remaining);
+            for (const row of selected) {
+                assertWorkflowStoredEnvelopeOuterForMode({
+                    raw: row.contentEnvelope,
+                    mode: params.sourceMode,
+                    binding: workflowInvocationStoredBinding(params.accountId, row),
+                });
+                items.push(transitionInventoryWorkflowInvocation(row));
+            }
+            if (selected.length === remaining) {
+                return transitionSourcePage(items, runCount, {
+                    kind: "workflow_invocation",
+                    participantId: selected.at(-1)!.id,
+                });
+            }
+        }
+        return transitionSourcePage(items, runCount);
     } catch (error) {
-        if (error instanceof AutomationValidationError) {
+        if (isAutomationTransitionInvalidContentError(error)) {
             return { status: "invalid_content" };
         }
         throw error;
@@ -1658,9 +1810,18 @@ type AutomationAccountEncryptionTransitionValidatedRun = Readonly<{
     item: Extract<AutomationAccountEncryptionTransitionStageItem, { kind: "run" }>;
 }>;
 
+type AutomationAccountEncryptionTransitionValidatedWorkflowInvocation = Readonly<{
+    row: WorkflowInvocationEncryptionMigrationRow;
+    item: Extract<AutomationAccountEncryptionTransitionStageItem, {
+        kind: "workflow_invocation";
+    }>;
+}>;
+
 type AutomationAccountEncryptionTransitionValidatedStageBatch = Readonly<{
     definitions: readonly AutomationAccountEncryptionTransitionValidatedDefinition[];
     runs: readonly AutomationAccountEncryptionTransitionValidatedRun[];
+    workflowInvocations:
+        readonly AutomationAccountEncryptionTransitionValidatedWorkflowInvocation[];
 }>;
 
 export type AutomationAccountEncryptionTransitionStageValidationResult =
@@ -1676,7 +1837,9 @@ function transitionStageIdentity(
 ): string {
     return item.kind === "definition"
         ? `definition\u0000${item.automationId}`
-        : `run\u0000${item.runId}`;
+        : item.kind === "run"
+            ? `run\u0000${item.runId}`
+            : `workflow_invocation\u0000${item.invocationRecordId}`;
 }
 
 function stageDefinitionSourceMatches(
@@ -1696,21 +1859,42 @@ function stageRunSourceMatches(
     item: Extract<AutomationAccountEncryptionTransitionStageItem, { kind: "run" }>,
 ): boolean {
     return row.id === item.runId
-        && row.automationId === item.automationId
-        && row.revision === item.expectedRevision
         && pluginJsonValuesEqual(
-            decodeAutomationRunCause(row),
-            item.cause,
+            row.originKind === "direct"
+                ? {
+                    kind: "direct",
+                    ...(row.originSessionId ? { originSessionId: row.originSessionId } : {}),
+                }
+                : { kind: "automation", automationId: row.automationId },
+            item.origin,
         )
+        && row.revision === item.expectedRevision
+        && (item.origin.kind === "direct"
+            || ("cause" in item
+                && pluginJsonValuesEqual(decodeAutomationRunCause(row), item.cause)))
         && row.triggerEvidenceEnvelope === item.source.triggerEvidenceEnvelope
         && row.occurrenceEvidenceEqualityTag
             === item.source.occurrenceEvidenceEqualityTag
         && row.executionInputEnvelope === item.source.executionInputEnvelope
+        && row.workflowAcceptedSnapshotEnvelope
+            === item.source.workflowAcceptedSnapshotEnvelope
+        && row.workflowCheckpointEnvelope === item.source.workflowCheckpointEnvelope
         && row.resultEnvelope === item.source.resultEnvelope
         && row.replyContextEnvelope === item.source.replyContextEnvelope
         && currentAutomationRunFailureDetailEnvelope(row)
             === item.source.failureDetailEnvelope
         && row.summaryCiphertext === item.source.summaryCiphertext;
+}
+
+function stageWorkflowInvocationSourceMatches(
+    row: WorkflowInvocationEncryptionMigrationRow,
+    item: Extract<AutomationAccountEncryptionTransitionStageItem, {
+        kind: "workflow_invocation";
+    }>,
+): boolean {
+    return row.id === item.invocationRecordId
+        && row.runId === item.runId
+        && row.contentEnvelope === item.source.contentEnvelope;
 }
 
 function validateAutomationTriggerDefinitionTransitionTargets(params: Readonly<{
@@ -1736,7 +1920,7 @@ function validateAutomationTriggerDefinitionTransitionTargets(params: Readonly<{
         );
     }
     return pluginEventTriggers.map((trigger) => {
-        const target = targetsById.get(trigger.id);
+        const target = targetsById.get(AutomationTriggerIdSchema.parse(trigger.id));
         if (
             !target
             || target.triggerRevision !== trigger.revision
@@ -1808,6 +1992,18 @@ async function loadAutomationAccountEncryptionTransitionRunsByIdsInTx(
     });
 }
 
+async function loadWorkflowInvocationEncryptionTransitionRowsByIdsInTx(
+    tx: Tx,
+    accountId: string,
+    ids: readonly string[],
+): Promise<WorkflowInvocationEncryptionMigrationRow[]> {
+    if (ids.length === 0) return [];
+    return await tx.workflowRunInvocation.findMany({
+        where: { id: { in: [...ids] }, run: { accountId } },
+        select: workflowInvocationMigrationParticipantSelect,
+    });
+}
+
 /**
  * The Automation owner validates the exact staged source and target against
  * live Definition/Run rows. The Account coordinator owns the transition and
@@ -1845,7 +2041,11 @@ async function validateAutomationAccountEncryptionTransitionStageBatchInTx(
         AutomationAccountEncryptionTransitionStageItem,
         { kind: "run" }
     > => item.kind === "run");
-    const [definitionRows, runRows, actualSourceMode] = await Promise.all([
+    const workflowInvocations = params.items.filter((item): item is Extract<
+        AutomationAccountEncryptionTransitionStageItem,
+        { kind: "workflow_invocation" }
+    > => item.kind === "workflow_invocation");
+    const [definitionRows, runRows, invocationRows, actualSourceMode] = await Promise.all([
         loadAutomationAccountEncryptionTransitionDefinitionsByIdsInTx(
             params.tx,
             params.accountId,
@@ -1856,12 +2056,18 @@ async function validateAutomationAccountEncryptionTransitionStageBatchInTx(
             params.accountId,
             runs.map((item) => item.runId),
         ),
+        loadWorkflowInvocationEncryptionTransitionRowsByIdsInTx(
+            params.tx,
+            params.accountId,
+            workflowInvocations.map((item) => item.invocationRecordId),
+        ),
         readAutomationMigrationSourceModeInTx(params.tx, params.accountId),
     ]);
     if (
         actualSourceMode !== params.fromMode
         || definitionRows.length !== definitions.length
         || runRows.length !== runs.length
+        || invocationRows.length !== workflowInvocations.length
     ) {
         return { status: "migration_incomplete" };
     }
@@ -1869,6 +2075,7 @@ async function validateAutomationAccountEncryptionTransitionStageBatchInTx(
         definitionRows.map((row) => [row.id, row] as const),
     );
     const runsById = new Map(runRows.map((row) => [row.id, row] as const));
+    const invocationsById = new Map(invocationRows.map((row) => [row.id, row] as const));
     if (
         definitions.some((item) => {
             const row = definitionsById.get(item.automationId);
@@ -1877,6 +2084,10 @@ async function validateAutomationAccountEncryptionTransitionStageBatchInTx(
         || runs.some((item) => {
             const row = runsById.get(item.runId);
             return !row || !stageRunSourceMatches(row, item);
+        })
+        || workflowInvocations.some((item) => {
+            const row = invocationsById.get(item.invocationRecordId);
+            return !row || !stageWorkflowInvocationSourceMatches(row, item);
         })
     ) {
         return { status: "migration_incomplete" };
@@ -1931,29 +2142,46 @@ async function validateAutomationAccountEncryptionTransitionStageBatchInTx(
         for (const item of runs) {
             const row = runsById.get(item.runId);
             if (!row) return { status: "migration_incomplete" };
-            assertAutomationRunStoredContentForAccountMode({
-                row,
-                mode: params.fromMode,
-                content: automationRunMigrationStoredContent(row),
-                allowLegacyResultSource: true,
-            });
+            assertAutomationRunTransitionSourceForMode(row, params.fromMode);
             assertAutomationRunOptionalContentNullnessPreserved({
                 source: automationRunMigrationStoredContent(row),
                 target: item.target,
             });
-            assertAutomationRunStoredContentForAccountMode({
+            assertAutomationRunTransitionTargetForMode(
                 row,
-                mode: params.toMode,
-                content: item.target,
-            });
+                item.target,
+                params.toMode,
+            );
             validatedRuns.push({ row, item });
+        }
+        const validatedWorkflowInvocations:
+            AutomationAccountEncryptionTransitionValidatedWorkflowInvocation[] = [];
+        for (const item of workflowInvocations) {
+            const row = invocationsById.get(item.invocationRecordId);
+            if (!row) return { status: "migration_incomplete" };
+            const binding = workflowInvocationStoredBinding(params.accountId, row);
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: row.contentEnvelope,
+                mode: params.fromMode,
+                binding,
+            });
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: item.target.contentEnvelope,
+                mode: params.toMode,
+                binding,
+            });
+            validatedWorkflowInvocations.push({ row, item });
         }
         return {
             status: "validated",
-            batch: { definitions: validatedDefinitions, runs: validatedRuns },
+            batch: {
+                definitions: validatedDefinitions,
+                runs: validatedRuns,
+                workflowInvocations: validatedWorkflowInvocations,
+            },
         };
     } catch (error) {
-        if (error instanceof AutomationValidationError) {
+        if (isAutomationTransitionInvalidContentError(error)) {
             return { status: "invalid_content" };
         }
         throw error;
@@ -2058,18 +2286,38 @@ export async function applyAutomationAccountEncryptionTransitionStageInTx(
         });
     }
     for (const candidate of validated.batch.runs) {
+        const originWhere = candidate.item.origin.kind === "automation"
+            ? (() => {
+                if (!("cause" in candidate.item)) {
+                    throw new AutomationAccountEncryptionMigrationConflictError();
+                }
+                return {
+                    originKind: "automation" as const,
+                    automationId: candidate.item.origin.automationId,
+                    ...encodeAutomationRunCause(candidate.item.cause),
+                };
+            })()
+            : {
+                originKind: "direct" as const,
+                automationId: null,
+                originSessionId: candidate.item.origin.originSessionId ?? null,
+            };
         const updated = await params.tx.automationRun.updateMany({
             where: {
                 id: candidate.row.id,
                 accountId: params.accountId,
                 revision: candidate.item.expectedRevision,
-                ...encodeAutomationRunCause(candidate.item.cause),
+                ...originWhere,
             },
             data: {
                 triggerEvidenceEnvelope: candidate.item.target.triggerEvidenceEnvelope,
                 occurrenceEvidenceEqualityTag:
                     candidate.item.target.occurrenceEvidenceEqualityTag,
                 executionInputEnvelope: candidate.item.target.executionInputEnvelope,
+                workflowAcceptedSnapshotEnvelope:
+                    candidate.item.target.workflowAcceptedSnapshotEnvelope,
+                workflowCheckpointEnvelope:
+                    candidate.item.target.workflowCheckpointEnvelope,
                 resultEnvelope: candidate.item.target.resultEnvelope,
                 replyContextEnvelope: candidate.item.target.replyContextEnvelope,
                 errorMessage: candidate.item.target.failureDetailEnvelope
@@ -2089,17 +2337,36 @@ export async function applyAutomationAccountEncryptionTransitionStageInTx(
             select: automationRunItemSelect,
         });
         if (!run) throw new AutomationAccountEncryptionMigrationConflictError();
-        const cursor = await markAutomationChangedTx(params.tx, {
-            accountId: params.accountId,
-            automationId: candidate.row.automationId,
-        });
-        afterTx(params.tx, () => {
-            emitAutomationRunUpdated({
+        if (candidate.item.origin.kind === "automation") {
+            const cursor = await markAutomationChangedTx(params.tx, {
                 accountId: params.accountId,
-                run: run as AutomationRunItem,
-                cursor,
+                automationId: candidate.item.origin.automationId,
             });
+            afterTx(params.tx, () => {
+                emitAutomationRunUpdated({
+                    accountId: params.accountId,
+                    run: run as AutomationRunItem,
+                    cursor,
+                });
+            });
+        }
+    }
+    for (const candidate of validated.batch.workflowInvocations) {
+        const updated = await params.tx.workflowRunInvocation.updateMany({
+            where: {
+                id: candidate.row.id,
+                runId: candidate.row.runId,
+                contentEnvelope: candidate.item.source.contentEnvelope,
+                run: { accountId: params.accountId },
+            },
+            data: {
+                contentEnvelope: candidate.item.target.contentEnvelope,
+                updatedAt: new Date(),
+            },
         });
+        if (updated.count !== 1) {
+            throw new AutomationAccountEncryptionMigrationConflictError();
+        }
     }
     if (validated.batch.definitions.some((candidate) => (
         candidate.row.enabled
@@ -2337,6 +2604,8 @@ type AutomationAccountEncryptionMigrationRunStoredContent = Pick<
     | "triggerEvidenceEnvelope"
     | "occurrenceEvidenceEqualityTag"
     | "executionInputEnvelope"
+    | "workflowAcceptedSnapshotEnvelope"
+    | "workflowCheckpointEnvelope"
     | "resultEnvelope"
     | "replyContextEnvelope"
 > & Readonly<{ failureDetailEnvelope: string | null }>;
@@ -2348,9 +2617,33 @@ function automationRunMigrationStoredContent(
         triggerEvidenceEnvelope: row.triggerEvidenceEnvelope,
         occurrenceEvidenceEqualityTag: row.occurrenceEvidenceEqualityTag,
         executionInputEnvelope: row.executionInputEnvelope,
+        workflowAcceptedSnapshotEnvelope: row.workflowAcceptedSnapshotEnvelope,
+        workflowCheckpointEnvelope: row.workflowCheckpointEnvelope,
         resultEnvelope: row.resultEnvelope,
         replyContextEnvelope: row.replyContextEnvelope,
         failureDetailEnvelope: currentAutomationRunFailureDetailEnvelope(row),
+    };
+}
+
+function automationRunMigrationDirectiveTargetContent(
+    row: AutomationAccountEncryptionMigrationRunRow,
+    item: NonNullable<Extract<
+        AccountEncryptionMigrateAutomationsDirective,
+        { action: "migrate" }
+    >["runs"]>[number],
+): AutomationAccountEncryptionMigrationRunStoredContent {
+    return {
+        triggerEvidenceEnvelope: item.triggerEvidenceEnvelope,
+        occurrenceEvidenceEqualityTag: item.occurrenceEvidenceEqualityTag,
+        executionInputEnvelope: item.executionInputEnvelope,
+        // This predecessor directive cannot re-seal Workflow-owned content.
+        // Retaining its current bytes here preserves legacy Automation Runs
+        // while target-mode validation rejects an unsafe Workflow mode flip.
+        workflowAcceptedSnapshotEnvelope: row.workflowAcceptedSnapshotEnvelope,
+        workflowCheckpointEnvelope: row.workflowCheckpointEnvelope,
+        resultEnvelope: item.resultEnvelope,
+        replyContextEnvelope: item.replyContextEnvelope,
+        failureDetailEnvelope: item.failureDetailEnvelope,
     };
 }
 
@@ -2360,6 +2653,8 @@ function assertAutomationRunOptionalContentNullnessPreserved(params: Readonly<{
 }>): void {
     for (const field of [
         "executionInputEnvelope",
+        "workflowAcceptedSnapshotEnvelope",
+        "workflowCheckpointEnvelope",
         "resultEnvelope",
         "replyContextEnvelope",
         "failureDetailEnvelope",
@@ -2441,8 +2736,10 @@ function assertAutomationRunStoredContentForAccountMode(params: Readonly<{
     content: AutomationAccountEncryptionMigrationRunStoredContent;
     allowLegacyResultSource?: boolean;
 }>): void {
+    const isWorkflowRun = params.row.workflowCustodyState !== null;
     if (
-        params.allowLegacyResultSource === true
+        !isWorkflowRun
+        && params.allowLegacyResultSource === true
         && params.row.errorMessage !== null
         && currentAutomationRunFailureDetailEnvelope(params.row) === null
         && parseAutomationRunExecutionRecipeV1(
@@ -2454,6 +2751,61 @@ function assertAutomationRunStoredContentForAccountMode(params: Readonly<{
         );
     }
     const cause = decodeAutomationRunCause(params.row);
+    if (cause === null) {
+        if (
+            !isWorkflowRun
+            || params.row.originKind !== "direct"
+            || params.content.executionInputEnvelope === null
+            || params.content.workflowAcceptedSnapshotEnvelope === null
+        ) {
+            throw new AutomationValidationError("Workflow Run has invalid origin correspondence");
+        }
+        const baseBinding = { v: 1 as const, accountId: params.row.accountId, runId: params.row.id };
+        assertWorkflowStoredEnvelopeOuterForMode({
+            raw: params.content.executionInputEnvelope,
+            mode: params.mode,
+            binding: { ...baseBinding, purpose: "accepted_snapshot" },
+        });
+        assertWorkflowStoredEnvelopeOuterForMode({
+            raw: params.content.workflowAcceptedSnapshotEnvelope,
+            mode: params.mode,
+            binding: { ...baseBinding, purpose: "accepted_snapshot" },
+        });
+        if (
+            params.content.executionInputEnvelope
+            !== params.content.workflowAcceptedSnapshotEnvelope
+        ) {
+            throw new AutomationValidationError(
+                "Direct Workflow Run must retain one accepted-snapshot envelope",
+            );
+        }
+        if (params.content.workflowCheckpointEnvelope !== null) {
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: params.content.workflowCheckpointEnvelope,
+                mode: params.mode,
+                binding: { ...baseBinding, purpose: "checkpoint" },
+            });
+        }
+        if (params.content.resultEnvelope !== null) {
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: params.content.resultEnvelope,
+                mode: params.mode,
+                binding: { ...baseBinding, purpose: "final_result" },
+            });
+        }
+        if (
+            params.content.triggerEvidenceEnvelope !== null
+            || params.content.occurrenceEvidenceEqualityTag !== null
+            || params.content.replyContextEnvelope !== null
+            || params.content.failureDetailEnvelope !== null
+            || params.row.summaryCiphertext !== null
+        ) {
+            throw new AutomationValidationError(
+                "Direct Workflow Run must not retain Automation-only private content",
+            );
+        }
+        return;
+    }
     const retainsPrivateOccurrenceEvidence = cause.kind === "conversation"
         || (cause.kind === "trigger" && cause.triggerKind === "pluginEvent");
     if (retainsPrivateOccurrenceEvidence) {
@@ -2527,6 +2879,70 @@ function assertAutomationRunStoredContentForAccountMode(params: Readonly<{
         );
     }
 
+    if (isWorkflowRun) {
+        if (
+            params.row.originKind !== "automation"
+            || params.content.executionInputEnvelope === null
+            || params.row.summaryCiphertext !== null
+        ) {
+            throw new AutomationValidationError(
+                "Automation Workflow Run has invalid retained private content",
+            );
+        }
+        const executionInput = validateAutomationStoredContentEnvelopeOuterForMode({
+            raw: params.content.executionInputEnvelope,
+            mode: params.mode,
+        });
+        if (executionInput.kind !== "available") {
+            throw new AutomationValidationError(
+                "Workflow definition envelope does not match the Account mode",
+            );
+        }
+        const baseBinding = {
+            v: 1 as const,
+            accountId: params.row.accountId,
+            runId: params.row.id,
+        };
+        if (params.content.workflowAcceptedSnapshotEnvelope !== null) {
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: params.content.workflowAcceptedSnapshotEnvelope,
+                mode: params.mode,
+                binding: { ...baseBinding, purpose: "accepted_snapshot" },
+            });
+        }
+        if (params.content.workflowCheckpointEnvelope !== null) {
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: params.content.workflowCheckpointEnvelope,
+                mode: params.mode,
+                binding: { ...baseBinding, purpose: "checkpoint" },
+            });
+        }
+        if (params.content.resultEnvelope !== null) {
+            assertWorkflowStoredEnvelopeOuterForMode({
+                raw: params.content.resultEnvelope,
+                mode: params.mode,
+                binding: { ...baseBinding, purpose: "final_result" },
+            });
+        }
+        assertAutomationReplyHandoffStoredEnvelopeForAccountMode({
+            content: "replyContext",
+            raw: params.content.replyContextEnvelope,
+            mode: params.mode,
+        });
+        const failureDetail = params.content.failureDetailEnvelope === null
+            ? null
+            : validateAutomationRunFailureDetailEnvelopeOuterForMode({
+                raw: params.content.failureDetailEnvelope,
+                mode: params.mode,
+            });
+        if (failureDetail !== null && failureDetail.kind !== "available") {
+            throw new AutomationValidationError(
+                "Run failure detail does not match the Account mode",
+            );
+        }
+        return;
+    }
+
     if (params.allowLegacyResultSource === true) {
         assertAutomationRunLegacySummarySource(params.row);
     }
@@ -2560,18 +2976,16 @@ function assertAutomationRunStoredContentForAccountMode(params: Readonly<{
         raw: params.content.replyContextEnvelope,
         mode: params.mode,
     });
-    try {
-        assertAutomationRunFailureDetailEnvelopeOuterForMode({
+    if (params.content.failureDetailEnvelope !== null) {
+        const failureDetail = validateAutomationRunFailureDetailEnvelopeOuterForMode({
             raw: params.content.failureDetailEnvelope,
             mode: params.mode,
         });
-    } catch (error) {
-        if (error instanceof AutomationStoredContentReadError) {
+        if (failureDetail.kind !== "available") {
             throw new AutomationValidationError(
                 "Run failure detail does not match the Account mode",
             );
         }
-        throw error;
     }
 }
 
@@ -3001,6 +3415,10 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
         if (runRows.length > 0) {
             for (const row of runRows) {
                 const item = runsById.get(row.id)!;
+                const targetContent = automationRunMigrationDirectiveTargetContent(
+                    row,
+                    item,
+                );
                 assertAutomationRunStoredContentForAccountMode({
                     row,
                     mode: sourceMode!,
@@ -3009,12 +3427,12 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
                 });
                 assertAutomationRunOptionalContentNullnessPreserved({
                     source: automationRunMigrationStoredContent(row),
-                    target: item,
+                    target: targetContent,
                 });
                 assertAutomationRunStoredContentForAccountMode({
                     row,
                     mode: params.toMode,
-                    content: item,
+                    content: targetContent,
                 });
             }
         }
@@ -3087,12 +3505,15 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
 
     for (const row of runRows) {
         const item = runsById.get(row.id)!;
+        const cause = decodeAutomationRunCause(row);
         const updated = await params.tx.automationRun.updateMany({
             where: {
                 id: row.id,
                 accountId: params.accountId,
                 revision: item.expectedRunRevision,
-                ...encodeAutomationRunCause(decodeAutomationRunCause(row)),
+                ...(cause === null
+                    ? { originKind: "direct", automationId: null, causeKind: null }
+                    : encodeAutomationRunCause(cause)),
             },
             data: {
                 triggerEvidenceEnvelope: item.triggerEvidenceEnvelope,
@@ -3124,17 +3545,21 @@ export async function migrateAutomationAccountEncryptionInTx(params: Readonly<{
         if (!run) {
             throw new AutomationAccountEncryptionMigrationConflictError();
         }
-        const cursor = await markAutomationChangedTx(params.tx, {
-            accountId: params.accountId,
-            automationId: row.automationId,
-        });
-        afterTx(params.tx, () => {
-            emitAutomationRunUpdated({
+        if (row.automationId !== null) {
+            const automationRun = projectAutomationOriginRun(run);
+            if (!automationRun) throw new AutomationAccountEncryptionMigrationConflictError();
+            const cursor = await markAutomationChangedTx(params.tx, {
                 accountId: params.accountId,
-                run: run as AutomationRunItem,
-                cursor,
+                automationId: row.automationId,
             });
-        });
+            afterTx(params.tx, () => {
+                emitAutomationRunUpdated({
+                    accountId: params.accountId,
+                    run: automationRun,
+                    cursor,
+                });
+            });
+        }
     }
 
     if (rows.some((automation) =>
@@ -3299,6 +3724,10 @@ export function automationRunCustodyTerminalWhere() {
     return {
         state: { in: [...AUTOMATION_RUN_TERMINAL_STATES] },
         replyHandoffState: { in: [...AUTOMATION_RUN_REPLY_HANDOFF_TERMINAL_STATES] },
+        AND: [{ OR: [
+            { workflowCustodyState: null },
+            { workflowCustodyState: "settled" as const },
+        ] }],
     };
 }
 
@@ -3817,7 +4246,7 @@ export async function createAutomation(params: {
     const triggerInputs: readonly AutomationTriggerCreateRequest[] =
         isAutomationCurrentUpsertInput(params.input)
             ? params.input.triggers
-            : [{
+            : params.input.schedule.kind === "manual" ? [] : [{
                 triggerId: AutomationTriggerIdSchema.parse(randomUUID()),
                 trigger: {
                     kind: "schedule",
@@ -4227,27 +4656,67 @@ export async function updateAutomation(params: {
             if (!isAutomationDefinitionRepresentableInV2(existing)) {
                 throw new AutomationTemplateMutationConflictError();
             }
-            const trigger = existing.triggers[0]!;
-            const fields = resolveScheduleDbFields(schedule);
-            scheduleChanged = !hasSameAutomationScheduleFields(trigger, fields);
-            const triggerUpdated = await tx.automationTrigger.updateMany({
-                where: {
-                    id: trigger.id,
-                    automationId: existing.id,
-                    revision: trigger.revision,
-                    deletedAt: null,
-                    kind: "schedule",
-                },
-                data: {
-                    ...fields,
-                    ...(scheduleChanged
-                        ? { nextRunAt: null, revision: { increment: 1 } }
-                        : {}),
-                    updatedAt: observationBoundaryNow,
-                },
-            });
-            if (triggerUpdated.count !== 1) {
-                throw new AutomationTemplateMutationConflictError();
+            const trigger = existing.triggers[0];
+            if (schedule.kind === "manual") {
+                if (trigger) {
+                    scheduleChanged = true;
+                    const triggerUpdated = await tx.automationTrigger.updateMany({
+                        where: {
+                            id: trigger.id,
+                            automationId: existing.id,
+                            revision: trigger.revision,
+                            deletedAt: null,
+                            kind: "schedule",
+                        },
+                        data: automationTriggerTombstoneUpdate(
+                            observationBoundaryNow,
+                            "schedule",
+                        ),
+                    });
+                    if (triggerUpdated.count !== 1) {
+                        throw new AutomationTemplateMutationConflictError();
+                    }
+                }
+            } else {
+                const fields = resolveScheduleDbFields(schedule);
+                scheduleChanged = !trigger || !hasSameAutomationScheduleFields(trigger, fields);
+                if (!trigger) {
+                    await tx.automationTrigger.create({
+                        data: {
+                            id: AutomationTriggerIdSchema.parse(randomUUID()),
+                            automationId: existing.id,
+                            revision: 0,
+                            kind: "schedule",
+                            enabled: true,
+                            deletedAt: null,
+                            ...AUTOMATION_TRIGGER_KIND_FIELDS_CLEARED,
+                            ...fields,
+                            nextRunAt: null,
+                            createdAt: observationBoundaryNow,
+                            updatedAt: observationBoundaryNow,
+                        },
+                    });
+                } else {
+                    const triggerUpdated = await tx.automationTrigger.updateMany({
+                        where: {
+                            id: trigger.id,
+                            automationId: existing.id,
+                            revision: trigger.revision,
+                            deletedAt: null,
+                            kind: "schedule",
+                        },
+                        data: {
+                            ...fields,
+                            ...(scheduleChanged
+                                ? { nextRunAt: null, revision: { increment: 1 } }
+                                : {}),
+                            updatedAt: observationBoundaryNow,
+                        },
+                    });
+                    if (triggerUpdated.count !== 1) {
+                        throw new AutomationTemplateMutationConflictError();
+                    }
+                }
             }
         }
 
@@ -5273,6 +5742,7 @@ export async function runAutomationNow(params: {
     automationId: string;
     idempotencyKey?: string;
     requireV2DefinitionRepresentability?: boolean;
+    recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }): Promise<AutomationRunItem | null> {
     const idempotencyKey = params.idempotencyKey?.trim();
     if (params.idempotencyKey !== undefined && !idempotencyKey) {
@@ -5302,6 +5772,7 @@ export async function runAutomationNow(params: {
                     ? { legacyV2ManualIdempotencyKey: idempotencyKey }
                     : { manualIdempotencyKey: idempotencyKey }
                 : {}),
+            ...(params.recipeFeaturePolicy ? { recipeFeaturePolicy: params.recipeFeaturePolicy } : {}),
         });
         if (admitted.kind === "ineligible") {
             if (admitted.reason === "automationNotFound") return null;
@@ -5353,6 +5824,8 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
         where: {
             accountId: params.accountId,
             automationId: params.automationId,
+            originKind: "automation",
+            causeKind: { not: null },
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take,
@@ -5385,7 +5858,18 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
         if (rows === null) return null;
         const hasNext = rows.length > normalizedLimit;
         const rawWindow = hasNext ? rows.slice(0, normalizedLimit) : rows;
-        const resultRows = rawWindow.filter(isAutomationRunV2HistoryRepresentable);
+        const resultRows: AutomationRunV2ListItem[] = [];
+        for (const run of rawWindow) {
+            const state = run.state;
+            if (!isAutomationCauseRow(run)) {
+                throw new Error("Stored Automation history Run has invalid origin correspondence");
+            }
+            if (!isAutomationRunState(state)) continue;
+            const automationRun = { ...run, state };
+            if (isAutomationRunV2HistoryRepresentable(automationRun)) {
+                resultRows.push(automationRun);
+            }
+        }
         const currentTriggerIds = new Set((await db.automationTrigger.findMany({
             where: {
                 id: { in: resultRows.flatMap((run) => run.triggerId ? [run.triggerId] : []) },
@@ -5415,6 +5899,8 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
         where: {
             accountId: params.accountId,
             automationId: params.automationId,
+            originKind: "automation",
+            causeKind: { not: null },
         },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: normalizedLimit + 1,
@@ -5427,8 +5913,17 @@ export async function listAutomationRuns(params: AutomationRunListParams | Autom
         select: automationRunV3ListItemSelect,
     });
     const hasNext = rows.length > normalizedLimit;
-    const resultRows = hasNext ? rows.slice(0, normalizedLimit) : rows;
-    const nextCursor = hasNext ? resultRows[resultRows.length - 1]?.id ?? null : null;
+    const rawResultRows = hasNext ? rows.slice(0, normalizedLimit) : rows;
+    const resultRows: AutomationRunV3ListItem[] = [];
+    for (const run of rawResultRows) {
+        const state = run.state;
+        if (!isAutomationCauseRow(run)) {
+            throw new Error("Stored Automation history Run has invalid origin correspondence");
+        }
+        if (!isAutomationRunState(state)) continue;
+        resultRows.push({ ...run, state });
+    }
+    const nextCursor = hasNext ? rawResultRows[rawResultRows.length - 1]?.id ?? null : null;
 
     const currentTriggerIds = new Set((await db.automationTrigger.findMany({
         where: {
@@ -5457,6 +5952,8 @@ export async function getAutomationRun(params: {
             id: params.runId,
             accountId: params.accountId,
             automationId: params.automationId,
+            originKind: "automation",
+            causeKind: { not: null },
         },
         select: automationRunDetailSelect,
     });

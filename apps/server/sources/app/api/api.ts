@@ -8,11 +8,13 @@ import { log, logger } from "@/utils/logging/log";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { onShutdown } from "@/utils/process/shutdown";
 import { Fastify } from "./types";
+import { registerEphemeralRunnerRoutes } from "@/app/ephemeralRunner/routes";
 import { authRoutes } from "./routes/auth/authRoutes";
 import { pushRoutes } from "./routes/push/pushRoutes";
 import { sessionRoutes } from "./routes/session/sessionRoutes";
 import { connectRoutes } from "./routes/connect/connectRoutes";
 import { accountRoutes } from "./routes/account/accountRoutes";
+import { homeGovernanceRoutes } from "./routes/home/homeGovernanceRoutes";
 import { changesRoutes } from "./routes/changes/changesRoutes";
 import { startSocket } from "./socket";
 import { machinesRoutes } from "./routes/machines/machinesRoutes";
@@ -48,10 +50,22 @@ import { registerPluginWebhookIngressRoute } from "./routes/plugins/webhooks/reg
 import { registerPluginWebhookEndpointRoutes } from "./routes/plugins/webhooks/registerPluginWebhookEndpointRoutes";
 import { emitPluginWebhookDeliveryCommittedWakeV1 } from "@/app/plugins/webhooks/wake";
 import { registerLocalServiceRoutes } from "./routes/local/services/registerRoutes";
-import { V2_SESSION_LIST_SERVER_TIMING_REQUEST_HEADER } from "./routes/session/v2SessionListServerTiming";
+import { V2_SESSION_LIST_SERVER_TIMING_REQUEST_HEADER } from "@/app/session/listing/timing";
 import { startAutomationReplyHandoffWorker } from "@/app/automations/automationReplyHandoffWorker";
 import { startAutomationScheduleWorker } from "@/app/automations/automationScheduleWorker";
 import { registerExternalActionRoutes } from "./routes/actions/registerExternalActionRoutes";
+import { registerExternalProviderApiRoutes } from "./routes/providers/registerExternalProviderApiRoutes";
+import { registerTeamInvitationRoutes } from "@/app/teams/invitations/registerTeamInvitationRoutes";
+import { registerTeamGroupRoutes } from "@/app/teams/groups/registerTeamGroupRoutes";
+import { registerTeamMemberRoutes } from "@/app/teams/memberships/registerTeamMemberRoutes";
+import { registerTeamDirectoryRoutes } from "@/app/teams/directory/registerTeamDirectoryRoutes";
+import { registerTeamRoutes } from "@/app/teams/registerTeamRoutes";
+import { registerManagedGitHubAppRoutes } from "@/app/integrations/github/githubManagedAppRoutes";
+import {
+    resolveJoinScreenHomeIdentity,
+    resolveTeamJoinLinkTarget,
+} from "@/app/teams/invitations/joinScreenHome";
+import { resolveAuthEmailDelivery } from "@/app/auth/email/resolveAuthEmailDelivery";
 import { startHomeSearchLifecycle, type HomeSearchLifecycle } from "@/app/search/homeSearchLifecycle";
 import { readCanonicalSessionMessagesPage } from "@/app/search/homeSearchCanonicalSessionMessages";
 import { registerHomeSearchRoutes } from "@/app/search/homeSearchRoutes";
@@ -59,12 +73,14 @@ import { resolveHomeSearchRuntimeConfig } from "@/app/search/homeSearchCapabilit
 import { resolveHomeSearchDbPath } from "@/app/search/homeSearchDb";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { db } from "@/storage/db";
-import { createV2SessionListVisibilityWhere } from "./routes/session/v2SessionListRows";
+import { inTx } from "@/storage/inTx";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import {
     SESSION_TRANSCRIPT_PUBLICATION_SELECT,
     resolveSessionTranscriptPublicationConstraints,
 } from '@/app/session/sessionTranscriptPublicationPolicy';
 import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
+import type { ResolveAuthEmailApplicationLinkTarget } from '@/app/auth/email/nativeAuthEmailOperations';
 import { readHomeConnectionDescriptor } from '@/app/features/homeConnectionDescriptorPublication';
 
 export function resolveApiListenHost(env: Record<string, string | undefined>): string {
@@ -117,7 +133,12 @@ export function enableContentTypeParsers(app: Pick<FastifyInstance, 'addContentT
 export function registerApiRoutes(typed: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => ReturnType<HomeSearchLifecycle['capability']> | undefined;
     homeConnectionDescriptorContinuityStore?: HomeConnectionDescriptorContinuityStore | null;
+    authEmailDelivery?: ReturnType<typeof resolveAuthEmailDelivery>;
+    resolveAuthEmailApplicationLinkTarget?: ResolveAuthEmailApplicationLinkTarget;
 }> = {}): void {
+    const authEmail = {
+        delivery: params.authEmailDelivery ?? resolveAuthEmailDelivery(process.env),
+    };
     const hasLifecycleSelectedDescriptorOwner = Object.prototype.hasOwnProperty.call(
         params,
         'homeConnectionDescriptorContinuityStore',
@@ -133,12 +154,22 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
             });
         }
         : undefined;
+    const resolveAuthEmailApplicationLinkTarget = params.resolveAuthEmailApplicationLinkTarget
+        ?? (async () => resolveTeamJoinLinkTarget(
+            process.env,
+            params.homeConnectionDescriptorContinuityStore,
+        ));
     authRoutes(typed, {
         ...(resolveHomeConnectionDescriptor ? { resolveHomeConnectionDescriptor } : {}),
+        isEmailDeliveryReady: () => authEmail.delivery.isReady,
+        authEmailDelivery: authEmail.delivery,
+        resolveApplicationLinkTarget: resolveAuthEmailApplicationLinkTarget,
     });
     pushRoutes(typed);
     sessionRoutes(typed);
+    registerEphemeralRunnerRoutes(typed);
     accountRoutes(typed);
+    homeGovernanceRoutes(typed);
     changesRoutes(typed);
     connectRoutes(typed);
     machinesRoutes(typed);
@@ -173,7 +204,42 @@ export function registerApiRoutes(typed: Fastify, params: Readonly<{
         onCommittedWake: emitPluginWebhookDeliveryCommittedWakeV1,
     });
     registerExternalActionRoutes(typed);
+    registerExternalProviderApiRoutes(typed);
     registerReviewCommentRoutes(typed);
+    // Team lifecycle, policy, and branding. These need no composed dependency:
+    // the domain owns its own authorization, transaction, and media boundary, and
+    // the single `teams` feature gate is applied inside the route module.
+    // The member sign-in link on Team Authentication is rendered from the same
+    // Home application origin and portable carrier the invitation link uses, so
+    // both links address the identical Home.
+    registerTeamRoutes(typed, process.env, {
+        resolveMemberSignInLinkTarget: async () => resolveTeamJoinLinkTarget(
+            process.env,
+            params.homeConnectionDescriptorContinuityStore,
+        ),
+    });
+    registerManagedGitHubAppRoutes(typed);
+    // Team membership and flat Groups. Like Team lifecycle they compose nothing
+    // external: the membership owner holds the capability, owner-invariant, and
+    // history decisions, and the Group owner holds the contribution union.
+    registerTeamMemberRoutes(typed);
+    registerTeamGroupRoutes(typed);
+    registerTeamDirectoryRoutes(typed);
+    // Team invitations compose owners that already exist: the Home identity and
+    // storage disclosure, the configured application origin, the Account/email
+    // lane's verified-mailbox fact, and the transactional mail boundary. This
+    // route family owns none of them.
+    registerTeamInvitationRoutes(typed, {
+        resolveJoinLinkTarget: async () => resolveTeamJoinLinkTarget(
+            process.env,
+            params.homeConnectionDescriptorContinuityStore,
+        ),
+        resolveJoinScreenHomeIdentity: async () => resolveJoinScreenHomeIdentity(process.env),
+        email: {
+            delivery: authEmail.delivery,
+            isDeliveryReady: () => authEmail.delivery.isReady,
+        },
+    });
 }
 
 export async function startApi(params: Readonly<{
@@ -230,10 +296,19 @@ export async function startApi(params: Readonly<{
     if (homeSearch) {
         registerHomeSearchRoutes(typed, {
             service: homeSearch,
-            resolveVisibleSessions: async (userId) => resolveSessionTranscriptPublicationConstraints(
-                await db.session.findMany({
-                    where: createV2SessionListVisibilityWhere({ userId }),
-                    select: { id: true, ...SESSION_TRANSCRIPT_PUBLICATION_SELECT },
+            resolveVisibleSessions: async (userId, authentication) => resolveSessionTranscriptPublicationConstraints(
+                await inTx(async (tx) => {
+                    const accessWhere = await buildSessionAccessWhere({
+                        tx,
+                        accountId: userId,
+                        capability: 'readTranscript',
+                        mode: 'effective_access_v1',
+                        authentication,
+                    });
+                    return await tx.session.findMany({
+                        where: accessWhere,
+                        select: { id: true, ...SESSION_TRANSCRIPT_PUBLICATION_SELECT },
+                    });
                 }),
             ),
         });

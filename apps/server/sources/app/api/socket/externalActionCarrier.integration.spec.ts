@@ -27,7 +27,11 @@ import {
     EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
     EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES,
     EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
-    ExternalActionDaemonDispatchRequestV1Schema,
+    ExternalActionDaemonDispatchRequestSchema,
+    openExternalActionRequestV2,
+    openExternalActionResponseV2,
+    sealExternalActionRequestV2,
+    prepareExternalActionResponseV2,
     measureExternalActionResponseEnvelopeUtf8BytesV1,
     prepareExternalActionResponseEnvelopeV1,
 } from "@happier-dev/protocol/actions";
@@ -108,10 +112,13 @@ function createExactLimitMultibyteResponseResult(): string {
 
 function summarizeRelayedRequest(rawRequest: unknown): Readonly<{
     summary: RelayedRequestSummary;
-    dispatch: ReturnType<typeof ExternalActionDaemonDispatchRequestV1Schema.parse>;
+    dispatch: ReturnType<typeof ExternalActionDaemonDispatchRequestSchema.parse>;
 }> {
     const request = rawRequest as SocketRpcRequestPayload;
-    const dispatch = ExternalActionDaemonDispatchRequestV1Schema.parse(request.params);
+    const dispatch = ExternalActionDaemonDispatchRequestSchema.parse(request.params);
+    if (dispatch.envelope.v !== 1) {
+        throw new TypeError("Expected the V1 carrier branch");
+    }
     const input = dispatch.envelope.input;
     const blob = (
         typeof input === "object"
@@ -157,7 +164,7 @@ describe("external Action server-to-daemon request carrier", () => {
 
     it("keeps exact/+1 multibyte request and response boundaries usable through the real daemon socket", async () => {
         expect(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES).toBe(expectedHttpBodyLimitBytes);
-        expect(DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE).toBe(expectedRequestCarrierLimitBytes);
+        expect(DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE).toBeGreaterThanOrEqual(expectedRequestCarrierLimitBytes);
         expect(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES).toBe(24_000_000);
         expect(EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES)
             .toBe(expectedResponseCarrierLimitBytes);
@@ -177,6 +184,10 @@ describe("external Action server-to-daemon request carrier", () => {
                 daemonState: null,
                 daemonStateVersion: 0,
                 active: true,
+                operationProtocolCapabilities: {
+                    externalActionExecutionAuthorization: { protocolVersions: [1] },
+                },
+                operationProtocolCapabilitiesRevision: 1,
             },
             select: { id: true },
         });
@@ -190,9 +201,15 @@ describe("external Action server-to-daemon request carrier", () => {
         const method = machineId + ":" + EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1;
         const relayedRequests: RelayedRequestSummary[] = [];
         let responseResult: unknown = { accepted: true };
+        const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(9) };
+        const privateBinding = { serverIdentityId: 'srv_carrier', accountId: account.id,
+            credentialId: '00000000-0000-4000-8000-000000000001', actionId: 'session.spawn_new',
+            requestId: 'carrier-response-boundary', target: { kind: 'machine' as const, machineId } };
+        let privateRequestBytes = 0;
         const daemonReady = new Promise<void>((resolve) => {
             io.on("connection", async (serverSocket) => {
                 serverSocket.data.clientType = "machine-scoped";
+                serverSocket.data.userId = account.id;
                 serverSocket.data.machineId = machineId;
                 serverSocket.data.verifiedMachineInstallationId = "installation-external-action-carrier";
                 await serverSocket.join(buildRpcMethodRoom({
@@ -220,6 +237,17 @@ describe("external Action server-to-daemon request carrier", () => {
             autoConnect: false,
         });
         daemonSocket.on(SOCKET_RPC_EVENTS.REQUEST, (request: unknown, acknowledge: (response: unknown) => void) => {
+            const dispatch = ExternalActionDaemonDispatchRequestSchema.parse((request as SocketRpcRequestPayload).params);
+            if (dispatch.envelope.v === 2) {
+                privateRequestBytes = Buffer.byteLength(JSON.stringify(request), 'utf8');
+                const opened = openExternalActionRequestV2({ envelope: dispatch.envelope, binding: privateBinding, material });
+                expect(opened).not.toBeNull();
+                const prepared = prepareExternalActionResponseV2({ binding: privateBinding, request: dispatch.envelope,
+                    executedMachineId: machineId, execution: { ok: true, result: responseResult }, material,
+                    randomBytes: (length) => new Uint8Array(length).fill(3) });
+                acknowledge({ kind: 'response', body: new TextEncoder().encode(prepared.body) });
+                return;
+            }
             const relayed = summarizeRelayedRequest(request);
             relayedRequests.push(relayed.summary);
             const response = {
@@ -394,6 +422,22 @@ describe("external Action server-to-daemon request carrier", () => {
             expect(protocolSerializerSpy).not.toHaveBeenCalled();
             expect(protocolPrepareSpy).toHaveBeenCalledTimes(1);
             expect(relayedRequests).toHaveLength(6);
+            expect(daemonSocket.connected).toBe(true);
+
+            // The real socket must carry base64-expanded V2 bodies above V1's wire ceiling.
+            const privateInput = { blob: 'x'.repeat(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES - 1024) };
+            const privateRequest = sealExternalActionRequestV2({ binding: privateBinding, input: privateInput,
+                material, randomBytes: (length) => new Uint8Array(length).fill(2) });
+            responseResult = exactResponseResult;
+            const privateResponse = await app.inject({ ...responseBoundaryRequest,
+                headers: { ...responseBoundaryRequest.headers, 'x-test-api-token-credential-id': privateBinding.credentialId },
+                payload: privateRequest });
+            expect(privateResponse.statusCode).toBe(200);
+            expect(privateRequestBytes).toBeGreaterThan(expectedRequestCarrierLimitBytes);
+            expect(privateRequestBytes).toBeLessThanOrEqual(DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE);
+            expect(Buffer.byteLength(privateResponse.body, 'utf8')).toBeGreaterThan(expectedResponseCarrierLimitBytes);
+            expect(openExternalActionResponseV2({ envelope: privateResponse.json(), binding: privateBinding,
+                request: privateRequest, material })).toEqual({ ok: true, result: exactResponseResult });
             expect(daemonSocket.connected).toBe(true);
         } finally {
             daemonSocket.close();

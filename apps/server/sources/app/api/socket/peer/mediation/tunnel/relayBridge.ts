@@ -5,7 +5,7 @@ import { PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, type PeerTcpTunnelRelayEnvelope } f
 import type {
     PeerTcpTunnelRelayTransport,
     PeerTcpTunnelRelayTransportFactory,
-} from "@/app/local/services/preview/tunnel";
+} from "@/app/machines/peer/mediation/tunnel/peerRelayStreamTransport";
 
 type RelayBridgeIoTarget = Readonly<{
     emit(event: string, payload: unknown): unknown;

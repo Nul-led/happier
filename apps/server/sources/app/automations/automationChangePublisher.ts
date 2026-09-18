@@ -154,9 +154,25 @@ export function emitAutomationRunTransition(params: {
 export function emitAutomationRunUpdatedToMachineOnly(params: {
     accountId: string;
     machineId: string;
-    run: AutomationRunItem | AutomationRunWithAutomation;
+    run: Readonly<{
+        id: string;
+        automationId: string | null;
+        state: AutomationRunState | "pause_requested" | "paused" | "interrupted";
+        scheduledAt: Date;
+        startedAt: Date | null;
+        finishedAt: Date | null;
+        updatedAt: Date;
+        claimedByMachineId: string | null;
+        attempt: number;
+    }>;
     cursor: number;
+    workflowControl?: "cancel_requested";
 }): void {
+    const projectedState: AutomationRunState = params.run.state === "pause_requested"
+        || params.run.state === "paused"
+        || params.run.state === "interrupted"
+        ? "running"
+        : params.run.state;
     eventRouter.emitUpdate({
         userId: params.accountId,
         payload: {
@@ -166,7 +182,7 @@ export function emitAutomationRunUpdatedToMachineOnly(params: {
                 t: "automation-run-updated",
                 runId: params.run.id,
                 automationId: params.run.automationId,
-                state: params.run.state,
+                state: projectedState,
                 scheduledAt: params.run.scheduledAt.getTime(),
                 startedAt: params.run.startedAt ? params.run.startedAt.getTime() : null,
                 finishedAt: params.run.finishedAt ? params.run.finishedAt.getTime() : null,
@@ -174,6 +190,7 @@ export function emitAutomationRunUpdatedToMachineOnly(params: {
                 machineId: params.run.claimedByMachineId,
                 attempt: params.run.attempt,
                 targetMachineId: params.machineId,
+                ...(params.workflowControl ? { workflowControl: params.workflowControl } : {}),
             },
             createdAt: Date.now(),
         },

@@ -22,6 +22,8 @@ import { fetchAutomationAccountCurrentnessWitnessTx } from "@/app/automations/au
 import { automationRunCauseSelect } from "@/app/automations/automationPersistenceSelect";
 import {
     decodeAutomationRunCause,
+    isAutomationCauseRow,
+    type AutomationCauseRow,
     type CauseRow,
 } from "@/app/automations/automationRunCauseCodec";
 import { retainAutomationRunProducedSession } from "@/app/automations/automationRunService";
@@ -294,7 +296,7 @@ export function createSessionServerStartDaemonDispatcher(params: Readonly<{
 
 /** The ingress Run read: the complete immutable cause plus its claim facts. */
 type SessionServerStartIngressRun = CauseRow & Readonly<{
-    automationId: string;
+    automationId: string | null;
     state: string;
     claimedByMachineId: string | null;
     attempt: number;
@@ -354,6 +356,7 @@ export function deriveSessionServerStartDispatchFromIngress(params: Readonly<{
     const run = params.run;
     if (
         run === null
+        || !isAutomationCauseRow(run)
         || run.state !== "running"
         || run.claimedByMachineId !== params.sourceMachineId
         || run.attempt !== request.data.attempt
@@ -369,7 +372,8 @@ export function deriveSessionServerStartDispatchFromIngress(params: Readonly<{
     });
     if (outer.kind !== "available" || outer.recipe.target.kind !== "newSession") return null;
 
-    const cause = decodeAutomationRunCause(run);
+    const automationCauseRow: AutomationCauseRow = run;
+    const cause = decodeAutomationRunCause(automationCauseRow);
     const targetMachine = params.targetMachine;
     const installationId = targetMachine?.installationId?.trim() ?? "";
     if (

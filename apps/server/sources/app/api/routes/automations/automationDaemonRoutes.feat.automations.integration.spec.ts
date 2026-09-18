@@ -14,6 +14,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
 import { db } from "@/storage/db";
+import {
+    automationAccountCurrentnessSelect,
+    deriveAutomationAccountCurrentnessWitness,
+} from "@/app/automations/automationAccountCurrentness";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import {
     createSignedPluginInstallationPublisherHeader,
@@ -1190,6 +1194,118 @@ describe("automation daemon routes (integration)", () => {
         );
     });
 
+    it("rejects generic V3 start, succeed, and fail mutations for Workflow-custody Runs", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = "machine-v3-workflow-custody";
+        const installationId = "installation-v3-workflow-custody";
+        const keyPair = tweetnacl.sign.keyPair();
+        await createTrustedMachineInstallation({
+            accountId: account.id,
+            machineId,
+            installationId,
+            keyPair,
+        });
+        const triggerId = "trigger-v3-workflow-custody";
+        const automation = await db.automation.create({
+            data: {
+                accountId: account.id,
+                name: "Workflow custody lifecycle rejection",
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: buildStrictV3Recipe(1),
+                templateVersion: 1,
+                triggers: { create: scheduleTriggerCreate(triggerId) },
+                assignments: { create: { machineId, enabled: true, priority: 0 } },
+            },
+            select: { id: true },
+        });
+        const accountRow = await db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: automationAccountCurrentnessSelect,
+        });
+        const accountCurrentness = deriveAutomationAccountCurrentnessWitness(accountRow);
+        if (!accountCurrentness) throw new Error("Expected current plain Account witness");
+        const now = Date.now();
+        const createWorkflowRun = async (state: "claimed" | "running", offsetMs: number) => {
+            const scheduledFor = new Date(now - 60_000 - offsetMs);
+            return await db.automationRun.create({
+                data: {
+                    automationId: automation.id,
+                    accountId: account.id,
+                    ...scheduleRunCause({ triggerId, scheduledFor }),
+                    state,
+                    scheduledAt: scheduledFor,
+                    dueAt: scheduledFor,
+                    claimedAt: new Date(now - 20_000),
+                    ...(state === "running" ? { startedAt: new Date(now - 10_000) } : {}),
+                    claimedByMachineId: machineId,
+                    leaseExpiresAt: new Date(now + 60_000),
+                    attempt: 1,
+                    executionInputEnvelope: buildStrictV3RunRecipe(1, machineId),
+                    workflowAcceptedSnapshotEnvelope: "{}",
+                    workflowCustodyState: "pending",
+                    assignments: { create: { machineId, priority: 0 } },
+                },
+                select: { id: true },
+            });
+        };
+        const [startRun, succeedRun, failRun] = await Promise.all([
+            createWorkflowRun("claimed", 1),
+            createWorkflowRun("running", 2),
+            createWorkflowRun("running", 3),
+        ]);
+        const mutations = [
+            {
+                runId: startRun.id,
+                operation: "start",
+                body: { machineId, attempt: 1, accountCurrentness },
+            },
+            {
+                runId: succeedRun.id,
+                operation: "succeed",
+                body: { machineId, attempt: 1, accountCurrentness },
+            },
+            {
+                runId: failRun.id,
+                operation: "fail",
+                body: { machineId, attempt: 1, accountCurrentness, errorCode: "must-not-terminalize" },
+            },
+        ] as const;
+
+        await withAuthenticatedTestApp(
+            (app) => automationRoutes(app as any),
+            async (app) => {
+                for (const mutation of mutations) {
+                    const path = `/v3/automations/runs/${mutation.runId}/${mutation.operation}`;
+                    const before = await snapshotAutomationPersistence(account.id);
+                    const response = await app.inject({
+                        method: "POST",
+                        url: path,
+                        headers: {
+                            "content-type": "application/json",
+                            "x-test-user-id": account.id,
+                            [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]:
+                                createSignedPluginInstallationPublisherHeader({
+                                    keyPair,
+                                    machineId,
+                                    installationId,
+                                    path,
+                                    body: mutation.body,
+                                    nonce: `workflow-custody-${mutation.operation}`,
+                                }),
+                        },
+                        payload: mutation.body,
+                    });
+                    expect(response.statusCode, `${mutation.operation}: ${response.body}`).toBe(404);
+                    expect(await snapshotAutomationPersistence(account.id)).toEqual(before);
+                }
+            },
+        );
+    });
+
     it("retains the committed predecessor V2 Session through input failure and refuses uncertain running cancellation", async () => {
         const account = await db.account.create({
             data: { encryptionMode: "plain" },
@@ -1637,6 +1753,181 @@ describe("automation daemon routes (integration)", () => {
         );
     });
 
+    it("round-trips the released V2 manual Automation shape through CRUD without inventing a trigger", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = "machine-v2-manual-crud";
+        await db.machine.create({
+            data: {
+                id: machineId,
+                accountId: account.id,
+                metadata: "{}",
+            },
+        });
+        const headers = {
+            "content-type": "application/json",
+            "x-test-user-id": account.id,
+        };
+        const manualSchedule = {
+            kind: "manual",
+            scheduleExpr: null,
+            everyMs: null,
+            timezone: null,
+        };
+
+        await withAuthenticatedTestApp(
+            (app) => automationRoutes(app as any),
+            async (app) => {
+                const created = await app.inject({
+                    method: "POST",
+                    url: "/v2/automations",
+                    headers,
+                    payload: {
+                        name: "Released V2 manual Automation",
+                        enabled: true,
+                        schedule: { kind: "manual" },
+                        targetType: "new_session",
+                        templateCiphertext: buildPlainTemplateEnvelope(),
+                        assignments: [{ machineId, enabled: true, priority: 0 }],
+                    },
+                });
+                expect(created.statusCode, created.body).toBe(200);
+                const createdBody = created.json() as { id: string; schedule: unknown };
+                expect(createdBody.schedule).toEqual(manualSchedule);
+
+                const persisted = await db.automation.findUnique({
+                    where: { id: createdBody.id },
+                    include: { triggers: true },
+                });
+                expect(persisted?.triggers).toEqual([]);
+
+                const listed = await app.inject({
+                    method: "GET",
+                    url: "/v2/automations",
+                    headers: { "x-test-user-id": account.id },
+                });
+                expect(listed.statusCode, listed.body).toBe(200);
+                expect(listed.json()).toEqual([
+                    expect.objectContaining({ id: createdBody.id, schedule: manualSchedule }),
+                ]);
+
+                const fetched = await app.inject({
+                    method: "GET",
+                    url: `/v2/automations/${createdBody.id}`,
+                    headers: { "x-test-user-id": account.id },
+                });
+                expect(fetched.statusCode, fetched.body).toBe(200);
+                expect(fetched.json()).toEqual(
+                    expect.objectContaining({ id: createdBody.id, schedule: manualSchedule }),
+                );
+
+                const updated = await app.inject({
+                    method: "PATCH",
+                    url: `/v2/automations/${createdBody.id}`,
+                    headers,
+                    payload: {
+                        name: "Updated V2 manual Automation",
+                        schedule: { kind: "manual" },
+                    },
+                });
+                expect(updated.statusCode, updated.body).toBe(200);
+                expect(updated.json()).toEqual(expect.objectContaining({
+                    id: createdBody.id,
+                    name: "Updated V2 manual Automation",
+                    schedule: manualSchedule,
+                }));
+                expect(await db.automationTrigger.count({
+                    where: { automationId: createdBody.id },
+                })).toBe(0);
+
+                const deleted = await app.inject({
+                    method: "DELETE",
+                    url: `/v2/automations/${createdBody.id}`,
+                    headers: { "x-test-user-id": account.id },
+                });
+                expect(deleted.statusCode, deleted.body).toBe(200);
+                expect(deleted.json()).toEqual({ ok: true });
+
+                const afterDelete = await app.inject({
+                    method: "GET",
+                    url: `/v2/automations/${createdBody.id}`,
+                    headers: { "x-test-user-id": account.id },
+                });
+                expect(afterDelete.statusCode, afterDelete.body).toBe(404);
+            },
+        );
+    });
+
+    it("projects a released V2 manual Run through daemon assignments without inventing a trigger", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = "machine-v2-manual-assignment";
+        await db.machine.create({
+            data: {
+                id: machineId,
+                accountId: account.id,
+                metadata: "{}",
+            },
+        });
+        const automation = await db.automation.create({
+            data: {
+                accountId: account.id,
+                name: "Released V2 manual Automation",
+                enabled: true,
+                targetType: "new_session",
+                templateCiphertext: buildPlainTemplateEnvelope(),
+                templateVersion: 1,
+                assignments: {
+                    create: { machineId, enabled: true, priority: 0 },
+                },
+            },
+            select: { id: true },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => automationRoutes(app as any),
+            async (app) => {
+                const runNow = await app.inject({
+                    method: "POST",
+                    url: `/v2/automations/${automation.id}/run-now`,
+                    headers: {
+                        "x-test-user-id": account.id,
+                        "x-happier-account-stored-content-protocol": "2",
+                    },
+                });
+                expect(runNow.statusCode, runNow.body).toBe(200);
+
+                const assignments = await app.inject({
+                    method: "GET",
+                    url: `/v2/automations/daemon/assignments?machineId=${machineId}`,
+                    headers: { "x-test-user-id": account.id },
+                });
+                expect(assignments.statusCode, assignments.body).toBe(200);
+                expect(assignments.json()).toEqual({
+                    assignments: [
+                        expect.objectContaining({
+                            machineId,
+                            automation: expect.objectContaining({
+                                id: automation.id,
+                                schedule: {
+                                    kind: "manual",
+                                    scheduleExpr: null,
+                                    everyMs: null,
+                                    timezone: null,
+                                },
+                                nextRunAt: expect.any(Number),
+                            }),
+                        }),
+                    ],
+                });
+            },
+        );
+    });
+
     it("keeps non-schedule definitions and non-V2 Run causes out of V2 mutations while V3 Run Now accepts zero triggers", async () => {
         const account = await db.account.create({
             data: { publicKey: null, encryptionMode: "plain" },
@@ -1814,8 +2105,11 @@ describe("automation daemon routes (integration)", () => {
                         name: "V3 zero-trigger Run Now control",
                         enabled: true,
                         targetType: "new_session",
-                        templateCiphertext: buildPlainTemplateEnvelope(),
+                        templateCiphertext: buildStrictV3Recipe(1),
                         templateVersion: 1,
+                        assignments: {
+                            create: { machineId, enabled: true, priority: 0 },
+                        },
                     },
                     select: { id: true },
                 });
@@ -1828,7 +2122,7 @@ describe("automation daemon routes (integration)", () => {
                         "x-happier-account-stored-content-protocol": "2",
                     },
                 });
-                expect(v3RunNow.statusCode).toBe(200);
+                expect(v3RunNow.statusCode, v3RunNow.body).toBe(200);
                 expect(v3RunNow.json()).toEqual(expect.objectContaining({
                     run: expect.objectContaining({
                         automationId: zeroTriggerAutomation.id,
@@ -1851,16 +2145,9 @@ describe("automation daemon routes (integration)", () => {
                     state: "queued",
                     executionInputEnvelope: expect.any(String),
                 });
-                expect(JSON.parse(v3Run?.executionInputEnvelope ?? "")).toEqual({
-                    kind: "happier_automation_run_execution_input_v1",
-                    targetType: "new_session",
-                    templateVersion: 1,
-                    templateCiphertext: buildPlainTemplateEnvelope(),
-                    origin: {
-                        kind: "manual",
-                        invokedAt: expect.any(Number),
-                    },
-                });
+                expect(JSON.parse(v3Run?.executionInputEnvelope ?? "")).toEqual(
+                    JSON.parse(buildStrictV3RunRecipe(1, machineId)),
+                );
             },
         );
     });

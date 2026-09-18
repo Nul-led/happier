@@ -7,14 +7,24 @@ import {
     RPC_ERROR_MESSAGES,
     RPC_METHODS,
     SESSION_RPC_METHODS,
+    SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS,
     parseSocketRpcAuthorizationContext,
-    resolveSocketRpcSessionWriteAuthorizationMethod,
+    isSocketRpcSessionAuthorizationNamespace,
+    resolveSocketRpcSessionAuthorization,
     type SocketRpcAuthorizationContext,
+    type SocketRpcCurrentSessionPresentationOriginAuthorizationContext,
 } from "@happier-dev/protocol/rpc";
 import {
     AUTOMATION_REPLY_HANDOFF_DAEMON_RPC_METHOD_V1,
+    CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD,
+    CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD,
+    ExternalActionMachineRpcExecutionV1Schema,
     SESSION_SERVER_START_DAEMON_RPC_METHOD_V1,
+    SessionFollowSourceKeyPrepareAuthorizationV1Schema,
+    resolveEphemeralRunnerMachineRpcAuthority,
+    type EphemeralRunnerMachineRpcAuthority,
 } from "@happier-dev/protocol";
+import { VerifiedEphemeralSessionRunnerPrincipalSchema } from "@happier-dev/protocol/ephemeralRunner/principal";
 import {
     SOCKET_RPC_EVENTS,
     SocketRpcCancellationPayloadSchema,
@@ -23,7 +33,9 @@ import {
 
 import { observeRpcCall, recordRpcCallFailure, recordRpcRegistration, recordRpcUnregistration } from "@/app/monitoring/metrics/index";
 import { readMachineAvailabilityState } from "@/app/machines/machineStateGuards";
-import { checkSessionAccess, requireAccessLevel } from "@/app/share/accessControl";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromSocket } from "@/app/session/access/sessionAccessAuthentication";
+import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 import type {
     CaptureExplicitMachineStopResult,
@@ -31,14 +43,26 @@ import type {
 } from "@/app/presence/sessionPublisherPresence";
 import { readSessionPublisherAuthorityProjection } from "@/app/presence/sessionPublisherPresence";
 import { publishSessionPublisherClose } from "@/app/presence/publishSessionPublisherClose";
+import {
+    authorizeSessionFollowSourceKeyPreparation,
+    authorizeSessionFollowSourceKeyPreparer,
+} from "@/app/session/follow/sessionFollowEdgeService";
+import { verifyExternalActionMachineRpcExecution } from "@/app/auth/externalActionExecutionAuthorization";
+import {
+    readMaterializedRunnerMachineRoutingBinding,
+    verifyCurrentMaterializedRunnerPrincipal,
+} from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
 
 import { canCallSessionScopedRpcMethod, canRegisterSessionScopedRpcMethod } from "../sessionScopedBinding";
+import {
+    canEphemeralRunnerMachineRegisterRpcMethod,
+    type EphemeralRunnerSocketAdmission,
+} from "../ephemeralRunnerSocketAdmission";
 import { readVerifiedMachineSocketInstallationIdFromSocketData } from "../machineSocketInstallationProof";
 import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from "../externalActionDispatcher";
 import { forwardRpcCall } from "./forwardRpcCall";
 import type { RpcForwardTargetGuard } from "./_types";
 import { buildRpcMethodRoom } from "./rpcMethodRoom";
-import { resolveRpcCallTarget } from "./resolveRpcCallTarget";
 
 const MAX_RPC_METHOD_NAME_LENGTH = 512;
 const RPC_REGISTERED_METHODS_SOCKET_DATA_KEY = "rpcRegisteredMethods";
@@ -180,6 +204,77 @@ function createSessionModelTransitionTargetGuard(params: Readonly<{
     };
 }
 
+function createSessionAccessTargetGuard(params: Readonly<{
+    accountId: string;
+    sessionId: string;
+    authentication: ReturnType<typeof readSessionAccessAuthenticationFromSocket>;
+    authority: NonNullable<ReturnType<typeof resolveSocketRpcSessionAuthorization>>["authority"];
+}>): RpcForwardTargetGuard {
+    return {
+        filterTargets: async (targets) => targets,
+        runOperation: async ({ operation }) => {
+            const decision = await resolveSessionAccessForOperation(db, {
+                accountId: params.accountId,
+                sessionId: params.sessionId,
+                authentication: params.authentication,
+                ...(params.authority === "sessionOwner"
+                    ? {}
+                    : { capability: params.authority }),
+            });
+            const admitted = decision.status === "allowed"
+                && (params.authority === "sessionOwner"
+                    ? decision.access.level === "owner"
+                    : decision.access.capabilities[params.authority]);
+            return admitted
+                ? { status: "current", value: await operation() }
+                : { status: "unavailable" };
+        },
+    };
+}
+
+function composeRpcForwardTargetGuards(
+    guards: readonly (RpcForwardTargetGuard | null)[],
+): RpcForwardTargetGuard | null {
+    const activeGuards = guards.filter((guard): guard is RpcForwardTargetGuard => guard !== null);
+    if (activeGuards.length === 0) return null;
+    return {
+        filterTargets: async (targets) => {
+            let filteredTargets = targets;
+            for (const guard of activeGuards) {
+                filteredTargets = await guard.filterTargets(filteredTargets);
+            }
+            return filteredTargets;
+        },
+        runOperation: async ({ target, operation, readLatestTarget }) => {
+            const runGuard = async (index: number): ReturnType<RpcForwardTargetGuard["runOperation"]> => {
+                const guard = activeGuards[index];
+                if (!guard) return { status: "current", value: await operation() };
+                return await guard.runOperation({
+                    target,
+                    readLatestTarget,
+                    operation: async () => {
+                        const nested = await runGuard(index + 1);
+                        if (nested.status === "unavailable") {
+                            throw new RpcForwardGuardUnavailableError();
+                        }
+                        return nested.value;
+                    },
+                });
+            };
+            try {
+                return await runGuard(0);
+            } catch (error) {
+                if (error instanceof RpcForwardGuardUnavailableError) {
+                    return { status: "unavailable" };
+                }
+                throw error;
+            }
+        },
+    };
+}
+
+class RpcForwardGuardUnavailableError extends Error {}
+
 function buildMachineScopedSocketRoom(params: Readonly<{
     userId: string;
     machineId: string;
@@ -219,6 +314,13 @@ function readMachineIdPrefix(method: string): string | null {
     if (separatorIndex <= 0) return null;
     const prefix = method.slice(0, separatorIndex).trim();
     return prefix || null;
+}
+
+function readSessionFollowSourceKeyPreparationMachineId(method: string): string | null {
+    const suffix = `:${RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE}`;
+    if (!method.endsWith(suffix)) return null;
+    const machineId = method.slice(0, -suffix.length).trim();
+    return machineId || null;
 }
 
 const RESERVED_SERVER_ORIGIN_DAEMON_RPC_METHODS = new Set<string>([
@@ -292,6 +394,110 @@ function createExplicitMachineStopTargetGuard(
             if (!latestTarget || !matchesRequestMachine(latestTarget)) {
                 return { status: "unavailable" };
             }
+            return { status: "current", value: await operation() };
+        },
+    };
+}
+
+function readMachineRuntimeRunnerPrincipal(target: SocketDataCarrier) {
+    const data = readSocketData(target);
+    const admission = data.ephemeralRunnerAdmission;
+    if (!admission || typeof admission !== "object" || Array.isArray(admission)) return null;
+    if ((admission as { kind?: unknown }).kind !== "machine-runtime") return null;
+    const parsed = VerifiedEphemeralSessionRunnerPrincipalSchema.safeParse(
+        (admission as { principal?: unknown }).principal,
+    );
+    return parsed.success ? parsed.data : null;
+}
+
+function readEphemeralRunnerMachineRpcRequest(method: string): Readonly<{
+    machineId: string;
+    authority: Exclude<EphemeralRunnerMachineRpcAuthority, "followSourceKeyPreparation">;
+}> | null {
+    const separatorIndex = method.indexOf(":");
+    if (separatorIndex <= 0 || separatorIndex === method.length - 1) return null;
+    const machineId = method.slice(0, separatorIndex).trim();
+    const authority = resolveEphemeralRunnerMachineRpcAuthority(method.slice(separatorIndex + 1));
+    if (!machineId || authority === null || authority === "followSourceKeyPreparation") return null;
+    return { machineId, authority };
+}
+
+function createEphemeralRunnerMachineRpcTargetGuard(params: Readonly<{
+    accountId: string;
+    targetAccountId: string;
+    machineId: string;
+    authority: Exclude<EphemeralRunnerMachineRpcAuthority, "followSourceKeyPreparation">;
+    authentication: ReturnType<typeof readSessionAccessAuthenticationFromSocket>;
+}>): RpcForwardTargetGuard {
+    const authorizeTarget = async (target: SocketDataCarrier): Promise<boolean> => {
+        const socketData = readSocketData(target);
+        if (readMachineScopedSocketMachineId(target) !== params.machineId) return false;
+        if (socketData.ephemeralRunnerAdmission === undefined) {
+            const machine = await db.machine.findFirst({
+                where: { accountId: params.targetAccountId, id: params.machineId },
+                select: { kind: true },
+            });
+            return machine !== null && machine.kind !== "ephemeral_session_runner";
+        }
+        const principal = readMachineRuntimeRunnerPrincipal(target);
+        if (
+            !principal
+            || principal.accountId !== params.targetAccountId
+            || principal.machineId !== params.machineId
+            || !await verifyCurrentMaterializedRunnerPrincipal(principal)
+        ) {
+            return false;
+        }
+        const decision = await resolveSessionAccessForOperation(db, {
+            accountId: params.accountId,
+            sessionId: principal.sessionId,
+            authentication: params.authentication,
+            capability: params.authority,
+        });
+        return decision.status === "allowed" && decision.access.capabilities[params.authority];
+    };
+    return {
+        filterTargets: async (targets) => {
+            const decisions = await Promise.all(targets.map(async (target) => await authorizeTarget(target)));
+            return targets.filter((_target, index) => decisions[index] === true);
+        },
+        runOperation: async ({ target, operation, readLatestTarget }) => {
+            if (!await authorizeTarget(target)) return { status: "unavailable" };
+            const latest = await readLatestTarget();
+            if (!latest || !await authorizeTarget(latest)) return { status: "unavailable" };
+            return { status: "current", value: await operation() };
+        },
+    };
+}
+
+function createSessionFollowSourceKeyPreparationTargetGuard(params: Readonly<{
+    accountId: string;
+    sourceSessionId: string;
+    destinationSessionId: string;
+    machineId: string;
+    authentication: ReturnType<typeof readSessionAccessAuthenticationFromSocket>;
+}>): RpcForwardTargetGuard {
+    const matchesTarget = (target: SocketDataCarrier): boolean => {
+        const principal = readMachineRuntimeRunnerPrincipal(target);
+        return principal?.machineId === params.machineId;
+    };
+    const authorizeTarget = async (target: SocketDataCarrier): Promise<boolean> => {
+        const principal = readMachineRuntimeRunnerPrincipal(target);
+        if (!principal || principal.machineId !== params.machineId) return false;
+        const admission = await authorizeSessionFollowSourceKeyPreparation({
+            accountId: params.accountId,
+            sourceSessionId: params.sourceSessionId,
+            destinationSessionId: params.destinationSessionId,
+            principal,
+            authentication: params.authentication,
+        });
+        return admission.ok && admission.value.machineId === params.machineId;
+    };
+    return {
+        filterTargets: async (targets) => targets.filter(matchesTarget),
+        runOperation: async ({ operation, readLatestTarget }) => {
+            const latest = await readLatestTarget();
+            if (!latest || !await authorizeTarget(latest)) return { status: "unavailable" };
             return { status: "current", value: await operation() };
         },
     };
@@ -415,12 +621,43 @@ export function registerSocketRpcHandlers(params: Readonly<{
     socket: Socket;
     io: Server;
     sessionPublisherPresence?: SessionPublisherPresenceForRpc;
+    ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission | null;
 }>): void {
     const ownedMethods = new Set<string>();
     // Caller request ids are meaningful only within this authenticated socket.
     // The relay maps them to server-minted target ids, so a caller cannot name
     // or cancel another caller's in-flight work at a shared target.
     const activeCancellations = new Map<string, ActiveSocketRpcCancellation>();
+    const activePresentationBindings = new Map<string, Readonly<{
+        ownerAccountId: string;
+        clientId: string;
+    }>>();
+    let disconnected = false;
+
+    const retirePresentationBinding = async (
+        sessionId: string,
+        binding: Readonly<{ ownerAccountId: string; clientId: string }>,
+    ): Promise<void> => {
+        await forwardRpcCall({
+            io: params.io,
+            targetUserId: binding.ownerAccountId,
+            method: `${sessionId}:${CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD}`,
+            callParams: { clientId: binding.clientId },
+            authorization: {
+                kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN,
+                sessionId,
+                accountId: params.userId,
+                connectionId: params.socket.id,
+            },
+            callerSocketId: params.socket.id,
+            callerSocket: params.socket,
+        }).catch((error: unknown) => {
+            log(
+                { module: "websocket-rpc", level: "warn", sessionId },
+                `Presentation disconnect retirement failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        });
+    };
 
     params.socket.on(SOCKET_RPC_EVENTS.CANCEL, (data: unknown) => {
         const parsed = SocketRpcCancellationPayloadSchema.safeParse(data);
@@ -435,6 +672,37 @@ export function registerSocketRpcHandlers(params: Readonly<{
             const method = normalizeRpcMethodName((data as { method?: unknown } | undefined)?.method);
             if (!method) {
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Invalid method name" });
+                return;
+            }
+            if (
+                params.ephemeralRunnerAdmission?.kind === "machine-runtime"
+                && (
+                    !canEphemeralRunnerMachineRegisterRpcMethod({
+                        admission: params.ephemeralRunnerAdmission,
+                        method,
+                    })
+                    || !await verifyCurrentMaterializedRunnerPrincipal(
+                        params.ephemeralRunnerAdmission.principal,
+                    )
+                )
+            ) {
+                params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Forbidden" });
+                return;
+            }
+            const sessionAuthorization = resolveSocketRpcSessionAuthorization(method);
+            const isSessionAuthorizationNamespace = isSocketRpcSessionAuthorizationNamespace(method);
+            if (
+                isSessionAuthorizationNamespace
+                && !sessionAuthorization
+            ) {
+                params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE });
+                return;
+            }
+            if (
+                (isSessionAuthorizationNamespace || sessionAuthorization?.routeToSessionOwnerDaemon === true)
+                && readSocketClientType(params.socket) !== "session-scoped"
+            ) {
+                params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Forbidden" });
                 return;
             }
             if (
@@ -519,6 +787,13 @@ export function registerSocketRpcHandlers(params: Readonly<{
         let callerRequestId: string | undefined;
         let cancellation: ActiveSocketRpcCancellation | undefined;
         try {
+            // Runner socket compositions are restricted RPC receivers. A future
+            // Runner-originated call needs its own explicit source authority;
+            // target-side Machine classification cannot grant caller authority.
+            if (params.ephemeralRunnerAdmission) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
             const parsedRequestId = readOptionalSocketRpcRequestId(data);
             if (parsedRequestId === null) {
                 callback?.({
@@ -548,11 +823,57 @@ export function registerSocketRpcHandlers(params: Readonly<{
             const callParams = (data as { params?: unknown } | undefined)?.params;
             const timeoutMs = (data as { timeoutMs?: unknown } | undefined)?.timeoutMs;
             let authorization: SocketRpcAuthorizationContext | undefined;
+            let sessionWriteTargetUserId: string | null = null;
 
             if (!method) {
                 callback?.({
                     ok: false,
                     error: "Invalid parameters: method is required",
+                });
+                return;
+            }
+
+            const rawExternalActionExecution = (data as { externalActionExecution?: unknown } | undefined)
+                ?.externalActionExecution;
+            const externalActionExecution = rawExternalActionExecution === undefined
+                ? null
+                : ExternalActionMachineRpcExecutionV1Schema.safeParse(rawExternalActionExecution);
+            if (externalActionExecution && !externalActionExecution.success) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            const verifiedExternalAction = externalActionExecution?.success
+                ? await verifyExternalActionMachineRpcExecution(externalActionExecution.data, {
+                    method,
+                    ...(callerRequestId === undefined ? {} : { requestId: callerRequestId }),
+                    ...(callParams === undefined ? {} : { params: callParams }),
+                })
+                : null;
+            if (
+                externalActionExecution?.success
+                && (!verifiedExternalAction || verifiedExternalAction.principal.accountId !== params.userId)
+            ) {
+                callback?.(buildForbiddenRpcResponse());
+                return;
+            }
+            const requestAuthentication = verifiedExternalAction
+                ? {
+                    env: process.env,
+                    authority: verifiedExternalAction.principal.authority,
+                    authenticationEvidence: verifiedExternalAction.principal.authenticationEvidence,
+                }
+                : readSessionAccessAuthenticationFromSocket(params.socket);
+
+            const methodSessionAuthorization = resolveSocketRpcSessionAuthorization(method);
+            const isPermissionDecisionMethod = methodSessionAuthorization?.serverMintedContext === "session.permission.respond";
+            if (
+                isSocketRpcSessionAuthorizationNamespace(method)
+                && !methodSessionAuthorization
+            ) {
+                callback?.({
+                    ok: false,
+                    error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE,
+                    errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
                 });
                 return;
             }
@@ -582,58 +903,151 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 return;
             }
 
-            if (resolveSocketRpcSessionWriteAuthorizationMethod(method)) {
-                const parsedAuthorization = parseSocketRpcAuthorizationContext(
+            const sourceKeyPreparationMachineId = readSessionFollowSourceKeyPreparationMachineId(method);
+            let sourceKeyPreparationTargetGuard: RpcForwardTargetGuard | null = null;
+            let sessionAccessTargetGuard: RpcForwardTargetGuard | null = null;
+            if (sourceKeyPreparationMachineId) {
+                const parsedAuthorization = SessionFollowSourceKeyPrepareAuthorizationV1Schema.safeParse(
                     (data as { authorization?: unknown } | undefined)?.authorization,
                 );
-                if (!parsedAuthorization) {
-                    recordRpcCallFailure(method, "forbidden");
-                    observeRpcCall({
-                        method,
-                        durationMs: Date.now() - startedAt,
-                        result: "error",
-                    });
+                if (!parsedAuthorization.success) {
                     callback?.(buildForbiddenRpcResponse());
                     return;
                 }
-                const access = await checkSessionAccess(params.userId, parsedAuthorization.sessionId);
-                if (!access || !requireAccessLevel(access, "edit")) {
-                    recordRpcCallFailure(method, "forbidden");
-                    observeRpcCall({
-                        method,
-                        durationMs: Date.now() - startedAt,
-                        result: "error",
-                    });
+                const admission = await authorizeSessionFollowSourceKeyPreparer({
+                    accountId: params.userId,
+                    sourceSessionId: parsedAuthorization.data.sourceSessionId,
+                    destinationSessionId: parsedAuthorization.data.destinationSessionId,
+                    authentication: requestAuthentication,
+                });
+                if (!admission.ok) {
                     callback?.(buildForbiddenRpcResponse());
                     return;
                 }
-                authorization = parsedAuthorization;
-            }
-
-            const targetResolution = await resolveRpcCallTarget({
-                callerUserId: params.userId,
-                method,
-            });
-            if (targetResolution.type === "forbidden") {
-                recordRpcCallFailure(method, "forbidden");
-                observeRpcCall({
-                    method,
-                    durationMs: Date.now() - startedAt,
-                    result: "error",
+                authorization = parsedAuthorization.data;
+                sessionWriteTargetUserId = admission.value.destinationRuntimeAccountId;
+                sourceKeyPreparationTargetGuard = createSessionFollowSourceKeyPreparationTargetGuard({
+                    accountId: params.userId,
+                    machineId: sourceKeyPreparationMachineId,
+                    sourceSessionId: parsedAuthorization.data.sourceSessionId,
+                    destinationSessionId: parsedAuthorization.data.destinationSessionId,
+                    authentication: requestAuthentication,
                 });
-                callback?.({
-                    ok: false,
-                    error: "Forbidden",
-                });
+            } else if (
+                method === RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE
+                || method.endsWith(`:${RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE}`)
+            ) {
+                callback?.(buildForbiddenRpcResponse());
                 return;
             }
 
-            // Only resolveRpcCallTarget can mint this narrow attestation after
-            // owner/share authorization. In particular, no client-supplied
-            // `authorization` field is considered for permission decisions.
-            if (targetResolution.permissionRespondAuthorization) {
-                authorization = targetResolution.permissionRespondAuthorization;
+            const sessionAuthorization = methodSessionAuthorization;
+            if (sessionAuthorization) {
+                const separatorIndex = method.lastIndexOf(":");
+                const rawAuthorization = (data as { authorization?: unknown } | undefined)?.authorization;
+                const suppliedAuthorization = parseSocketRpcAuthorizationContext(
+                    rawAuthorization,
+                );
+                const sessionId = sessionAuthorization.routeToSessionOwnerDaemon
+                    ? (separatorIndex > 0 ? method.slice(0, separatorIndex) : null)
+                    : suppliedAuthorization?.kind === "session.write"
+                        ? suppliedAuthorization.sessionId
+                        : null;
+                if (
+                    !sessionId
+                    || (
+                        sessionAuthorization.routeToSessionOwnerDaemon
+                        && !isPermissionDecisionMethod
+                        && rawAuthorization !== undefined
+                        && (
+                            suppliedAuthorization?.kind !== "session.write"
+                            || suppliedAuthorization.sessionId !== sessionId
+                        )
+                    )
+                ) {
+                    recordRpcCallFailure(method, "forbidden");
+                    observeRpcCall({
+                        method,
+                        durationMs: Date.now() - startedAt,
+                        result: "error",
+                    });
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                const decision = await resolveSessionAccessForOperation(db, {
+                    accountId: params.userId,
+                    sessionId,
+                    authentication: requestAuthentication,
+                    ...(sessionAuthorization.authority === "sessionOwner"
+                        ? {}
+                        : { capability: sessionAuthorization.authority }),
+                });
+                const admitted = decision.status === "allowed"
+                    && (sessionAuthorization.authority === "sessionOwner"
+                        ? decision.access.level === "owner"
+                        : decision.access.capabilities[sessionAuthorization.authority]);
+                if (!admitted) {
+                    recordRpcCallFailure(method, "forbidden");
+                    observeRpcCall({
+                        method,
+                        durationMs: Date.now() - startedAt,
+                        result: "error",
+                    });
+                    callback?.(buildForbiddenRpcResponse());
+                    return;
+                }
+                if (sessionAuthorization.routeToSessionOwnerDaemon) {
+                    const session = await db.session.findUnique({
+                        where: { id: sessionId },
+                        select: { accountId: true },
+                    });
+                    if (!session) {
+                        callback?.(buildForbiddenRpcResponse());
+                        return;
+                    }
+                    sessionWriteTargetUserId = session.accountId;
+                }
+                authorization = sessionAuthorization.serverMintedContext === "session.presentation.origin"
+                    ? {
+                        kind: SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN,
+                        sessionId,
+                        accountId: params.userId,
+                        connectionId: params.socket.id,
+                    } satisfies SocketRpcCurrentSessionPresentationOriginAuthorizationContext
+                    : isPermissionDecisionMethod
+                    ? {
+                        kind: "session.permission.respond",
+                        sessionId,
+                        actor: {
+                            kind: "accountUser",
+                            accountId: params.userId,
+                            relationship: decision.status === "allowed" && decision.access.level === "owner"
+                                ? "owner"
+                                : "sharedApprover",
+                        },
+                    }
+                    : { kind: "session.write", sessionId };
+                sessionAccessTargetGuard = createSessionAccessTargetGuard({
+                    accountId: params.userId,
+                    sessionId,
+                    authentication: requestAuthentication,
+                    authority: sessionAuthorization.authority,
+                });
             }
+            const ephemeralRunnerMachineRequest = readEphemeralRunnerMachineRpcRequest(method);
+            if (ephemeralRunnerMachineRequest && sessionWriteTargetUserId === null) {
+                const runnerBinding = await readMaterializedRunnerMachineRoutingBinding(
+                    ephemeralRunnerMachineRequest.machineId,
+                );
+                if (runnerBinding) {
+                    sessionWriteTargetUserId = runnerBinding.accountId;
+                    authorization = {
+                        kind: "session.write",
+                        sessionId: runnerBinding.sessionId,
+                    };
+                }
+            }
+            const targetUserId = sessionWriteTargetUserId ?? params.userId;
 
             const explicitMachineStopRequest = readExplicitMachineStopRequest(method, authorization);
             if (method.endsWith(`:${RPC_METHODS.STOP_SESSION}`) && !explicitMachineStopRequest) {
@@ -656,7 +1070,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 }
                 explicitMachineStopCapture = await presence.captureExplicitMachineStop({
                     binding: {
-                        accountId: targetResolution.targetUserId,
+                        accountId: targetUserId,
                         machineId: explicitMachineStopRequest.machineId,
                         sessionId: explicitMachineStopRequest.sessionId,
                     },
@@ -676,16 +1090,30 @@ export function registerSocketRpcHandlers(params: Readonly<{
                 }
             }
 
-            const targetGuard = explicitMachineStopRequest
+            const targetSpecificGuard = explicitMachineStopRequest
                 ? createExplicitMachineStopTargetGuard(explicitMachineStopRequest)
-                : createSessionModelTransitionTargetGuard({
-                    method,
-                    targetUserId: targetResolution.targetUserId,
-                    presence: params.sessionPublisherPresence,
-                });
+                : sourceKeyPreparationTargetGuard
+                    ? sourceKeyPreparationTargetGuard
+                    : ephemeralRunnerMachineRequest
+                        ? createEphemeralRunnerMachineRpcTargetGuard({
+                            accountId: params.userId,
+                            targetAccountId: targetUserId,
+                            machineId: ephemeralRunnerMachineRequest.machineId,
+                            authority: ephemeralRunnerMachineRequest.authority,
+                            authentication: requestAuthentication,
+                        })
+                        : createSessionModelTransitionTargetGuard({
+                            method,
+                            targetUserId,
+                            presence: params.sessionPublisherPresence,
+                        });
+            const targetGuard = composeRpcForwardTargetGuards([
+                targetSpecificGuard,
+                sessionAccessTargetGuard,
+            ]);
             const forwarded = await forwardRpcCall({
                 io: params.io,
-                targetUserId: targetResolution.targetUserId,
+                targetUserId,
                 method,
                 callParams,
                 timeoutMs,
@@ -708,6 +1136,37 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     }
                     : {}),
             });
+            const unscopedMethod = method.slice(method.lastIndexOf(":") + 1);
+            const presentationClientId = callParams && typeof callParams === "object" && !Array.isArray(callParams)
+                ? (callParams as { clientId?: unknown }).clientId
+                : null;
+            if (
+                forwarded.ok
+                && unscopedMethod === CURRENT_SESSION_PRESENTATION_BIND_RPC_METHOD
+                && typeof presentationClientId === "string"
+                && forwarded.result
+                && typeof forwarded.result === "object"
+                && (forwarded.result as { status?: unknown }).status === "bound"
+                && authorization?.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN
+            ) {
+                const binding = {
+                    ownerAccountId: targetUserId,
+                    clientId: presentationClientId,
+                };
+                if (disconnected) {
+                    await retirePresentationBinding(authorization.sessionId, binding);
+                } else {
+                    activePresentationBindings.set(authorization.sessionId, binding);
+                }
+            } else if (
+                forwarded.ok
+                && unscopedMethod === CURRENT_SESSION_PRESENTATION_UNBIND_RPC_METHOD
+                && typeof presentationClientId === "string"
+                && authorization?.kind === SOCKET_RPC_AUTHORIZATION_CONTEXT_KINDS.CURRENT_SESSION_PRESENTATION_ORIGIN
+                && activePresentationBindings.get(authorization.sessionId)?.clientId === presentationClientId
+            ) {
+                activePresentationBindings.delete(authorization.sessionId);
+            }
             if (
                 explicitMachineStopRequest
                 && explicitMachineStopCapture?.status === "captured"
@@ -732,7 +1191,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
                     if (closed.status === "closed") {
                         await publishSessionPublisherClose({
                             sessionId: explicitMachineStopRequest.sessionId,
-                            publisherAccountId: targetResolution.targetUserId,
+                            publisherAccountId: targetUserId,
                             closed,
                         });
                     } else if (closed.status !== "already_inactive") {
@@ -774,10 +1233,16 @@ export function registerSocketRpcHandlers(params: Readonly<{
     });
 
     params.socket.on("disconnect", async () => {
+        disconnected = true;
         for (const active of activeCancellations.values()) {
             cancelActiveSocketRpcCall({ io: params.io, active });
         }
         activeCancellations.clear();
+        const presentationBindings = [...activePresentationBindings.entries()];
+        activePresentationBindings.clear();
+        for (const [sessionId, binding] of presentationBindings) {
+            await retirePresentationBinding(sessionId, binding);
+        }
         const methods = [...ownedMethods];
         ownedMethods.clear();
         writeSocketRegisteredRpcMethods(params.socket, ownedMethods);

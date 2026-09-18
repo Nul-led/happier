@@ -73,6 +73,33 @@ describe('enableServeUi (mountRoot)', () => {
     });
   });
 
+  it('prevents capability-bearing public entry URLs from becoming referrers', async () => {
+    await withTempDir('happier-ui-sensitive-entry-', async (dir) => {
+      await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ok</body></html>\n', 'utf-8');
+
+      await withApp(async (app) => {
+        enableServeUi(app, { dir, prefix: '/', mountRoot: true, required: false });
+        await app.ready();
+
+        for (const url of [
+          '/join/invitation-bearer',
+          '/auth/email/verify/verification-bearer',
+          '/auth/password/reset/reset-bearer',
+        ]) {
+          const res = await app.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(200);
+          expect(res.headers['referrer-policy']).toBe('no-referrer');
+        }
+
+        for (const url of ['/', '/teams/team-1/sign-in', '/auth/password/reset']) {
+          const res = await app.inject({ method: 'GET', url });
+          expect(res.statusCode).toBe(200);
+          expect(res.headers['referrer-policy']).toBeUndefined();
+        }
+      });
+    });
+  });
+
   it('serves index.html for SPA routes that contain dots in the path', async () => {
     await withTempDir('happier-ui-root-dots-', async (dir) => {
       await writeFile(join(dir, 'index.html'), '<!doctype html><html><body>ok</body></html>\n', 'utf-8');

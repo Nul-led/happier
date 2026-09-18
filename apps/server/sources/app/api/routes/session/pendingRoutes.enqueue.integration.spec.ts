@@ -47,6 +47,100 @@ describe("sessionPendingRoutes (enqueue)", () => {
         sessionFindUnique.mockResolvedValue(HOSTED_RECIPIENT_PROJECTION);
     });
 
+    it("maps exhausted transaction acquisition to retryable 503 with request correlation", async () => {
+        enqueuePendingMessage.mockResolvedValueOnce({
+            ok: false,
+            error: "transaction-unavailable",
+            retryAfterMs: 1_000,
+            correlationId: "req-enqueue-busy",
+        });
+
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+        const { reply, response } = await route.invoke({
+            id: "req-enqueue-busy",
+            userId: "actor",
+            authAuthority: "present_user",
+            params: { sessionId: "s1" },
+            body: { localId: "l1", ciphertext: "cipher" },
+        });
+
+        expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
+            diagnosticCorrelationId: "req-enqueue-busy",
+        }));
+        expect(reply.statusCode).toBe(503);
+        const headers = reply.headers as Record<string, string | undefined>;
+        expect(headers["Retry-After"] ?? headers["retry-after"]).toBe("1");
+        expect(response).toEqual({
+            error: "transaction-unavailable",
+            retryAfterMs: 1_000,
+            correlationId: "req-enqueue-busy",
+        });
+    });
+
+    it("publishes the exact execution-run recipient as the recovery hint", async () => {
+        const createdAt = new Date(1);
+        enqueuePendingMessage.mockResolvedValueOnce({
+            ok: true,
+            didWrite: true,
+            pending: {
+                localId: "target-local-1",
+                recipient: { kind: "execution_run", runId: "run-1" },
+                content: { t: "plain", v: { type: "user", text: "continue" } },
+                status: "queued",
+                position: 1,
+                createdAt,
+                updatedAt: createdAt,
+                discardedAt: null,
+                discardedReason: null,
+                authorAccountId: "actor",
+            },
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 2,
+            recipientCursors: [{ accountId: "owner", cursor: 12 }],
+        });
+
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/sessions/:sessionId/execution-runs/:runId/pending",
+            defaultRequest: { authAuthority: "present_user" },
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+
+        await route.invoke({
+            userId: "actor",
+            authAuthority: "present_user",
+            params: { sessionId: "s1", runId: "run-1" },
+            body: {
+                v: 1,
+                localId: "target-local-1",
+                targetMachineId: "machine-1",
+                content: { t: "plain", v: { type: "user", text: "continue" } },
+            },
+        });
+
+        expect(buildPendingChangedUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({
+                sessionId: "s1",
+                pendingVersion: 2,
+                recipient: { kind: "execution_run", runId: "run-1" },
+            }),
+            12,
+            "update-id",
+        );
+    });
+
     it("forwards the external handoff admission mode to enqueuePendingMessage", async () => {
         const createdAt = new Date(1);
         enqueuePendingMessage.mockResolvedValueOnce({
@@ -65,13 +159,14 @@ describe("sessionPendingRoutes (enqueue)", () => {
             },
             pendingCount: 1,
             pendingVersion: 1,
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -85,7 +180,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             },
         );
 
-        expect(enqueuePendingMessage).toHaveBeenCalledWith({
+        expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "actor",
             sessionId: "s1",
             localId: "l1",
@@ -93,7 +188,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             messageRole: null,
             deliveryMode: "external_handoff",
             requestedAction: { v: 1, kind: "enqueue" },
-        });
+        }));
         expect(reply.send).toHaveBeenCalledWith(
             expect.objectContaining({
                 didWrite: true,
@@ -112,13 +207,14 @@ describe("sessionPendingRoutes (enqueue)", () => {
             pendingBlockedCount: 0,
             pendingVersion: 4,
             badgeAttentionChanged: false,
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -136,7 +232,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             },
         });
 
-        expect(enqueuePendingMessage).toHaveBeenCalledWith({
+        expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "actor",
             sessionId: "s1",
             localId: "connected-service-continuation:test",
@@ -144,7 +240,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             messageRole: "user",
             admissionMode: "continuation_if_no_queued_user_input",
             requestedAction: { v: 1, kind: "send_now" },
-        });
+        }));
         expect(reply.send).toHaveBeenCalledWith({
             didWrite: false,
             suppressed: true,
@@ -160,6 +256,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -207,13 +304,14 @@ describe("sessionPendingRoutes (enqueue)", () => {
             pendingBlockedCount: 0,
             pendingVersion: 4,
             badgeAttentionChanged: false,
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -247,6 +345,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -285,13 +384,14 @@ describe("sessionPendingRoutes (enqueue)", () => {
             },
             pendingCount: 1,
             pendingVersion: 1,
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -309,7 +409,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         }));
     });
 
-    it("publishes one exact machine activation after an inactive send-now row is durably committed", async () => {
+    it("publishes one exact machine activation after an ordinary queued row requests resume-on-availability", async () => {
         const createdAt = new Date("2026-07-23T12:00:00.000Z");
         sessionFindUnique.mockResolvedValue({
             ...HOSTED_RECIPIENT_PROJECTION,
@@ -325,7 +425,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
                 localId: "pending-after-ui-death",
                 messageRole: "user",
                 content: { t: "encrypted", c: "cipher" },
-                requestedAction: { v: 1, kind: "send_now" },
+                requestedAction: { v: 1, kind: "enqueue" },
                 status: "queued",
                 deliveryStatus: { status: "queued" },
                 position: 1,
@@ -340,7 +440,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             pendingVersion: 9,
             meaningfulActivityAt: createdAt,
             badgeAttentionChanged: false,
-            participantCursors: [{ accountId: "owner", cursor: 41 }],
+            recipientCursors: [{ accountId: "owner", cursor: 41 }],
             activationTarget: {
                 accountId: "owner",
                 requestId: "pending-after-ui-death",
@@ -351,6 +451,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -363,9 +464,15 @@ describe("sessionPendingRoutes (enqueue)", () => {
                 localId: "pending-after-ui-death",
                 ciphertext: "cipher",
                 messageRole: "user",
-                requestedAction: { v: 1, kind: "send_now" },
+                requestedAction: { v: 1, kind: "enqueue" },
+                resumeWhenAvailable: true,
             },
         });
+
+        expect(enqueuePendingMessage).toHaveBeenCalledWith(expect.objectContaining({
+            requestedAction: { v: 1, kind: "enqueue" },
+            resumeWhenAvailable: true,
+        }));
 
         expect(buildPendingChangedUpdate).toHaveBeenCalledWith(
             expect.objectContaining({
@@ -406,7 +513,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
             pendingVersion: 2,
             meaningfulActivityAt: createdAt,
             badgeAttentionChanged: false,
-            participantCursors: [],
+            recipientCursors: [],
         });
         sessionFindUnique.mockRejectedValueOnce(new Error("publication projection unavailable"));
 
@@ -414,6 +521,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 // The narrow route harness intentionally supplies only the Fastify registration surface.
                 sessionPendingRoutes(app as any);
@@ -442,6 +550,7 @@ describe("sessionPendingRoutes (enqueue)", () => {
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 // The narrow route harness intentionally supplies only the Fastify registration surface.
                 sessionPendingRoutes(app as any);

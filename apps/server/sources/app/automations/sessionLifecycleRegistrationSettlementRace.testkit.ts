@@ -1,11 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { serializeAutomationStoredDefinitionExecutionRecipeV1 } from "@happier-dev/protocol";
 
-import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+import { applySessionTurnMutation as applySessionTurnMutationWithAuthentication } from "@/app/session/sessionWriteService";
 import { db } from "@/storage/db";
 import { getDbProviderFromEnv } from "@/storage/prisma";
 import { createAutomationTrigger } from "./automationCrudService";
 import { AutomationSessionLifecycleRegistrationValidationError } from "./automationSessionLifecycleRegistration";
+
+const authentication = createPresentUserSessionAccessAuthentication();
+
+function applySessionTurnMutation(
+    params: Omit<Parameters<typeof applySessionTurnMutationWithAuthentication>[0], "authentication">,
+) {
+    return applySessionTurnMutationWithAuthentication({ ...params, authentication });
+}
 
 function deferred() {
     let resolve!: () => void;
@@ -88,12 +97,11 @@ function installCanonicalRaceBarrier(params: { sessionId: string; turnId: string
                         return async (...findArgs: unknown[]) => {
                             const result = await Reflect.apply(originalFindMany, target, findArgs);
                             const query = findArgs[0] as {
-                                where?: { kind?: unknown; sourceSessionId?: unknown; sourceTurnId?: unknown };
+                                where?: { kind?: unknown; sourceSessionId?: unknown };
                             } | undefined;
                             if (
                                 query?.where?.kind === "sessionLifecycle"
                                 && query.where.sourceSessionId === params.sessionId
-                                && query.where.sourceTurnId === params.turnId
                                 && Array.isArray(result)
                                 && result.length === 0
                             ) {

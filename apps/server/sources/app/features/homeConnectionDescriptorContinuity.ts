@@ -6,7 +6,7 @@ import {
     resolveManagedServerLightPathEnvValue,
     resolvePersonalHomeRuntimeLayout,
     replacePersonalHomeFileDurably,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/server';
 import {
     IrohEndpointIdV1Schema,
     type HomeConnectionEndpointV1,

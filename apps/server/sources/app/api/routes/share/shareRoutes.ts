@@ -1,26 +1,25 @@
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import { type Fastify } from "../../types";
 import { db } from "@/storage/db";
 import { z } from "zod";
 import {
-    areFriends,
-    buildCurrentSessionParticipantWhere,
-    canManagePermissionDelegation,
-    canManageSharing,
-    canManageSharingInTx,
-} from "@/app/share/accessControl";
-import { ShareAccessLevel } from "@/storage/prisma";
-import { PROFILE_SELECT, toShareUserProfile } from "@/app/share/types";
-import { eventRouter, buildSessionSharedUpdate, buildSessionShareUpdatedUpdate, buildSessionShareRevokedUpdate } from "@/app/events/eventRouter";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
-import { afterTx, inTx } from "@/storage/inTx";
-import { markAccountChanged } from "@/app/changes/markAccountChanged";
-import { tombstoneSessionDraftForLifecycleInTx } from "@/app/account/sessionDrafts/sessionDraftService";
+    resolveSessionAccessForOperation,
+} from "@/app/session/access/sessionAccess";
+import {
+    deleteSessionAccessGrantInTx,
+    putSessionAccessGrantInTx,
+    type SessionAccessDirectShareRow,
+    type SessionAccessGrantErrorCode,
+} from "@/app/session/access/sessionAccessGrantService";
+import {
+    projectReleasedDirectShareEvent,
+    scheduleReleasedDirectShareEvent,
+} from "@/app/session/access/publishSessionAccessChange";
+import { ACCOUNT_DISPLAY_PROFILE_SELECT, toShareUserProfile } from "@/app/account/profile/accountDisplayProfile";
+import { inTx, type Tx } from "@/storage/inTx";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { tryParseDirectShareEncryptedDataKey } from "./directShareEncryptedDataKeyValidation";
-import {
-    isSessionTranscriptShareable,
-    SESSION_TRANSCRIPT_PUBLICATION_SELECT,
-} from "@/app/session/sessionTranscriptPublicationPolicy";
+import { SESSION_TRANSCRIPT_PUBLICATION_SELECT } from "@/app/session/sessionTranscriptPublicationPolicy";
 import {
     createSessionMetadataPrivacyUpgradeRequiredResponse,
     isSessionMetadataPrivacyUpgradeRequiredError,
@@ -31,20 +30,156 @@ import {
     enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
     readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { SESSION_METADATA_LAYOUT_VERSION_V1 } from "@happier-dev/protocol";
+import {
+    ReleasedDirectSessionShareCreateRequestV1Schema,
+    ReleasedDirectSessionShareDeleteResponseV1Schema,
+    ReleasedDirectSessionSharePatchRequestV1Schema,
+    ReleasedDirectSessionShareResponseV1Schema,
+    ReleasedDirectSessionSharesResponseV1Schema,
+    ReleasedDirectSessionShareV1Schema,
+    SESSION_METADATA_LAYOUT_VERSION_V1,
+    type ReleasedDirectSessionShareV1,
+} from "@happier-dev/protocol";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
-function resolveEffectiveShareApprovalCapability(input: Readonly<{
-    accessLevel: ShareAccessLevel;
-    requestedCanApprovePermissions?: boolean;
-    existingCanApprovePermissions?: boolean;
-}>): boolean {
-    if (input.accessLevel === "view") return false;
-    return input.requestedCanApprovePermissions ?? input.existingCanApprovePermissions ?? false;
+/**
+ * Released direct-sharing API.
+ *
+ * These routes are compatibility adapters: they parse the released Account-only
+ * request shapes, delegate every access decision and every write to the canonical
+ * Session access grant service, and project the released response and socket event.
+ * They must not regain a mutation path, an access decision, or a direct Prisma write.
+ */
+
+async function projectReleasedShareResponse(
+    tx: Tx,
+    share: SessionAccessDirectShareRow,
+): Promise<ReleasedDirectSessionShareV1> {
+    const sharedWithUser = await tx.account.findUniqueOrThrow({
+        where: { id: share.sharedWithUserId },
+        select: ACCOUNT_DISPLAY_PROFILE_SELECT,
+    });
+    return ReleasedDirectSessionShareV1Schema.parse({
+        id: share.id,
+        sharedWithUser: toShareUserProfile(sharedWithUser),
+        accessLevel: share.accessLevel,
+        canApprovePermissions: share.canApprovePermissions,
+        createdAt: share.createdAt.getTime(),
+        updatedAt: share.updatedAt.getTime(),
+    });
 }
 
 /**
- * Session sharing API routes
+ * Map canonical outcomes onto the exact released status/body pairs.
+ *
+ * `subject_ineligible` keeps the released "friends" wording because a released
+ * client renders it verbatim. The canonical eligibility rule now also accepts a
+ * current shared-Team colleague, so this body is only reached when neither source
+ * applies.
  */
+const RELEASED_ERROR_RESPONSE: Readonly<
+    Record<SessionAccessGrantErrorCode, Readonly<{ status: number; body: Readonly<Record<string, string>> }>>
+> = Object.freeze({
+    invalid_request: { status: 400, body: { error: "Invalid encryptedDataKey" } },
+    data_key_not_required: { status: 400, body: { error: "Invalid encryptedDataKey" } },
+    recipient_envelope_required: { status: 400, body: { error: "encryptedDataKey required" } },
+    recipient_key_unavailable: { status: 400, body: { error: "Recipient key unavailable" } },
+    session_access_transcript_not_shareable: {
+        status: 409,
+        body: {
+            error: "Session transcript is not shareable",
+            code: "session_transcript_not_shareable",
+        },
+    },
+    session_access_forbidden: { status: 403, body: { error: "Forbidden" } },
+    session_access_authentication_required: { status: 403, body: { error: "Forbidden" } },
+    session_access_authentication_unavailable: {
+        status: 503,
+        body: { error: "session_access_authentication_unavailable" },
+    },
+    session_access_session_not_found: { status: 404, body: { error: "Session not found" } },
+    session_access_subject_not_found: { status: 404, body: { error: "User not found" } },
+    session_access_subject_ineligible: { status: 403, body: { error: "Can only share with friends" } },
+    session_access_owner_grant_invalid: { status: 400, body: { error: "Cannot share with the session owner" } },
+    session_access_self_grant_invalid: { status: 400, body: { error: "Cannot share with yourself" } },
+    session_access_permission_delegation_forbidden: { status: 403, body: { error: "Forbidden" } },
+    session_access_permission_delegation_requires_edit: {
+        status: 400,
+        body: { error: "Permission approvals require edit or admin access" },
+    },
+    session_access_team_policy_required: {
+        status: 409,
+        body: { error: "Team policy requires this access" },
+    },
+    session_access_external_sharing_requires_team_admin: {
+        status: 403,
+        body: { error: "Forbidden" },
+    },
+    session_access_external_sharing_disabled: {
+        status: 403,
+        body: { error: "Forbidden" },
+    },
+    // Unreachable from this adapter, which parses the released bytes before
+    // delegating. It is mapped to the released malformed-key body so the total
+    // mapping never has to invent a status at runtime.
+    session_access_invalid_recipient_envelope: {
+        status: 400,
+        body: { error: "Invalid encryptedDataKey" },
+    },
+});
+
+type ReleasedShareCapability = "manageAccess";
+
+/**
+ * Preserve the canonical authentication continuation at the released adapter.
+ *
+ * A boolean capability helper is sufficient for callers whose only public answer
+ * is allowed/forbidden. These routes also need to distinguish a currently
+ * unavailable accepted authentication method from an available method that this
+ * credential has not satisfied, so they project the canonical operation decision
+ * without interpreting Team policy themselves. Only `manageAccess` is preflighted:
+ * permission-delegation admission depends on the effective before/after capability
+ * transition and remains exclusively owned by the transaction-bound grant writer.
+ */
+async function resolveReleasedShareCapability(
+    accountId: string,
+    sessionId: string,
+    authentication: ReturnType<typeof readSessionAccessAuthenticationFromRequest>,
+    capability: ReleasedShareCapability,
+): Promise<
+    | Readonly<{ ok: true }>
+    | Readonly<{ ok: false; response: (typeof RELEASED_ERROR_RESPONSE)[SessionAccessGrantErrorCode] }>
+> {
+    const decision = await resolveSessionAccessForOperation(db, {
+        accountId,
+        sessionId,
+        authentication,
+        capability,
+    });
+    if (decision.status === "allowed" && decision.access.capabilities[capability]) {
+        return { ok: true };
+    }
+    const error: SessionAccessGrantErrorCode = decision.status === "authentication_unavailable"
+        ? "session_access_authentication_unavailable"
+        : decision.status === "authentication_required"
+            ? "session_access_authentication_required"
+            : "session_access_forbidden";
+    return { ok: false, response: RELEASED_ERROR_RESPONSE[error] };
+}
+
+/** Released create semantics: an omitted flag retains an existing delegation. */
+async function readStoredDelegation(
+    tx: Tx,
+    sessionId: string,
+    recipientAccountId: string,
+): Promise<boolean> {
+    const existing = await tx.sessionShare.findUnique({
+        where: { sessionId_sharedWithUserId: { sessionId, sharedWithUserId: recipientAccountId } },
+        select: { canApprovePermissions: true },
+    });
+    return existing?.canApprovePermissions ?? false;
+}
+
 export function shareRoutes(app: Fastify) {
 
     /**
@@ -61,37 +196,39 @@ export function shareRoutes(app: Fastify) {
         const userId = request.userId;
         const { sessionId } = request.params;
 
-        // Only owner or admin can view shares
-        if (!await canManageSharing(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const preflight = await resolveReleasedShareCapability(
+            userId,
+            sessionId,
+            authentication,
+            "manageAccess",
+        );
+        if (!preflight.ok) {
+            return reply.code(preflight.response.status).send(preflight.response.body);
         }
 
-        const session = await db.session.findFirst({
-            where: buildCurrentSessionParticipantWhere({
-                userId,
-                sessionId,
-                minimumAccess: "admin",
-            }),
+        const session = await inTx(async tx => tx.session.findFirst({
+            where: { AND: [{ id: sessionId }, await buildSessionAccessWhere({ tx,
+                accountId: userId, capability: "manageAccess", mode: "effective_access_v1",
+                authentication,
+            })] },
             select: {
                 ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 shares: {
                     include: {
                         sharedWithUser: {
-                            select: PROFILE_SELECT,
+                            select: ACCOUNT_DISPLAY_PROFILE_SELECT,
                         },
                     },
                     orderBy: { createdAt: 'desc' },
                 },
             },
-        });
-        if (!session || (
-            session.accountId !== userId
-            && !isSessionTranscriptShareable(session)
-        )) {
+        }));
+        if (!session) {
             return reply.code(403).send({ error: 'Forbidden' });
         }
 
-        return reply.send({
+        return reply.send(ReleasedDirectSessionSharesResponseV1Schema.parse({
             shares: session.shares.map(share => ({
                 id: share.id,
                 sharedWithUser: toShareUserProfile(share.sharedWithUser),
@@ -100,7 +237,7 @@ export function shareRoutes(app: Fastify) {
                 createdAt: share.createdAt.getTime(),
                 updatedAt: share.updatedAt.getTime()
             }))
-        });
+        }));
     });
 
     /**
@@ -115,67 +252,41 @@ export function shareRoutes(app: Fastify) {
             params: z.object({
                 sessionId: z.string()
             }),
-            body: z.object({
-                userId: z.string(),
-                accessLevel: z.enum(['view', 'edit', 'admin']),
-                canApprovePermissions: z.boolean().optional(),
-                encryptedDataKey: z.string().optional(),
-            })
+            body: ReleasedDirectSessionShareCreateRequestV1Schema,
         }
     }, async (request, reply) => {
         const ownerId = request.userId;
         const { sessionId } = request.params;
         const { userId, accessLevel, canApprovePermissions, encryptedDataKey } = request.body;
 
-        // Only owner or admin can create shares
-        if (!await canManageSharing(ownerId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        // The released admission order is preserved so an existing client keeps
+        // receiving the same status for the same request. Every one of these
+        // decisions is repeated by the canonical service inside the write
+        // transaction, where it is actually authoritative.
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const sharingPreflight = await resolveReleasedShareCapability(
+            ownerId,
+            sessionId,
+            authentication,
+            "manageAccess",
+        );
+        if (!sharingPreflight.ok) {
+            return reply.code(sharingPreflight.response.status).send(sharingPreflight.response.body);
         }
         if (canApprovePermissions === true) {
             if (accessLevel === 'view') {
                 return reply.code(400).send({ error: 'Permission approvals require edit or admin access' });
             }
-            if (!await canManagePermissionDelegation(ownerId, sessionId)) {
-                return reply.code(403).send({ error: 'Forbidden' });
-            }
         }
-
-        // Cannot share with yourself
         if (userId === ownerId) {
             return reply.code(400).send({ error: 'Cannot share with yourself' });
         }
 
-        // Verify target user exists and get their public key
-        const targetUser = await db.account.findUnique({
-            where: { id: userId },
-            select: { id: true }
-        });
-
-        if (!targetUser) {
-            return reply.code(404).send({ error: 'User not found' });
-        }
-
-        // Check if users are friends
-        if (!await areFriends(ownerId, userId)) {
-            return reply.code(403).send({ error: 'Can only share with friends' });
-        }
-
-        const effectiveCanApprovePermissions = resolveEffectiveShareApprovalCapability({
-            accessLevel: accessLevel as ShareAccessLevel,
-            requestedCanApprovePermissions: canApprovePermissions,
-        });
         const supportsCurrentProtocol =
             readAccountStoredContentCompatibilityForHttpRequest(request)
                 .supportsCurrentProtocol;
 
-        const share = await inTx(async (tx) => {
-            if (!await canManageSharingInTx(tx, {
-                userId: ownerId,
-                sessionId,
-                requirePermissionDelegation: canApprovePermissions === true,
-            })) {
-                return { type: "forbidden" as const };
-            }
+        const outcome = await inTx(async (tx) => {
             const currentSession = await tx.session.findUnique({
                 where: { id: sessionId },
                 select: {
@@ -198,9 +309,7 @@ export function shareRoutes(app: Fastify) {
                     === SESSION_METADATA_LAYOUT_VERSION_V1
                 && !supportsCurrentProtocol
             ) {
-                return {
-                    type: "client-upgrade-required" as const,
-                };
+                return { type: "client-upgrade-required" as const };
             }
             try {
                 const ownerAccountMode = currentSession.metadataLayoutVersion
@@ -224,106 +333,81 @@ export function shareRoutes(app: Fastify) {
                 }
                 throw error;
             }
-            if (!isSessionTranscriptShareable(currentSession)) {
-                return { type: "publication-error" as const };
-            }
-            const sessionEncryptionMode: "e2ee" | "plain" =
-                currentSession.encryptionMode === "plain" ? "plain" : "e2ee";
+
+            // The released create route requires recipient key material for an E2EE
+            // Session regardless of that recipient's readiness. That rejection stays
+            // here rather than in the grant service: it is this operation's released
+            // contract, not a property of the access transition itself.
             let encryptedDataKeyBytes: Uint8Array<ArrayBuffer> | null = null;
-            if (sessionEncryptionMode === "e2ee") {
+            if (currentSession.encryptionMode !== "plain") {
                 if (typeof encryptedDataKey !== "string" || encryptedDataKey.length === 0) {
                     return { type: "invalid-key" as const, error: "encryptedDataKey required" };
                 }
-                const parsedEncryptedDataKey = tryParseDirectShareEncryptedDataKey(encryptedDataKey);
-                if (parsedEncryptedDataKey.type === "error") {
-                    return { type: "invalid-key" as const, error: parsedEncryptedDataKey.error };
+                const parsed = tryParseDirectShareEncryptedDataKey(encryptedDataKey);
+                if (parsed.type === "error") {
+                    return { type: "invalid-key" as const, error: parsed.error };
                 }
-                encryptedDataKeyBytes = parsedEncryptedDataKey.encryptedDataKey;
+                encryptedDataKeyBytes = parsed.encryptedDataKey;
             }
-            const share = await tx.sessionShare.upsert({
-                where: {
-                    sessionId_sharedWithUserId: {
-                        sessionId,
-                        sharedWithUserId: userId
-                    }
+
+            const result = await putSessionAccessGrantInTx(tx, {
+                actorAccountId: ownerId,
+                sessionId,
+                subject: { kind: "account", accountId: userId },
+                grant: {
+                    accessLevel,
+                    canApprovePermissions: accessLevel === "view"
+                        ? false
+                        : canApprovePermissions
+                            ?? await readStoredDelegation(tx, sessionId, userId),
                 },
-                create: {
-                    sessionId,
-                    sharedByUserId: ownerId,
-                    sharedWithUserId: userId,
-                    accessLevel: accessLevel as ShareAccessLevel,
-                    canApprovePermissions: effectiveCanApprovePermissions,
-                    encryptedDataKey: encryptedDataKeyBytes
-                },
-                update: {
-                    accessLevel: accessLevel as ShareAccessLevel,
-                    ...(accessLevel === "view" || canApprovePermissions !== undefined
-                        ? { canApprovePermissions: effectiveCanApprovePermissions }
-                        : {}),
-                    encryptedDataKey: encryptedDataKeyBytes
-                },
-                include: {
-                    sharedWithUser: {
-                        select: PROFILE_SELECT
-                    },
-                    sharedByUser: {
-                        select: PROFILE_SELECT
-                    }
-                }
+                directEnvelope: { encryptedDataKey: encryptedDataKeyBytes },
+                authentication,
+            });
+            if (!result.ok) return { type: "error" as const, error: result.error };
+            if (!result.directShare) return { type: "not-found" as const };
+
+            const sharedByUser = await tx.account.findUnique({
+                where: { id: result.directShare.sharedByUserId },
+                select: ACCOUNT_DISPLAY_PROFILE_SELECT,
+            });
+            scheduleReleasedDirectShareEvent(tx, {
+                recipientAccountId: userId,
+                cursor: result.effects.accountCursors.get(userId) ?? 0,
+                event: projectReleasedDirectShareEvent({
+                    recipientAccountId: userId,
+                    effects: result.effects,
+                    directShare: result.directShare,
+                    directShareRemoved: false,
+                }),
+                sharedByUser: sharedByUser ?? null,
             });
 
-            await markAccountChanged(tx, { accountId: ownerId, kind: 'share', entityId: sessionId });
-            const recipientShareCursor = await markAccountChanged(tx, { accountId: userId, kind: 'share', entityId: sessionId });
-            const recipientSessionCursor = await markAccountChanged(tx, { accountId: userId, kind: 'session', entityId: sessionId });
-            const recipientCursor = Math.max(recipientShareCursor, recipientSessionCursor);
-
-            afterTx(tx, () => {
-                const updatePayload = buildSessionSharedUpdate(share, recipientCursor, randomKeyNaked(12));
-                eventRouter.emitUpdate({
-                    userId: userId,
-                    payload: updatePayload,
-                    recipientFilter: { type: 'all-user-authenticated-connections' }
-                });
-            });
-
-            return { type: "ok" as const, share };
+            return {
+                type: "ok" as const,
+                share: await projectReleasedShareResponse(tx, result.directShare),
+            };
         });
-        if (share.type === "forbidden") {
-            return reply.code(403).send({ error: "Forbidden" });
+
+        if (outcome.type === "error") {
+            const released = RELEASED_ERROR_RESPONSE[outcome.error];
+            return reply.code(released.status).send(released.body);
         }
-        if (share.type === "privacy-error") {
+        if (outcome.type === "privacy-error") {
             return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
         }
-        if (share.type === "client-upgrade-required") {
-            await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                request,
-                reply,
-            );
+        if (outcome.type === "client-upgrade-required") {
+            await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(request, reply);
             return;
         }
-        if (share.type === "not-found") {
+        if (outcome.type === "not-found") {
             return reply.code(404).send({ error: "Session not found" });
         }
-        if (share.type === "publication-error") {
-            return reply.code(409).send({
-                error: "Session transcript is not shareable",
-                code: "session_transcript_not_shareable",
-            });
-        }
-        if (share.type === "invalid-key") {
-            return reply.code(400).send({ error: share.error });
+        if (outcome.type === "invalid-key") {
+            return reply.code(400).send({ error: outcome.error });
         }
 
-        return reply.send({
-            share: {
-                id: share.share.id,
-                sharedWithUser: toShareUserProfile(share.share.sharedWithUser),
-                accessLevel: share.share.accessLevel,
-                canApprovePermissions: share.share.canApprovePermissions,
-                createdAt: share.share.createdAt.getTime(),
-                updatedAt: share.share.updatedAt.getTime()
-            }
-        });
+        return reply.send(ReleasedDirectSessionShareResponseV1Schema.parse({ share: outcome.share }));
     });
 
     /**
@@ -336,107 +420,95 @@ export function shareRoutes(app: Fastify) {
                 sessionId: z.string(),
                 shareId: z.string()
             }),
-            body: z.object({
-                accessLevel: z.enum(['view', 'edit', 'admin']).optional(),
-                canApprovePermissions: z.boolean().optional(),
-            })
+            body: ReleasedDirectSessionSharePatchRequestV1Schema,
         }
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId, shareId } = request.params;
         const { accessLevel, canApprovePermissions } = request.body;
 
-        // Only owner or admin can update shares
-        if (!await canManageSharing(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const sharingPreflight = await resolveReleasedShareCapability(
+            userId,
+            sessionId,
+            authentication,
+            "manageAccess",
+        );
+        if (!sharingPreflight.ok) {
+            return reply.code(sharingPreflight.response.status).send(sharingPreflight.response.body);
         }
+        const outcome = await inTx(async (tx) => {
+            // The released route computed the next state from a row read before the
+            // transaction, so a concurrent edit could be silently overwritten with a
+            // stale value. The deciding row is now read inside this transaction.
+            const existing = await tx.sessionShare.findFirst({
+                where: { id: shareId, sessionId },
+                select: {
+                    sharedWithUserId: true,
+                    accessLevel: true,
+                    canApprovePermissions: true,
+                },
+            });
+            if (!existing) return { type: "not-found" as const };
 
-        if (canApprovePermissions !== undefined) {
-            if (!await canManagePermissionDelegation(userId, sessionId)) {
-                return reply.code(403).send({ error: 'Forbidden' });
+            const nextAccessLevel = accessLevel ?? existing.accessLevel;
+            if (canApprovePermissions === true && nextAccessLevel === 'view') {
+                return {
+                    type: "invalid" as const,
+                    error: 'Permission approvals require edit or admin access',
+                };
             }
-        }
 
-        const existing = await db.sessionShare.findFirst({
-            where: { id: shareId, sessionId },
-            select: { accessLevel: true, canApprovePermissions: true },
+            const result = await putSessionAccessGrantInTx(tx, {
+                actorAccountId: userId,
+                sessionId,
+                subject: { kind: "account", accountId: existing.sharedWithUserId },
+                // Released PATCH edits access without requiring recipient-key repair.
+                directEnvelope: { encryptedDataKey: null },
+                authentication,
+                grant: {
+                    accessLevel: nextAccessLevel,
+                    // The released PATCH body may omit delegation. Downgrading an
+                    // older delegated Edit/Admin grant must still produce the one
+                    // canonical View tuple instead of retaining an impossible true.
+                    canApprovePermissions: nextAccessLevel === "view"
+                        ? false
+                        : canApprovePermissions ?? existing.canApprovePermissions,
+                },
+            });
+            if (!result.ok) return { type: "error" as const, error: result.error };
+            if (!result.directShare) return { type: "not-found" as const };
+
+            scheduleReleasedDirectShareEvent(tx, {
+                recipientAccountId: existing.sharedWithUserId,
+                cursor: result.effects.accountCursors.get(existing.sharedWithUserId) ?? 0,
+                event: projectReleasedDirectShareEvent({
+                    recipientAccountId: existing.sharedWithUserId,
+                    effects: result.effects,
+                    directShare: result.directShare,
+                    directShareRemoved: false,
+                }),
+                sharedByUser: null,
+            });
+
+            return {
+                type: "ok" as const,
+                share: await projectReleasedShareResponse(tx, result.directShare),
+            };
         });
-        if (!existing) {
+
+        if (outcome.type === "error") {
+            const released = RELEASED_ERROR_RESPONSE[outcome.error];
+            return reply.code(released.status).send(released.body);
+        }
+        if (outcome.type === "not-found") {
             return reply.code(404).send({ error: 'Share not found' });
         }
-
-        const nextAccessLevel = accessLevel ?? existing.accessLevel;
-        if (canApprovePermissions === true && nextAccessLevel === 'view') {
-            return reply.code(400).send({ error: 'Permission approvals require edit or admin access' });
-        }
-        const nextCanApprovePermissions = resolveEffectiveShareApprovalCapability({
-            accessLevel: nextAccessLevel as ShareAccessLevel,
-            requestedCanApprovePermissions: canApprovePermissions,
-            existingCanApprovePermissions: existing.canApprovePermissions,
-        });
-
-        const result = await inTx(async (tx) => {
-            if (!await canManageSharingInTx(tx, {
-                userId,
-                sessionId,
-                requirePermissionDelegation: canApprovePermissions !== undefined,
-            })) {
-                return { type: "forbidden" as const };
-            }
-            const share = await tx.sessionShare.update({
-                where: { id: shareId },
-                data: {
-                    ...(accessLevel !== undefined ? { accessLevel: accessLevel as ShareAccessLevel } : {}),
-                    ...(accessLevel === "view" || canApprovePermissions !== undefined
-                        ? { canApprovePermissions: nextCanApprovePermissions }
-                        : {}),
-                },
-                include: {
-                    sharedWithUser: {
-                        select: PROFILE_SELECT
-                    }
-                }
-            });
-
-            await markAccountChanged(tx, { accountId: userId, kind: 'share', entityId: sessionId });
-            const recipientShareCursor = await markAccountChanged(tx, { accountId: share.sharedWithUserId, kind: 'share', entityId: sessionId });
-            const recipientSessionCursor = await markAccountChanged(tx, { accountId: share.sharedWithUserId, kind: 'session', entityId: sessionId });
-            const recipientCursor = Math.max(recipientShareCursor, recipientSessionCursor);
-
-            afterTx(tx, () => {
-                const updatePayload = buildSessionShareUpdatedUpdate(
-                    share.id,
-                    share.sessionId,
-                    share.accessLevel,
-                    share.canApprovePermissions,
-                    share.updatedAt,
-                    recipientCursor,
-                    randomKeyNaked(12)
-                );
-                eventRouter.emitUpdate({
-                    userId: share.sharedWithUserId,
-                    payload: updatePayload,
-                    recipientFilter: { type: 'all-user-authenticated-connections' }
-                });
-            });
-
-            return { type: "ok" as const, share };
-        });
-
-        if (result.type === "forbidden") {
-            return reply.code(403).send({ error: "Forbidden" });
+        if (outcome.type === "invalid") {
+            return reply.code(400).send({ error: outcome.error });
         }
 
-        return reply.send({
-            share: {
-                id: result.share.id,
-                sharedWithUser: toShareUserProfile(result.share.sharedWithUser),
-                accessLevel: result.share.accessLevel,
-                canApprovePermissions: result.share.canApprovePermissions,
-                createdAt: result.share.createdAt.getTime(),
-                updatedAt: result.share.updatedAt.getTime()
-            }
-        });
+        return reply.send(ReleasedDirectSessionShareResponseV1Schema.parse({ share: outcome.share }));
     });
 
     /**
@@ -454,61 +526,57 @@ export function shareRoutes(app: Fastify) {
         const userId = request.userId;
         const { sessionId, shareId } = request.params;
 
-        // Only owner or admin can delete shares
-        if (!await canManageSharing(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const preflight = await resolveReleasedShareCapability(
+            userId,
+            sessionId,
+            authentication,
+            "manageAccess",
+        );
+        if (!preflight.ok) {
+            return reply.code(preflight.response.status).send(preflight.response.body);
         }
 
-        const result = await inTx(async (tx) => {
-            if (!await canManageSharingInTx(tx, { userId, sessionId })) {
-                return { type: "forbidden" as const };
-            }
-            const share = await tx.sessionShare.findFirst({
-                where: { id: shareId, sessionId }
+        const outcome = await inTx(async (tx) => {
+            const existing = await tx.sessionShare.findFirst({
+                where: { id: shareId, sessionId },
+                select: { sharedWithUserId: true },
             });
+            // The released contract answers a repeated delete with 404; the current
+            // subject-keyed remove operation is the idempotent one.
+            if (!existing) return { type: "not-found" as const };
 
-            if (!share) {
-                return { type: "not-found" as const };
-            }
-
-            await tx.sessionShare.delete({
-                where: { id: shareId }
-            });
-
-            await tombstoneSessionDraftForLifecycleInTx(tx, {
-                accountId: share.sharedWithUserId,
+            const result = await deleteSessionAccessGrantInTx(tx, {
+                actorAccountId: userId,
                 sessionId,
+                subject: { kind: "account", accountId: existing.sharedWithUserId },
+                authentication,
+            });
+            if (!result.ok) return { type: "error" as const, error: result.error };
+
+            scheduleReleasedDirectShareEvent(tx, {
+                recipientAccountId: existing.sharedWithUserId,
+                cursor: result.effects.accountCursors.get(existing.sharedWithUserId) ?? 0,
+                event: projectReleasedDirectShareEvent({
+                    recipientAccountId: existing.sharedWithUserId,
+                    effects: result.effects,
+                    directShare: result.removedDirectShare,
+                    directShareRemoved: true,
+                }),
+                sharedByUser: null,
             });
 
-            await markAccountChanged(tx, { accountId: userId, kind: 'share', entityId: sessionId });
-            const recipientShareCursor = await markAccountChanged(tx, { accountId: share.sharedWithUserId, kind: 'share', entityId: sessionId });
-            const recipientSessionCursor = await markAccountChanged(tx, { accountId: share.sharedWithUserId, kind: 'session', entityId: sessionId });
-            const recipientCursor = Math.max(recipientShareCursor, recipientSessionCursor);
-
-            afterTx(tx, async () => {
-                const updatePayload = buildSessionShareRevokedUpdate(
-                    share.id,
-                    share.sessionId,
-                    recipientCursor,
-                    randomKeyNaked(12)
-                );
-                eventRouter.emitUpdate({
-                    userId: share.sharedWithUserId,
-                    payload: updatePayload,
-                    recipientFilter: { type: 'all-user-authenticated-connections' }
-                });
-            });
-
-            return { type: "ok" as const, share };
+            return { type: "ok" as const };
         });
 
-        if (result.type === "forbidden") {
-            return reply.code(403).send({ error: "Forbidden" });
+        if (outcome.type === "error") {
+            const released = RELEASED_ERROR_RESPONSE[outcome.error];
+            return reply.code(released.status).send(released.body);
         }
-        if (result.type === "not-found") {
+        if (outcome.type === "not-found") {
             return reply.code(404).send({ error: 'Share not found' });
         }
 
-        return reply.send({ success: true });
+        return reply.send(ReleasedDirectSessionShareDeleteResponseV1Schema.parse({ success: true }));
     });
 }

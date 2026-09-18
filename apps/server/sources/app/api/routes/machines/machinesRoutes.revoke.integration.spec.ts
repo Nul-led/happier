@@ -9,6 +9,8 @@ vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
 vi.mock("@/app/changes/markAccountChangedAfterCommit", () => ({ markAccountChangedAfterCommit: vi.fn(async () => 456) }));
 
 const emitUpdate = vi.fn();
+const getConnections = vi.fn(() => []);
+const disconnectMachineAndSessionSockets = vi.fn();
 const buildUpdateMachineUpdate = vi.fn((_machineId: string, updSeq: number, updId: string, _metadata?: any, _daemonState?: any, extra?: any) => ({
     id: updId,
     seq: updSeq,
@@ -16,7 +18,7 @@ const buildUpdateMachineUpdate = vi.fn((_machineId: string, updSeq: number, updI
     createdAt: 0,
 }));
 vi.mock("@/app/events/eventRouter", () => ({
-    eventRouter: { emitUpdate },
+    eventRouter: { emitUpdate, getConnections, disconnectMachineAndSessionSockets },
     buildNewMachineUpdate: vi.fn(),
     buildUpdateMachineUpdate,
 }));
@@ -64,7 +66,7 @@ const dbMocks = createDbMocks({
 } as const);
 const txDbMocks = createDbMocks({
     machine: ["findFirst", "update"],
-    accessKey: ["deleteMany"],
+    accessKey: ["deleteMany", "findMany"],
 } as const);
 
 installDbModuleMock(() => ({
@@ -94,6 +96,9 @@ describe("machinesRoutes (revoke machine)", () => {
             ...args.data,
             updatedAt: new Date(),
         }));
+        txDbMocks.db.accessKey.findMany.mockResolvedValue([
+            { sessionId: "runner-session" },
+        ]);
         txDbMocks.db.accessKey.deleteMany.mockResolvedValue({ count: 2 });
         const route = createRouteTestBuilder({
             method: "POST",
@@ -139,6 +144,11 @@ describe("machinesRoutes (revoke machine)", () => {
         );
         expect(emitUpdate).toHaveBeenCalledTimes(1);
         expect(invalidateMachine).toHaveBeenCalledWith("m1");
+        expect(disconnectMachineAndSessionSockets).toHaveBeenCalledWith({
+            accountId: "u1",
+            machineId: "m1",
+            sessionIds: ["runner-session"],
+        });
 
         expect(reply.send).toHaveBeenCalled();
         expect(response).toEqual(
@@ -170,6 +180,7 @@ describe("machinesRoutes (revoke machine)", () => {
             active: false,
             revokedAt: new Date(),
         });
+        txDbMocks.db.accessKey.findMany.mockResolvedValue([]);
         txDbMocks.db.accessKey.deleteMany.mockResolvedValue({ count: 0 });
         const route = createRouteTestBuilder({
             method: "POST",

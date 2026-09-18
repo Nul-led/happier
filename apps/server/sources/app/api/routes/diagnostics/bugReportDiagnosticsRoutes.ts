@@ -5,7 +5,7 @@ import { z } from "zod";
 import { redactBugReportSensitiveText } from "@happier-dev/protocol";
 
 import { parseBooleanEnv, parseIntEnv } from "@/config/env";
-import { isServerOwnerUserId, resolveServerOwnerUserIds } from "@/app/features/serverOwners";
+import { resolveLegacyServerDiagnosticsEntitlement } from "@/app/home/governance/serverDiagnosticsEntitlement";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { type Fastify } from "../../types";
 
@@ -85,13 +85,16 @@ export function bugReportDiagnosticsRoutes(app: Fastify) {
             });
         }
         if (diagnosticsAccess.mode === "owner") {
-            const ownerUserIds = resolveServerOwnerUserIds(process.env);
-            if (ownerUserIds.length === 0) {
+            const entitlement = await resolveLegacyServerDiagnosticsEntitlement({
+                env: process.env,
+                accountId: request.userId,
+            });
+            if (entitlement.status === "not_configured") {
                 return reply.code(403).send({
                     error: "Server diagnostics owner access mode requires configured owner user ids",
                 });
             }
-            if (!isServerOwnerUserId(process.env, request.userId)) {
+            if (entitlement.status === "denied") {
                 return reply.code(403).send({
                     error: "Server diagnostics are restricted to configured server owners",
                 });

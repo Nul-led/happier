@@ -310,6 +310,44 @@ describe("usageQueryService scoped aggregation", () => {
         expect(result.totals.eventCount).toBe(1);
     });
 
+    it("excludes Team-only admission and external-terminal rows from personal analytics", async () => {
+        const owner = await createUsageOwner("team-only-sources");
+        const observedAt = new Date("2026-07-01T10:00:00.000Z");
+        await db.usageEvent.createMany({
+            data: [
+                buildUsageEvent({ ...owner, observedAt: observedAt.toISOString(), scope: "turn_delta", totalTokens: 10 }),
+                {
+                    accountId: owner.accountId,
+                    sessionId: owner.sessionId,
+                    observedAt,
+                    agentId: "team_credential_broker",
+                    source: "team_credential_admission",
+                    scope: "turn_delta",
+                    requestCount: 1,
+                    teamCredentialResourceId: "resource-personal-exclusion",
+                    teamCredentialActorAccountId: owner.accountId,
+                },
+                {
+                    accountId: owner.accountId,
+                    sessionId: owner.sessionId,
+                    observedAt,
+                    agentId: "team_credential_broker",
+                    source: "team_credential_external_terminal",
+                    scope: "turn_delta",
+                    totalTokens: 40,
+                    inputTokens: 40,
+                    teamCredentialResourceId: "resource-personal-exclusion",
+                    teamCredentialActorAccountId: owner.accountId,
+                },
+            ],
+        });
+
+        const result = await querySession(owner.accountId, owner.sessionId);
+
+        expect(result.totals.eventCount).toBe(1);
+        expect(result.totals.tokens.total).toBe(10);
+    });
+
     it("keeps series and premium timeline day buckets aligned regardless of server timezone", async () => {
         const owner = await createUsageOwner("timezone-owner");
         await db.usageEvent.create({

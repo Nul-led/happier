@@ -1,29 +1,64 @@
 import { Buffer } from "node:buffer";
+import { randomUUID } from "node:crypto";
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import {
-    EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+    EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HTTP_PATH_TEMPLATE_V1,
+    EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_VERIFY_HTTP_PATH_TEMPLATE_V1,
+    EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
+    EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1,
     ExternalActionActionIdV1Schema,
-    ExternalActionRequestEnvelopeV1Schema,
+    ExternalActionExecutionAuthorizationRequestV1Schema,
+    ExternalActionExecutionAuthorizationVerifyRequestV1Schema,
+    computeExternalActionRequestEnvelopeDigestV1,
+    ExternalActionRequestEnvelopeSchema,
+    isExternalActionRequestWithinLimit,
     type ExternalActionServerPrincipalV1,
-    type PreparedExternalActionResponseEnvelopeV1,
+    type PreparedExternalActionResponseEnvelope,
+    projectExternalActionHttpError,
     projectExternalActionResponseEnvelopeV1,
-    projectExternalActionHttpErrorV1,
+    type ExternalActionHttpErrorCode,
     prepareExternalActionResponseEnvelopeV1,
-    type ExternalActionHttpErrorCodeV1,
+    readExternalActionProtectedRequestId,
 } from "@happier-dev/protocol/actions";
 
 import {
     type ExternalActionDaemonDispatcher,
 } from "@/app/api/socket/externalActionDispatcher";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
+import { auth } from "@/app/auth/auth";
+import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { db } from "@/storage/db";
 
 import type { Fastify } from "../../types";
 
 type ExternalActionRouteParams = Readonly<{
     actionId: string;
 }>;
+
+// The inner envelope retains its canonical owner limit. This adds only the
+// maximum escaped 256-code-unit Machine id and fixed JSON wrapper framing.
+const EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_REQUEST_FRAMING_BYTES = Buffer.byteLength(JSON.stringify({
+    v: 1,
+    machineId: "\u0000".repeat(256),
+    envelope: null,
+}), "utf8") - Buffer.byteLength("null", "utf8");
+
+async function verifyExternalActionExecutionAuthorizationRoute(
+    request: FastifyRequest<{ Params: ExternalActionRouteParams; Body: unknown }>,
+    reply: FastifyReply,
+): Promise<FastifyReply> {
+    reply.header("cache-control", "no-store");
+    if (request.externalActionExecutionAuthorized !== true) {
+        return sendExternalActionJson(reply, 401, { error: "invalid_token" });
+    }
+    if (!ExternalActionExecutionAuthorizationVerifyRequestV1Schema.safeParse(request.body).success) {
+        return sendExternalActionHttpError(reply, "invalid_envelope");
+    }
+    return reply.send({ ok: true });
+}
 
 export type RegisterExternalActionRoutesDependencies = Readonly<{
     dispatch?: ExternalActionDaemonDispatcher;
@@ -51,17 +86,28 @@ function sendExternalActionSerializedJson(
 
 function sendExternalActionResponse(
     reply: FastifyReply,
-    prepared: PreparedExternalActionResponseEnvelopeV1,
+    prepared: PreparedExternalActionResponseEnvelope,
 ): FastifyReply {
     return sendExternalActionSerializedJson(reply, 200, prepared.body, prepared.byteLength);
 }
 
 function sendExternalActionHttpError(
     reply: FastifyReply,
-    code: ExternalActionHttpErrorCodeV1,
+    code: ExternalActionHttpErrorCode,
+    requestId?: string,
 ): FastifyReply {
-    const error = projectExternalActionHttpErrorV1(code);
+    const error = projectExternalActionHttpError(code, requestId);
     return sendExternalActionJson(reply, error.statusCode, error.payload);
+}
+
+function sendExternalActionSubmittedUnknown(reply: FastifyReply): FastifyReply {
+    // The relay cannot authenticate an Action result after losing the daemon's
+    // acknowledgement. An empty transport failure lets the caller retain its
+    // own request correlation without fabricating a plaintext Action outcome.
+    return reply
+        .code(502)
+        .header("cache-control", "no-store")
+        .send();
 }
 
 function isFastifyBodyLimitError(error: unknown): boolean {
@@ -139,17 +185,93 @@ export function registerExternalActionRoutes(
 ): void {
     const dispatch = dependencies.dispatch ?? app.forwardExternalActionToMachine;
 
+    app.post<{ Params: ExternalActionRouteParams; Body: unknown }>(
+        EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HTTP_PATH_TEMPLATE_V1,
+        {
+            bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2
+                + EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_REQUEST_FRAMING_BYTES,
+            config: {
+                allowApiToken: true,
+                cors: false,
+                connectionAuthFailureError: "invalid_token",
+                rateLimit: resolveApiHotEndpointRateLimit(process.env, "actions"),
+            },
+            preHandler: app.authenticate,
+        },
+        async (request, reply) => {
+            reply.header("cache-control", "no-store");
+            const principal = readExternalActionRequestPrincipal(request);
+            const actionId = ExternalActionActionIdV1Schema.safeParse(request.params.actionId);
+            const body = ExternalActionExecutionAuthorizationRequestV1Schema.safeParse(request.body);
+            if (!principal || !actionId.success || !body.success) {
+                return sendExternalActionHttpError(reply, principal ? "invalid_envelope" : "invalid_token");
+            }
+            if (!isExternalActionRequestWithinLimit(body.data.envelope)) {
+                return sendExternalActionHttpError(reply, "request_too_large");
+            }
+            const target = body.data.envelope.target ?? {
+                kind: "machine" as const,
+                machineId: body.data.machineId,
+            };
+            if (target.kind === "machine" && target.machineId !== body.data.machineId) {
+                return sendExternalActionHttpError(reply, "invalid_envelope");
+            }
+            const machine = await db.machine.findFirst({
+                where: { id: body.data.machineId, accountId: principal.accountId },
+                select: {
+                    revokedAt: true,
+                    replacedByMachineId: true,
+                    installationId: true,
+                    installationPublicKey: true,
+                },
+            });
+            if (
+                !machine
+                || classifyMachineAvailabilityState(machine) !== "available"
+                || !machine.installationId
+                || !machine.installationPublicKey
+            ) {
+                return sendExternalActionHttpError(reply, "target_unavailable", body.data.envelope.requestId);
+            }
+            const authorization = await auth.mintExternalActionExecutionAuthorization({
+                serverIdentityId: await getOrCreateServerIdentityId(),
+                accountId: principal.accountId,
+                principalId: principal.principalId,
+                credentialId: principal.credentialId,
+                machineId: body.data.machineId,
+                actionId: actionId.data,
+                requestId: body.data.envelope.requestId ?? randomUUID(),
+                requestEnvelopeDigest: computeExternalActionRequestEnvelopeDigestV1(body.data.envelope),
+                target,
+            });
+            return reply.header("cache-control", "no-store").send(authorization);
+        },
+    );
+
+    app.post<{ Params: ExternalActionRouteParams; Body: unknown }>(
+        EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_VERIFY_HTTP_PATH_TEMPLATE_V1,
+        {
+            config: {
+                allowApiToken: true,
+                cors: false,
+                connectionAuthFailureError: "invalid_token",
+            },
+            preHandler: app.authenticate,
+        },
+        verifyExternalActionExecutionAuthorizationRoute,
+    );
+
     // Explicitly shadow global CORS handling: this public Action endpoint is
     // bearer-only and must not become browser-callable through preflight.
-    app.options<{ Params: ExternalActionRouteParams }>("/v1/actions/:actionId", {
+    app.options<{ Params: ExternalActionRouteParams }>(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, {
         config: { cors: false },
     }, async (_request, reply) => reply.header("cache-control", "no-store").code(404).send());
 
     app.post<{
         Params: ExternalActionRouteParams;
         Body: unknown;
-    }>("/v1/actions/:actionId", {
-        bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+    }>(`${EXTERNAL_ACTION_HTTP_PATH_PREFIX_V1}:actionId`, {
+        bodyLimit: EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
         config: {
             allowApiToken: true,
             cors: false,
@@ -172,7 +294,7 @@ export function registerExternalActionRoutes(
             await app.authenticate(request, reply);
             if (reply.sent) return;
             if (!readExternalActionRequestPrincipal(request)) {
-                return sendExternalActionJson(reply, 401, { error: "invalid_token" });
+                return sendExternalActionHttpError(reply, "invalid_token");
             }
         },
     }, async (request, reply) => {
@@ -183,17 +305,28 @@ export function registerExternalActionRoutes(
             // forward the plaintext bearer beyond that boundary.
             const principal = readExternalActionRequestPrincipal(request);
             if (!principal) {
-                return sendExternalActionJson(reply, 401, { error: "invalid_token" });
+                return sendExternalActionHttpError(reply, "invalid_token");
             }
 
             const actionId = ExternalActionActionIdV1Schema.safeParse(request.params.actionId);
             if (!actionId.success) {
-                return sendExternalActionHttpError(reply, "invalid_action");
+                return sendExternalActionHttpError(
+                    reply,
+                    "invalid_action",
+                    readExternalActionProtectedRequestId(request.body),
+                );
             }
 
-            const envelope = ExternalActionRequestEnvelopeV1Schema.safeParse(request.body);
+            const envelope = ExternalActionRequestEnvelopeSchema.safeParse(request.body);
             if (!envelope.success) {
-                return sendExternalActionHttpError(reply, "invalid_envelope");
+                return sendExternalActionHttpError(
+                    reply,
+                    "invalid_envelope",
+                    readExternalActionProtectedRequestId(request.body),
+                );
+            }
+            if (!isExternalActionRequestWithinLimit(envelope.data)) {
+                return sendExternalActionHttpError(reply, "request_too_large");
             }
 
             const result = await dispatch({
@@ -201,7 +334,13 @@ export function registerExternalActionRoutes(
                 envelope: envelope.data,
                 principal,
             }, { signal: lifetime.signal });
+            if (result.kind === "submitted_unknown") {
+                return sendExternalActionSubmittedUnknown(reply);
+            }
             if (result.kind === "placement_error") {
+                if (envelope.data.v === 2) {
+                    return sendExternalActionHttpError(reply, result.code, envelope.data.requestId);
+                }
                 const response = projectExternalActionResponseEnvelopeV1({
                     v: 1,
                     actionId: actionId.data,
@@ -223,7 +362,11 @@ export function registerExternalActionRoutes(
                 );
             }
             if (result.kind === "invalid_request") {
-                return sendExternalActionHttpError(reply, result.errorCode);
+                return sendExternalActionHttpError(
+                    reply,
+                    result.errorCode,
+                    envelope.data.v === 2 ? envelope.data.requestId : undefined,
+                );
             }
             return sendExternalActionResponse(reply, result.prepared);
         } finally {

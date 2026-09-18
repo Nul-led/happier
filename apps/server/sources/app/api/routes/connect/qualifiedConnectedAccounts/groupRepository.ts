@@ -1,4 +1,5 @@
 import {
+    CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
     ConnectedServiceAuthGroupMemberStateV1Schema,
     ConnectedServiceAuthGroupPolicyV1Schema,
     ConnectedServiceAuthGroupStateV1Schema,
@@ -11,6 +12,7 @@ import {
     QualifiedConnectedAccountGroupRefSchema,
     QualifiedConnectedAccountGroupV4Schema,
     QualifiedConnectedAccountServiceRefSchema,
+    clearConnectedServiceAuthGroupMemberRuntimeBlockers,
     readConnectedServiceManualActiveProfileRuntimeBlocker,
     type QualifiedConnectedAccountGroupV4,
     type QualifiedConnectedAccountServiceRef,
@@ -74,6 +76,7 @@ type QualifiedGroupRow = Readonly<{
             qualifiedIdentityDigest: string;
             metadata?: unknown;
             configurationRevision?: string | null;
+            authenticationModeId?: string;
         }>;
     }>>;
 }>;
@@ -305,6 +308,7 @@ const qualifiedGroupInclude = {
                     id: true,
                     metadata: true,
                     configurationRevision: true,
+                    authenticationModeId: true,
                 },
             },
         },
@@ -354,6 +358,185 @@ async function readQualifiedGroupRowInTx(
 type QualifiedGroupStoredRow = NonNullable<
     Awaited<ReturnType<typeof readQualifiedGroupRowInTx>>
 >;
+
+export type QualifiedConnectedAccountGroupSourceSnapshot = Readonly<{
+    incarnation: string;
+    generation: number;
+    runtimeStateRevision: number;
+    members: readonly Readonly<{
+        account: Readonly<{
+            service: QualifiedConnectedAccountServiceRef;
+            accountId: string;
+        }>;
+        credentialIncarnation: string;
+        credentialRevision: string | null;
+        configurationRevision: string | null;
+        authenticationModeId: string;
+        directExportContract:
+            | typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+            | null;
+        contributionContractVersion: string | null;
+        priority: number;
+        enabled: boolean;
+    }>[];
+}>;
+
+function projectQualifiedConnectedAccountGroupSourceSnapshot(
+    current: QualifiedGroupStoredRow,
+): QualifiedConnectedAccountGroupSourceSnapshot {
+    const projected = toQualifiedConnectedAccountGroup(current);
+    const credentialIncarnationByAccountId = new Map(
+        current.members.map((member) => [
+            member.credential.connectedAccountId,
+            member.credential.id,
+        ]),
+    );
+    return Object.freeze({
+        incarnation: current.id,
+        generation: projected.generation,
+        runtimeStateRevision: projected.runtimeStateRevision,
+        members: Object.freeze(projected.members.map((member) => {
+            const storedMember = current.members.find(candidate => (
+                candidate.credential.connectedAccountId
+                    === member.connectedAccountId
+            ));
+            const credentialIncarnation = credentialIncarnationByAccountId.get(
+                member.connectedAccountId,
+            );
+            if (
+                !credentialIncarnation
+                || !storedMember
+                || typeof storedMember.credential.authenticationModeId !== "string"
+            ) {
+                throw new Error(
+                    "Qualified Connected Account group member credential identity is missing",
+                );
+            }
+            const sourceMetadata = resolveQualifiedConnectedAccountStoredMetadata({
+                rowId: credentialIncarnation,
+                metadata: storedMember.credential.metadata,
+            });
+            return Object.freeze({
+                account: Object.freeze({
+                    service: Object.freeze({ ...projected.ref.service }),
+                    accountId: member.connectedAccountId,
+                }),
+                credentialIncarnation,
+                credentialRevision: sourceMetadata.credentialRevision,
+                configurationRevision:
+                    storedMember.credential.configurationRevision ?? null,
+                authenticationModeId:
+                    storedMember.credential.authenticationModeId,
+                directExportContract: sourceMetadata.directExportContract,
+                contributionContractVersion:
+                    sourceMetadata.contributionContractVersion,
+                priority: member.priority,
+                enabled: member.enabled,
+            });
+        })),
+    });
+}
+
+/**
+ * Reads every exact Pool source requested by one administration page in a
+ * single persistence query. Results stay aligned with callers so repeated
+ * resources do not create repeated source-owner reads.
+ */
+export async function readQualifiedConnectedAccountGroupSourceSnapshotsInTx(
+    tx: Tx,
+    params: readonly Readonly<{
+        accountId: string;
+        service: QualifiedConnectedAccountServiceRef;
+        groupId: string;
+    }>[],
+): Promise<readonly (QualifiedConnectedAccountGroupSourceSnapshot | null)[]> {
+    if (params.length === 0) return [];
+    const prepared = params.map((input) => {
+        const service = QualifiedConnectedAccountServiceRefSchema.parse(
+            input.service,
+        );
+        const groupRef = QualifiedConnectedAccountGroupRefSchema.parse({
+            service,
+            groupId: input.groupId,
+        });
+        return {
+            accountId: input.accountId,
+            groupRef,
+            qualifiedGroupDigest:
+                createQualifiedConnectedAccountGroupDigest(groupRef),
+        };
+    });
+    const unique = [...new Map(prepared.map((input) => [
+        `${input.accountId}\u0000${input.qualifiedGroupDigest}`,
+        input,
+    ])).values()];
+    const rows = await tx.connectedServiceAuthGroup.findMany({
+        where: {
+            OR: unique.map((input) => ({
+                accountId: input.accountId,
+                qualifiedGroupDigest: input.qualifiedGroupDigest,
+            })),
+        },
+        include: qualifiedGroupInclude,
+    });
+    const rowByKey = new Map(rows.map((row) => [
+        `${row.accountId}\u0000${row.qualifiedGroupDigest}`,
+        row,
+    ]));
+    return prepared.map((input) => {
+        const current = rowByKey.get(
+            `${input.accountId}\u0000${input.qualifiedGroupDigest}`,
+        );
+        if (!current) return null;
+        const storedRef = parseStoredQualifiedConnectedAccountGroupRef(current);
+        if (
+            storedRef.service.pluginId !== input.groupRef.service.pluginId
+            || storedRef.service.localId !== input.groupRef.service.localId
+            || storedRef.groupId !== input.groupRef.groupId
+        ) {
+            throw new Error(
+                "Qualified Connected Account group identity digest collision",
+            );
+        }
+        return projectQualifiedConnectedAccountGroupSourceSnapshot(current);
+    });
+}
+
+/**
+ * Reads the Pool's current source-owned membership without authorizing a
+ * caller or selecting an active Account. Team credential code uses this
+ * internal projection only to verify a pinned Pool lifetime and enumerate
+ * explicitly disclosed direct members. Generation, policy and switching stay
+ * owned by the ordinary Connected Account runtime.
+ */
+export async function readQualifiedConnectedAccountGroupSourceSnapshotInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        service: QualifiedConnectedAccountServiceRef;
+        groupId: string;
+    }>,
+): Promise<QualifiedConnectedAccountGroupSourceSnapshot | null> {
+    const current = await readQualifiedGroupRowInTx(tx, params);
+    if (!current) return null;
+    return projectQualifiedConnectedAccountGroupSourceSnapshot(current);
+}
+
+/** Reads the existing Pool lifetime without projecting its private members. */
+export async function readQualifiedConnectedAccountGroupSourceIdentityInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        service: QualifiedConnectedAccountServiceRef;
+        groupId: string;
+    }>,
+): Promise<Readonly<{ incarnation: string }> | null> {
+    const current = await readQualifiedConnectedAccountGroupSourceSnapshotInTx(
+        tx,
+        params,
+    );
+    return current ? { incarnation: current.incarnation } : null;
+}
 
 export async function readQualifiedConnectedAccountGroup(
     params: Readonly<{
@@ -710,7 +893,12 @@ export async function patchQualifiedConnectedAccountGroup(
             ? null
             : encodeStoredState(
                 ConnectedServiceAuthGroupPolicyV1Schema,
-                patch.policy,
+                {
+                    // Feature-masked readers omit the reset opt-in; an unrelated
+                    // policy edit must preserve that saved choice.
+                    ...parseStoredJson(ConnectedServiceAuthGroupPolicyV1Schema, current.policyJson),
+                    ...patch.policy,
+                },
             );
         const nextStateJson = patch.state === undefined
             ? null
@@ -1174,6 +1362,24 @@ async function mutateQualifiedGroupMember(
                     candidate.id !== existing?.id
                     && candidate.enabled)
                 : undefined;
+            const clearedAutomaticDisableState = (
+                params.operation === "update"
+                && existing !== undefined
+                && mutation.enabled === true
+                && existing.enabled === false
+            )
+                ? (() => {
+                    const state = ConnectedServiceAuthGroupMemberStateV1Schema.parse(
+                        mutation.state
+                            ?? (existing.stateJson === null
+                                ? {}
+                                : JSON.parse(existing.stateJson)),
+                    );
+                    return state.autoDisabledReason === "model_not_entitled"
+                        ? clearConnectedServiceAuthGroupMemberRuntimeBlockers(state)
+                        : null;
+                })()
+                : null;
             if (params.operation === "update" && existing) {
                 await tx.connectedServiceAuthGroupMember.update({
                     where: { id: existing.id },
@@ -1184,7 +1390,14 @@ async function mutateQualifiedGroupMember(
                         ...(mutation.enabled !== undefined
                             ? { enabled: mutation.enabled }
                             : {}),
-                        ...(mutation.state !== undefined
+                        ...(clearedAutomaticDisableState !== null
+                            ? {
+                                stateJson: encodeStoredState(
+                                    ConnectedServiceAuthGroupMemberStateV1Schema,
+                                    clearedAutomaticDisableState,
+                                ),
+                            }
+                            : mutation.state !== undefined
                             ? {
                                 stateJson: encodeStoredState(
                                     ConnectedServiceAuthGroupMemberStateV1Schema,

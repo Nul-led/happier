@@ -4,11 +4,27 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
 import { db } from '@/storage/db';
 import { inTx } from '@/storage/inTx';
-import { createSessionMessage } from '@/app/session/sessionWriteService';
+import { createPresentUserSessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication.testkit';
+import { createSessionMessage as createSessionMessageWithAuthentication } from '@/app/session/sessionWriteService';
 import { deleteSessionTree } from '@/app/session/delete/deleteSessionTree';
 import { runSessionSidechainMessageRetentionRule } from '@/app/retention/rules/sessionSidechainMessageRetentionRule';
 import { readCanonicalSessionMessagesPage } from './homeSearchCanonicalSessionMessages';
 import { startHomeSearchLifecycle } from './homeSearchLifecycle';
+
+const authentication = createPresentUserSessionAccessAuthentication();
+
+type AuthenticatedSessionMessageInput = Omit<
+    Extract<Parameters<typeof createSessionMessageWithAuthentication>[0], { content: unknown }>,
+    'authentication' | 'inputAdmission'
+>;
+
+function createSessionMessage(params: AuthenticatedSessionMessageInput) {
+    return createSessionMessageWithAuthentication({
+        ...params,
+        inputAdmission: 'authenticatedAccount',
+        authentication,
+    });
+}
 
 async function eventually(assertion: () => void): Promise<void> {
     for (let attempt = 0; attempt < 40; attempt += 1) {

@@ -3,11 +3,9 @@ import {
     decodePeerTcpTunnelBinaryFrameV2,
     encodePeerTcpTunnelBinaryFrameV2,
     PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-    PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     PeerTcpTunnelRelayEnvelopeSchema,
     PeerTcpTunnelRelayEnvelopeV1Schema,
-    validatePeerTcpTunnelDataFrameCaps,
     verifyPeerTcpTunnelRelayAuthorizationV2,
     type PeerTcpTunnelBinaryFrameHeaderV2,
     type PeerTcpTunnelEncoding,
@@ -26,6 +24,7 @@ import { resolvePeerTcpTunnelRelayCaps, type PeerTcpTunnelRelayCaps } from './re
 import {
     createPeerMediationFlowEvent,
     type PeerMediationObservabilityEmitter,
+    type PeerMediationObservabilityFlowKind,
 } from '../observability/events';
 import type {
     PeerTcpTunnelRelayAdmissionResult,
@@ -171,7 +170,10 @@ function validateOpenFramePolicy(input: Readonly<{
     if (input.envelope.recipient.kind !== 'machine' || frame.open.targetMachineId !== input.envelope.recipient.machineId) {
         return 'probe_binding_mismatch';
     }
-    if (!isLoopbackHost(frame.open.destination.host)) return 'destination_host_not_allowed';
+    if (frame.open.relayAuthorization?.payload.flowKind === 'provider_broker') {
+        return frame.open.destination === undefined ? null : 'destination_host_not_allowed';
+    }
+    if (!frame.open.destination || !isLoopbackHost(frame.open.destination.host)) return 'destination_host_not_allowed';
     if (!input.caps.allowedPorts.includes(frame.open.destination.port)) return 'destination_port_not_allowed';
     return null;
 }
@@ -183,6 +185,12 @@ function validateRelayAuthorizationBinding(input: Readonly<{
     if (input.payload.routeKind !== input.open.routeKind) return 'relay_authorization_invalid';
     if (input.payload.tunnelId !== input.open.tunnelId) return 'relay_authorization_invalid';
     if (input.payload.targetMachineId !== input.open.targetMachineId) return 'relay_authorization_invalid';
+    if (input.payload.flowKind === 'provider_broker') {
+        return input.payload.providerBroker && input.open.destination === undefined
+            ? null
+            : 'relay_authorization_invalid';
+    }
+    if (!input.payload.destination || !input.open.destination) return 'relay_authorization_invalid';
     if (normalizeHost(input.payload.destination.host) !== normalizeHost(input.open.destination.host)) {
         return 'relay_authorization_invalid';
     }
@@ -222,17 +230,6 @@ function validateRelayAuthorization(input: Readonly<{
     }
     if (validateRelayAuthorizationBinding({ open: frame.open, payload: verification.payload })) return null;
     return verification.payload;
-}
-
-function validateRelayFrameDirection(envelope: PeerTcpTunnelRelayEnvelopeV1): string | null {
-    if (envelope.frame.kind !== 'data') return null;
-    if (envelope.sender.kind === 'user' && envelope.frame.direction !== 'client_to_daemon') {
-        return 'direction_not_allowed';
-    }
-    if (envelope.sender.kind === 'machine' && envelope.frame.direction !== 'daemon_to_client') {
-        return 'direction_not_allowed';
-    }
-    return null;
 }
 
 function emitSocketError(socket: TunnelRelaySocket, error: string): void {
@@ -427,16 +424,6 @@ function emitBinarySubstreamAbortToRelayParticipants(input: Readonly<{
     });
 }
 
-function frameDecodedBytes(frame: PeerTcpTunnelFrameV1, maxFrameBytes: number): number {
-    if (frame.kind !== 'data') return 0;
-    const capped = validatePeerTcpTunnelDataFrameCaps({
-        frame,
-        maxEncodedFrameBytes: maxFrameBytes,
-        maxDecodedPayloadBytes: maxFrameBytes,
-    });
-    return capped.ok ? capped.decodedBytes : maxFrameBytes + 1;
-}
-
 function resolveEffectiveRelayMeteringCaps(
     caps: PeerTcpTunnelRelayCaps,
     authorization: PeerTcpTunnelRelayAuthorizationPayloadV2,
@@ -454,8 +441,8 @@ function resolveEffectiveRelayMeteringCaps(
 
 function selectedOpenEncoding(frame: PeerTcpTunnelFrameV1): PeerTcpTunnelEncoding {
     return frame.kind === 'open'
-        ? frame.open.selectedEncoding ?? PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1
-        : PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1;
+        ? frame.open.selectedEncoding ?? PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
+        : PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2;
 }
 
 function validateSelectedOpenEncoding(input: Readonly<{
@@ -465,9 +452,6 @@ function validateSelectedOpenEncoding(input: Readonly<{
     if (input.frame.kind !== 'open') return null;
     const selectedEncoding = selectedOpenEncoding(input.frame);
     if (!input.caps.supportedEncodings.includes(selectedEncoding)) return 'encoding_unsupported';
-    if (selectedEncoding === PEER_TCP_TUNNEL_JSON_BASE64_ENCODING_V1 && !input.caps.allowV1Fallback) {
-        return 'encoding_unsupported';
-    }
     return null;
 }
 
@@ -808,21 +792,24 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         envelope?: PeerTcpTunnelRelayEnvelope;
         machineId?: string;
         tunnelId: string;
-        flowKind?: Parameters<typeof createPeerMediationFlowEvent>[0]['flowKind'];
+        flowKind?: PeerTcpTunnelRelayAuthorizationPayloadV2['flowKind'];
         kind: Parameters<typeof createPeerMediationFlowEvent>[0]['kind'];
         reasonCode?: string;
         bytesIn?: number;
         bytesOut?: number;
         metadata?: Readonly<Record<string, unknown>>;
     }>): void {
+        const signedFlowKind = input.flowKind
+            ?? (input.envelope
+                ? authorizationStateByTunnelKey.get(buildTunnelKey(input.envelope, input.tunnelId))?.flowKind
+                : undefined);
+        const flowKind: PeerMediationObservabilityFlowKind = signedFlowKind === 'provider_broker'
+            ? 'tcp_tunnel'
+            : signedFlowKind ?? 'tcp_tunnel';
         ctx.observability?.emit(createPeerMediationFlowEvent({
             accountId: userId,
             machineId: input.machineId ?? (input.envelope ? participantMachineId(input.envelope) : undefined),
-            flowKind: input.flowKind
-                ?? (input.envelope
-                    ? authorizationStateByTunnelKey.get(buildTunnelKey(input.envelope, input.tunnelId))?.flowKind
-                    : undefined)
-                ?? 'tcp_tunnel',
+            flowKind,
             flowId: input.tunnelId,
             kind: input.kind,
             nowMs: ctx.nowMs?.() ?? Date.now(),
@@ -997,6 +984,10 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             emitSocketError(socket, 'Peer tunnel relay sender does not match the authenticated socket binding');
             return;
         }
+        if (envelope.v === 1 && envelope.frame.kind !== 'open') {
+            emitSocketError(socket, 'Peer tunnel relay session frames require binary_frame_v2');
+            return;
+        }
 
         const decodedBinary = envelope.v === 2 ? decodeBinaryEnvelope({ envelope, caps }) : null;
         if (decodedBinary && !decodedBinary.ok) {
@@ -1040,7 +1031,7 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             const pending = pendingOpenByTunnelKey.get(tunnelKey);
             if (pending) {
                 const queuedBytes = envelope.v === 1
-                    ? frameDecodedBytes(envelope.frame, caps.maxFrameBytes)
+                    ? 0
                     : decodedBinary?.payloadBytes ?? 0;
                 const maxQueuedFrames = Math.max(1, Math.ceil(caps.maxBytes / Math.max(1, caps.maxFrameBytes)));
                 pending.queuedFrames += 1;
@@ -1139,7 +1130,7 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         }
 
         const directionDenyReason = envelope.v === 1
-            ? validateRelayFrameDirection(envelope)
+            ? null
             : decodedBinary && decodedBinary.ok
                 ? validateBinaryFrameDirection({ envelope, header: decodedBinary.header })
                 : null;
@@ -1147,18 +1138,6 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             emitObservability({ envelope, tunnelId, kind: 'flow.denied', reasonCode: directionDenyReason });
             emitAbort({ io: ctx.io, userId, envelope, tunnelId, reasonCode: directionDenyReason, tunnelKey, senderSocketId: socket.id });
             emitSocketError(socket, 'Server-routed peer tunnel frame direction does not match sender binding');
-            return;
-        }
-
-        const encodingDenyReason = envelope.v === 1
-            ? validateSelectedOpenEncoding({ frame: envelope.frame, caps })
-            : encodingByTunnelKey.get(tunnelKey) !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
-                ? 'encoding_unsupported'
-                : null;
-        if (encodingDenyReason) {
-            emitObservability({ envelope, tunnelId, kind: 'flow.denied', reasonCode: encodingDenyReason });
-            emitAbort({ io: ctx.io, userId, envelope, tunnelId, reasonCode: encodingDenyReason, tunnelKey, senderSocketId: socket.id });
-            emitSocketError(socket, 'Server-routed peer tunnel encoding is unsupported for this tunnel');
             return;
         }
 
@@ -1185,6 +1164,18 @@ export function registerPeerTcpTunnelRelaySocketHandler(
             emitObservability({ envelope, tunnelId, kind: 'flow.denied', reasonCode: 'tunnel_not_open' });
             emitAbort({ io: ctx.io, userId, envelope, tunnelId, reasonCode: 'tunnel_not_open', tunnelKey, senderSocketId: socket.id });
             emitSocketError(socket, 'Server-routed peer tunnel frame arrived before an authorized open');
+            return;
+        }
+
+        const encodingDenyReason = envelope.v === 1
+            ? validateSelectedOpenEncoding({ frame: envelope.frame, caps })
+            : encodingByTunnelKey.get(tunnelKey) !== PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2
+                ? 'encoding_unsupported'
+                : null;
+        if (encodingDenyReason) {
+            emitObservability({ envelope, tunnelId, kind: 'flow.denied', reasonCode: encodingDenyReason });
+            emitAbort({ io: ctx.io, userId, envelope, tunnelId, reasonCode: encodingDenyReason, tunnelKey, senderSocketId: socket.id });
+            emitSocketError(socket, 'Server-routed peer tunnel encoding is unsupported for this tunnel');
             return;
         }
 
@@ -1364,7 +1355,7 @@ export function registerPeerTcpTunnelRelaySocketHandler(
         }
 
         const decodedBytes = envelope.v === 1
-            ? frameDecodedBytes(envelope.frame, authorizationState.meteringCaps.maxFrameBytes)
+            ? 0
             : decodedBinary?.payloadBytes ?? 0;
         const currentBytes = bytesByTunnelKey.get(tunnelKey) ?? { in: 0, out: 0 };
         const nextBytes = envelope.sender.kind === 'user'

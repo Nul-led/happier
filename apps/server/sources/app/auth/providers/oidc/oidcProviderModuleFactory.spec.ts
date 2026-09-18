@@ -18,6 +18,7 @@ describe("oidcProviderModuleFactory", () => {
             displayName: "Acme Okta",
             issuer: "https://issuer.example.test",
             clientId: "cid",
+            clientAuthenticationMethod: "client_secret_post",
             clientSecret: "secret",
             redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
             scopes: "openid profile email",
@@ -32,7 +33,7 @@ describe("oidcProviderModuleFactory", () => {
             fetchUserInfo: false,
             storeRefreshToken: true,
             ui: { buttonColor: "#111111", iconHint: "okta" },
-        });
+        }, "test-runtime");
 
         expect(provider.auth).toBeDefined();
         const features = provider.auth!.resolveFeatures({ env: {}, policy });

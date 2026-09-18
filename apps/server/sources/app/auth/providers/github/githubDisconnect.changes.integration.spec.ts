@@ -1,109 +1,35 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { db } from '@/storage/db';
+import { Context } from '@/context';
+import { eventRouter } from '@/app/events/eventRouter';
+import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
+import { githubDisconnect } from './githubDisconnect';
 
-import { createDbMocks, installDbModuleMock } from "../../../api/testkit/dbMocks";
-
-const emitUpdate = vi.fn();
-const buildUpdateAccountUpdate = vi.fn((_userId: string, _profile: any, updSeq: number, updId: string) => ({
-    id: updId,
-    seq: updSeq,
-    body: { t: "update-account" },
-}));
-
-vi.mock("@/app/events/eventRouter", () => ({
-    eventRouter: { emitUpdate },
-    buildUpdateAccountUpdate,
-}));
-
-const randomKeyNaked = vi.fn(() => "upd-id");
-vi.mock("@/utils/keys/randomKeyNaked", () => ({ randomKeyNaked }));
-
-const markAccountChanged = vi.fn(async () => 333);
-vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
-
-vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
-
-const dbMocks = createDbMocks({
-    account: ["findUnique"],
-    accountIdentity: ["findFirst"],
-} as const);
-installDbModuleMock({ db: dbMocks.db });
-
-let txAccountUpdate: any;
-let txAccountIdentityDeleteMany: any;
-let txAccountIdentityFindMany: any;
-
-vi.mock("@/storage/inTx", () => {
-    const afterTx = (tx: any, callback: () => void) => {
-        tx.__afterTxCallbacks.push(callback);
-    };
-
-    const inTx = async <T>(fn: (tx: any) => Promise<T>): Promise<T> => {
-        const tx: any = {
-            __afterTxCallbacks: [] as Array<() => void | Promise<void>>,
-            account: {
-                update: (...args: any[]) => txAccountUpdate(...args),
-            },
-            accountIdentity: {
-                deleteMany: (...args: any[]) => txAccountIdentityDeleteMany(...args),
-                findMany: (...args: any[]) => txAccountIdentityFindMany(...args),
-            },
-        };
-        const result = await fn(tx);
-        for (const cb of tx.__afterTxCallbacks) {
-            await cb();
-        }
-        return result;
-    };
-
-    return { afterTx, inTx };
-});
-
-describe("githubDisconnect (AccountChange integration)", () => {
-    beforeEach(() => {
-        vi.clearAllMocks();
-        txAccountIdentityFindMany = vi.fn(async () => []);
+describe('githubDisconnect (AccountChange integration)', () => {
+    let harness: LightSqliteHarness;
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({ tempDirPrefix: 'github-disconnect-' });
+    }, 120_000);
+    afterAll(async () => { await harness.close(); });
+    beforeEach(async () => {
+        vi.restoreAllMocks();
+        harness.resetEnv();
+        await harness.resetDbTables([() => db.accountChange.deleteMany(), () => db.accountIdentity.deleteMany(), () => db.account.deleteMany()]);
     });
-
-    it("marks account change and emits update using returned cursor", async () => {
-        dbMocks.db.account.findUnique.mockResolvedValue({ username: "octocat" });
-        dbMocks.db.accountIdentity.findFirst.mockResolvedValue({ profile: { login: "octocat" } });
-        txAccountUpdate = vi.fn(async (args: any) => {
-            expect(args.data.username).toBeNull();
-            return {};
-        });
-        txAccountIdentityDeleteMany = vi.fn(async () => ({}));
-
-        const { githubDisconnect } = await import("./githubDisconnect");
-        await githubDisconnect({ uid: "u1" } as any);
-
-        expect(markAccountChanged).toHaveBeenCalledWith(
-            expect.anything(),
-            expect.objectContaining({ accountId: "u1", kind: "account", entityId: "self", hint: { linkedProviders: true } }),
-        );
-        expect(buildUpdateAccountUpdate).toHaveBeenCalledWith(
-            "u1",
-            { linkedProviders: [], username: null },
-            333,
-            expect.any(String),
-        );
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
-    });
-
-    it("preserves a custom username when disconnecting GitHub", async () => {
-        dbMocks.db.account.findUnique.mockResolvedValue({ username: "custom" });
-        dbMocks.db.accountIdentity.findFirst.mockResolvedValue({ profile: { login: "octocat" } });
-        txAccountUpdate = vi.fn(async () => ({}));
-        txAccountIdentityDeleteMany = vi.fn(async () => ({}));
-
-        const { githubDisconnect } = await import("./githubDisconnect");
-        await githubDisconnect({ uid: "u1" } as any);
-
-        expect(buildUpdateAccountUpdate).toHaveBeenCalledWith(
-            "u1",
-            { linkedProviders: [], username: "custom" },
-            333,
-            expect.any(String),
-        );
-        expect(txAccountUpdate).not.toHaveBeenCalled();
-    });
+    it.each([{ username: 'octocat', expected: null }, { username: 'custom', expected: 'custom' }])(
+        'disconnects and preserves only a custom username: $username', async ({ username, expected }) => {
+            const account = await db.account.create({ data: { publicKey: `disconnect-${username}`, username } });
+            await db.accountIdentity.create({ data: { accountId: account.id, provider: 'github', providerUserId: '123', providerLogin: 'octocat', profile: { login: 'octocat' } } });
+            // Replace socket delivery only; real mutation, cursor allocation and afterTx remain exercised.
+            const emit = vi.spyOn(eventRouter, 'emitUpdate').mockImplementation(() => {});
+            await githubDisconnect(Context.create(account.id));
+            expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
+            expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).username).toBe(expected);
+            const change = await db.accountChange.findUniqueOrThrow({ where: { accountId_kind_entityId: { accountId: account.id, kind: 'account', entityId: 'self' } } });
+            expect(change.hint).toEqual({ linkedProviders: true });
+            const updates = emit.mock.calls.filter(([value]) => value.recipientFilter?.type === 'user-scoped-only');
+            expect(updates).toHaveLength(1);
+            expect(updates[0]?.[0].payload.seq).toBe(change.cursor);
+        },
+    );
 });

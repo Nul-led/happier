@@ -29,10 +29,10 @@ export type AccountEncryptionTransitionAutomationStageState = Readonly<{
 export type AccountEncryptionTransitionAutomationStoredStage = Readonly<{
     id: string;
     transitionId: string;
-    participantKind: "definition" | "run";
+    participantKind: "definition" | "run" | "workflow_invocation";
     participantId: string;
-    automationId: string;
-    sourceRevision: number;
+    automationId: string | null;
+    sourceRevision: number | null;
     sourceContent: string;
     targetContent: string | null;
     sourceEncodedBytes: bigint;
@@ -40,7 +40,7 @@ export type AccountEncryptionTransitionAutomationStoredStage = Readonly<{
 }>;
 
 export type AccountEncryptionTransitionAutomationStageCursor = Readonly<{
-    participantKind: "definition" | "run";
+    participantKind: "definition" | "run" | "workflow_invocation";
     participantId: string;
 }>;
 
@@ -110,10 +110,10 @@ const RawStageStateSchema = z.object({
 const RawStoredStageSchema = z.object({
     id: z.string().uuid(),
     transitionId: z.string().uuid(),
-    participantKind: z.enum(["definition", "run"]),
+    participantKind: z.enum(["definition", "run", "workflow_invocation"]),
     participantId: z.string().min(1).max(256),
-    automationId: z.string().min(1).max(256),
-    sourceRevision: z.number().int().nonnegative(),
+    automationId: z.string().min(1).max(256).nullable(),
+    sourceRevision: z.number().int().nonnegative().nullable(),
     sourceContent: z.string().min(1),
     targetContent: z.string().min(1).nullable(),
     sourceEncodedBytes: z.union([z.bigint(), z.number(), z.string()]),
@@ -158,6 +158,12 @@ function parseStoredStage(value: unknown): AccountEncryptionTransitionAutomation
         sourceEncodedBytes === null
         || (parsed.data.targetEncodedBytes !== null && targetEncodedBytes === null)
         || (parsed.data.targetContent === null) !== (targetEncodedBytes === null)
+        || (parsed.data.participantKind === "definition"
+            && (parsed.data.automationId === null || parsed.data.sourceRevision === null))
+        || (parsed.data.participantKind === "run"
+            && parsed.data.sourceRevision === null)
+        || (parsed.data.participantKind === "workflow_invocation"
+            && (parsed.data.automationId !== null || parsed.data.sourceRevision !== null))
     ) {
         return null;
     }
@@ -178,24 +184,33 @@ function parseStoredStage(value: unknown): AccountEncryptionTransitionAutomation
 function sourceItemIdentity(
     item: AutomationAccountEncryptionTransitionInventoryItem,
 ): Readonly<{
-    participantKind: "definition" | "run";
+    participantKind: "definition" | "run" | "workflow_invocation";
     participantId: string;
-    automationId: string;
-    sourceRevision: number;
+    automationId: string | null;
+    sourceRevision: number | null;
 }> {
-    return item.kind === "definition"
-        ? {
+    switch (item.kind) {
+        case "definition": return {
             participantKind: "definition",
             participantId: item.automationId,
             automationId: item.automationId,
             sourceRevision: item.revision,
-        }
-        : {
+        };
+        case "run": return {
             participantKind: "run",
             participantId: item.runId,
-            automationId: item.automationId,
+            automationId: item.origin.kind === "automation"
+                ? item.origin.automationId
+                : null,
             sourceRevision: item.revision,
         };
+        case "workflow_invocation": return {
+            participantKind: "workflow_invocation",
+            participantId: item.invocationRecordId,
+            automationId: null,
+            sourceRevision: null,
+        };
+    }
 }
 
 function sourceItemContent(item: AutomationAccountEncryptionTransitionInventoryItem): string {
@@ -287,11 +302,23 @@ export function targetItemFromAccountEncryptionTransitionAutomationStage(
             ? parsed.data as AutomationAccountEncryptionTransitionStageItem
             : null;
     }
-    return source.kind === "run"
+    if (parsed.data.kind === "run") {
+        return source.kind === "run"
+            && parsed.data.runId === source.runId
+            && pluginJsonValuesEqual(parsed.data.origin, source.origin)
+            && parsed.data.expectedRevision === source.revision
+            && (parsed.data.origin.kind === "direct"
+                || (source.origin.kind === "automation"
+                    && "cause" in parsed.data
+                    && "cause" in source
+                    && pluginJsonValuesEqual(parsed.data.cause, source.cause)))
+            && pluginJsonValuesEqual(parsed.data.source, source.source)
+            ? parsed.data as AutomationAccountEncryptionTransitionStageItem
+            : null;
+    }
+    return source.kind === "workflow_invocation"
         && parsed.data.runId === source.runId
-        && parsed.data.automationId === source.automationId
-        && parsed.data.expectedRevision === source.revision
-        && pluginJsonValuesEqual(parsed.data.cause, source.cause)
+        && parsed.data.invocationRecordId === source.invocationRecordId
         && pluginJsonValuesEqual(parsed.data.source, source.source)
         ? parsed.data as AutomationAccountEncryptionTransitionStageItem
         : null;

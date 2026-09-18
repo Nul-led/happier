@@ -2,6 +2,7 @@ import {
     LocalServicePreviewResourceV1Schema,
     type LocalServicePreviewResourceV1,
 } from "@happier-dev/protocol";
+import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 import type { Fastify } from "@/app/api/types";
 import {
@@ -55,6 +56,7 @@ export type RegisterLocalServicePreviewRoutesOptions = Readonly<{
         userId: string;
         sessionId: string;
         purpose: LocalServicePreviewSessionAccessPurpose;
+        authentication: SessionAccessAuthentication;
     }>) => boolean | Promise<boolean>;
     validateAccess: (input: Readonly<{
         previewId: string;
@@ -85,6 +87,8 @@ type RouteRequest = Readonly<{
     headers?: Record<string, unknown>;
     body?: unknown;
     userId?: string;
+    authAuthority?: "present_user" | "account_automation";
+    authTokenAuthenticationEvidence?: readonly import("@happier-dev/protocol").AuthTokenAuthenticationEvidenceV1[];
 }>;
 
 type RouteReply = {
@@ -527,6 +531,7 @@ async function isSessionAuthorized(
         userId,
         sessionId: input.sessionId,
         purpose: input.purpose,
+        authentication: readSessionAccessAuthenticationFromRequest(request),
     });
 }
 

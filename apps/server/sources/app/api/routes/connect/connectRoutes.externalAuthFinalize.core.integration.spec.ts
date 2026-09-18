@@ -1,3 +1,4 @@
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import Fastify from "fastify";
 import { createHash } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -6,10 +7,15 @@ import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
 
 import { db } from "@/storage/db";
-import { connectRoutes } from "./connectRoutes";
+import { connectAuthExternalRoutes } from "./connectRoutes.authExternal";
+import { enableAuthentication } from "../../utils/enableAuthentication";
 import { auth } from "@/app/auth/auth";
 import { encryptString } from "@/modules/encrypt";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
+import { registerTeamInvitationRoutes } from "@/app/teams/invitations/registerTeamInvitationRoutes";
+import { digestTeamInvitationToken, mintTeamInvitationToken } from "@/app/teams/invitations/token";
+import { eventRouter } from "@/app/events/connectionEventRouter";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -21,6 +27,7 @@ function createTestApp() {
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
+    enableAuthentication(typed);
     return trackApp(typed);
 }
 
@@ -47,6 +54,9 @@ function applyGithubExternalAuthFinalizeEnv(
     harness.resetEnv({
         AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
         AUTH_SIGNUP_PROVIDERS: "github",
+        GITHUB_CLIENT_ID: "test_client",
+        GITHUB_CLIENT_SECRET: "test_secret",
+        GITHUB_REDIRECT_URL: "https://home.example.test/v1/oauth/github/callback",
         ...overrides,
     });
 }
@@ -72,12 +82,15 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         await closeTrackedApps();
         harness.resetEnv();
         vi.unstubAllGlobals();
+        vi.restoreAllMocks();
         globalThis.fetch = originalFetch;
         await db.userFeedItem.deleteMany();
         await db.userRelationship.deleteMany();
         await db.repeatKey.deleteMany();
         await db.uploadedFile.deleteMany();
         await db.accountIdentity.deleteMany();
+        await db.teamMembership.deleteMany();
+        await db.team.deleteMany();
         await db.account.deleteMany();
     });
 
@@ -88,7 +101,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
 
     it("POST /v1/auth/external/:provider/finalize returns 404 unsupported-provider for unknown providers", async () => {
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -126,9 +139,8 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
                 expiresAt: new Date(Date.now() + 60_000),
             },
         });
-
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -136,7 +148,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             url: "/v1/auth/external/github/pending/oauth_pending_deleteAA1",
         });
 
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode, res.body).toBe(200);
         expect(res.json()).toEqual({ success: true });
 
         const row = await db.repeatKey.findUnique({ where: { key: "oauth_pending_deleteAA1" } });
@@ -168,7 +180,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         });
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -199,7 +211,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         });
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -267,7 +279,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -280,11 +292,16 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             },
         });
 
-        expect(res.statusCode).toBe(200);
+        expect(res.statusCode, res.body).toBe(200);
         const json = res.json() as any;
         expect(json.success).toBe(true);
         expect(typeof json.token).toBe("string");
         expect(json.token.length).toBeGreaterThan(10);
+        // Legacy pending records authenticate normally without inventing a
+        // runtime fingerprint that was never bound by their OAuth attempt.
+        const verified = await auth.verifyToken(json.token);
+        expect(verified).toMatchObject({ authTokenKind: "account", authority: "present_user", legacy: false });
+        expect(verified?.authenticationEvidence).toBeUndefined();
 
         const account = await db.account.findFirst({ where: { publicKey: publicKeyHex } });
         expect(account).toBeTruthy();
@@ -297,6 +314,304 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         expect(identity?.providerUserId).toBe(String(githubProfile.id));
         expect(identity?.providerLogin).toBe("octocat");
 
+        await app.close();
+    });
+
+    it("atomically provisions a fresh Account and consumes an exact Team invitation admission", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness);
+        const { body, publicKeyHex } = createAuthBody(41);
+        const pending = "oauth_pending_teamInviteFresh1";
+        const invitationToken = "team-invitation-fresh-account";
+        const tokenHash = createHash("sha256").update(invitationToken, "utf8").digest();
+        const team = await db.team.create({ data: { name: "Invited Fresh Account", admissionMode: "invite_only" } });
+        const invitation = await db.teamInvitation.create({
+            data: {
+                teamId: team.id,
+                tokenHash,
+                role: "member",
+                historyAccess: "from_membership",
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        const resolved = await resolveOAuthRuntimeById(process.env, "github");
+        expect(resolved?.reference.context).toEqual({ kind: "home" });
+        const githubProfile = { id: 7001, login: "invited-fresh", avatar_url: "", name: "Invited Fresh" };
+        await db.repeatKey.create({
+            data: {
+                key: pending,
+                value: JSON.stringify({
+                    flow: "auth",
+                    provider: "github",
+                    securityBinding: {
+                        provider: resolved!.reference,
+                        connection: null,
+                        admission: {
+                            kind: "team_invitation",
+                            teamId: team.id,
+                            providerId: "github",
+                            providerOrigin: "home",
+                            connectionId: null,
+                            connectionRevision: null,
+                            admissionMode: "invite_only",
+                            invitationId: invitation.id,
+                            tokenHash: tokenHash.toString("hex"),
+                        },
+                        purpose: "team_admission",
+                    },
+                    publicKeyHex,
+                    profileEnc: privacyKit.encodeBase64(encryptString(
+                        ["auth", "external", "github", "pending", pending, publicKeyHex, "profile"],
+                        JSON.stringify(githubProfile),
+                    )),
+                    accessTokenEnc: privacyKit.encodeBase64(encryptString(
+                        ["auth", "external", "github", "pending", pending, publicKeyHex],
+                        "team_invitation_access_token",
+                    )),
+                    suggestedUsername: githubProfile.login,
+                    usernameRequired: false,
+                    usernameReason: null,
+                }),
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        const app = createTestApp();
+        connectAuthExternalRoutes(app);
+        await app.ready();
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: { pending, ...body },
+        });
+
+        expect(response.statusCode).toBe(200);
+        const account = await db.account.findUniqueOrThrow({ where: { publicKey: publicKeyHex } });
+        await expect(db.teamMembership.findUnique({
+            where: { teamId_accountId: { teamId: team.id, accountId: account.id } },
+        })).resolves.toMatchObject({ status: "active", role: "member" });
+        await expect(db.teamInvitation.findUnique({ where: { id: invitation.id } }))
+            .resolves.toMatchObject({ acceptedByAccountId: account.id });
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.toBeNull();
+        await app.close();
+    });
+
+    it("authenticates an existing Account without consuming its Team invitation, then joins only through the explicit action", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness);
+        const { body, publicKeyHex } = createAuthBody(43);
+        const pending = "oauth_pending_teamInviteExisting1";
+        const invitationToken = mintTeamInvitationToken();
+        const tokenHash = new Uint8Array(digestTeamInvitationToken(invitationToken));
+        const account = await db.account.create({
+            data: { publicKey: publicKeyHex, encryptionMode: "e2ee", username: "existing-invitee" },
+        });
+        const team = await db.team.create({ data: { name: "Invited Existing Account", admissionMode: "invite_only" } });
+        const invitation = await db.teamInvitation.create({
+            data: {
+                teamId: team.id,
+                tokenHash,
+                role: "member",
+                historyAccess: "from_membership",
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        const resolved = await resolveOAuthRuntimeById(process.env, "github");
+        const githubProfile = { id: 7003, login: "existing-invitee", avatar_url: "", name: "Existing Invitee" };
+        const pendingValue = JSON.stringify({
+            flow: "auth",
+            provider: "github",
+            securityBinding: {
+                provider: resolved!.reference,
+                connection: null,
+                admission: {
+                    kind: "team_invitation",
+                    teamId: team.id,
+                    providerId: "github",
+                    providerOrigin: "home",
+                    connectionId: null,
+                    connectionRevision: null,
+                    admissionMode: "invite_only",
+                    invitationId: invitation.id,
+                    tokenHash: Buffer.from(tokenHash).toString("hex"),
+                },
+                purpose: "team_admission",
+            },
+            publicKeyHex,
+            profileEnc: privacyKit.encodeBase64(encryptString(
+                ["auth", "external", "github", "pending", pending, publicKeyHex, "profile"],
+                JSON.stringify(githubProfile),
+            )),
+            accessTokenEnc: privacyKit.encodeBase64(encryptString(
+                ["auth", "external", "github", "pending", pending, publicKeyHex],
+                "team_invitation_existing_access_token",
+            )),
+            suggestedUsername: githubProfile.login,
+            usernameRequired: false,
+            usernameReason: null,
+        });
+        await db.repeatKey.create({
+            data: {
+                key: pending,
+                value: pendingValue,
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+
+        const app = createTestApp();
+        connectAuthExternalRoutes(app);
+        registerTeamInvitationRoutes(app, {
+            resolveJoinLinkTarget: async () => ({ applicationOrigin: "https://app.example.test", homeTarget: null }),
+            resolveJoinScreenHomeIdentity: async () => ({
+                serverId: "home-1",
+                displayName: "Test Home",
+                storageMode: "encrypted",
+            }),
+            email: {
+                delivery: { isReady: true, deliver: async () => ({ status: "sent" as const }) },
+                isDeliveryReady: () => true,
+            },
+        });
+        await app.ready();
+
+        const cancelled = await app.inject({
+            method: "DELETE",
+            url: `/v1/auth/external/github/pending/${pending}`,
+        });
+        expect(cancelled.statusCode, cancelled.body).toBe(200);
+        await expect(db.teamInvitation.findUnique({ where: { id: invitation.id } }))
+            .resolves.toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+        await db.repeatKey.create({
+            data: {
+                key: pending,
+                value: pendingValue,
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+
+        const authenticated = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: { pending, ...body },
+        });
+        expect(authenticated.statusCode, authenticated.body).toBe(200);
+        const continuation = authenticated.json().teamInvitationContinuation;
+        expect(continuation).toEqual({
+            v: 1,
+            kind: "post_auth_invitation",
+            reference: pending,
+            teamId: team.id,
+        });
+        expect(await db.teamMembership.findUnique({
+            where: { teamId_accountId: { teamId: team.id, accountId: account.id } },
+        })).toBeNull();
+        await expect(db.teamInvitation.findUnique({ where: { id: invitation.id } }))
+            .resolves.toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+
+        const joined = await app.inject({
+            method: "POST",
+            url: "/v1/team-invitations/accept",
+            headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${authenticated.json().token}`,
+            },
+            payload: { v: 1, continuation },
+        });
+        expect(joined.statusCode, joined.body).toBe(200);
+        expect(joined.json()).toEqual({ outcome: "joined", teamId: team.id });
+        await expect(db.teamMembership.findUnique({
+            where: { teamId_accountId: { teamId: team.id, accountId: account.id } },
+        })).resolves.toMatchObject({ status: "active", role: "member" });
+        const replay = await app.inject({
+            method: "POST",
+            url: "/v1/team-invitations/accept",
+            headers: {
+                "content-type": "application/json",
+                authorization: `Bearer ${authenticated.json().token}`,
+            },
+            payload: { v: 1, continuation },
+        });
+        expect(replay.json()).toEqual({ outcome: "not_found" });
+        await app.close();
+    });
+
+    it("rolls back the fresh Account, identity, pending consumption, and Team membership when invitation admission fails", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness);
+        const { body, publicKeyHex } = createAuthBody(42);
+        const pending = "oauth_pending_teamInviteRollback1";
+        const tokenHash = createHash("sha256").update("rollback-invitation", "utf8").digest();
+        const team = await db.team.create({ data: { name: "Rejected Fresh Account", admissionMode: "invite_only" } });
+        const invitation = await db.teamInvitation.create({
+            data: {
+                teamId: team.id,
+                tokenHash,
+                recipientEmailNormalized: "required@example.test",
+                role: "member",
+                historyAccess: "from_membership",
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        const resolved = await resolveOAuthRuntimeById(process.env, "github");
+        const githubProfile = { id: 7002, login: "rejected-fresh", avatar_url: "", name: "Rejected Fresh" };
+        await db.repeatKey.create({
+            data: {
+                key: pending,
+                value: JSON.stringify({
+                    flow: "auth",
+                    provider: "github",
+                    securityBinding: {
+                        provider: resolved!.reference,
+                        connection: null,
+                        admission: {
+                            kind: "team_invitation",
+                            teamId: team.id,
+                            providerId: "github",
+                            providerOrigin: "home",
+                            connectionId: null,
+                            connectionRevision: null,
+                            admissionMode: "invite_only",
+                            invitationId: invitation.id,
+                            tokenHash: tokenHash.toString("hex"),
+                        },
+                        purpose: "team_admission",
+                    },
+                    publicKeyHex,
+                    profileEnc: privacyKit.encodeBase64(encryptString(
+                        ["auth", "external", "github", "pending", pending, publicKeyHex, "profile"],
+                        JSON.stringify(githubProfile),
+                    )),
+                    accessTokenEnc: privacyKit.encodeBase64(encryptString(
+                        ["auth", "external", "github", "pending", pending, publicKeyHex],
+                        "team_invitation_rollback_token",
+                    )),
+                    suggestedUsername: githubProfile.login,
+                    usernameRequired: false,
+                    usernameReason: null,
+                }),
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+        await db.teamInvitation.update({
+            where: { id: invitation.id },
+            data: { revokedAt: new Date() },
+        });
+
+        const app = createTestApp();
+        connectAuthExternalRoutes(app);
+        await app.ready();
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: { pending, ...body },
+        });
+
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toEqual({ error: "team_authentication_required" });
+        await expect(db.account.findUnique({ where: { publicKey: publicKeyHex } })).resolves.toBeNull();
+        await expect(db.accountIdentity.findFirst({ where: { provider: "github", providerUserId: "7002" } }))
+            .resolves.toBeNull();
+        await expect(db.teamMembership.count({ where: { teamId: team.id } })).resolves.toBe(0);
+        await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.not.toBeNull();
         await app.close();
     });
 
@@ -356,7 +671,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         });
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -391,22 +706,16 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         } = createAuthBody(61);
         const originalContentKey = tweetnacl.box.keyPair();
         const replacementContentKey = tweetnacl.box.keyPair();
-        const originalBinding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(originalContentKey.publicKey),
-        ]);
-        const originalSignature = tweetnacl.sign.detached(
-            originalBinding,
-            signingKeyPair.secretKey,
-        );
-        const replacementBinding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(replacementContentKey.publicKey),
-        ]);
-        const replacementSignature = tweetnacl.sign.detached(
-            replacementBinding,
-            signingKeyPair.secretKey,
-        );
+
+        const originalSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signingKeyPair.secretKey,
+            contentPublicKey: originalContentKey.publicKey,
+        });
+
+        const replacementSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signingKeyPair.secretKey,
+            contentPublicKey: replacementContentKey.publicKey,
+        });
         const account = await db.account.create({
             data: {
                 publicKey: publicKeyHex,
@@ -465,7 +774,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const response = await app.inject({
@@ -509,7 +818,13 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         await app.close();
     });
 
-    it("rejects a raced OAuth Account winner with a different content key and does not delete it", async () => {
+    it.each([
+        { contentKeyOutcome: "different" as const, expectedStatus: 409 },
+        { contentKeyOutcome: "equal" as const, expectedStatus: 200 },
+    ])("resolves a raced OAuth Account winner with a $contentKeyOutcome content key", async ({
+        contentKeyOutcome,
+        expectedStatus,
+    }) => {
         applyGithubExternalAuthFinalizeEnv(harness);
 
         const {
@@ -518,21 +833,17 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             signingKeyPair,
         } = createAuthBody(62);
         const winnerContentKey = tweetnacl.box.keyPair();
-        const requestedContentKey = tweetnacl.box.keyPair();
-        const winnerSignature = tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(winnerContentKey.publicKey),
-            ]),
-            signingKeyPair.secretKey,
-        );
-        const requestedSignature = tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(requestedContentKey.publicKey),
-            ]),
-            signingKeyPair.secretKey,
-        );
+        const requestedContentKey = contentKeyOutcome === "equal"
+            ? winnerContentKey
+            : tweetnacl.box.keyPair();
+        const winnerSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signingKeyPair.secretKey,
+            contentPublicKey: winnerContentKey.publicKey,
+        });
+        const requestedSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signingKeyPair.secretKey,
+            contentPublicKey: requestedContentKey.publicKey,
+        });
         const pending = "oauth_pending_contentKeyRaceA1";
         const githubProfile = {
             id: 6223,
@@ -613,7 +924,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         };
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
         let response;
         try {
@@ -636,10 +947,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             accountDelegate.findUnique = originalFindUnique;
         }
 
-        expect(response!.statusCode).toBe(409);
-        expect(response!.json()).toEqual({
-            error: "content_public_key_mismatch",
-        });
+        expect(response!.statusCode, response!.body).toBe(expectedStatus);
         expect(racedAccount).toBeDefined();
         await expect(db.account.findUniqueOrThrow({
             where: { id: racedAccount!.id },
@@ -649,14 +957,37 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
                 contentPublicKeySig: true,
                 updatedAt: true,
             },
-        })).resolves.toEqual({
+        })).resolves.toMatchObject({
             username: "race-winner",
             contentPublicKey:
                 new Uint8Array(winnerContentKey.publicKey),
             contentPublicKeySig:
                 new Uint8Array(winnerSignature),
-            updatedAt: racedAccount!.updatedAt,
+            ...(contentKeyOutcome === "different"
+                ? { updatedAt: racedAccount!.updatedAt }
+                : {}),
         });
+
+        if (contentKeyOutcome === "different") {
+            expect(response!.json()).toEqual({
+                error: "content_public_key_mismatch",
+            });
+            await expect(db.accountIdentity.count({
+                where: { accountId: racedAccount!.id },
+            })).resolves.toBe(0);
+        } else {
+            expect(response!.json()).toMatchObject({ success: true });
+            await expect(auth.verifyToken(response!.json().token)).resolves.toMatchObject({
+                userId: racedAccount!.id,
+                authTokenKind: "account",
+                authority: "present_user",
+            });
+            await expect(db.accountIdentity.findFirst({
+                where: { accountId: racedAccount!.id, provider: "github" },
+                select: { providerUserId: true },
+            })).resolves.toEqual({ providerUserId: String(githubProfile.id) });
+            await expect(db.repeatKey.findUnique({ where: { key: pending } })).resolves.toBeNull();
+        }
 
         await app.close();
     });
@@ -717,7 +1048,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -790,7 +1121,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -865,7 +1196,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const res = await app.inject({
@@ -920,7 +1251,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         // First finalize connects GitHub identity to pk1.
@@ -1013,13 +1344,10 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             signingKeyPair: resetSigningKeyPair,
         } = createAuthBody(22);
         const resetContentKey = tweetnacl.box.keyPair();
-        const resetContentKeySignature = tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(resetContentKey.publicKey),
-            ]),
-            resetSigningKeyPair.secretKey,
-        );
+        const resetContentKeySignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: resetSigningKeyPair.secretKey,
+            contentPublicKey: resetContentKey.publicKey,
+        });
 
         const githubProfile = {
             id: 888,
@@ -1042,7 +1370,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         // First finalize links identity to pk1 (username should become "octocat").
@@ -1079,6 +1407,11 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
 
         const oldAccount = await db.account.findFirst({ where: { publicKey: pk1 }, select: { id: true, username: true } });
         expect(oldAccount?.username).toBe("octocat");
+
+        // Socket disconnection is an external transport boundary. Keep the
+        // provider reset, disablement and credential revocation path real.
+        const disconnectAccountSockets = vi.spyOn(eventRouter, "disconnectAccountSockets");
+        const oldPat = await auth.createApiToken({ accountId: oldAccount!.id, tokenId: crypto.randomUUID(), label: 'Before provider reset' });
 
         // Add some social data to be migrated.
         const friend = await db.account.create({ data: { publicKey: "pk_friend_reset", username: "friend1" } });
@@ -1155,6 +1488,9 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             },
         });
         expect(newAccount?.username).toBe("octocat");
+        expect(disconnectAccountSockets).toHaveBeenCalledWith(oldAccount!.id);
+        expect(await auth.verifyPat(oldPat.token)).toEqual({ ok: false, reason: 'invalid_token' });
+        expect(await auth.listApiTokens(newAccount!.id)).toEqual([]);
         expect(newAccount?.feedSeq?.toString()).toBe("1");
         expect(newAccount?.contentPublicKey).toEqual(
             new Uint8Array(resetContentKey.publicKey),
@@ -1184,6 +1520,117 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             select: { id: true },
         });
         expect(feedMoved.length).toBeGreaterThan(0);
+
+        await app.close();
+    });
+
+    it("provider reset transfers Home role and Team membership lifetimes and retires the replaced Account through the canonical lifecycle", async () => {
+        applyGithubExternalAuthFinalizeEnv(harness, {
+            HAPPIER_FEATURE_AUTH_RECOVERY__PROVIDER_RESET_ENABLED: "1",
+            GITHUB_CLIENT_ID: "cid",
+            GITHUB_CLIENT_SECRET: "secret",
+            GITHUB_REDIRECT_URL: "https://server.example.test/v1/oauth/github/callback",
+        });
+
+        const { body: body1, publicKeyHex: pk1 } = createAuthBody(41);
+        const { body: body2, publicKeyHex: pk2 } = createAuthBody(42);
+        const githubProfile = { id: 909, login: "ownercat", avatar_url: null, name: "Owner Cat" };
+
+        const writePending = async (key: string, publicKeyHex: string) => {
+            await db.repeatKey.create({
+                data: {
+                    key,
+                    value: JSON.stringify({
+                        flow: "auth",
+                        provider: "github",
+                        publicKeyHex,
+                        profileEnc: privacyKit.encodeBase64(encryptString(
+                            ["auth", "external", "github", "pending", key, publicKeyHex, "profile"],
+                            JSON.stringify(githubProfile),
+                        )),
+                        accessTokenEnc: privacyKit.encodeBase64(encryptString(
+                            ["auth", "external", "github", "pending", key, publicKeyHex], "tok",
+                        )),
+                        suggestedUsername: "ownercat",
+                        usernameRequired: false,
+                        usernameReason: null,
+                    }),
+                    expiresAt: new Date(Date.now() + 60_000),
+                },
+            });
+        };
+
+        const app = createTestApp();
+        connectAuthExternalRoutes(app);
+        await app.ready();
+        app.disconnectAccountSockets = () => {};
+
+        await writePending("oauth_pending_pendingResetOwner1", pk1);
+        expect((await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: { pending: "oauth_pending_pendingResetOwner1", ...body1 },
+        })).statusCode).toBe(200);
+
+        const oldAccount = await db.account.findFirstOrThrow({ where: { publicKey: pk1 }, select: { id: true } });
+
+        // The replaced Account is this Home's only owner and holds a Team
+        // membership lifetime that downstream Group rows and grants key on.
+        await db.account.update({ where: { id: oldAccount.id }, data: { homeRole: "owner" } });
+        const team = await db.team.create({ data: { name: "Platform" }, select: { id: true } });
+        const historyCutoff = new Date("2026-01-01T00:00:00.000Z");
+        const membership = await db.teamMembership.create({
+            data: {
+                teamId: team.id,
+                accountId: oldAccount.id,
+                role: "owner",
+                sessionAccessStartsAt: historyCutoff,
+            },
+            select: { id: true },
+        });
+
+        await writePending("oauth_pending_pendingResetOwner2", pk2);
+        const res = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/github/finalize",
+            headers: { "content-type": "application/json" },
+            payload: { pending: "oauth_pending_pendingResetOwner2", reset: true, ...body2 },
+        });
+        expect(res.statusCode).toBe(200);
+
+        const newAccount = await db.account.findFirstOrThrow({
+            where: { publicKey: pk2 },
+            select: { id: true, homeRole: true, status: true },
+        });
+        // The replacement inherits Home authority, so the Home is never left
+        // ownerless by the retirement that follows in the same transaction.
+        expect(newAccount.homeRole).toBe("owner");
+        expect(newAccount.status).toBe("active");
+
+        // The replaced Account is retired through the canonical lifecycle
+        // column, not only an expiring disable marker, so it can no longer
+        // satisfy an active-owner check.
+        const retired = await db.account.findUniqueOrThrow({
+            where: { id: oldAccount.id },
+            select: { status: true, homeRole: true },
+        });
+        expect(retired.status).toBe("disabled");
+        expect(await db.account.count({ where: { homeRole: "owner", status: "active" } })).toBe(1);
+
+        // Only accountId moves: the membership lifetime identity and its
+        // history horizon are preserved for Group rows and grants.
+        const moved = await db.teamMembership.findUniqueOrThrow({
+            where: { id: membership.id },
+            select: { accountId: true, teamId: true, role: true, sessionAccessStartsAt: true },
+        });
+        expect(moved).toEqual({
+            accountId: newAccount.id,
+            teamId: team.id,
+            role: "owner",
+            sessionAccessStartsAt: historyCutoff,
+        });
+        expect(await db.teamMembership.count({ where: { accountId: oldAccount.id } })).toBe(0);
 
         await app.close();
     });
@@ -1220,7 +1667,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const pending1 = "oauth_pending_disableFailResetA1";
@@ -1309,14 +1756,13 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             },
         });
 
-        const originalUpsert = db.repeatKey.upsert.bind(db.repeatKey);
-        const upsertSpy = vi.spyOn(db.repeatKey, "upsert").mockImplementation((async (args: any) => {
-            const key = args?.where?.key;
-            if (typeof key === "string" && key.startsWith("auth_disabled_")) {
-                throw new Error("disable failed");
-            }
-            return await originalUpsert(args);
-        }) as any);
+        // The canonical lifecycle status write must fail inside the real
+        // caller-owned replacement transaction. RepeatKey is intentionally no
+        // longer a lifecycle writer.
+        await db.$executeRawUnsafe(`CREATE TRIGGER fail_provider_reset_disable
+            BEFORE UPDATE OF status ON Account
+            WHEN OLD.id = '${oldAccount!.id}' AND NEW.status = 'disabled'
+            BEGIN SELECT RAISE(ABORT, 'disable failed'); END`);
         try {
             const res = await app.inject({
                 method: "POST",
@@ -1326,7 +1772,6 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             });
 
             expect(res.statusCode).toBe(500);
-            expect(upsertSpy).toHaveBeenCalled();
 
             const newAccount = await db.account.findFirst({ where: { publicKey: pk2 }, select: { id: true } });
             expect(newAccount).toBeNull();
@@ -1355,13 +1800,13 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             const stillPending = await db.repeatKey.findUnique({ where: { key: pending2 } });
             expect(stillPending).toBeTruthy();
         } finally {
-            upsertSpy.mockRestore();
+            await db.$executeRawUnsafe("DROP TRIGGER fail_provider_reset_disable");
         }
 
         await app.close();
     });
 
-    it("deletes the newly created account when identity detach fails during provider reset", async () => {
+    it("rolls back replacement Account creation when identity transfer fails without compensating erasure", async () => {
         applyGithubExternalAuthFinalizeEnv(harness, {
             HAPPIER_FEATURE_AUTH_RECOVERY__PROVIDER_RESET_ENABLED: "1",
             GITHUB_CLIENT_ID: "cid",
@@ -1393,7 +1838,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
         }) as any);
 
         const app = createTestApp();
-        connectRoutes(app as any);
+        connectAuthExternalRoutes(app);
         await app.ready();
 
         const pending1 = "oauth_pending_detachFailResetA1";
@@ -1457,9 +1902,14 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             },
         });
 
-        const deleteSpy = vi.spyOn(db.accountIdentity, "delete").mockImplementationOnce((async () => {
-            throw new Error("detach failed");
-        }) as any);
+        await db.$executeRawUnsafe(`CREATE TRIGGER fail_provider_reset_detach
+            BEFORE DELETE ON AccountIdentity
+            BEGIN SELECT RAISE(ABORT, 'detach failed'); END`);
+        // A database boundary failure also prevents compensating Account erasure.
+        // Atomic rollback must leave no replacement row without relying on that cleanup.
+        await db.$executeRawUnsafe(`CREATE TRIGGER fail_provider_reset_compensating_erasure
+            BEFORE DELETE ON Account
+            BEGIN SELECT RAISE(ABORT, 'erasure unavailable'); END`);
         try {
             const res = await app.inject({
                 method: "POST",
@@ -1469,7 +1919,6 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             });
 
             expect(res.statusCode).toBe(500);
-            expect(deleteSpy).toHaveBeenCalled();
 
             const newAccount = await db.account.findFirst({ where: { publicKey: pk2 }, select: { id: true } });
             expect(newAccount).toBeNull();
@@ -1483,7 +1932,8 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
             const stillPending = await db.repeatKey.findUnique({ where: { key: pending2 } });
             expect(stillPending).toBeTruthy();
         } finally {
-            deleteSpy.mockRestore();
+            await db.$executeRawUnsafe("DROP TRIGGER fail_provider_reset_detach");
+            await db.$executeRawUnsafe("DROP TRIGGER fail_provider_reset_compensating_erasure");
         }
 
         await app.close();

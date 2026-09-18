@@ -5,6 +5,7 @@ import { afterTx } from "@/storage/inTx";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import type { Tx } from "@/storage/inTx";
 import type { MachineReplacementSource } from "./validateMachineReplacement";
+import { readMachineAccessKeySessionIdsInTx } from "@/app/accessKeys/sessionMachineAccessKeyMutations";
 
 export type ApplyMachineReplacementParams = Readonly<{
     tx: Tx;
@@ -28,6 +29,10 @@ export class MachineReplacementWriteConflictError extends Error {
 
 export async function applyMachineReplacement(params: ApplyMachineReplacementParams): Promise<void> {
     const replacedAt = params.replacedAt ?? new Date();
+    const invalidatedSessionIds = await readMachineAccessKeySessionIdsInTx(params.tx, {
+        accountId: params.accountId,
+        machineId: params.oldMachineId,
+    });
     const replacementData = {
         active: false,
         replacedByMachineId: params.replacementMachineId,
@@ -80,11 +85,11 @@ export async function applyMachineReplacement(params: ApplyMachineReplacementPar
 
     afterTx(params.tx, () => {
         activityCache.invalidateMachine(params.oldMachineId);
-        for (const connection of eventRouter.getConnections(params.accountId) ?? []) {
-            if (connection.connectionType === "machine-scoped" && connection.machineId === params.oldMachineId) {
-                connection.socket.disconnect(true);
-            }
-        }
+        eventRouter.disconnectMachineAndSessionSockets({
+            accountId: params.accountId,
+            machineId: params.oldMachineId,
+            sessionIds: invalidatedSessionIds,
+        });
         eventRouter.emitUpdate({
             userId: params.accountId,
             payload: buildUpdateMachineUpdate(

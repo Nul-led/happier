@@ -401,6 +401,16 @@ describe("Automation Event stored-definition projection", () => {
         } as const;
     }
 
+    it("rejects an ephemeral watcher before disclosing stored definitions", async () => {
+        await seed(1);
+        await db.machine.update({ where: { id: MACHINE_ID }, data: { kind: "ephemeral_session_runner" } });
+        await expect(readAutomationEventStoredDefinitionsV1({
+            accountId: ACCOUNT_ID,
+            caller,
+            input: { transport: { kind: "checkpointedPull" } },
+        })).rejects.toMatchObject({ code: "caller_materialization_not_current" });
+    });
+
     it("uses revision-bound keyset pages to disclose only the exact materialization's opaque stored envelopes", async () => {
         await seed(501);
 

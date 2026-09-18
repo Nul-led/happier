@@ -18,13 +18,16 @@ import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv"
 import { initializeExternalLinkedSessionStorage } from "@/app/session/externalLinkedSessionStorageInitialization";
 import { fenceExactCurrentPublisherAuthorityInTx } from "@/app/session/pending/hasExactCurrentPublisherAuthorityInTx";
 import { updateSessionMetadataEnvelopeTupleInTx } from "@/app/session/sessionWriteService";
+import { resolveVisibleSessionSeq, stampViewerUnreadEntryInTx } from "@/app/session/personal/readState";
 import {
     HISTORICAL_IMPORT_TRANSCRIPT_OBSERVATION_PROVENANCE,
     writeHistoricalSessionMessageBatchInTx,
 } from "@/app/session/sessionTranscriptWrite";
-import { findExactHostSessionSystemRecordInTx } from "@/app/session/systemRecords/sessionSystemRecordService";
+import {
+    findExactHostSessionSystemRecordInTx,
+    writeExternalSessionHistoricalImportRecordInTx,
+} from "@/app/session/systemRecords/sessionSystemRecordService";
 import { inTx, type Tx } from "@/storage/inTx";
-import { isPrismaErrorCode } from "@/storage/prisma";
 import type { Prisma } from "@prisma/client";
 import { notifySessionTranscriptMutationAfterCommit } from './sessionTranscriptMutationObserver';
 
@@ -621,59 +624,17 @@ async function writeExternalLinkedTakeoverAdmissionInTx(
     machineId: string,
 ): Promise<void> {
     const localId = localIdForTakeoverAdmission(command.claim.operationId);
-    const lookup = await findExactHostSessionSystemRecordInTx(tx, {
+    const result = await writeExternalSessionHistoricalImportRecordInTx(tx, {
         accountId: actorUserId,
         sessionId: command.claim.sessionId,
-        namespace: HISTORICAL_IMPORT_NAMESPACE,
+        kind: TAKEOVER_ADMISSION_KIND,
         localId,
+        content: externalLinkedTakeoverAdmissionRecordFromCommand(command, machineId),
     });
-    if (!lookup.ok) throw new HistoricalImportSystemRecordAddressCollisionError();
-    if (lookup.row) {
-        if (lookup.row.kind !== TAKEOVER_ADMISSION_KIND) {
-            throw new HistoricalImportSystemRecordKindConflictError();
-        }
-        await tx.sessionSystemRecord.update({
-            where: { id: lookup.row.id },
-            data: {
-                kind: TAKEOVER_ADMISSION_KIND,
-                content: externalLinkedTakeoverAdmissionRecordFromCommand(
-                    command,
-                    machineId,
-                ),
-                ownerKind: "host",
-                pluginId: null,
-                namespaceAddressKey: lookup.keys.namespaceAddressKey,
-                recordAddressKey: lookup.keys.recordAddressKey,
-                version: { increment: 1 },
-            },
-        });
-        return;
-    }
-    try {
-        await tx.sessionSystemRecord.create({
-            data: {
-                accountId: actorUserId,
-                sessionId: command.claim.sessionId,
-                namespace: HISTORICAL_IMPORT_NAMESPACE,
-                kind: TAKEOVER_ADMISSION_KIND,
-                localId,
-                content: externalLinkedTakeoverAdmissionRecordFromCommand(
-                    command,
-                    machineId,
-                ),
-                ownerKind: "host",
-                pluginId: null,
-                namespaceAddressKey: lookup.keys.namespaceAddressKey,
-                recordAddressKey: lookup.keys.recordAddressKey,
-                version: 1,
-            },
-        });
-    } catch (error) {
-        if (isPrismaErrorCode(error, "P2002")) {
-            throw new HistoricalImportSystemRecordCreateRaceError();
-        }
-        throw error;
-    }
+    if (result.ok) return;
+    if (result.code === "address_collision") throw new HistoricalImportSystemRecordAddressCollisionError();
+    if (result.code === "kind_conflict") throw new HistoricalImportSystemRecordKindConflictError();
+    throw new HistoricalImportSystemRecordCreateRaceError();
 }
 
 function externalLinkedAdmissionFencesMatch(
@@ -847,53 +808,17 @@ async function writeJobInTx(
         ...(publication === undefined ? {} : { publication }),
     };
     const localId = localIdForOperation(job.claim.operationId);
-    const lookup = await findExactHostSessionSystemRecordInTx(tx, {
+    const result = await writeExternalSessionHistoricalImportRecordInTx(tx, {
         accountId: actorUserId,
         sessionId: job.claim.sessionId,
-        namespace: HISTORICAL_IMPORT_NAMESPACE,
+        kind: HISTORICAL_IMPORT_KIND,
         localId,
+        content,
     });
-    if (!lookup.ok) throw new HistoricalImportSystemRecordAddressCollisionError();
-    if (lookup.row && lookup.row.kind !== HISTORICAL_IMPORT_KIND) {
-        throw new HistoricalImportSystemRecordKindConflictError();
-    }
-    if (lookup.row) {
-        await tx.sessionSystemRecord.update({
-            where: { id: lookup.row.id },
-            data: {
-                kind: HISTORICAL_IMPORT_KIND,
-                content,
-                ownerKind: "host",
-                pluginId: null,
-                namespaceAddressKey: lookup.keys.namespaceAddressKey,
-                recordAddressKey: lookup.keys.recordAddressKey,
-                version: { increment: 1 },
-            },
-        });
-        return;
-    }
-    try {
-        await tx.sessionSystemRecord.create({
-            data: {
-                accountId: actorUserId,
-                sessionId: job.claim.sessionId,
-                namespace: HISTORICAL_IMPORT_NAMESPACE,
-                kind: HISTORICAL_IMPORT_KIND,
-                localId,
-                content,
-                ownerKind: "host",
-                pluginId: null,
-                namespaceAddressKey: lookup.keys.namespaceAddressKey,
-                recordAddressKey: lookup.keys.recordAddressKey,
-                version: 1,
-            },
-        });
-    } catch (error) {
-        if (isPrismaErrorCode(error, "P2002")) {
-            throw new HistoricalImportSystemRecordCreateRaceError();
-        }
-        throw error;
-    }
+    if (result.ok) return;
+    if (result.code === "address_collision") throw new HistoricalImportSystemRecordAddressCollisionError();
+    if (result.code === "kind_conflict") throw new HistoricalImportSystemRecordKindConflictError();
+    throw new HistoricalImportSystemRecordCreateRaceError();
 }
 
 function appendInsertedSequenceSpans(
@@ -1608,6 +1533,19 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
                 if (transitioned.count !== 1) {
                     throw new HistoricalImportStorageStateTransitionConflictError();
                 }
+                const visibleSessionSeq = resolveVisibleSessionSeq({
+                    ...session,
+                    seq: Math.max(session.seq, written.lastSeq ?? 0),
+                    currentStorageState: "server_partial",
+                    acceptedThroughServerSeq,
+                });
+                if (visibleSessionSeq > resolveVisibleSessionSeq(session)) {
+                    await stampViewerUnreadEntryInTx(tx, {
+                        sessionId: session.id,
+                        visibleSessionSeq,
+                        at: new Date(),
+                    });
+                }
             }
             return {
                 v: 1,
@@ -1681,6 +1619,19 @@ async function executeExternalSessionHistoricalImportCommandWithCreateRaceRetry(
             });
             if (transitioned.count !== 1) {
                 throw new HistoricalImportStorageStateTransitionConflictError();
+            }
+            const visibleSessionSeq = resolveVisibleSessionSeq({
+                ...session,
+                ...publication,
+                currentStorageState: "snapshot_complete",
+                acceptedThroughServerSeq: null,
+            });
+            if (visibleSessionSeq > resolveVisibleSessionSeq(session)) {
+                await stampViewerUnreadEntryInTx(tx, {
+                    sessionId: session.id,
+                    visibleSessionSeq,
+                    at: new Date(publication.materializedThroughSourceAt),
+                });
             }
             job = {
                 ...job,

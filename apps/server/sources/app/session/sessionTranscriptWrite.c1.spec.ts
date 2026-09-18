@@ -1,20 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Tx } from "@/storage/inTx";
-
-const inTx = vi.hoisted(() => vi.fn());
-vi.mock("@/storage/inTx", () => ({ inTx }));
+import { createDbTransactionMock, installDbModuleMock } from "../api/testkit/dbMocks";
 
 const sessionUpdate = vi.fn();
 const sessionFindUnique = vi.fn();
 const sessionMessageFindMany = vi.fn();
 const sessionMessageCreate = vi.fn();
+const accountFindUnique = vi.fn();
+const accountSessionReadStateUpdateMany = vi.fn();
+const accountSessionFollowFindMany = vi.fn();
 
 function createTx(): Tx {
     return {
         session: { findUnique: sessionFindUnique, update: sessionUpdate },
         sessionMessage: { findMany: sessionMessageFindMany, create: sessionMessageCreate },
+        account: { findUnique: accountFindUnique },
+        accountSessionReadState: { updateMany: accountSessionReadStateUpdateMany },
+        accountSessionFollow: { findMany: accountSessionFollowFindMany },
     } as unknown as Tx;
+}
+
+const { transaction, wrapDb } = createDbTransactionMock(createTx);
+installDbModuleMock(() => ({ db: wrapDb({}) }));
+
+async function runInTransaction<T>(operation: (tx: Tx) => Promise<T>): Promise<T> {
+    const { inTx } = await import("@/storage/inTx");
+    return await inTx(operation);
 }
 
 describe("canonical session transcript writer", () => {
@@ -22,9 +34,13 @@ describe("canonical session transcript writer", () => {
         vi.clearAllMocks();
         sessionUpdate.mockResolvedValue({ seq: 8 });
         sessionFindUnique.mockResolvedValue({
+            accountId: "account-1",
             encryptionMode: "plain",
             currentStorageState: "machine_only",
         });
+        accountFindUnique.mockResolvedValue({ id: "account-1" });
+        accountSessionReadStateUpdateMany.mockResolvedValue({ count: 0 });
+        accountSessionFollowFindMany.mockResolvedValue([]);
         sessionMessageFindMany.mockResolvedValue([]);
         sessionMessageCreate.mockResolvedValue({
             id: "message-1",
@@ -41,7 +57,6 @@ describe("canonical session transcript writer", () => {
             createdAt: new Date(1_000),
             updatedAt: new Date(1_000),
         });
-        inTx.mockImplementation(async (operation: (tx: Tx) => Promise<unknown>) => await operation(createTx()));
     });
 
     it("rejects a mode-mismatched historical item before allocating a sequence", async () => {
@@ -87,7 +102,7 @@ describe("canonical session transcript writer", () => {
             kind: "plainDigest",
             digest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
         } as const;
-        await expect(writeSessionTranscriptMessageInTx!(createTx(), {
+        await expect(runInTransaction((tx) => writeSessionTranscriptMessageInTx!(tx, {
             sessionId: "session-1",
             writeAuthority: "hosted",
             sessionEncryptionMode: "plain",
@@ -98,7 +113,7 @@ describe("canonical session transcript writer", () => {
             messageRole: "user",
             inputAdmissionReceipt: receipt,
             requestEqualityEvidenceV1: equalityEvidence,
-        })).resolves.toMatchObject({ ok: true });
+        }))).resolves.toMatchObject({ ok: true });
 
         expect(sessionMessageCreate).toHaveBeenCalledWith(expect.objectContaining({
             data: expect.objectContaining({
@@ -169,7 +184,7 @@ describe("canonical session transcript writer", () => {
         expect(sessionUpdate).not.toHaveBeenCalled();
         expect(sessionMessageCreate).not.toHaveBeenCalled();
 
-        const rawAcp = await writer.writeSessionTranscriptMessageInTx(createTx(), {
+        const rawAcp = await runInTransaction((tx) => writer.writeSessionTranscriptMessageInTx(tx, {
             sessionId: "session-1",
             writeAuthority: "hosted",
             sessionEncryptionMode: "plain",
@@ -184,8 +199,8 @@ describe("canonical session transcript writer", () => {
                     content: { type: "acp", data: { type: "message", message: "Incumbent ACP" } },
                 },
             },
-        });
-        const builtInStructured = await writer.writeSessionTranscriptMessageInTx(createTx(), {
+        }));
+        const builtInStructured = await runInTransaction((tx) => writer.writeSessionTranscriptMessageInTx(tx, {
             sessionId: "session-1",
             writeAuthority: "hosted",
             sessionEncryptionMode: "plain",
@@ -201,7 +216,7 @@ describe("canonical session transcript writer", () => {
                     meta: { happier: { kind: "review_comments.v1", payload: {} } },
                 },
             },
-        });
+        }));
 
         expect(rawAcp).toMatchObject({ ok: true, message: { seq: 8 } });
         expect(builtInStructured).toMatchObject({ ok: true, message: { seq: 8 } });
@@ -242,11 +257,11 @@ describe("canonical session transcript writer", () => {
                 content: { t: "plain", v: { role: "agent", text: "two" } },
             },
         ];
-        const first = await writeHistoricalSessionMessageBatchInTx!(createTx(), {
+        const first = await runInTransaction((tx) => writeHistoricalSessionMessageBatchInTx!(tx, {
             sessionId: "session-1",
             storagePolicy: "optional",
             items,
-        });
+        }));
 
         expect(first).toMatchObject({ ok: true, didWrite: true, firstSeq: 8, lastSeq: 9 });
         expect(first.messages.map((message: { seq: number }) => message.seq)).toEqual([8, 9]);
@@ -254,11 +269,11 @@ describe("canonical session transcript writer", () => {
 
         vi.clearAllMocks();
         sessionMessageFindMany.mockResolvedValue(first.messages);
-        const retry = await writeHistoricalSessionMessageBatchInTx!(createTx(), {
+        const retry = await runInTransaction((tx) => writeHistoricalSessionMessageBatchInTx!(tx, {
             sessionId: "session-1",
             storagePolicy: "optional",
             items,
-        });
+        }));
 
         expect(retry).toMatchObject({ ok: true, didWrite: false, firstSeq: 8, lastSeq: 9 });
         expect(sessionUpdate).not.toHaveBeenCalled();
@@ -291,7 +306,7 @@ describe("canonical session transcript writer", () => {
             encryptionMode: "plain",
             currentStorageState: "hosted",
         });
-        await expect(writer.writeHistoricalSessionMessageBatchInTx(createTx(), params))
+        await expect(runInTransaction((tx) => writer.writeHistoricalSessionMessageBatchInTx(tx, params)))
             .resolves.toMatchObject({ ok: true, didWrite: true, firstSeq: 8, lastSeq: 8 });
         expect(sessionUpdate).toHaveBeenCalledTimes(1);
         expect(sessionMessageCreate).toHaveBeenCalledTimes(1);
@@ -323,11 +338,11 @@ describe("canonical session transcript writer", () => {
             updatedAt: data.createdAt,
         }));
 
-        const first = await writer.writeHistoricalSessionMessageBatchInTx(createTx(), {
+        const first = await runInTransaction((tx) => writer.writeHistoricalSessionMessageBatchInTx(tx, {
             sessionId: "session-1",
             storagePolicy: "optional",
             items: [item],
-        });
+        }));
 
         expect(first).toMatchObject({ ok: true, didWrite: true });
         expect(sessionMessageCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -429,6 +444,6 @@ describe("canonical session transcript writer", () => {
         });
 
         expect(result).toMatchObject({ ok: true, didWrite: false, firstSeq: 8, lastSeq: 8 });
-        expect(inTx).toHaveBeenCalledTimes(2);
+        expect(transaction).toHaveBeenCalledTimes(2);
     }, 60_000);
 });

@@ -36,7 +36,6 @@ describe("enableAuthentication API-token admission (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -58,7 +57,7 @@ describe("enableAuthentication API-token admission (integration)", () => {
         const [signedToken, terminalToken, pat] = await Promise.all([
             auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createToken(account.id, { session: "terminal-auth-request" }, { kind: "terminal", authority: "account_automation" }),
-            auth.createApiToken({ accountId: account.id, label: "PAT admission" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "PAT admission" }),
         ]);
         const app = createApp();
         await app.ready();

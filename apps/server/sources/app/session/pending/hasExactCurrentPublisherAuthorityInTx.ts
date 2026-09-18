@@ -1,3 +1,4 @@
+import { supportsMachineSessionInputAdmissionProtocolVersion } from "@happier-dev/protocol";
 import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
 import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPublisherPresence";
 import type { Tx } from "@/storage/inTx";
@@ -69,4 +70,18 @@ export async function fenceExactCurrentPublisherAuthorityInTx(
         },
     });
     return fenced.count === 1;
+}
+
+/** Capability belongs to the exact execution-custodian Machine, independently of input authorship. */
+export async function hasCurrentPublisherTargetAdmissionCapabilityInTx(
+    tx: Tx,
+    authority: CurrentSessionPublisherAuthority,
+): Promise<boolean> {
+    const machine = await tx.machine.findUnique({
+        where: { accountId_id: { accountId: authority.accountId, id: authority.machineId } },
+        select: { operationProtocolCapabilities: true, operationProtocolCapabilitiesRevision: true },
+    });
+    return machine !== null && machine.operationProtocolCapabilitiesRevision !== null
+        && machine.operationProtocolCapabilitiesRevision >= 1
+        && supportsMachineSessionInputAdmissionProtocolVersion(machine.operationProtocolCapabilities, 2);
 }

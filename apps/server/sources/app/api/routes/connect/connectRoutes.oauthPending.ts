@@ -7,7 +7,13 @@ import { db } from "@/storage/db";
 import type { Tx } from "@/storage/inTx";
 import {
     accountEncryptionFirstKeyStepUpPendingSchema,
+    accountPasswordEnrollmentStepUpPendingSchema,
+    authPendingSchema,
+    hasInvalidOAuthSecurityBinding,
 } from "./oauthExternal/oauthExternalSchemas";
+import { resolveOAuthSecurityBindingInTx } from "./oauthExternal/oauthSecurityBinding";
+import { findNativePasswordAccount } from "@/app/auth/password/nativePasswordAuthentication";
+import { isEffectiveHomeAuthMethodActionEnabledInTx } from "@/app/auth/methods/effectiveHomeAuthMethods";
 
 function isSafeOAuthPendingKey(key: string): boolean {
     const pendingKey = key.toString().trim();
@@ -37,6 +43,32 @@ export async function loadValidOAuthPending(key: string): Promise<{ key: string;
     return { key: pending.key, value: pending.value };
 }
 
+/**
+ * Resolve the existing server-authored pending reference that an ordinary
+ * fresh-Account mailbox verification may resume. Purpose-qualified pending
+ * records (Team admission, Account Directory, password enrollment, and other
+ * step-up flows) retain their own consumers and cannot be relabelled as a
+ * fresh-Account continuation.
+ */
+export async function loadValidFreshAccountAuthContinuation(
+    key: string,
+): Promise<{ key: string; value: string } | null> {
+    const pending = await loadValidOAuthPending(key);
+    if (!pending) return null;
+    let decoded: unknown;
+    try {
+        decoded = JSON.parse(pending.value);
+    } catch {
+        return null;
+    }
+    const parsed = authPendingSchema.safeParse(decoded);
+    if (!parsed.success) return null;
+    if ("purpose" in parsed.data && parsed.data.purpose !== undefined) return null;
+    if (parsed.data.securityBinding?.purpose !== null
+        && parsed.data.securityBinding?.purpose !== undefined) return null;
+    return pending;
+}
+
 export async function consumeValidOAuthPendingInTx(
     tx: Tx,
     pending: Readonly<{ key: string; value: string }>,
@@ -64,6 +96,7 @@ export type AccountEncryptionFirstKeyStepUpConsumeResult =
             | "invalid_or_consumed"
             | "expired"
             | "binding_mismatch"
+            | "configuration_changed"
             | "identity_mismatch";
     }>;
 
@@ -79,16 +112,16 @@ function proofHashMatches(
         && timingSafeEqual(actual, expected);
 }
 
-export async function consumeAccountEncryptionFirstKeyStepUpPendingInTx(
+async function consumePurposeBoundStepUpPendingInTx(
     tx: Tx,
     params: Readonly<{
         accountId: string;
         provider: string;
         pending: string;
         proof: string;
-        requestDigest:
-            AccountEncryptionMigrateExternalAuthBindingDigestV1;
+        requestDigest: string;
     }>,
+    purpose: "account_encryption_first_key" | "account_password_enrollment",
 ): Promise<AccountEncryptionFirstKeyStepUpConsumeResult> {
     const pending = params.pending.toString().trim();
     if (!isSafeOAuthPendingKey(pending)) {
@@ -111,9 +144,14 @@ export async function consumeAccountEncryptionFirstKeyStepUpPendingInTx(
     } catch {
         return { ok: false, reason: "invalid_or_consumed" };
     }
-    const proof =
-        accountEncryptionFirstKeyStepUpPendingSchema.safeParse(parsed);
+    const proof = purpose === "account_encryption_first_key"
+        ? accountEncryptionFirstKeyStepUpPendingSchema.safeParse(parsed)
+        : accountPasswordEnrollmentStepUpPendingSchema.safeParse(parsed);
     if (!proof.success) {
+        if (hasInvalidOAuthSecurityBinding(parsed)) {
+            await tx.repeatKey.deleteMany({ where: { key: pending, value: row.value } });
+            return { ok: false, reason: "configuration_changed" };
+        }
         return { ok: false, reason: "invalid_or_consumed" };
     }
     if (
@@ -124,10 +162,32 @@ export async function consumeAccountEncryptionFirstKeyStepUpPendingInTx(
     ) {
         return { ok: false, reason: "binding_mismatch" };
     }
+    if (proof.data.provider === "email_password") {
+        if (purpose !== "account_encryption_first_key" || !("credentialRevision" in proof.data)) {
+            return { ok: false, reason: "binding_mismatch" };
+        }
+        const current = await findNativePasswordAccount(proof.data.providerUserId, tx);
+        if (!current || current.account.id !== params.accountId || current.account.status !== "active"
+            || current.parsed.mode !== "plain" || current.revision !== proof.data.credentialRevision) {
+            return { ok: false, reason: "identity_mismatch" };
+        }
+        if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, { env: process.env, methodId: "email_password", actionId: "login" })) {
+            return { ok: false, reason: "configuration_changed" };
+        }
+    } else if (!await resolveOAuthSecurityBindingInTx(tx, {
+        env: process.env,
+        providerId: params.provider,
+        binding: proof.data.securityBinding,
+        purpose,
+        stage: "oauth_finalize",
+    })) {
+        await tx.repeatKey.deleteMany({ where: { key: pending, value: row.value } });
+        return { ok: false, reason: "configuration_changed" };
+    }
     const identity = await tx.accountIdentity.findFirst({
         where: {
             accountId: params.accountId,
-            provider: proof.data.provider,
+            provider: proof.data.provider === "email_password" ? "email" : proof.data.provider,
             providerUserId: proof.data.providerUserId,
         },
         select: { id: true },
@@ -149,4 +209,24 @@ export async function consumeAccountEncryptionFirstKeyStepUpPendingInTx(
         provider: proof.data.provider,
         providerUserId: proof.data.providerUserId,
     };
+}
+
+export async function consumeAccountEncryptionFirstKeyStepUpPendingInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        provider: string;
+        pending: string;
+        proof: string;
+        requestDigest: AccountEncryptionMigrateExternalAuthBindingDigestV1;
+    }>,
+): Promise<AccountEncryptionFirstKeyStepUpConsumeResult> {
+    return await consumePurposeBoundStepUpPendingInTx(tx, params, "account_encryption_first_key");
+}
+
+export async function consumeAccountPasswordEnrollmentStepUpPendingInTx(
+    tx: Tx,
+    params: Readonly<{ accountId: string; provider: string; pending: string; proof: string; requestDigest: string }>,
+): Promise<AccountEncryptionFirstKeyStepUpConsumeResult> {
+    return await consumePurposeBoundStepUpPendingInTx(tx, params, "account_password_enrollment");
 }

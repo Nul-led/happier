@@ -68,6 +68,90 @@ describe("resolveServerFeaturePayload", () => {
         resetSessionSystemRecordsProtocolV1ActivationForTests();
     });
 
+    it("advertises approved Workflow activation only while its Automations dependency is enabled", () => {
+        expect(readServerEnabledBit(
+            resolveServerFeaturePayload({}, serverFeatureRegistry),
+            "workflows",
+        )).toBe(true);
+        expect(readServerEnabledBit(
+            resolveServerFeaturePayload({ HAPPIER_FEATURE_AUTOMATIONS__ENABLED: "0" }, serverFeatureRegistry),
+            "workflows",
+        )).toBe(false);
+        expect(readServerEnabledBit(
+            resolveServerFeaturePayload({ HAPPIER_FEATURE_WORKFLOWS__ENABLED: "0" }, serverFeatureRegistry),
+            "workflows",
+        )).toBe(false);
+    });
+
+    it("keeps credential resources fail-closed until the operator enables the consumed vertical", () => {
+        const path = ["features", "teams", "credentialResources", "enabled"];
+        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(false);
+        expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1" }, serverFeatureRegistry), path)).toBe(true);
+        expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS__ENABLED: "0" }, serverFeatureRegistry), path)).toBe(false);
+        expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "0" }, serverFeatureRegistry), path)).toBe(false);
+    });
+
+    it("keeps external credential API access default-off and dependent on credential resources", () => {
+        const path = ["features", "teams", "credentialResources", "externalApi", "enabled"];
+        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(false);
+        expect(readOptionalPath(resolveServerFeaturePayload({
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+        }, serverFeatureRegistry), path)).toBe(false);
+        expect(readOptionalPath(resolveServerFeaturePayload({
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+        }, serverFeatureRegistry), path)).toBe(true);
+    });
+
+    it("publishes external credential API deployment readiness through the canonical feature payload", () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test/prefix/",
+        }, serverFeatureRegistry);
+        expect(payload.capabilities.teams?.credentialResources.externalApi).toEqual({
+            available: true,
+            baseUrl: "https://home.example.test/prefix/api/provider-broker/v1",
+            protocols: ["openai_responses", "openai_chat_completions", "anthropic_messages"],
+        });
+    });
+
+    it('publishes sign-in policy and verified Account Service presentation at the root', () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'self',
+            HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME: ' Acme ',
+        } as NodeJS.ProcessEnv, [fromPartial({
+            capabilities: {
+                accountDirectory: {
+                    version: 1,
+                    homeDirectory: true,
+                    homeEnrollment: true,
+                    homeLoginAssertion: {
+                        keyId: 'a'.repeat(64),
+                        publicKeyBase64Url: 'A'.repeat(43),
+                    },
+                },
+            },
+        })]);
+
+        expect(payload.signInService).toEqual({ v: 1, mode: 'self' });
+        expect(payload.accountServicePresentation).toEqual({ v: 1, displayName: 'Acme' });
+    });
+
+    it('drops self policy without technical Directory capability while keeping Home features live', () => {
+        const payload = resolveServerFeaturePayload({
+            HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: 'self',
+            HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME: 'Acme',
+        } as NodeJS.ProcessEnv, [fromPartial({ features: { auth: { login: { keyChallenge: { enabled: true } } } } })]);
+
+        expect(payload.signInService).toBeUndefined();
+        expect(payload.accountServicePresentation).toBeUndefined();
+        expect(payload.features.auth.login.keyChallenge.enabled).toBe(true);
+        expect(payload.capabilities.auth.misconfig).toEqual(expect.arrayContaining([
+            expect.objectContaining({ code: 'auth_sign_in_service_self_unavailable' }),
+        ]));
+    });
+
     it("throws when resolvers list is empty", () => {
         expect(() => resolveServerFeaturePayload({} as NodeJS.ProcessEnv, [])).toThrow(/resolvers/i);
     });
@@ -292,6 +376,25 @@ describe("resolveServerFeaturePayload", () => {
         expect(readOptionalPath(payload, ["features", "sessions", "folders", "enabled"])).toBe(false);
     });
 
+    it("enables the development Runner surface only when explicitly enabled and every canonical dependency is enabled", () => {
+        const enabled = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" }, serverFeatureRegistry);
+        expect(readOptionalPath(enabled, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(true);
+        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        expect(readOptionalPath(disabled, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
+        const withoutDrafts = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1", HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED: "0" }, serverFeatureRegistry);
+        expect(readOptionalPath(withoutDrafts, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
+        const withoutSessions = resolveServerFeaturePayload(
+            { HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" },
+            [...serverFeatureRegistry, fromPartial({ features: { sessions: { enabled: false } } })],
+        );
+        expect(readOptionalPath(withoutSessions, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
+        const withoutMachines = resolveServerFeaturePayload(
+            { HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" },
+            [...serverFeatureRegistry, fromPartial({ features: { machines: { enabled: false } } })],
+        );
+        expect(readOptionalPath(withoutMachines, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
+    });
+
     it("enables agent switching from the server registry by default so the in-Session Agent rail can appear", () => {
         const payload = resolveServerFeaturePayload({} as NodeJS.ProcessEnv, serverFeatureRegistry);
 
@@ -327,9 +430,8 @@ describe("resolveServerFeaturePayload", () => {
         expect(payload.capabilities.machines.tunnel.serverRouted).toMatchObject({
             maxActiveTunnelsPerSocket: 8,
             maxFrameBytes: 64 * 1024,
-            supportedEncodings: ["json_base64_v1", "binary_frame_v2"],
+            supportedEncodings: ["binary_frame_v2"],
             preferredEncoding: "binary_frame_v2",
-            allowV1Fallback: true,
             substreams: {
                 maxConcurrentSubstreams: 32,
                 maxTotalSubstreams: 1024,

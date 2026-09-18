@@ -5,10 +5,16 @@ import { describe, expect, it, vi } from "vitest";
 import { createAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import {
     EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES,
+    EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2,
     EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES,
     measureExternalActionResponseEnvelopeUtf8BytesV1,
     prepareExternalActionResponseEnvelopeV1,
+    prepareExternalActionResponseV2,
+    sealExternalActionRequestV2,
+    createExternalActionDaemonDispatchResponse,
 } from "@happier-dev/protocol/actions";
+import { createExternalActionDaemonDispatcher } from "@/app/api/socket/externalActionDispatcher";
+import { Server } from "socket.io";
 import {
     type RegisterExternalActionRoutesDependencies,
     registerExternalActionRoutes,
@@ -90,7 +96,59 @@ function externalActionJsonPayloadWithByteLength(byteLength: number): string {
     return payload;
 }
 
+function externalActionV2JsonPayloadWithByteLength(byteLength: number): string {
+    const prefix = '{"v":2,"requestId":"request-limit","payload":{"t":"encrypted","c":"';
+    const suffix = '"}}';
+    const paddingLength = byteLength - Buffer.byteLength(`${prefix}${suffix}`, "utf8");
+    if (paddingLength < 1) throw new Error("Requested payload is too small");
+    return `${prefix}${"x".repeat(paddingLength)}${suffix}`;
+}
+
 describe("registerExternalActionRoutes", () => {
+    it("relays opaque V2 through the real dispatcher and preserves its binary response", async () => {
+        const material = { type: "dataKey" as const, machineKey: new Uint8Array(32).fill(9) };
+        const target = { kind: "machine" as const, machineId: "machine-1" };
+        const binding = { serverIdentityId: "srv_test", accountId: "account-1",
+            credentialId: "00000000-0000-4000-8000-000000000001", actionId: "session.message.send",
+            requestId: "private-relay", target };
+        const request = sealExternalActionRequestV2({ binding, material,
+            input: { sessionId: "session-1", message: "private-input-sentinel" },
+            randomBytes: (length) => new Uint8Array(length).fill(2) });
+        const prepared = prepareExternalActionResponseV2({ binding, material, request,
+            executedMachineId: target.machineId, randomBytes: (length) => new Uint8Array(length).fill(3),
+            execution: { ok: false, errorCode: "conflict", error: "private-error-sentinel" } });
+        const io = new Server();
+        const dispatch = createExternalActionDaemonDispatcher({ io,
+            resolveMachine: async () => "available",
+            getServerIdentityId: async () => binding.serverIdentityId,
+            mintExecutionAuthorization: async (authorizationBinding) => ({
+                v: 1,
+                token: "unit-test-execution-authorization",
+                binding: authorizationBinding,
+            }),
+            // Network boundary only: real route/dispatcher/framing owners remain composed.
+            forwardRpc: async (call) => {
+                expect(call.callParams).toMatchObject({ envelope: request });
+                expect(call.callParams).toMatchObject({
+                    executionAuthorization: {
+                        v: 1,
+                        token: "unit-test-execution-authorization",
+                    },
+                });
+                expect(JSON.stringify(call.callParams)).not.toContain("sentinel");
+                return { ok: true, result: createExternalActionDaemonDispatchResponse(prepared) };
+            },
+        });
+        const app = createApp({ dispatch });
+        try {
+            const response = await app.inject({ method: "POST", url: "/v1/actions/session.message.send",
+                payload: request, headers: { ...patHeaders, "x-test-api-token-credential-id": binding.credentialId } });
+            expect(response.statusCode).toBe(200);
+            expect(response.body).toBe(prepared.body);
+            expect(response.body).not.toContain("sentinel");
+        } finally { await app.close(); }
+    });
+
     it("accepts a verified PAT, relays only the outer envelope, and forwards server-stamped provenance", async () => {
         const dispatch = vi.fn(async () => dispatchedResponse({
             v: 1 as const,
@@ -608,6 +666,38 @@ describe("registerExternalActionRoutes", () => {
         }
     });
 
+    it("rejects protected request bytes beyond the derived ciphertext envelope before dispatch", async () => {
+        const dispatch = vi.fn(async (request) => dispatchedResponse({
+            v: 1 as const,
+            actionId: request.actionId,
+            execution: { ok: true as const, result: { accepted: true } },
+        }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const formerlyInflatedBodyBytes = EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES
+                + Math.floor(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES / 2);
+            expect(formerlyInflatedBodyBytes).toBeGreaterThan(EXTERNAL_ACTION_HTTP_BODY_LIMIT_BYTES_V2);
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/session.spawn_new",
+                headers: {
+                    ...patHeaders,
+                    "content-type": "application/json",
+                },
+                payload: externalActionV2JsonPayloadWithByteLength(formerlyInflatedBodyBytes),
+            });
+            expect(response.statusCode).toBe(413);
+            expect(response.json()).toEqual({
+                error: "invalid_request",
+                code: "request_too_large",
+            });
+            expect(dispatch).not.toHaveBeenCalled();
+        } finally {
+            await app.close();
+        }
+    });
+
     it("projects server placement failures through the finite Action response envelope", async () => {
         const dispatch = vi.fn(async () => ({
             kind: "placement_error" as const,
@@ -634,6 +724,172 @@ describe("registerExternalActionRoutes", () => {
                     errorCode: "target_required",
                     error: "target_required",
                 },
+            });
+            expect(dispatch).toHaveBeenCalledTimes(1);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("returns V2 placement failures through the strict correlated outer error", async () => {
+        const dispatch = vi.fn(async () => ({
+            kind: "placement_error" as const,
+            code: "target_required" as const,
+        }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/session.spawn_new",
+                headers: patHeaders,
+                payload: {
+                    v: 2,
+                    requestId: "protected-placement",
+                    payload: { t: "encrypted", c: "opaque" },
+                },
+            });
+
+            expect(response.statusCode).toBe(400);
+            expect(response.json()).toEqual({
+                error: "invalid_request",
+                code: "target_required",
+                requestId: "protected-placement",
+            });
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("does not fabricate a plaintext target failure after protected submission", async () => {
+        const dispatch = vi.fn(async () => ({ kind: "submitted_unknown" as const }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/action.spec.get",
+                headers: patHeaders,
+                payload: {
+                    v: 2,
+                    requestId: "protected-submitted-unknown",
+                    target: { kind: "machine", machineId: "machine-1" },
+                    payload: { t: "encrypted", c: "opaque" },
+                },
+            });
+
+            expect(response.statusCode).toBe(502);
+            expect(response.body).toBe("");
+            expect(response.body).not.toContain("target_unavailable");
+            expect(response.headers["cache-control"]).toBe("no-store");
+            expect(dispatch).toHaveBeenCalledTimes(1);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("projects exact-Machine targeted-input incompatibility as the operation-scoped update requirement", async () => {
+        const dispatch = vi.fn(async () => ({
+            kind: "placement_error" as const,
+            code: "session_input_target_update_required" as const,
+        }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/session.message.send",
+                headers: patHeaders,
+                payload: {
+                    v: 1,
+                    requestId: "request-targeted",
+                    target: { kind: "machine", machineId: "machine-1" },
+                    input: {
+                        sessionId: "session-1",
+                        message: "Continue the attached Run",
+                        recipient: { kind: "execution_run", runId: "run-1" },
+                    },
+                },
+            });
+
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({
+                v: 1,
+                actionId: "session.message.send",
+                requestId: "request-targeted",
+                execution: {
+                    ok: false,
+                    errorCode: "session_input_target_update_required",
+                    error: "session_input_target_update_required",
+                },
+            });
+            expect(dispatch).toHaveBeenCalledTimes(1);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("preserves the external Action support failure for an unrelated V1 Action", async () => {
+        const dispatch = vi.fn(async () => ({
+            kind: "placement_error" as const,
+            code: "encrypted_action_unsupported" as const,
+        }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/action.spec.get",
+                headers: patHeaders,
+                payload: {
+                    v: 1,
+                    requestId: "request-old-daemon",
+                    target: { kind: "machine", machineId: "machine-1" },
+                    input: { actionId: "session.message.send" },
+                },
+            });
+
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toEqual({
+                v: 1,
+                actionId: "action.spec.get",
+                requestId: "request-old-daemon",
+                execution: {
+                    ok: false,
+                    errorCode: "encrypted_action_unsupported",
+                    error: "encrypted_action_unsupported",
+                },
+            });
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("returns protected targeted-input incompatibility through the strict correlated outer error", async () => {
+        const dispatch = vi.fn(async () => ({
+            kind: "placement_error" as const,
+            code: "session_input_target_update_required" as const,
+        }));
+        const app = createApp({ dispatch });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/actions/session.message.send",
+                headers: patHeaders,
+                payload: {
+                    v: 2,
+                    requestId: "protected-targeted-update",
+                    target: { kind: "machine", machineId: "machine-1" },
+                    payload: { t: "encrypted", c: "opaque" },
+                },
+            });
+
+            expect(response.statusCode).toBe(409);
+            expect(response.json()).toEqual({
+                error: "invalid_request",
+                code: "session_input_target_update_required",
+                requestId: "protected-targeted-update",
             });
             expect(dispatch).toHaveBeenCalledTimes(1);
         } finally {

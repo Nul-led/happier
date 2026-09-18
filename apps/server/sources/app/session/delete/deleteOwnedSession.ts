@@ -1,9 +1,10 @@
-import { afterTx, inTx } from '@/storage/inTx';
+import { afterTx, inTx, type Tx } from '@/storage/inTx';
 import type { Prisma } from '@prisma/client';
 import { log } from '@/utils/logging/log';
 import { markAccountChanged } from '@/app/changes/markAccountChanged';
 import { tombstoneSessionDraftForLifecycleInTx } from '@/app/account/sessionDrafts/sessionDraftService';
 import { SessionDeletedChangeHintV1Schema } from '@happier-dev/protocol/changes';
+import { resolveSessionGrantedAccountIdsInTx } from '@/app/session/access/sessionRecipients';
 
 import { deleteSessionTree, SessionDeleteConditionLostError } from './deleteSessionTree';
 import { emitSessionDeletedUpdate } from './emitSessionDeletedUpdate';
@@ -47,90 +48,7 @@ export async function deleteOwnedSession(
 ): Promise<DeleteOwnedSessionResult> {
     try {
         return await inTx(async (tx) => {
-            const session = await loadSessionDeleteRecipients(tx, {
-                sessionId: params.sessionId,
-                ownerAccountId: params.ownerAccountId ?? null,
-                sessionWhereGuard: params.sessionWhereGuard,
-            });
-
-            if (!session) {
-                log(
-                    { module: 'session-delete', userId: params.ownerAccountId ?? null, sessionId: params.sessionId, reason: params.reason },
-                    'Session not found or not owned by user',
-                );
-                return { ok: false, error: 'not-found' } as const;
-            }
-
-            const isCallerInitiated = params.reason === 'user_request';
-            const recipientAccountIds = new Set<string>();
-            recipientAccountIds.add(session.accountId);
-            for (const share of session.shares) {
-                recipientAccountIds.add(share.sharedWithUserId);
-            }
-
-            const sessionDeleteWhere = {
-                ...(params.sessionWhereGuard ?? {}),
-                ...(params.ownerAccountId ? { accountId: params.ownerAccountId } : {}),
-                ...(isCallerInitiated
-                    ? {
-                        metadataLayoutVersion:
-                            session.metadataLayoutVersion,
-                    }
-                    : null),
-            };
-            const recipientCursors: Array<{ accountId: string; cursor: number }> = [];
-            const deletionHint = SessionDeletedChangeHintV1Schema.parse({
-                v: 1,
-                lifecycle: 'deleted',
-            });
-            for (const accountId of recipientAccountIds) {
-                await tombstoneSessionDraftForLifecycleInTx(tx, {
-                    accountId,
-                    sessionId: params.sessionId,
-                });
-            }
-            const deleted = await deleteSessionTree(tx, {
-                sessionId: params.sessionId,
-                sessionUpdatedAt: session.updatedAt,
-                actorAccountId: session.accountId,
-                reason: params.reason,
-                sessionDeleteWhere: Object.keys(sessionDeleteWhere).length > 0 ? sessionDeleteWhere : undefined,
-                afterSessionWriteBoundary: async () => {
-                    for (const accountId of recipientAccountIds) {
-                        const cursor = await markAccountChanged(tx, {
-                            accountId,
-                            kind: 'session',
-                            entityId: params.sessionId,
-                            hint: deletionHint,
-                        });
-                        recipientCursors.push({ accountId, cursor });
-                    }
-                },
-            });
-
-            afterTx(tx, async () => {
-                log(
-                    {
-                        module: 'session-delete',
-                        userId: session.accountId,
-                        sessionId: params.sessionId,
-                        reason: params.reason,
-                        deletedMessages: deleted.deletedMessages,
-                        deletedReports: deleted.deletedReports,
-                        deletedAccessKeys: deleted.deletedAccessKeys,
-                    },
-                    'Session deleted successfully',
-                );
-                await Promise.all(recipientCursors.map(async ({ accountId, cursor }) => {
-                    await emitSessionDeletedUpdate({
-                        sessionId: params.sessionId,
-                        accountId,
-                        cursor,
-                    });
-                }));
-            });
-
-            return { ok: true } as const;
+            return await deleteSessionWithRecipientsInTx(tx, params);
         });
     } catch (error) {
         if (error instanceof SessionDeleteConditionLostError) {
@@ -138,4 +56,116 @@ export async function deleteOwnedSession(
         }
         throw error;
     }
+}
+
+/**
+ * The guarded Session-deletion lifecycle for an existing transaction. Account
+ * erasure composes it before deleting the Account, so recipient capture, drafts,
+ * durable changes, and after-commit events have the same owner as ordinary delete.
+ * A lost write condition must escape and roll back the caller's transaction.
+ */
+export async function deleteSessionWithRecipientsInTx(
+    tx: Tx,
+    params: DeleteOwnedSessionParams,
+): Promise<DeleteOwnedSessionResult> {
+    const session = await loadSessionDeleteRecipients(tx, {
+        sessionId: params.sessionId,
+        ownerAccountId: params.ownerAccountId ?? null,
+        sessionWhereGuard: params.sessionWhereGuard,
+    });
+
+    if (!session) {
+        log(
+            { module: 'session-delete', userId: params.ownerAccountId ?? null, sessionId: params.sessionId, reason: params.reason },
+            'Session not found or not owned by user',
+        );
+        return { ok: false, error: 'not-found' } as const;
+    }
+
+    const isCallerInitiated = params.reason === 'user_request';
+    // Resolve recipients before the row disappears, and resolve them through
+    // the canonical access owner so a Team- or Group-granted collaborator
+    // receives the same draft tombstone and deletion projection a direct
+    // recipient does. Transcript publication does not narrow this set: a
+    // collaborator who cannot receive content still has a local Session row
+    // that must be retired.
+    const recipientAccountIds = new Set<string>(
+        await resolveSessionGrantedAccountIdsInTx(tx, { sessionId: params.sessionId }),
+    );
+    recipientAccountIds.add(session.accountId);
+
+    const sessionDeleteWhere = {
+        ...(params.sessionWhereGuard ?? {}),
+        ...(params.ownerAccountId ? { accountId: params.ownerAccountId } : {}),
+        ...(isCallerInitiated
+            ? {
+                metadataLayoutVersion:
+                    session.metadataLayoutVersion,
+            }
+            : null),
+    };
+    const recipientCursors: Array<{ accountId: string; cursor: number }> = [];
+    const deletionHint = SessionDeletedChangeHintV1Schema.parse({
+        v: 1,
+        lifecycle: 'deleted',
+    });
+    for (const accountId of recipientAccountIds) {
+        await tombstoneSessionDraftForLifecycleInTx(tx, {
+            accountId,
+            sessionId: params.sessionId,
+        });
+    }
+    const deleted = await deleteSessionTree(tx, {
+        sessionId: params.sessionId,
+        sessionUpdatedAt: session.updatedAt,
+        actorAccountId: session.accountId,
+        reason: params.reason,
+        sessionDeleteWhere: Object.keys(sessionDeleteWhere).length > 0 ? sessionDeleteWhere : undefined,
+        afterSessionWriteBoundary: async () => {
+            for (const accountId of recipientAccountIds) {
+                const cursor = await markAccountChanged(tx, {
+                    accountId,
+                    kind: 'session',
+                    entityId: params.sessionId,
+                    hint: deletionHint,
+                });
+                recipientCursors.push({ accountId, cursor });
+            }
+        },
+    });
+
+    afterTx(tx, () => {
+        log(
+            {
+                module: 'session-delete',
+                userId: session.accountId,
+                sessionId: params.sessionId,
+                reason: params.reason,
+                deletedMessages: deleted.deletedMessages,
+                deletedReports: deleted.deletedReports,
+                deletedAccessKeys: deleted.deletedAccessKeys,
+            },
+            'Session deleted successfully',
+        );
+        void Promise.all(recipientCursors.map(({ accountId, cursor }) =>
+            emitSessionDeletedUpdate({
+                sessionId: params.sessionId,
+                accountId,
+                cursor,
+            }),
+        )).catch((error: unknown) => {
+            log(
+                {
+                    module: 'session-delete',
+                    userId: session.accountId,
+                    sessionId: params.sessionId,
+                    reason: params.reason,
+                    error,
+                },
+                'Failed to emit one or more delete-session updates',
+            );
+        });
+    });
+
+    return { ok: true } as const;
 }

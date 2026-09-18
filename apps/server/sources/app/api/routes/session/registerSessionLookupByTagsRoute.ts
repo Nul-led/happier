@@ -11,7 +11,8 @@ import { type Fastify } from "../../types";
 import {
     createV2SessionOwnerRowSelect,
     mapV2SessionOwnerRow,
-} from "./v2SessionListRows";
+} from "@/app/session/listing/rows";
+import { readSessionListViewerDiscussionFacts } from "@/app/session/listing/page";
 import {
     createSessionMetadataPrivacyUpgradeRequiredResponse,
     isSessionMetadataPrivacyUpgradeRequiredError,
@@ -44,7 +45,7 @@ export function registerSessionLookupByTagsRoute(app: Fastify) {
             },
             orderBy: { tag: "asc" },
             take: SESSION_LOOKUP_BY_TAGS_MAX_TAGS_V2,
-            select: createV2SessionOwnerRowSelect(),
+            select: createV2SessionOwnerRowSelect(request.userId),
         });
         if (
             sessions.some((session) =>
@@ -69,11 +70,13 @@ export function registerSessionLookupByTagsRoute(app: Fastify) {
                     userId,
                 )
                 : undefined;
+            const discussionFacts = await readSessionListViewerDiscussionFacts(sessions, userId);
             return reply.send({
                 sessions: sessions.map((session) =>
                     mapV2SessionOwnerRow(
                         session,
                         ownerAccountMode,
+                        discussionFacts,
                     )),
             });
         } catch (error) {

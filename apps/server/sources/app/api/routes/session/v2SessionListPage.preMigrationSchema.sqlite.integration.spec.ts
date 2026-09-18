@@ -5,7 +5,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
-import { findV2SessionListRows, mapV2SessionListRows, V2_SESSION_LIST_ORDER_BY } from "./v2SessionListPage";
+import { findV2SessionListRows, mapV2SessionListRows, V2_SESSION_LIST_ORDER_BY } from "@/app/session/listing/page";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 
 describe("session list on the pre-activation-authorization schema (SQLite integration)", () => {
     let harness: LightSqliteHarness;
@@ -57,6 +58,7 @@ describe("session list on the pre-activation-authorization schema (SQLite integr
     it("serves the existing legacy projection and omits activation authorization", async () => {
         const rows = await findV2SessionListRows({
             userId: ownerId,
+            authentication: createPresentUserSessionAccessAuthentication(),
             where: { archivedAt: null },
             orderBy: V2_SESSION_LIST_ORDER_BY,
             take: 10,

@@ -35,9 +35,11 @@ import {
     QualifiedProviderAccountUsageRecordResponseV4Schema,
     QualifiedConnectedAccountServiceRefSchema,
     parseQualifiedConnectedAccountV4StructuredQueryValue,
+    type QualifiedConnectedAccountGroupV4,
 } from "@happier-dev/protocol";
 
 import type { Fastify } from "../../../types";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import {
     listQualifiedConnectedAccounts,
     acquireQualifiedConnectedServiceRefreshLease,
@@ -181,6 +183,28 @@ function parseOptionalQualifiedGroupIncarnation(
     return value === undefined
         ? undefined
         : QualifiedConnectedAccountGroupIncarnationV4Schema.parse(value);
+}
+
+function projectGroupPolicyForFeature(
+    group: QualifiedConnectedAccountGroupV4,
+    autoQuotaResetEnabled = isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env),
+    autoDisablePlanInvalidEnabled = isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env),
+    poolQuotaLimitSelectionEnabled = isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env),
+): QualifiedConnectedAccountGroupV4 {
+    let policy = group.policy;
+    if (!autoQuotaResetEnabled) {
+        const { autoUseQuotaResetsWhenExhausted: _quotaReset, ...projected } = policy;
+        policy = projected;
+    }
+    if (!autoDisablePlanInvalidEnabled) {
+        const { autoDisablePlanInvalidAccounts: _autoDisable, ...projected } = policy;
+        policy = projected;
+    }
+    if (!poolQuotaLimitSelectionEnabled) {
+        const { quotaLimitSelection: _quotaLimitSelection, ...projected } = policy;
+        policy = projected;
+    }
+    return { ...group, policy };
 }
 
 export function registerQualifiedConnectedAccountCredentialRoutesV4(
@@ -694,11 +718,19 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
         } catch {
             return reply.code(400).send({ error: "invalid-params" });
         }
+        const autoQuotaResetEnabled = isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env);
+        const autoDisablePlanInvalidEnabled = isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env);
+        const poolQuotaLimitSelectionEnabled = isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env);
         return reply.send({
-            groups: await listQualifiedConnectedAccountGroups({
+            groups: (await listQualifiedConnectedAccountGroups({
                 accountId: request.userId,
                 service,
-            }),
+            })).map((group) => projectGroupPolicyForFeature(
+                group,
+                autoQuotaResetEnabled,
+                autoDisablePlanInvalidEnabled,
+                poolQuotaLimitSelectionEnabled,
+            )),
         });
     });
 
@@ -708,10 +740,23 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
             body: QualifiedConnectedAccountGroupCreateV4Schema,
             response: {
                 200: QualifiedConnectedAccountGroupResponseV4Schema,
+                400: z.object({ error: z.literal("invalid-params") }).strict(),
                 409: GroupConflictResponseSchema,
             },
         },
     }, async (request, reply) => {
+        if (request.body.group.policy?.autoUseQuotaResetsWhenExhausted === true
+            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
+        if (request.body.group.policy?.autoDisablePlanInvalidAccounts === true
+            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
+        if (request.body.group.policy?.quotaLimitSelection !== undefined
+            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
         const result = await createQualifiedConnectedAccountGroup({
             accountId: request.userId,
             ...request.body,
@@ -735,7 +780,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.get("/v4/connect/qualified/group", {
@@ -783,7 +828,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                 runtimeStateRevision: stored.runtimeStateRevision,
             });
         }
-        return reply.send({ group: stored });
+        return reply.send({ group: projectGroupPolicyForFeature(stored) });
     });
 
     app.patch("/v4/connect/qualified/group", {
@@ -792,11 +837,24 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
             body: QualifiedConnectedAccountGroupPatchV4Schema,
             response: {
                 200: QualifiedConnectedAccountGroupResponseV4Schema,
+                400: z.object({ error: z.literal("invalid-params") }).strict(),
                 404: NotFoundResponseSchema,
                 409: GroupConflictResponseSchema,
             },
         },
     }, async (request, reply) => {
+        if (request.body.policy?.autoUseQuotaResetsWhenExhausted === true
+            && !isServerFeatureEnabledForRequest("connectedServices.autoQuotaReset", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
+        if (request.body.policy?.autoDisablePlanInvalidAccounts === true
+            && !isServerFeatureEnabledForRequest("connectedServices.autoDisablePlanInvalid", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
+        if (request.body.policy?.quotaLimitSelection !== undefined
+            && !isServerFeatureEnabledForRequest("connectedServices.poolQuotaLimitSelection", process.env)) {
+            return reply.code(400).send({ error: "invalid-params" });
+        }
         const result = await patchQualifiedConnectedAccountGroup({
             accountId: request.userId,
             patch: request.body,
@@ -839,7 +897,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.delete("/v4/connect/qualified/group", {
@@ -961,7 +1019,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.post("/v4/connect/qualified/group/members", {
@@ -1022,7 +1080,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.patch("/v4/connect/qualified/group/member", {
@@ -1073,7 +1131,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.delete("/v4/connect/qualified/group/member", {
@@ -1134,7 +1192,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.post("/v4/connect/qualified/group/active-account", {
@@ -1201,7 +1259,7 @@ export function registerQualifiedConnectedAccountCredentialRoutesV4(
                         : null,
             });
         }
-        return reply.send({ group: result.group });
+        return reply.send({ group: projectGroupPolicyForFeature(result.group) });
     });
 
     app.get(

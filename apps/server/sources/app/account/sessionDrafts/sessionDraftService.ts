@@ -1,23 +1,33 @@
 import {
     SESSION_DRAFT_SOCKET_EVENT,
-    SessionDraftStoredContentEnvelopeV1Schema,
+    SESSION_DRAFT_V2_SOCKET_EVENT,
+    SessionDraftStoredContentEnvelopeV2Schema,
     canonicalSessionDraftAddressV1,
+    canonicalSessionDraftAddressV2,
+    isSessionDraftAddressV1,
+    isSessionDraftContentV1,
     pluginJsonValuesEqual,
+    type SessionDraftAddressKindV2,
     type SessionDraftAddressV1,
+    type SessionDraftAddressV2,
     type SessionDraftExpectedRevisionV1,
-    type SessionDraftListResponseV1,
-    type SessionDraftMutateResponseV1,
-    type SessionDraftReadResponseV1,
-    type SessionDraftRecordV1,
-    type SessionDraftStoredContentEnvelopeV1,
+    type SessionDraftListResponseV2,
+    type SessionDraftMutateResponseV2,
+    type SessionDraftReadResponseV2,
+    type SessionDraftRecordV2,
+    type SessionDraftStoredContentEnvelopeV2,
     type AccountEncryptionMigrateSessionDraftsDirective,
 } from "@happier-dev/protocol";
 import * as privacyKit from "privacy-kit";
 
+import { closeDraftEphemeralRunnerActivationsInTx } from "@/app/ephemeralRunner/activationLifecycle";
+import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 import { eventRouter } from "@/app/events/eventRouter";
 import { applyUserKvMutationsInTx } from "@/app/kv/kvMutate";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { db } from "@/storage/db";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 
@@ -25,21 +35,33 @@ import {
     ACCOUNT_SESSION_DRAFT_KV_PREFIX,
     parseSessionDraftPhysicalKey,
     sessionDraftPhysicalKey,
+    sessionDraftPhysicalKeySessionPrefix,
 } from "./sessionDraftPhysicalKey";
 
-export type SessionDraftMutationServiceResult = SessionDraftMutateResponseV1
+export type SessionDraftAddressEpoch = "v1" | "v2";
+
+export type SessionDraftMutationServiceResult = SessionDraftMutateResponseV2
+    | Readonly<{ status: "epochUnavailable" }>
     | Readonly<{ status: "sessionUnavailable" }>
     | Readonly<{ status: "invalidContentMode" }>
     | Readonly<{ status: "invalidAddressBinding" }>;
 
+export type SessionDraftReadServiceResult = SessionDraftReadResponseV2
+    | Readonly<{ status: "epochUnavailable" }>;
+
 export type SessionDraftAccountMigrationResult =
-    | Readonly<{ status: "applied"; records: readonly SessionDraftRecordV1[] }>
+    | Readonly<{ status: "applied"; records: readonly SessionDraftRecordV2[] }>
     | Readonly<{
-        status: "requires_upgrade" | "migration_incomplete" | "source_mismatch";
+        status: "requires_upgrade" | "migration_incomplete";
+    }>
+    | Readonly<{
+        status: "source_mismatch";
+        address?: Extract<SessionDraftAddressV1, { kind: "newSession" }>;
+        currentRevision?: number;
     }>;
 
 export type SessionDraftAccountMigrationPostStateResult =
-    | Readonly<{ status: "matched"; records: readonly SessionDraftRecordV1[] }>
+    | Readonly<{ status: "matched"; records: readonly SessionDraftRecordV2[] }>
     | Readonly<{ status: "requires_upgrade" | "mismatch" }>;
 
 export const SESSION_DRAFT_ACCOUNT_CHANGE_ENTITY_PREFIX = "session-draft:";
@@ -61,7 +83,7 @@ type SessionDraftKvRow = Readonly<{
 }>;
 
 export function encodeSessionDraftContentForKv(
-    content: SessionDraftStoredContentEnvelopeV1 | null,
+    content: SessionDraftStoredContentEnvelopeV2 | null,
 ): string | null {
     return content === null
         ? null
@@ -70,7 +92,7 @@ export function encodeSessionDraftContentForKv(
 
 export function decodeSessionDraftContentFromKv(
     value: Uint8Array | null,
-): SessionDraftStoredContentEnvelopeV1 | null {
+): SessionDraftStoredContentEnvelopeV2 | null {
     if (value === null) return null;
     let raw: unknown;
     try {
@@ -78,12 +100,12 @@ export function decodeSessionDraftContentFromKv(
     } catch {
         throw new Error("Stored session draft content is malformed");
     }
-    const parsed = SessionDraftStoredContentEnvelopeV1Schema.safeParse(raw);
+    const parsed = SessionDraftStoredContentEnvelopeV2Schema.safeParse(raw);
     if (!parsed.success) throw new Error("Stored session draft content is malformed");
     return parsed.data;
 }
 
-function mapRow(row: SessionDraftKvRow, address?: SessionDraftAddressV1): SessionDraftRecordV1 {
+function mapRow(row: SessionDraftKvRow, address?: SessionDraftAddressV2): SessionDraftRecordV2 {
     const resolvedAddress = address ?? parseSessionDraftPhysicalKey(row.key);
     if (!resolvedAddress) throw new Error("Stored session draft key is malformed");
     return {
@@ -95,10 +117,16 @@ function mapRow(row: SessionDraftKvRow, address?: SessionDraftAddressV1): Sessio
     };
 }
 
+/**
+ * Every address kind except `newSession` binds one existing Session, so all
+ * epochs consume the canonical readable-Session decision while retaining the
+ * Account-private visibility of these drafts.
+ */
 async function resolveAddressMode(
     tx: Tx,
     accountId: string,
-    address: SessionDraftAddressV1,
+    address: SessionDraftAddressV2,
+    authentication: SessionAccessAuthentication,
 ): Promise<"plain" | "e2ee" | null> {
     if (address.kind === "newSession") {
         const account = await tx.account.findUnique({
@@ -111,10 +139,15 @@ async function resolveAddressMode(
     }
     const session = await tx.session.findFirst({
         where: {
-            id: address.sessionId,
-            OR: [
-                { accountId },
-                { shares: { some: { sharedWithUserId: accountId } } },
+            AND: [
+                { id: address.sessionId },
+                await buildSessionAccessWhere({
+                    tx,
+                    accountId,
+                    capability: "readTranscript",
+                    mode: "effective_access_v1",
+                    authentication,
+                }),
             ],
         },
         select: { encryptionMode: true },
@@ -124,48 +157,70 @@ async function resolveAddressMode(
 }
 
 function contentMatchesAddress(
-    content: SessionDraftStoredContentEnvelopeV1 | null,
-    address: SessionDraftAddressV1,
+    content: SessionDraftStoredContentEnvelopeV2 | null,
+    address: SessionDraftAddressV2,
 ): boolean {
     if (content === null || content.t === "encrypted") return true;
-    return canonicalSessionDraftAddressV1(content.v.address)
-        === canonicalSessionDraftAddressV1(address);
+    return canonicalSessionDraftAddressV2(content.v.address)
+        === canonicalSessionDraftAddressV2(address);
 }
 
 function contentMatchesMode(
-    content: SessionDraftStoredContentEnvelopeV1 | null,
+    content: SessionDraftStoredContentEnvelopeV2 | null,
     mode: "plain" | "e2ee",
 ): boolean {
     return content === null || (mode === "plain" ? content.t === "plain" : content.t === "encrypted");
 }
 
+/**
+ * V1 addresses keep their exact released hint/event shape. V2-only addresses
+ * publish a version-specific hint and socket event whose discriminators the
+ * strict V1 parsers reject, so a released client ignores them instead of
+ * feeding an unknown address into its V1 draft handler.
+ */
 export async function publishDraftMutationInTx(
     tx: Tx,
     params: Readonly<{
         accountId: string;
-        address: SessionDraftAddressV1;
-        record: SessionDraftRecordV1;
+        address: SessionDraftAddressV2;
+        record: SessionDraftRecordV2;
     }>,
 ): Promise<void> {
     const status = params.record.content === null ? "deleted" as const : "present" as const;
-    const hint = {
-        v: 1 as const,
-        sessionDraft: true as const,
-        address: params.address,
-        revision: params.record.revision,
-        status,
-    };
+    const addressV1 = isSessionDraftAddressV1(params.address) && isSessionDraftContentV1(params.record.content)
+        ? params.address
+        : null;
+    const hint = addressV1
+        ? {
+            v: 1 as const,
+            sessionDraft: true as const,
+            address: addressV1,
+            revision: params.record.revision,
+            status,
+        }
+        : {
+            v: 2 as const,
+            sessionDraftV2: true as const,
+            address: params.address,
+            revision: params.record.revision,
+            status,
+        };
     await markAccountChanged(tx, {
         accountId: params.accountId,
         kind: "account",
-        entityId: `${SESSION_DRAFT_ACCOUNT_CHANGE_ENTITY_PREFIX}${canonicalSessionDraftAddressV1(params.address)}`,
+        entityId: `${SESSION_DRAFT_ACCOUNT_CHANGE_ENTITY_PREFIX}${canonicalSessionDraftAddressV2(params.address)}`,
         hint,
     });
     afterTx(tx, () => {
         eventRouter.emitEphemeral({
             userId: params.accountId,
-            payload: { type: SESSION_DRAFT_SOCKET_EVENT, ...hint },
-            recipientFilter: { type: "user-scoped-only" },
+            payload: {
+                type: addressV1 ? SESSION_DRAFT_SOCKET_EVENT : SESSION_DRAFT_V2_SOCKET_EVENT,
+                ...hint,
+            },
+            recipientFilter: params.address.kind === "newSession"
+                ? { type: "user-scoped-only" }
+                : { type: "all-interested-in-session", sessionId: params.address.sessionId },
         });
     });
 }
@@ -181,30 +236,54 @@ async function readRowInTx(
     });
 }
 
+/**
+ * Tombstones every draft address bound to the Session — the main composer draft
+ * plus its Run, discussion and new-discussion drafts — in one lifecycle
+ * transaction. Parsed canonical addresses and the encoded segment prefix keep
+ * one Session from matching a sibling whose id shares its leading characters.
+ */
 export async function tombstoneSessionDraftForLifecycleInTx(
     tx: Tx,
     params: Readonly<{ accountId: string; sessionId: string }>,
 ): Promise<boolean> {
-    const address = { kind: "session" as const, sessionId: params.sessionId };
-    const key = sessionDraftPhysicalKey(address);
-    if (!key) return false;
-    const current = await readRowInTx(tx, params.accountId, key);
-    if (!current || current.value === null) return false;
+    const mainAddress = { kind: "session" as const, sessionId: params.sessionId };
+    const mainKey = sessionDraftPhysicalKey(mainAddress);
+    const rows = await tx.userKVStore.findMany({
+        where: {
+            accountId: params.accountId,
+            value: { not: null },
+            OR: [
+                ...(mainKey ? [{ key: mainKey }] : []),
+                { key: { startsWith: sessionDraftPhysicalKeySessionPrefix(params.sessionId) } },
+            ],
+        },
+        orderBy: { key: "asc" },
+        select: SESSION_DRAFT_ROW_SELECT,
+    });
+    const targets: Array<{ row: SessionDraftKvRow; address: SessionDraftAddressV2 }> = [];
+    for (const row of rows) {
+        const address = parseSessionDraftPhysicalKey(row.key);
+        if (!address || address.kind === "newSession" || address.sessionId !== params.sessionId) continue;
+        targets.push({ row, address });
+    }
+    if (targets.length === 0) return false;
     const application = await applyUserKvMutationsInTx(
         tx,
         { uid: params.accountId },
-        [{ key, value: null, version: current.version }],
+        targets.map(({ row }) => ({ key: row.key, value: null, version: row.version })),
     );
     if (!application.success) {
         throw new Error("Session draft lifecycle tombstone lost its transactional revision");
     }
-    const updated = await readRowInTx(tx, params.accountId, key);
-    if (!updated) throw new Error("Session draft lifecycle tombstone row disappeared");
-    await publishDraftMutationInTx(tx, {
-        accountId: params.accountId,
-        address,
-        record: mapRow(updated, address),
-    });
+    for (const { row, address } of targets) {
+        const updated = await readRowInTx(tx, params.accountId, row.key);
+        if (!updated) throw new Error("Session draft lifecycle tombstone row disappeared");
+        await publishDraftMutationInTx(tx, {
+            accountId: params.accountId,
+            address,
+            record: mapRow(updated, address),
+        });
+    }
     return true;
 }
 
@@ -229,6 +308,12 @@ export async function migrateNewSessionDraftsForAccountModeInTx(
         orderBy: { key: "asc" },
         select: SESSION_DRAFT_ROW_SELECT,
     });
+    // Only the explicitly capable directive may replace successor content;
+    // the unversioned writer cannot safely preserve its authoring intent.
+    if (!(params.directive && "v" in params.directive && params.directive.v === 2)
+        && rows.some((row) => !isSessionDraftContentV1(decodeSessionDraftContentFromKv(row.value)))) {
+        return { status: "requires_upgrade" };
+    }
     if (!params.directive) {
         return rows.length === 0
             ? { status: "applied", records: [] }
@@ -252,7 +337,9 @@ export async function migrateNewSessionDraftsForAccountModeInTx(
     for (const row of rows) {
         const item = incomingByKey.get(row.key);
         if (!item) return { status: "migration_incomplete" };
-        if (item.expectedRevision !== row.version) return { status: "source_mismatch" };
+        if (item.expectedRevision !== row.version) return {
+            status: "source_mismatch", address: item.address, currentRevision: row.version,
+        };
     }
     if (rows.length === 0) return { status: "applied", records: [] };
 
@@ -279,7 +366,7 @@ export async function migrateNewSessionDraftsForAccountModeInTx(
     if (updatedRows.length !== rows.length) {
         throw new Error("Session draft migration rows disappeared after atomic CAS");
     }
-    const records: SessionDraftRecordV1[] = [];
+    const records: SessionDraftRecordV2[] = [];
     for (const row of updatedRows) {
         const item = incomingByKey.get(row.key);
         if (!item) throw new Error("Validated session draft migration became incomplete");
@@ -312,6 +399,11 @@ export async function matchNewSessionDraftsAccountMigrationPostStateInTx(
         orderBy: { key: "asc" },
         select: SESSION_DRAFT_ROW_SELECT,
     });
+    // Replay must honor the same content epoch as the original transition.
+    if (!(params.directive && "v" in params.directive && params.directive.v === 2)
+        && rows.some((row) => !isSessionDraftContentV1(decodeSessionDraftContentFromKv(row.value)))) {
+        return { status: "requires_upgrade" };
+    }
     if (!params.directive) {
         return rows.length === 0
             ? { status: "matched", records: [] }
@@ -333,13 +425,13 @@ export async function matchNewSessionDraftsAccountMigrationPostStateInTx(
     }
     if (incomingByKey.size !== rows.length) return { status: "mismatch" };
 
-    const records: SessionDraftRecordV1[] = [];
+    const records: SessionDraftRecordV2[] = [];
     for (const row of rows) {
         const item = incomingByKey.get(row.key);
         if (!item || row.version !== item.expectedRevision + 1) {
             return { status: "mismatch" };
         }
-        let record: SessionDraftRecordV1;
+        let record: SessionDraftRecordV2;
         try {
             record = mapRow(row, item.address);
         } catch {
@@ -354,31 +446,55 @@ export async function matchNewSessionDraftsAccountMigrationPostStateInTx(
     return { status: "matched", records };
 }
 
-export async function readSessionDraft(params: Readonly<{
+export async function readSessionDraftInTx(tx: Tx, params: Readonly<{
     accountId: string;
-    address: SessionDraftAddressV1;
-}>): Promise<SessionDraftReadResponseV1> {
-    return await inTx(async (tx) => {
-        const mode = await resolveAddressMode(tx, params.accountId, params.address);
-        if (!mode) return { status: "absent" };
-        const key = sessionDraftPhysicalKey(params.address);
-        if (!key) return { status: "absent" };
-        const row = await readRowInTx(tx, params.accountId, key);
-        if (!row) return { status: "absent" };
-        const record = mapRow(row, params.address);
-        return record.content === null
-            ? { status: "deleted", record }
-            : { status: "present", record };
-    });
+    address: SessionDraftAddressV2;
+    epoch?: SessionDraftAddressEpoch;
+    authentication: SessionAccessAuthentication;
+}>): Promise<SessionDraftReadServiceResult> {
+    if (params.epoch === "v1" && !isSessionDraftAddressV1(params.address)) return { status: "epochUnavailable" };
+    const mode = await resolveAddressMode(tx, params.accountId, params.address, params.authentication);
+    if (!mode) return { status: "absent" };
+    const key = sessionDraftPhysicalKey(params.address);
+    if (!key) return { status: "absent" };
+    const row = await readRowInTx(tx, params.accountId, key);
+    if (!row) return { status: "absent" };
+    const record = mapRow(row, params.address);
+    if (params.epoch === "v1" && !isSessionDraftContentV1(record.content)) return { status: "epochUnavailable" };
+    return record.content === null
+        ? { status: "deleted", record }
+        : { status: "present", record };
 }
 
+export async function readSessionDraft(params: Readonly<{
+    accountId: string;
+    address: SessionDraftAddressV2;
+    epoch?: SessionDraftAddressEpoch;
+    authentication: SessionAccessAuthentication;
+}>): Promise<SessionDraftReadServiceResult> {
+    return await inTx((tx) => readSessionDraftInTx(tx, params));
+}
+
+/**
+ * One paged reader over the shared reserved KV prefix. The V1 epoch filters
+ * V2-only rows out before pagination, so its page size, `nextAfter` cursor and
+ * item shape stay exactly what a released V1 client expects even when V2 rows
+ * sort between V1 rows.
+ */
 export async function listSessionDrafts(params: Readonly<{
     accountId: string;
     after?: string;
     limit?: number;
-}>): Promise<SessionDraftListResponseV1> {
+    epoch?: SessionDraftAddressEpoch;
+    addressKinds?: readonly SessionDraftAddressKindV2[];
+    authentication: SessionAccessAuthentication;
+}>): Promise<SessionDraftListResponseV2> {
+    const epoch = params.epoch ?? "v1";
+    const selectedKinds = epoch === "v2" && params.addressKinds
+        ? new Set<SessionDraftAddressKindV2>(params.addressKinds)
+        : null;
     const limit = params.limit ?? 50;
-    const collected: SessionDraftRecordV1[] = [];
+    const collected: SessionDraftRecordV2[] = [];
     let afterPhysicalKey = params.after
         ? `${ACCOUNT_SESSION_DRAFT_KV_PREFIX}${params.after}`
         : undefined;
@@ -400,52 +516,84 @@ export async function listSessionDrafts(params: Readonly<{
         afterPhysicalKey = rows[rows.length - 1]!.key;
         const candidates: Array<{
             row: SessionDraftKvRow;
-            address: SessionDraftAddressV1;
+            address: SessionDraftAddressV2;
         }> = [];
         for (const row of rows) {
             const address = parseSessionDraftPhysicalKey(row.key);
-            if (address) candidates.push({ row, address });
+            if (!address) continue;
+            if (epoch === "v1" && !isSessionDraftAddressV1(address)) continue;
+            if (selectedKinds && !selectedKinds.has(address.kind)) continue;
+            candidates.push({ row, address });
         }
         const sessionIds = candidates.flatMap(({ address }) => (
-            address.kind === "session" ? [address.sessionId] : []
+            address.kind === "newSession" ? [] : [address.sessionId]
         ));
-        const reachableSessions = new Set(sessionIds.length === 0 ? [] : (await db.session.findMany({
-            where: {
-                id: { in: sessionIds },
-                OR: [
-                    { accountId: params.accountId },
-                    { shares: { some: { sharedWithUserId: params.accountId } } },
-                ],
-            },
-            select: { id: true },
+        const reachableSessions = new Set(sessionIds.length === 0 ? [] : (await inTx(async (tx) => {
+            const accessWhere = await buildSessionAccessWhere({
+                tx,
+                accountId: params.accountId,
+                capability: "readTranscript",
+                mode: "effective_access_v1",
+                authentication: params.authentication,
+            });
+            return await tx.session.findMany({
+                where: { AND: [{ id: { in: sessionIds } }, accessWhere] },
+                select: { id: true },
+            });
         })).map((session) => session.id));
         for (const { row, address } of candidates) {
-            if (address.kind === "session" && !reachableSessions.has(address.sessionId)) continue;
-            collected.push(mapRow(row, address));
+            if (address.kind !== "newSession" && !reachableSessions.has(address.sessionId)) continue;
+            const record = mapRow(row, address);
+            if (epoch === "v1" && !isSessionDraftContentV1(record.content)) continue;
+            collected.push(record);
             if (collected.length > limit) break;
         }
         if (collected.length > limit || rows.length < 100) break;
     }
     const items = collected.slice(0, limit);
-    const nextAfter = collected.length > limit && items.length > 0
-        ? canonicalSessionDraftAddressV1(items[items.length - 1]!.address)
-        : undefined;
+    const last = collected.length > limit && items.length > 0 ? items[items.length - 1]!.address : null;
+    const nextAfter = last === null
+        ? undefined
+        : epoch === "v1" && isSessionDraftAddressV1(last)
+            ? canonicalSessionDraftAddressV1(last)
+            : canonicalSessionDraftAddressV2(last);
     return { items, ...(nextAfter ? { nextAfter } : {}) };
 }
 
 export async function mutateSessionDraft(params: Readonly<{
     accountId: string;
-    address: SessionDraftAddressV1;
+    address: SessionDraftAddressV2;
     expectedRevision: SessionDraftExpectedRevisionV1;
-    content: SessionDraftStoredContentEnvelopeV1 | null;
+    content: SessionDraftStoredContentEnvelopeV2 | null;
+    epoch?: SessionDraftAddressEpoch;
+    authentication: SessionAccessAuthentication;
 }>): Promise<SessionDraftMutationServiceResult> {
     return await inTx(async (tx) => {
-        const mode = await resolveAddressMode(tx, params.accountId, params.address);
+        if (params.epoch === "v1" && (!isSessionDraftAddressV1(params.address) || !isSessionDraftContentV1(params.content))) {
+            return { status: "epochUnavailable" };
+        }
+        if (params.address.kind === "newSession") {
+            const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { id: true } });
+            if (!account) return { status: "sessionUnavailable" };
+            await acquireAccountSessionOwnerMetadataFenceInTx(tx, params.accountId);
+        }
+        const mode = await resolveAddressMode(tx, params.accountId, params.address, params.authentication);
         if (!mode) return { status: "sessionUnavailable" };
         if (!contentMatchesMode(params.content, mode)) return { status: "invalidContentMode" };
         if (!contentMatchesAddress(params.content, params.address)) return { status: "invalidAddressBinding" };
         const key = sessionDraftPhysicalKey(params.address);
         if (!key) return { status: "sessionUnavailable" };
+        if (params.epoch === "v1") {
+            const current = await readRowInTx(tx, params.accountId, key);
+            if (current && !isSessionDraftContentV1(decodeSessionDraftContentFromKv(current.value))) {
+                // An explicit exact-revision tombstone retains the shared activation
+                // cancellation contract. A rewrite or stale delete cannot expose or
+                // discard successor fields through a V1 success/conflict response.
+                if (params.content !== null || params.expectedRevision !== current.version) {
+                    return { status: "epochUnavailable" };
+                }
+            }
+        }
         const application = await applyUserKvMutationsInTx(
             tx,
             { uid: params.accountId },
@@ -457,6 +605,9 @@ export async function mutateSessionDraft(params: Readonly<{
         );
         if (!application.success) {
             const current = await readRowInTx(tx, params.accountId, key);
+            if (params.epoch === "v1" && current && !isSessionDraftContentV1(decodeSessionDraftContentFromKv(current.value))) {
+                return { status: "epochUnavailable" };
+            }
             return {
                 status: "conflict",
                 current: current ? mapRow(current, params.address) : { status: "absent" },
@@ -465,6 +616,9 @@ export async function mutateSessionDraft(params: Readonly<{
         const updated = await readRowInTx(tx, params.accountId, key);
         if (!updated) throw new Error("Session draft mutation row disappeared");
         const record = mapRow(updated, params.address);
+        if (params.address.kind === "newSession" && params.content === null) {
+            await closeDraftEphemeralRunnerActivationsInTx(tx, { creatorAccountId: params.accountId, draftId: params.address.draftId });
+        }
         await publishDraftMutationInTx(tx, {
             accountId: params.accountId,
             address: params.address,

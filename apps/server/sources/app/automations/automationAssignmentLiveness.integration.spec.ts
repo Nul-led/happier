@@ -557,7 +557,7 @@ describe("automation assignment liveness (integration)", () => {
         { policyKind: "firstMatch" as const, matchCount: null, remainingOccurrences: 1 },
         { policyKind: "nextMatches" as const, matchCount: 2, remainingOccurrences: 2 },
         { policyKind: "everyMatch" as const, matchCount: null, remainingOccurrences: null },
-    ])("does not admit a replayable $policyKind occurrence with only a replaced assignment", async ({
+    ])("preserves a $policyKind occurrence with only a reversibly replaced assignment", async ({
         policyKind,
         matchCount,
         remainingOccurrences,
@@ -584,7 +584,7 @@ describe("automation assignment liveness (integration)", () => {
         await db.session.create({
             data: {
                 id: sourceSessionId,
-                tag: `replacement-replayable-${suffix}`,
+                tag: `replacement-future-lifecycle-${suffix}`,
                 accountId,
                 encryptionMode: "plain",
                 metadata: "{}",
@@ -607,7 +607,7 @@ describe("automation assignment liveness (integration)", () => {
             data: {
                 id: automationId,
                 accountId,
-                name: `Replayable ${policyKind} replacement filter`,
+                name: `Future ${policyKind} replacement continuity`,
                 enabled: true,
                 targetType: "new_session",
                 templateCiphertext: storedRecipe(1),
@@ -638,21 +638,51 @@ describe("automation assignment liveness (integration)", () => {
             occurredAt: Date.now(),
         };
 
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+        const [admission] = await inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
+            tx,
+            accountId,
+            occurrence,
+        }));
+        expect(admission?.result).toMatchObject({ kind: "admitted", run: { state: "queued" } });
+        const runId = admission?.result.kind === "admitted" ? admission.result.run.id : null;
+        expect(runId).not.toBeNull();
+        await expect(db.automationRunAssignment.findMany({
+            where: { runId: runId! },
+            select: { machineId: true },
+        })).resolves.toEqual([{ machineId: replacedMachineId }]);
+        await expect(claimAutomationRun({
+            accountId,
+            machineId: replacedMachineId,
+            leaseDurationMs: 30_000,
+        })).resolves.toMatchObject({ run: null });
+
+        await expect(inTx(async (tx) => await admitSessionLifecycleAutomationRunsTx({
                 tx,
                 accountId,
                 occurrence,
-            }))).resolves.toEqual([{
-                triggerId,
-                result: { kind: "ineligible", reason: "noEnabledAssignment" },
-            }]);
-        }
-        await expect(db.automationRun.count({ where: { automationId } })).resolves.toBe(0);
+        }))).resolves.toEqual([{
+            triggerId,
+            result: expect.objectContaining({ kind: "rejoined" }),
+        }]);
+        await expect(db.automationRun.count({ where: { automationId } })).resolves.toBe(1);
         await expect(db.automationTrigger.findUniqueOrThrow({
             where: { id: triggerId },
             select: { remainingOccurrences: true },
-        })).resolves.toEqual({ remainingOccurrences });
+        })).resolves.toEqual({
+            remainingOccurrences: remainingOccurrences === null
+                ? null
+                : remainingOccurrences - 1,
+        });
+
+        await db.machine.update({
+            where: { id: replacedMachineId },
+            data: { replacedByMachineId: null, replacedAt: null },
+        });
+        await expect(claimAutomationRun({
+            accountId,
+            machineId: replacedMachineId,
+            leaseDurationMs: 30_000,
+        })).resolves.toMatchObject({ run: { id: runId, state: "claimed" } });
     });
 
     it("does not admit a Run when every configured assignment is currently unavailable", async () => {

@@ -467,6 +467,162 @@ describe("automation machine-assignment removal (integration)", () => {
         });
     });
 
+    it.each([
+        { state: "running", phase: "after root admission", terminalState: "outcome_uncertain", invocationLifecycle: "outcome_uncertain" },
+        { state: "pause_requested", phase: "after root admission", terminalState: "outcome_uncertain", invocationLifecycle: "outcome_uncertain" },
+        { state: "pause_requested", phase: "before root admission", terminalState: "cancelled", invocationLifecycle: null },
+        { state: "interrupted", phase: "after root admission", terminalState: "outcome_uncertain", invocationLifecycle: "outcome_uncertain" },
+        { state: "paused", phase: "after root admission", terminalState: "cancelled", invocationLifecycle: "cancelled" },
+    ] as const)(
+        "settles a $state Workflow Run $phase when permanent revocation removes its sole exact Machine",
+        async ({ state, phase, terminalState, invocationLifecycle }) => {
+            const accountId = await createAccount();
+            const machineId = await createMachine(accountId);
+            const { automationId } = await seedAutomation({ accountId });
+            await createAssignment(automationId, machineId);
+            const admitted = await runAutomationNow({
+                accountId,
+                automationId,
+                idempotencyKey: `machine-removal-stranded-workflow-${state}`,
+            });
+            const rootId = randomUUID();
+            await db.automationRun.update({
+                where: { id: admitted!.id },
+                data: {
+                    state,
+                    workflowCustodyState: "pending",
+                    workflowAcceptedSnapshotEnvelope: "{}",
+                    workflowCheckpointEnvelope: "{}",
+                    ...(phase === "after root admission"
+                        ? {
+                            workflowInvocations: { create: {
+                                id: rootId,
+                                sequence: 0n,
+                                parentRecordId: null,
+                                memberOrdinal: 0n,
+                                attempt: 0n,
+                                lifecycle: state === "paused" ? "running" : "needs_attention",
+                                contentEnvelope: "{}",
+                            } },
+                        }
+                        : {}),
+                },
+            });
+
+            await inTx(async (tx) => await removeAutomationMachineAssignmentsTx({
+                tx,
+                accountId,
+                machineId,
+                markMachineUnavailableTx: async (fencedTx) => {
+                    await fencedTx.machine.update({
+                        where: { id: machineId },
+                        data: { revokedAt: new Date() },
+                    });
+                },
+            }));
+
+            await expect(db.automationRun.findUniqueOrThrow({
+                where: { id: admitted!.id },
+                select: {
+                    state: true,
+                    revision: true,
+                    workflowCustodyState: true,
+                    workflowResultDeliveryState: true,
+                    finishedAt: true,
+                },
+            })).resolves.toEqual({
+                state: terminalState,
+                revision: 1,
+                workflowCustodyState: "settled",
+                workflowResultDeliveryState: null,
+                finishedAt: expect.any(Date),
+            });
+            if (invocationLifecycle === null) {
+                await expect(db.workflowRunInvocation.count({ where: { runId: admitted!.id } }))
+                    .resolves.toBe(0);
+            } else {
+                await expect(db.workflowRunInvocation.findUniqueOrThrow({
+                    where: { id: rootId },
+                    select: { lifecycle: true },
+                })).resolves.toEqual({ lifecycle: invocationLifecycle });
+            }
+        },
+    );
+
+    it("settles direct Workflow custody when permanent revocation removes its sole exact Machine", async () => {
+        const accountId = await createAccount();
+        const machineId = await createMachine(accountId);
+        const runId = randomUUID();
+        const rootId = randomUUID();
+        const now = new Date();
+        const originSession = await db.session.create({
+            data: {
+                accountId,
+                tag: `workflow-origin-${runId}`,
+                metadata: "{}",
+            },
+            select: { id: true },
+        });
+        await db.automationRun.create({
+            data: {
+                id: runId,
+                originKind: "direct",
+                automationId: null,
+                originSessionId: originSession.id,
+                accountId,
+                causeKind: null,
+                state: "interrupted",
+                scheduledAt: now,
+                dueAt: now,
+                workflowCustodyState: "pending",
+                workflowResultDeliveryState: "pending",
+                workflowAcceptedSnapshotEnvelope: "{}",
+                workflowCheckpointEnvelope: "{}",
+                assignments: { create: { machineId, priority: 0 } },
+                workflowInvocations: { create: {
+                    id: rootId,
+                    sequence: 0n,
+                    parentRecordId: null,
+                    memberOrdinal: 0n,
+                    attempt: 0n,
+                    lifecycle: "needs_attention",
+                    contentEnvelope: "{}",
+                } },
+            },
+        });
+
+        await inTx(async (tx) => await removeAutomationMachineAssignmentsTx({
+            tx,
+            accountId,
+            machineId,
+            markMachineUnavailableTx: async (fencedTx) => {
+                await fencedTx.machine.update({
+                    where: { id: machineId },
+                    data: { revokedAt: new Date() },
+                });
+            },
+        }));
+
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: runId },
+            select: {
+                state: true,
+                workflowCustodyState: true,
+                workflowResultDeliveryState: true,
+                finishedAt: true,
+            },
+        })).resolves.toEqual({
+            state: "outcome_uncertain",
+            workflowCustodyState: "settled",
+            workflowResultDeliveryState: "unavailable",
+            finishedAt: expect.any(Date),
+        });
+        await expect(db.workflowRunInvocation.findUniqueOrThrow({
+            where: { id: rootId },
+            select: { lifecycle: true },
+        })).resolves.toEqual({ lifecycle: "outcome_uncertain" });
+    });
+
     it("leaves a Run whose frozen snapshot keeps one eligible machine when one of several frozen machines is revoked", async () => {
         const accountId = await createAccount();
         const removedMachineId = await createMachine(accountId);

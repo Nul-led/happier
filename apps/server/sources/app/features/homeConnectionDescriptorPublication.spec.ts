@@ -556,7 +556,7 @@ describe("home connection descriptor production read path", () => {
         })).resolves.toMatchObject({ homeServerIdentityId: "srv_home" });
     });
 
-    it("surfaces a retained Iroh publication failure to required credential/bootstrap readers", async () => {
+    it.each([false, true])("surfaces a retained Iroh publication failure to required credential/bootstrap readers (restart: %s)", async (restartBeforeFailure) => {
         let persisted: { revision: number; contentKey: string } | null = null;
         const store: HomeConnectionDescriptorContinuityStore = {
             read: async () => persisted,
@@ -571,6 +571,7 @@ describe("home connection descriptor production read path", () => {
             continuityStore: store,
             resolveIrohEndpointState: activeIroh,
         })).resolves.toMatchObject({ homeServerIdentityId: "srv_home" });
+        if (restartBeforeFailure) resetHomeConnectionDescriptorRevisionOwnerForTests();
         await expect(readRequiredAuthenticatedHomeConnectionDescriptor({
             env,
             continuityStore: store,

@@ -4,6 +4,9 @@ import net from "node:net";
 
 import {
     createPeerTcpTunnelRelayAuthorizationSigningInputV2,
+    decodePeerTcpTunnelBinaryFrameV2,
+    encodePeerTcpTunnelBinaryFrameV2,
+    PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     type PeerTcpTunnelRelayEnvelope,
 } from "@happier-dev/protocol";
@@ -14,7 +17,10 @@ import { io as createClient, type Socket as ClientSocket } from "socket.io-clien
 import tweetnacl from "tweetnacl";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { startRedisAdapterRecoveryCluster } from "@/testkit/redisAdapterRecoveryCluster";
+
 import { getSocketRooms } from "@/app/api/socketRooms";
+import { readRedisStreamsAdapterOptionsFromEnv } from "@/config/socketAdapter";
 import { resolveRedisAdapterValidationRedisUrl } from "../../../../../../../scripts/resolveRedisAdapterValidationRedisUrl";
 
 import { createPeerTcpTunnelRelayCoordinator } from "./relayCoordinator";
@@ -151,10 +157,16 @@ function registerRelayServer(
         maxIdleMs?: number;
         maxDurationMs?: number;
     }> = {},
+    createRelayAdmissionRedis: () => Redis = () => redis.duplicate({
+        enableOfflineQueue: false,
+        maxRetriesPerRequest: 0,
+        retryStrategy: (attempt) => Math.min(attempt * 50, 2_000),
+        socketTimeout: 2_000,
+    }),
 ): PeerTcpTunnelRelayCoordinator {
     const coordinator = createPeerTcpTunnelRelayCoordinator({
         io,
-        config: { mode: "redis", redis },
+        config: { mode: "redis", createRelayAdmissionRedis },
     });
     io.on("connection", (socket) => {
         const clientType = socket.handshake.auth.clientType === "machine-scoped"
@@ -200,13 +212,13 @@ async function startCluster(relayCaps: Readonly<{
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisA),
+        adapter: createAdapter(redisA, readRedisStreamsAdapterOptionsFromEnv({})),
     });
     const ioB = new Server(httpB, {
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisB),
+        adapter: createAdapter(redisB, readRedisStreamsAdapterOptionsFromEnv({})),
     });
     const registerRelayA = await loadIsolatedRegisterRelayModule();
     const registerRelayB = await loadIsolatedRegisterRelayModule();
@@ -265,8 +277,12 @@ async function startRestartableProductCluster(): Promise<RestartableProductClust
     };
     const redisModuleA = await loadProductRedisModule();
     const redisA = redisModuleA.getRedisSocketClusterClient();
+    // Production hands the adapter its own view of the same root client so the
+    // reader/subscriber duplicates are independently instrumented.
+    const adapterRedisA = redisModuleA.getRedisSocketClusterAdapterClient();
     const redisModuleB = await loadProductRedisModule();
     const redisB = redisModuleB.getRedisSocketClusterClient();
+    const adapterRedisB = redisModuleB.getRedisSocketClusterAdapterClient();
     if (originalRedisUrl === undefined) {
         delete process.env.REDIS_URL;
     } else {
@@ -279,18 +295,30 @@ async function startRestartableProductCluster(): Promise<RestartableProductClust
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisA),
+        adapter: createAdapter(adapterRedisA, readRedisStreamsAdapterOptionsFromEnv({})),
     });
     const ioB = new Server(httpB, {
         path: SOCKET_PATH,
         transports: ["websocket"],
         serveClient: false,
-        adapter: createAdapter(redisB),
+        adapter: createAdapter(adapterRedisB, readRedisStreamsAdapterOptionsFromEnv({})),
     });
     const registerRelayA = await loadIsolatedRegisterRelayModule();
     const registerRelayB = await loadIsolatedRegisterRelayModule();
-    const coordinatorA = registerRelayServer(ioA, redisA, registerRelayA);
-    const coordinatorB = registerRelayServer(ioB, redisB, registerRelayB);
+    const coordinatorA = registerRelayServer(
+        ioA,
+        redisA,
+        registerRelayA,
+        {},
+        redisModuleA.createRedisSocketClusterRelayAdmissionClient,
+    );
+    const coordinatorB = registerRelayServer(
+        ioB,
+        redisB,
+        registerRelayB,
+        {},
+        redisModuleB.createRedisSocketClusterRelayAdmissionClient,
+    );
     const portA = await listen(httpA);
     const portB = await listen(httpB);
 
@@ -437,6 +465,7 @@ function createOpenEnvelope(input: Readonly<{
                 tunnelId: input.tunnelId,
                 targetMachineId: MACHINE_ID,
                 routeKind: "server_relay",
+                selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
                 destination,
                 relayAuthorization: {
                     payload,
@@ -461,19 +490,24 @@ function createMachineDataEnvelope(input: Readonly<{
     userSocketId: string;
     payload: string;
 }>): PeerTcpTunnelRelayEnvelope {
+    const payload = new TextEncoder().encode(input.payload);
     return {
-        v: 1,
+        v: 2,
         scopeUserId: ACCOUNT_ID,
         sender: { kind: "machine", machineId: MACHINE_ID },
         recipient: { kind: "user", socketId: input.userSocketId },
-        frame: {
-            v: 1,
-            kind: "data",
-            tunnelId: input.tunnelId,
-            direction: "daemon_to_client",
-            sequence: 0,
-            payloadBase64: Buffer.from(input.payload).toString("base64"),
-        },
+        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+        frame: encodePeerTcpTunnelBinaryFrameV2({
+            header: {
+                version: 2,
+                kind: "data",
+                tunnelId: input.tunnelId,
+                direction: "daemon_to_client",
+                sequence: 0,
+                payloadLength: payload.byteLength,
+            },
+            payload,
+        }),
     };
 }
 
@@ -481,20 +515,56 @@ function createUserDataEnvelope(input: Readonly<{
     tunnelId: string;
     payload: string;
 }>): PeerTcpTunnelRelayEnvelope {
+    const payload = new TextEncoder().encode(input.payload);
     return {
-        v: 1,
+        v: 2,
         scopeUserId: ACCOUNT_ID,
         sender: { kind: "user" },
         recipient: { kind: "machine", machineId: MACHINE_ID },
-        frame: {
-            v: 1,
-            kind: "data",
-            tunnelId: input.tunnelId,
-            direction: "client_to_daemon",
-            sequence: 0,
-            payloadBase64: Buffer.from(input.payload).toString("base64"),
-        },
+        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+        frame: encodePeerTcpTunnelBinaryFrameV2({
+            header: {
+                version: 2,
+                kind: "data",
+                tunnelId: input.tunnelId,
+                direction: "client_to_daemon",
+                sequence: 0,
+                payloadLength: payload.byteLength,
+            },
+            payload,
+        }),
     };
+}
+
+function decodeBinaryDataEnvelope(
+    envelope: PeerTcpTunnelRelayEnvelope,
+): Readonly<{ tunnelId: string; payload: Uint8Array }> | null {
+    if (envelope.v !== 2) return null;
+    const decoded = decodePeerTcpTunnelBinaryFrameV2({
+        frame: envelope.frame,
+        maxHeaderBytes: 64 * 1024,
+        maxPayloadBytes: Number.MAX_SAFE_INTEGER,
+    });
+    if (!decoded.ok || decoded.header.kind !== "data") return null;
+    return { tunnelId: decoded.header.tunnelId, payload: decoded.payload };
+}
+
+function isBinaryDataEnvelopeForTunnel(envelope: PeerTcpTunnelRelayEnvelope, tunnelId: string): boolean {
+    return decodeBinaryDataEnvelope(envelope)?.tunnelId === tunnelId;
+}
+
+function isBinaryTerminalEnvelopeForTunnel(
+    envelope: PeerTcpTunnelRelayEnvelope,
+    tunnelId: string,
+    kind: "close" | "abort",
+): boolean {
+    if (envelope.v !== 2) return false;
+    const decoded = decodePeerTcpTunnelBinaryFrameV2({
+        frame: envelope.frame,
+        maxHeaderBytes: 64 * 1024,
+        maxPayloadBytes: 0,
+    });
+    return decoded.ok && decoded.header.kind === kind && decoded.header.tunnelId === tunnelId;
 }
 
 function createMachineTerminalEnvelope(input: Readonly<{
@@ -503,24 +573,29 @@ function createMachineTerminalEnvelope(input: Readonly<{
     kind: "close" | "abort";
 }>): PeerTcpTunnelRelayEnvelope {
     return {
-        v: 1,
+        v: 2,
         scopeUserId: ACCOUNT_ID,
         sender: { kind: "machine", machineId: MACHINE_ID },
         recipient: { kind: "user", socketId: input.userSocketId },
-        frame: input.kind === "close"
-            ? {
-                v: 1,
-                kind: "close",
-                tunnelId: input.tunnelId,
-                halfClose: false,
-                reasonCode: "machine_closed",
-            }
-            : {
-                v: 1,
-                kind: "abort",
-                tunnelId: input.tunnelId,
-                reasonCode: "machine_aborted",
-            },
+        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+        frame: encodePeerTcpTunnelBinaryFrameV2({
+            header: input.kind === "close"
+                ? {
+                    version: 2,
+                    kind: "close",
+                    tunnelId: input.tunnelId,
+                    halfClose: false,
+                    reasonCode: "machine_closed",
+                    payloadLength: 0,
+                }
+                : {
+                    version: 2,
+                    kind: "abort",
+                    tunnelId: input.tunnelId,
+                    reasonCode: "machine_aborted",
+                    payloadLength: 0,
+                },
+        }),
     };
 }
 
@@ -532,6 +607,66 @@ describe("peer tunnel relay Redis adapter integration", () => {
         while (clients.length > 0) clients.pop()?.disconnect();
         while (clusters.length > 0) await clusters.pop()?.close();
     });
+
+    it.each(["restart", "silent partition"] as const)("recovers cross-node tunnel attachment and binary payloads after Redis %s", async (failure) => {
+        const cluster = await startRedisAdapterRecoveryCluster();
+        const [nodeA, nodeB] = cluster.nodes;
+        const coordinatorA = registerRelayServer(nodeA.io, nodeA.redis, await loadIsolatedRegisterRelayModule());
+        const coordinatorB = registerRelayServer(nodeB.io, nodeB.redis, await loadIsolatedRegisterRelayModule());
+        const user = await connectClient(nodeA.port, "user-scoped");
+        const machine = await connectClient(nodeB.port, "machine-scoped");
+        const machineFrames: PeerTcpTunnelRelayEnvelope[] = [];
+        const userFrames: PeerTcpTunnelRelayEnvelope[] = [];
+        machine.on(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, (frame) => machineFrames.push(frame));
+        user.on(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, (frame) => userFrames.push(frame));
+        try {
+            const userId = user.id;
+            const machineId = machine.id;
+            const assertTunnel = async (phase: string) => {
+                const tunnelId = `recovery-${phase}`;
+                user.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createOpenEnvelope({
+                    tunnelId, grantId: `grant-${phase}`, relaySocketId: user.id!,
+                }));
+                await waitForCondition(() => machineFrames.some((frame) => frame.v === 1
+                    && frame.frame.kind === "open" && frame.frame.open.tunnelId === tunnelId));
+                const bytes = new Uint8Array([0, 255, 128, 1, 13, 10, 254]);
+                for (const direction of ["client_to_daemon", "daemon_to_client"] as const) {
+                    const fromUser = direction === "client_to_daemon";
+                    const sent: PeerTcpTunnelRelayEnvelope = {
+                        v: 2,
+                        scopeUserId: ACCOUNT_ID,
+                        sender: fromUser ? { kind: "user", socketId: user.id! } : { kind: "machine", machineId: MACHINE_ID },
+                        recipient: fromUser ? { kind: "machine", machineId: MACHINE_ID } : { kind: "user", socketId: user.id! },
+                        encoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
+                        frame: encodePeerTcpTunnelBinaryFrameV2({
+                            header: { version: 2, kind: "data", tunnelId, direction, sequence: 0, payloadLength: bytes.byteLength },
+                            payload: bytes,
+                        }),
+                    };
+                    const frames = fromUser ? machineFrames : userFrames;
+                    const previousCount = frames.length;
+                    (fromUser ? user : machine).emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, sent);
+                    await waitForCondition(() => frames.slice(previousCount).some((frame) => frame.v === 2));
+                    const received = frames.slice(previousCount).find((frame) => frame.v === 2);
+                    expect(received).toMatchObject({ v: 2, sender: sent.sender, recipient: sent.recipient });
+                    if (!received || received.v !== 2) throw new Error("Expected binary envelope");
+                    expect(new Uint8Array(received.frame)).toEqual(new Uint8Array(sent.frame));
+                }
+            };
+            await assertTunnel("before");
+            await cluster.recover(failure);
+            expect(user.id).toBe(userId);
+            expect(machine.id).toBe(machineId);
+            await assertTunnel("after");
+        } finally {
+            user.disconnect();
+            machine.disconnect();
+            await cluster.close(async () => {
+                await coordinatorA.close();
+                await coordinatorB.close();
+            });
+        }
+    }, 60_000);
 
     it("fails closed before OPEN when the owner replica loses Redis transport and preserves one global winner after recovery", async () => {
         const cluster = await startCluster();
@@ -652,11 +787,7 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "must-not-cross-partition",
         }));
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
-        expect(machineFrames.filter((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === tunnelId,
-        )).toHaveLength(0);
+        expect(machineFrames.filter((frame) => isBinaryDataEnvelopeForTunnel(frame, tunnelId))).toHaveLength(0);
 
         await waitForCondition(() => userFrames.some((frame) =>
             frame.v === 1
@@ -688,11 +819,7 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "must-not-resurrect-after-heal",
         }));
         await new Promise<void>((resolve) => setTimeout(resolve, 200));
-        expect(userFrames.filter((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === tunnelId,
-        )).toHaveLength(0);
+        expect(userFrames.filter((frame) => isBinaryDataEnvelopeForTunnel(frame, tunnelId))).toHaveLength(0);
         expect(userFrames.filter((frame) =>
             frame.v === 1
             && frame.frame.kind === "abort"
@@ -711,9 +838,7 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "fresh-after-heal",
         }));
         await waitForCondition(() => machineFrames.some((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === freshTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, freshTunnelId),
         ));
     });
 
@@ -841,16 +966,14 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "queued-behind-attachment",
         }));
         await waitForCondition(() => machineFrames.some((frame) =>
-            frame.v === 1 && frame.frame.kind === "data" && frame.frame.tunnelId === immediateTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, immediateTunnelId),
         ));
         const immediateKinds = machineFrames
-            .filter((frame) =>
-                frame.v === 1
-                && (frame.frame.kind === "open"
-                    ? frame.frame.open.tunnelId === immediateTunnelId
-                    : frame.frame.tunnelId === immediateTunnelId),
-            )
-            .map((frame) => frame.v === 1 ? frame.frame.kind : "binary");
+            .flatMap((frame): Array<"open" | "data"> => {
+                if (frame.v === 1 && frame.frame.kind === "open"
+                    && frame.frame.open.tunnelId === immediateTunnelId) return ["open"];
+                return isBinaryDataEnvelopeForTunnel(frame, immediateTunnelId) ? ["data"] : [];
+            });
         expect(immediateKinds).toEqual(["open", "data"]);
 
         const exactSocketTunnelId = "exact-machine-socket";
@@ -876,15 +999,11 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "exact-recipient-only",
         }));
         await waitForCondition(() => machineFrames.some((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === exactSocketTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, exactSocketTunnelId),
         ));
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
         expect(replacementMachineFrames.filter((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === exactSocketTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, exactSocketTunnelId),
         )).toHaveLength(0);
 
         userA.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createUserDataEnvelope({
@@ -920,9 +1039,7 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "remote-machine-frame",
         }));
         await waitForCondition(() => userAFrames.some((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === frameTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, frameTunnelId),
         ));
 
         const disconnectTunnelId = "recipient-disconnect-before-frame";
@@ -979,11 +1096,9 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "same-replica-once",
         }));
         await waitForCondition(() => userFrames.some((frame) =>
-            frame.v === 1 && frame.frame.kind === "data" && frame.frame.tunnelId === tunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, tunnelId),
         ));
-        expect(userFrames.filter((frame) =>
-            frame.v === 1 && frame.frame.kind === "data" && frame.frame.tunnelId === tunnelId,
-        )).toHaveLength(1);
+        expect(userFrames.filter((frame) => isBinaryDataEnvelopeForTunnel(frame, tunnelId))).toHaveLength(1);
 
         const replacement = await connectClient(cluster.portA, "machine-scoped");
         clients.push(replacement);
@@ -1004,18 +1119,11 @@ describe("peer tunnel relay Redis adapter integration", () => {
         }));
         await new Promise<void>((resolve) => setTimeout(resolve, 150));
 
-        expect(userFrames.filter((frame) => {
-            if (frame.v !== 1 || frame.frame.kind === "open") return false;
-            return frame.frame.tunnelId === tunnelId;
-        })).toEqual([
-            expect.objectContaining({
-                frame: expect.objectContaining({
-                    kind: "data",
-                    tunnelId,
-                    payloadBase64: Buffer.from("same-replica-once").toString("base64"),
-                }),
-            }),
-        ]);
+        const relayedData = userFrames
+            .map(decodeBinaryDataEnvelope)
+            .filter((frame): frame is NonNullable<typeof frame> => frame?.tunnelId === tunnelId);
+        expect(relayedData).toHaveLength(1);
+        expect(new TextDecoder().decode(relayedData[0]?.payload)).toBe("same-replica-once");
 
         machine.emit(PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT, createMachineTerminalEnvelope({
             tunnelId,
@@ -1023,10 +1131,10 @@ describe("peer tunnel relay Redis adapter integration", () => {
             kind: "close",
         }));
         await waitForCondition(() => userFrames.some((frame) =>
-            frame.v === 1 && frame.frame.kind === "close" && frame.frame.tunnelId === tunnelId,
+            isBinaryTerminalEnvelopeForTunnel(frame, tunnelId, "close"),
         ));
         expect(userFrames.filter((frame) =>
-            frame.v === 1 && frame.frame.kind === "close" && frame.frame.tunnelId === tunnelId,
+            isBinaryTerminalEnvelopeForTunnel(frame, tunnelId, "close"),
         )).toHaveLength(1);
 
         replacement.disconnect();
@@ -1158,9 +1266,7 @@ describe("peer tunnel relay Redis adapter integration", () => {
             payload: "surviving-replica-remains-usable",
         }));
         await waitForCondition(() => machineFrames.some((frame) =>
-            frame.v === 1
-            && frame.frame.kind === "data"
-            && frame.frame.tunnelId === survivingTunnelId,
+            isBinaryDataEnvelopeForTunnel(frame, survivingTunnelId),
         ));
         await new Promise<void>((resolve) => setTimeout(resolve, 100));
         expect(machineFrames.filter((frame) =>

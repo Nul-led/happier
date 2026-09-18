@@ -1,6 +1,8 @@
 import type { Tx } from '@/storage/inTx';
 import type { Prisma } from '@prisma/client';
 import { notifySessionTranscriptMutationAfterCommit } from '../sessionTranscriptMutationObserver';
+import { revokeMachineInTx } from '@/app/machines/machineMutations';
+import { invalidateSessionFollowDestinationsForSessionDeleteInTx } from '@/app/session/follow/sessionFollowEdgeService';
 
 export class SessionDeleteConditionLostError extends Error {
     constructor() {
@@ -49,6 +51,11 @@ export async function deleteSessionTree(
     }
     await params.afterSessionWriteBoundary?.();
 
+    const runnerActivation = await tx.ephemeralRunnerActivation.findFirst({
+        where: { sessionId: params.sessionId, state: 'materialized' },
+        select: { id: true, creatorAccountId: true, machineId: true },
+    });
+
     const deletedMessages = await tx.sessionMessage.deleteMany({
         where: { sessionId: params.sessionId },
     });
@@ -57,8 +64,34 @@ export async function deleteSessionTree(
         where: { sessionId: params.sessionId },
     });
 
+    let revokedRunnerAccessKeys = 0;
+    if (runnerActivation) {
+        // Revoke while the AccessKey tuple still exists so the canonical
+        // Machine mutation can identify and disconnect both exact restricted
+        // socket profiles after commit. The following generic Session sweep is
+        // retained for ordinary Machine tuples.
+        const revokedRunner = await revokeMachineInTx(tx, {
+            accountId: runnerActivation.creatorAccountId,
+            machineId: runnerActivation.machineId,
+        });
+        if (!revokedRunner.ok) {
+            throw new Error('Materialized ephemeral Runner Machine disappeared during Session deletion');
+        }
+        revokedRunnerAccessKeys = revokedRunner.deletedAccessKeys;
+        await tx.ephemeralRunnerActivation.delete({ where: { id: runnerActivation.id } });
+        await tx.machine.deleteMany({ where: {
+            id: runnerActivation.machineId,
+            accountId: runnerActivation.creatorAccountId,
+            kind: 'ephemeral_session_runner',
+        } });
+    }
+
     const deletedAccessKeys = await tx.accessKey.deleteMany({
         where: { sessionId: params.sessionId },
+    });
+
+    await invalidateSessionFollowDestinationsForSessionDeleteInTx(tx, {
+        sessionId: params.sessionId,
     });
 
     const deletedSession = await tx.session.deleteMany({
@@ -76,6 +109,10 @@ export async function deleteSessionTree(
     return {
         deletedMessages: deletedMessages.count,
         deletedReports: deletedReports.count,
-        deletedAccessKeys: deletedAccessKeys.count,
+        // Runner Machine revocation deliberately removes its tuple before the
+        // generic sweep so established exact sockets can be found and evicted.
+        // Report the complete Session deletion outcome rather than only the
+        // rows left for the final sweep.
+        deletedAccessKeys: revokedRunnerAccessKeys + deletedAccessKeys.count,
     };
 }

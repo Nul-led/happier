@@ -1,16 +1,19 @@
 import type { Tx } from '@/storage/inTx';
 import type { Prisma } from '@prisma/client';
 
+/**
+ * Load the Session a guarded delete is allowed to target.
+ *
+ * It no longer selects direct shares: recipients are resolved by the canonical
+ * Session access recipient owner, which also reaches Team- and Group-granted
+ * collaborators. A delete-specific recipient query would be a second, narrower
+ * answer to a question access already owns.
+ */
 const sessionDeleteTargetSelect = {
     id: true,
     accountId: true,
     metadataLayoutVersion: true,
     updatedAt: true,
-    shares: {
-        select: {
-            sharedWithUserId: true,
-        },
-    },
 } satisfies Prisma.SessionSelect;
 
 export type SessionDeleteTarget = Prisma.SessionGetPayload<{

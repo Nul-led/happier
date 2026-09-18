@@ -1,0 +1,198 @@
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { eventRouter } from "@/app/events/eventRouter";
+import { deriveAccountRemoteAlertPolicyV1 } from "@happier-dev/protocol";
+
+import { writeAccountSettingsInTx } from "./writeAccountSettingsInTx";
+
+const emitUpdate = vi.hoisted(() => vi.fn());
+
+vi.mock("@/app/events/eventRouter", () => ({
+    eventRouter: { emitUpdate },
+    buildUpdateAccountUpdate: vi.fn(() => ({ body: { t: "update-account" } })),
+    buildAccountSettingsChangedUpdate: vi.fn(() => ({ body: { t: "account-settings-changed" } })),
+}));
+
+vi.mock("@/app/events/connectionEventRouter", () => ({
+    eventRouter: { emitUpdate },
+}));
+
+describe("writeAccountSettingsInTx (SQLite integration)", () => {
+    let harness: LightSqliteHarness;
+
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({
+            tempDirPrefix: "happier-account-settings-write-",
+            initAuth: false,
+        });
+    }, 120_000);
+
+    afterAll(async () => {
+        await harness.close();
+    });
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        harness.resetEnv();
+    });
+
+    afterEach(async () => {
+        harness.resetEnv();
+        await harness.resetDbTables([
+            () => db.accountChange.deleteMany(),
+            () => db.accountSettingsSnapshot.deleteMany(),
+            () => db.account.deleteMany(),
+        ]);
+    });
+
+    it("binds remote policy to the successful settings CAS and does not renew it for predecessor writes", async () => {
+        const account = await db.account.create({
+            data: { ...createSignedAccountContentBinding(), encryptionMode: "e2ee", settingsVersion: 0 },
+        });
+        const policy = deriveAccountRemoteAlertPolicyV1({ sessionRemoteAlertsEnabled: true });
+        const write = (expectedVersion: number, next: Parameters<typeof writeAccountSettingsInTx>[0]['next']) => inTx((tx) =>
+            writeAccountSettingsInTx({ tx, accountId: account.id, expectedVersion, next }));
+        expect(await write(0, { kind: "v2", content: { t: "encrypted", c: "first" }, remoteAlertPolicy: policy }))
+            .toEqual({ status: "success", version: 1 });
+        expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+            settingsVersion: 1, remoteAlertPolicy: { settingsVersion: 1, policy },
+        });
+        expect(await write(0, { kind: "v2", content: { t: "encrypted", c: "conflict" }, remoteAlertPolicy: null }))
+            .toMatchObject({ status: "version_mismatch", currentVersion: 1 });
+        await write(1, { kind: "v1", settings: "predecessor" });
+        expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+            settingsVersion: 2, remoteAlertPolicy: { settingsVersion: 1, policy },
+        });
+        await write(2, { kind: "v2", content: { t: "encrypted", c: "opt-out" }, remoteAlertPolicy: null });
+        expect(await db.account.findUniqueOrThrow({ where: { id: account.id } })).toMatchObject({
+            settingsVersion: 3, remoteAlertPolicy: null,
+        });
+    });
+
+    it("commits the Settings CAS, history, change cursor, and publications together", async () => {
+        const account = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+                settings: "settings-before",
+                settingsVersion: 6,
+                seq: 12,
+            },
+            select: { id: true, updatedAt: true },
+        });
+
+        await expect(inTx((tx) => writeAccountSettingsInTx({
+            tx,
+            accountId: account.id,
+            expectedVersion: 6,
+            next: {
+                kind: "v2",
+                content: { t: "encrypted", c: "settings-after" },
+            },
+        }))).resolves.toEqual({ status: "success", version: 7 });
+
+        const stored = await db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: {
+                settings: true,
+                settingsVersion: true,
+                seq: true,
+                updatedAt: true,
+            },
+        });
+        expect(stored).toMatchObject({
+            settings: "settings-after",
+            settingsVersion: 7,
+            seq: 13,
+        });
+        expect(stored.updatedAt.getTime()).toBeGreaterThanOrEqual(account.updatedAt.getTime());
+        await expect(db.accountSettingsSnapshot.findMany({
+            where: { accountId: account.id },
+            orderBy: { version: "asc" },
+            select: {
+                version: true,
+                settingsDbValue: true,
+                encryptionMode: true,
+            },
+        })).resolves.toEqual([
+            {
+                version: 6,
+                settingsDbValue: "settings-before",
+                encryptionMode: "e2ee",
+            },
+            {
+                version: 7,
+                settingsDbValue: "settings-after",
+                encryptionMode: "e2ee",
+            },
+        ]);
+        await expect(db.accountChange.findUniqueOrThrow({
+            where: {
+                accountId_kind_entityId: {
+                    accountId: account.id,
+                    kind: "account",
+                    entityId: "self",
+                },
+            },
+            select: { cursor: true, hint: true },
+        })).resolves.toEqual({
+            cursor: 13,
+            hint: { settingsVersion: 7 },
+        });
+        expect(eventRouter.emitUpdate).toHaveBeenCalledTimes(3);
+    });
+
+    it("leaves Settings, history, changes, and publication unchanged when the composing transaction fails", async () => {
+        const account = await db.account.create({
+            data: {
+                ...createSignedAccountContentBinding(),
+                encryptionMode: "e2ee",
+                settings: "settings-before",
+                settingsVersion: 6,
+                seq: 12,
+            },
+            select: { id: true, updatedAt: true },
+        });
+        const outerFailure = new Error("composed resource write failed");
+
+        await expect(inTx(async (tx) => {
+            const result = await writeAccountSettingsInTx({
+                tx,
+                accountId: account.id,
+                expectedVersion: 6,
+                next: {
+                    kind: "v2",
+                    content: { t: "encrypted", c: "settings-after" },
+                },
+            });
+            expect(result).toEqual({ status: "success", version: 7 });
+            throw outerFailure;
+        })).rejects.toBe(outerFailure);
+
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: {
+                settings: true,
+                settingsVersion: true,
+                seq: true,
+                updatedAt: true,
+            },
+        })).resolves.toEqual({
+            settings: "settings-before",
+            settingsVersion: 6,
+            seq: 12,
+            updatedAt: account.updatedAt,
+        });
+        await expect(db.accountSettingsSnapshot.count({
+            where: { accountId: account.id },
+        })).resolves.toBe(0);
+        await expect(db.accountChange.count({
+            where: { accountId: account.id },
+        })).resolves.toBe(0);
+        expect(eventRouter.emitUpdate).not.toHaveBeenCalled();
+    });
+});

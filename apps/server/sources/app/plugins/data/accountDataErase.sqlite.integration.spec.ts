@@ -222,6 +222,16 @@ describe("plugin Account data erasure", () => {
         ]);
     });
 
+    it("reports account-not-found through the real Account-first erasure fence", async () => {
+        const { erasePluginAccountDataInTx } = await import("./accountDataErase");
+
+        await expect(inTx(async (tx) => await erasePluginAccountDataInTx({
+            tx,
+            accountId: "missing-plugin-data-account",
+            pluginId: PLUGIN_ID,
+        }))).resolves.toEqual({ status: "account-not-found" });
+    });
+
     it("tombstones only the selected Account's durable plugin data, retires its derived records, and is retry-idempotent", async () => {
         const { erasePluginAccountData } = await import("./accountDataErase");
         const erasedAccountId = "account-erased";

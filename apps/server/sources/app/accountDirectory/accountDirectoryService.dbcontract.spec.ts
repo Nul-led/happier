@@ -1,3 +1,4 @@
+import { inTx } from "@/storage/inTx";
 import { createHash, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
@@ -16,7 +17,6 @@ import {
     deleteAccountDirectoryLink,
     deleteAccountHomeDirectoryEntry,
     listAccountHomeDirectory,
-    publishAccountHomeDirectoryDescriptor,
     redeemHomeLoginAssertion,
     setPreferredAccountHome,
     upsertAccountDirectoryLink,
@@ -24,6 +24,7 @@ import {
 } from "./accountDirectoryService";
 import { canonicalHomeLoginAssertionBytes } from "./accountDirectorySigner";
 import { createHomeApprovalGate } from "@/app/api/routes/auth/homeApprovalGate";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 
 type ContractProvider = "postgres" | "mysql" | "sqlite";
 
@@ -182,13 +183,14 @@ describe("Account Directory database contract", () => {
             connectionDescriptor: descriptor(homeA),
         });
         const movedCanonicalServerUrl = `https://moved-${homeA}.example.test`;
-        const published = await publishAccountHomeDirectoryDescriptor({
+        const published = await upsertAccountHomeDirectoryEntry({
             accountId: accountA.id,
             homeServerIdentityId: homeA,
             label: "Account A Home Moved",
-            minimumOuterRevisionExclusive: 1,
-            canonicalServerUrl: movedCanonicalServerUrl,
-            endpoints: [{ kind: "https", url: movedCanonicalServerUrl }],
+            connectionDescriptor: {
+                v: 1, homeServerIdentityId: homeA, canonicalServerUrl: movedCanonicalServerUrl,
+                revision: 2, endpoints: [{ kind: "https", url: movedCanonicalServerUrl }],
+            },
         });
         expect(published.connectionDescriptor.revision).toBe(2);
 
@@ -376,6 +378,89 @@ describe("Account Directory database contract", () => {
         ]);
         expect(directoryRows).toBe(0);
         expect(linkRows).toBe(0);
+    });
+
+    it.each(["0", "1"])("rejects disabled Accounts before redemption effects with approval policy %s", async (approvalRequired) => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-disabled") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_disabled_issuer");
+        const issuerSubjectId = uniqueValue("disabled-subject");
+        const key = signingKey(23);
+        const nowMs = Date.now();
+        const assertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 23, nowMs });
+        const issuedTokens: string[] = [];
+
+        try {
+            await upsertAccountDirectoryLink({
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            });
+            await inTx((tx) => setAccountStatusInTx(tx, { actorAccountId: account.id, targetAccountId: account.id, status: "disabled", authority: "account_erasure" }));
+
+            await expect(redeemHomeLoginAssertion({
+                assertion,
+                nowMs,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" },
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
+                homeApprovalGate: createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: approvalRequired }),
+                issueHomeToken: async () => {
+                    issuedTokens.push(account.id);
+                    return "must-not-issue-for-disabled-account";
+                },
+            })).rejects.toMatchObject({ code: "account_disabled", statusCode: 403 });
+            expect(issuedTokens).toEqual([]);
+            expect(await db.authPairingSession.count({ where: { accountId: account.id } })).toBe(0);
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
+    });
+
+    it("rejects an Account disabled after approval evaluation before issuing a Home token", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniqueValue("account-directory-disabled-during-entry") },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = uniqueValue("srv_disabled_issuer");
+        const issuerSubjectId = uniqueValue("disabled-subject");
+        const key = signingKey(23);
+        const nowMs = Date.now();
+        const assertion = signedAssertion({ issuerServerIdentityId, issuerSubjectId, signingSeed: 23, nowMs });
+        const gate = createHomeApprovalGate({ HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "0" });
+        const issuedTokens: string[] = [];
+        try {
+            await upsertAccountDirectoryLink({
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId,
+                issuerSigningKeyId: key.id,
+                issuerSigningPublicKeyBase64Url: key.publicKeyBase64Url,
+            });
+            await expect(redeemHomeLoginAssertion({
+                assertion,
+                nowMs,
+                env: { HAPPIER_SERVER_IDENTITY_ID: "srv_home_tx_test" },
+                resolveHomeConnectionDescriptor: async () => descriptor("srv_home_tx_test"),
+                homeApprovalGate: {
+                    evaluate: async (request) => {
+                        const decision = await gate.evaluate(request);
+                        await inTx((tx) => setAccountStatusInTx(tx, { actorAccountId: account.id, targetAccountId: account.id, status: "disabled", authority: "account_erasure" }));
+                        return decision;
+                    },
+                },
+                issueHomeToken: async () => {
+                    issuedTokens.push(account.id);
+                    return "must-not-issue-for-disabled-account";
+                },
+            })).rejects.toMatchObject({ code: "account_disabled", statusCode: 403 });
+            expect(issuedTokens).toEqual([]);
+        } finally {
+            await db.account.delete({ where: { id: account.id }, select: { id: true } });
+        }
     });
 
     it("revalidates the exact issuer link after approval before issuing a Home token", async () => {

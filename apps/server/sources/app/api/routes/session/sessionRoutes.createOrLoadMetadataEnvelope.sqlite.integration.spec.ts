@@ -1,7 +1,11 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FastifyInstance } from "fastify";
 import tweetnacl from "tweetnacl";
-import { V2SessionByIdResponseSchema } from "@happier-dev/protocol";
+import {
+    signAccountContentKeyBindingV1,
+    sealEncryptedDataKeyEnvelopeV1,
+    V2SessionByIdResponseSchema,
+} from "@happier-dev/protocol";
 
 import { eventRouter } from "@/app/events/eventRouter";
 import { buildAccountStoredContentUpgradeRequired } from "@/app/clientCompatibility/accountStoredContentCompatibility";
@@ -16,6 +20,14 @@ const ENCRYPTED_OWNER_METADATA = {
     t: "encrypted",
     c: "oRoBAgMEBQYHCAkKCwwNDg8QERITFBUWFxh8aC0+8+YDECLScN6uQTItPyWVR7XbQA==",
 } as const;
+
+function createSessionDataKeyEnvelope() {
+    return Buffer.from(sealEncryptedDataKeyEnvelopeV1({
+        dataKey: tweetnacl.randomBytes(32),
+        recipientPublicKey: tweetnacl.box.keyPair().publicKey,
+        randomBytes: (length) => tweetnacl.randomBytes(length),
+    })).toString("base64");
+}
 
 const layoutOneBody = {
     tag: "layout-one-create",
@@ -69,13 +81,10 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
     async function createE2eeAccount() {
         const signing = tweetnacl.sign.keyPair();
         const content = tweetnacl.box.keyPair();
-        const contentPublicKeySig = tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(content.publicKey),
-            ]),
-            signing.secretKey,
-        );
+        const contentPublicKeySig = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: content.publicKey,
+        });
         return db.account.create({
             data: {
                 publicKey: Buffer.from(signing.publicKey).toString("hex"),
@@ -115,6 +124,8 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 session: {
                     metadataLayoutVersion: 1,
                     ownerMetadata: PLAIN_OWNER_METADATA,
+                    pendingCount: 0,
+                    pendingVersion: 0,
                 },
             });
             expect(
@@ -125,13 +136,50 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 select: {
                     metadataLayoutVersion: true,
                     ownerMetadata: true,
-                    dataEncryptionKey: true,
+                    dataKeyEnvelopes: { select: { encryptedDataKey: true } },
                 },
             })).resolves.toEqual({
                 metadataLayoutVersion: 1,
                 ownerMetadata: STORED_PLAIN_OWNER_METADATA,
-                dataEncryptionKey: null,
+                dataKeyEnvelopes: [],
             });
+        });
+    });
+
+    it("rejects every Team credential binding intent before Session creation when the capability is disabled", async () => {
+        const owner = await createAccount("pk-disabled-team-credential-binding");
+
+        await withApp(async (app) => {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/sessions",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": owner.id,
+                    "x-happier-account-stored-content-protocol": "2",
+                },
+                payload: {
+                    ...layoutOneBody,
+                    tag: "disabled-team-credential-binding",
+                    teamCredentialBindings: [{
+                        v: 1,
+                        slot: { kind: "provider_model" },
+                        resourceId: null,
+                    }],
+                },
+            });
+
+            expect({ status: response.statusCode, body: response.json() }).toEqual({
+                status: 409,
+                body: {
+                    error: "update_required",
+                    kind: "update_required",
+                    operation: "session.spawn_new",
+                    component: "server",
+                    reason: "session_team_credential_binding_update_required",
+                },
+            });
+            await expect(db.session.count({ where: { accountId: owner.id } })).resolves.toBe(0);
         });
     });
 
@@ -149,7 +197,7 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 ownerMetadata: PLAIN_OWNER_METADATA,
                 agentState: "encrypted-agent-state",
                 dataEncryptionKey:
-                    Buffer.from("session-dek").toString("base64"),
+                    createSessionDataKeyEnvelope(),
             },
         },
         {
@@ -186,8 +234,20 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 session: {
                     encryptionMode: payload.encryptionMode,
                     ownerMetadata: payload.ownerMetadata,
+                    dataEncryptionKey: payload.dataEncryptionKey,
                 },
             });
+            const envelopes = await db.sessionDataKeyEnvelope.findMany({
+                where: { sessionId: response.json().session.id },
+                select: { recipientAccountId: true, encryptedDataKey: true },
+            });
+            expect(envelopes.map((envelope) => ({
+                recipientAccountId: envelope.recipientAccountId,
+                encryptedDataKey: Buffer.from(envelope.encryptedDataKey).toString("base64"),
+            }))).toEqual(payload.dataEncryptionKey === null ? [] : [{
+                recipientAccountId: owner.id,
+                encryptedDataKey: payload.dataEncryptionKey,
+            }]);
         });
     });
 
@@ -273,6 +333,9 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 metadataLayoutVersion: 1,
                 ownerMetadata: STORED_PLAIN_OWNER_METADATA,
                 agentState: layoutOneBody.agentState,
+                pendingCount: 3,
+                pendingVersion: 4,
+                active: false,
             },
         });
 
@@ -298,16 +361,84 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                         ownerMetadata: PLAIN_OWNER_METADATA,
                         agentState: before.agentState,
                         metadataLayoutVersion: 1,
+                        pendingCount: 3,
+                        pendingVersion: 4,
+                        active: false,
                     }),
                 });
                 expect(
                     V2SessionByIdResponseSchema.parse(loaded.json()).session.share,
                 ).toBeNull();
             }
-            await expect(db.session.findUniqueOrThrow({
+            const after = await db.session.findUniqueOrThrow({
                 where: { id: before.id },
-            })).resolves.toEqual(before);
+            });
+            expect({
+                ...after,
+                meaningfulActivityAt: before.meaningfulActivityAt,
+                updatedAt: before.updatedAt,
+            }).toEqual(before);
+            expect(after.meaningfulActivityAt).not.toBeNull();
+            expect(after.meaningfulActivityAt?.getTime())
+                .toBeGreaterThanOrEqual(before.createdAt.getTime());
         });
+    });
+
+    it("restores an archived legacy same-tag Session through the released create-or-load route", async () => {
+        const owner = await createE2eeAccount();
+        const oldActivityAt = new Date(1_000);
+        const before = await db.session.create({
+            data: {
+                accountId: owner.id,
+                tag: "archived-legacy-rejoin",
+                encryptionMode: "e2ee",
+                metadata: "encrypted-legacy-whole-bag",
+                metadataLayoutVersion: 0,
+                active: false,
+                archivedAt: new Date(2_000),
+                meaningfulActivityAt: oldActivityAt,
+                pendingCount: 5,
+                pendingVersion: 6,
+            },
+        });
+
+        await withApp(async (app) => {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/sessions",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": owner.id,
+                },
+                payload: {
+                    tag: before.tag,
+                    metadata: "replacement-must-not-win",
+                    agentState: "replacement-must-not-win",
+                    dataEncryptionKey: null,
+                    encryptionMode: "e2ee",
+                },
+            });
+
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toMatchObject({
+                created: false,
+                session: {
+                    id: before.id,
+                    metadata: before.metadata,
+                    active: false,
+                    pendingCount: 5,
+                    pendingVersion: 6,
+                },
+            });
+        });
+
+        const restored = await db.session.findUniqueOrThrow({ where: { id: before.id } });
+        expect(restored.archivedAt).toBeNull();
+        if (!restored.meaningfulActivityAt) {
+            throw new Error("Restored Session must have a meaningful activity timestamp");
+        }
+        expect(restored.meaningfulActivityAt.getTime()).toBeGreaterThan(oldActivityAt.getTime());
+        expect(restored.agentState).toBe(before.agentState);
     });
 
     it.each([
@@ -555,9 +686,17 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                 oldClientAgainstCurrent.statusCode,
                 oldClientAgainstCurrent.body,
             ).toBe(426);
-            await expect(db.session.findUniqueOrThrow({
+            const after = await db.session.findUniqueOrThrow({
                 where: { id: before.id },
-            })).resolves.toEqual(before);
+            });
+            expect({
+                ...after,
+                meaningfulActivityAt: before.meaningfulActivityAt,
+                updatedAt: before.updatedAt,
+            }).toEqual(before);
+            expect(after.meaningfulActivityAt).not.toBeNull();
+            expect(after.meaningfulActivityAt?.getTime())
+                .toBeGreaterThanOrEqual(before.createdAt.getTime());
         });
     });
 
@@ -726,8 +865,9 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
                     metadata: "encrypted-legacy-whole-bag",
                     agentState: "encrypted-legacy-agent-state",
                     dataEncryptionKey:
-                        Buffer.from("session-dek").toString("base64"),
+                        createSessionDataKeyEnvelope(),
                     encryptionMode: "e2ee",
+                    currentStorageState: "machine_only",
                 },
             });
             expect(response.statusCode, response.body).toBe(200);
@@ -743,7 +883,107 @@ describe("session create-or-load metadata envelope (SQLite integration)", () => 
         await expect(db.session.count({
             where: { accountId: owner.id },
         })).resolves.toBe(1);
+        await expect(db.session.findFirstOrThrow({
+            where: { accountId: owner.id },
+            select: { currentStorageState: true },
+        })).resolves.toEqual({ currentStorageState: "machine_only" });
     });
+
+    it.each(["hosted", "legacy_external_unknown"] as const)(
+        "repairs a safe legacy %s predecessor when its owner machine relinks it",
+        async (currentStorageState) => {
+            const owner = await createE2eeAccount();
+            const existing = await db.session.create({
+                data: {
+                    accountId: owner.id,
+                    tag: `safe-predecessor-${currentStorageState}`,
+                    encryptionMode: "e2ee",
+                    metadata: "encrypted-legacy-whole-bag",
+                    metadataLayoutVersion: 0,
+                    currentStorageState,
+                    seq: 0,
+                },
+            });
+
+            await withApp(async (app) => {
+                const response = await app.inject({
+                    method: "POST",
+                    url: "/v1/sessions",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": owner.id,
+                    },
+                    payload: {
+                        tag: existing.tag,
+                        metadata: "encrypted-legacy-whole-bag",
+                        agentState: null,
+                        dataEncryptionKey: null,
+                        encryptionMode: "e2ee",
+                        currentStorageState: "machine_only",
+                    },
+                });
+
+                expect(response.statusCode, response.body).toBe(200);
+                expect(response.json()).toMatchObject({
+                    created: false,
+                    session: {
+                        id: existing.id,
+                    },
+                });
+            });
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: existing.id },
+                select: { currentStorageState: true },
+            })).resolves.toEqual({ currentStorageState: "machine_only" });
+        },
+    );
+
+    it.each(["hosted", "legacy_external_unknown"] as const)(
+        "rejects unsafe legacy %s predecessor repair after server transcript ownership begins",
+        async (currentStorageState) => {
+            const owner = await createE2eeAccount();
+            const existing = await db.session.create({
+                data: {
+                    accountId: owner.id,
+                    tag: `unsafe-predecessor-${currentStorageState}`,
+                    encryptionMode: "e2ee",
+                    metadata: "encrypted-legacy-whole-bag",
+                    metadataLayoutVersion: 0,
+                    currentStorageState,
+                    seq: 1,
+                },
+            });
+
+            await withApp(async (app) => {
+                const response = await app.inject({
+                    method: "POST",
+                    url: "/v1/sessions",
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": owner.id,
+                    },
+                    payload: {
+                        tag: existing.tag,
+                        metadata: "encrypted-legacy-whole-bag",
+                        agentState: null,
+                        dataEncryptionKey: null,
+                        encryptionMode: "e2ee",
+                        currentStorageState: "machine_only",
+                    },
+                });
+
+                expect(response.statusCode, response.body).toBe(409);
+                expect(response.json()).toEqual({
+                    error: "storage-state-conflict",
+                    code: "session_storage_state_conflict",
+                });
+            });
+            await expect(db.session.findUniqueOrThrow({
+                where: { id: existing.id },
+                select: { currentStorageState: true },
+            })).resolves.toEqual({ currentStorageState });
+        },
+    );
 
     it("rejects an effectively plain legacy create from an E2EE Account before persistence", async () => {
         const owner = await createE2eeAccount();

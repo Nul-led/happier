@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
 import {
+    signAccountContentKeyBindingV1,
+    ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
     SESSION_ORGANIZATION_MAX_FOLDERS,
@@ -16,22 +18,17 @@ import {
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import {
     createSessionRouteTestBuilder,
+    createSessionAccessProjectionRelations,
     accountFindUnique,
     markAccountChanged,
     resetSessionRouteMocks,
     sessionFindFirst,
     sessionFindMany,
-    sessionFolderAssignmentFindMany,
-    sessionOrganizationCheckpointFindUnique,
-    sessionOrganizationFolderFindMany,
-    sessionOrganizationLabelFindMany,
-    sessionOrganizationOrderEntryFindMany,
-    sessionOrganizationTagFindMany,
-    sessionPinFindMany,
-    sessionTagAssignmentFindMany,
     txSessionFolderAssignmentDeleteMany,
+    txSessionFolderAssignmentFindMany,
     txSessionFolderAssignmentUpdateMany,
     txSessionFolderAssignmentUpsert,
+    txSessionOrganizationCheckpointFindUnique,
     txSessionOrganizationCheckpointUpsert,
     txSessionOrganizationFolderCount,
     txSessionOrganizationFolderFindMany,
@@ -76,13 +73,10 @@ function createCurrentE2eeAccountFixture() {
         encryptionMode: "e2ee" as const,
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         contentPublicKey: new Uint8Array(content.publicKey),
-        contentPublicKeySig: new Uint8Array(tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(content.publicKey),
-            ]),
-            signing.secretKey,
-        )),
+        contentPublicKeySig: new Uint8Array(signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: content.publicKey,
+        })),
     };
 }
 
@@ -95,7 +89,7 @@ function organizationCompatibilityForHeaders(
 }
 
 function arrangeLockedOrganizationFolder() {
-    sessionOrganizationFolderFindMany.mockResolvedValue([{
+    txSessionOrganizationFolderFindMany.mockResolvedValue([{
         id: "locked-folder",
         folderKey: "private/folder/key",
         parentKey: null,
@@ -109,10 +103,9 @@ function arrangeLockedOrganizationFolder() {
 
 function expectedV2SessionVisibilityBranches() {
     return [
-        { accountId: "u1" },
+        { accountId: "u1", account: { status: "active" } },
         {
             AND: [
-                { shares: { some: { sharedWithUserId: "u1" } } },
                 {
                     OR: [
                         { currentStorageState: "hosted" },
@@ -123,13 +116,36 @@ function expectedV2SessionVisibilityBranches() {
                                 gte: 0,
                                 lte: BigInt(Number.MAX_SAFE_INTEGER),
                             },
-                            publishedThroughServerSeq: { gte: 0 },
+                            publishedThroughServerSeq: {
+                                gte: 0,
+                                lte: { modelName: "session", name: "seq" },
+                            },
                         },
                     ],
+                },
+                {
+                    OR: [{
+                        shares: {
+                            some: {
+                                sharedWithUserId: "u1",
+                                sharedWithUser: { status: "active" },
+                                accessLevel: { in: ["view", "edit", "admin"] },
+                            },
+                        },
+                    }],
                 },
             ],
         },
     ];
+}
+
+function expectedVisibleUnarchivedSessionWhere() {
+    return {
+        AND: [
+            { OR: expectedV2SessionVisibilityBranches() },
+            { archivedAt: null },
+        ],
+    };
 }
 
 async function rejectPrismaSkipDuplicates(args: unknown): Promise<void> {
@@ -145,6 +161,7 @@ async function rejectPrismaSkipDuplicates(args: unknown): Promise<void> {
 function pagedSessionRow(id: string) {
     const createdAt = new Date(1_000);
     return {
+        ...createSessionAccessProjectionRelations(),
         id,
         seq: 1,
         accountId: "u1",
@@ -186,11 +203,11 @@ describe("session organization routes", () => {
     });
 
     it("returns an account-scoped organization snapshot", async () => {
-        sessionOrganizationCheckpointFindUnique.mockResolvedValue({ version: 12 });
-        sessionPinFindMany.mockResolvedValue([
+        txSessionOrganizationCheckpointFindUnique.mockResolvedValue({ version: 12 });
+        txSessionPinFindMany.mockResolvedValue([
             { sessionId: "s1", sortKey: "a", pinnedAt: organizationDate(1_000) },
         ]);
-        sessionOrganizationFolderFindMany.mockResolvedValue([
+        txSessionOrganizationFolderFindMany.mockResolvedValue([
             {
                 id: "parent-folder",
                 folderKey: "parent:key",
@@ -212,13 +229,13 @@ describe("session organization routes", () => {
                 updatedAt: organizationDate(3_000),
             },
         ]);
-        sessionFolderAssignmentFindMany.mockResolvedValue([{ sessionId: "s1", folderId: "folder-1" }]);
-        sessionOrganizationTagFindMany.mockResolvedValue([]);
-        sessionTagAssignmentFindMany.mockResolvedValue([]);
-        sessionOrganizationOrderEntryFindMany.mockResolvedValue([
+        txSessionFolderAssignmentFindMany.mockResolvedValue([{ sessionId: "s1", folderId: "folder-1" }]);
+        txSessionOrganizationTagFindMany.mockResolvedValue([]);
+        txSessionTagAssignmentFindMany.mockResolvedValue([]);
+        txSessionOrganizationOrderEntryFindMany.mockResolvedValue([
             { scopeKind: "workspace", scopeKey: "server-1", itemKind: "workspace", itemKey: "server-1:/repo", sortKey: "a" },
         ]);
-        sessionOrganizationLabelFindMany.mockResolvedValue([]);
+        txSessionOrganizationLabelFindMany.mockResolvedValue([]);
 
         const route = await createSessionRouteTestBuilder("GET", "/v2/session-organization");
         const { response } = await route.invoke({
@@ -261,17 +278,14 @@ describe("session organization routes", () => {
                 labels: [],
             },
         });
-        expect(sessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
-                session: expect.objectContaining({
-                    archivedAt: null,
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
+                session: expectedVisibleUnarchivedSessionWhere(),
             }),
             orderBy: [{ sortKey: "asc" }, { pinnedAt: "asc" }],
         }));
-        expect(accountFindUnique).toHaveBeenCalledWith({
+        expect(txAccountFindUnique).toHaveBeenCalledWith({
             where: { id: "u1" },
             select: {
                 publicKey: true,
@@ -280,7 +294,7 @@ describe("session organization routes", () => {
                 contentPublicKeySig: true,
             },
         });
-        expect(sessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
                 session: expect.objectContaining({
@@ -288,7 +302,7 @@ describe("session organization routes", () => {
                 }),
             }),
         }));
-        expect(sessionOrganizationOrderEntryFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionOrganizationOrderEntryFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
                 OR: [{
@@ -336,7 +350,7 @@ describe("session organization routes", () => {
             requirement: {
                 v: 1,
                 kind: "account-stored-content",
-                minimumProtocolVersion: CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                minimumProtocolVersion: ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
             },
         });
     });
@@ -368,7 +382,7 @@ describe("session organization routes", () => {
     });
 
     it("omits stale server-owned order entries from snapshots", async () => {
-        sessionOrganizationOrderEntryFindMany.mockResolvedValue([
+        txSessionOrganizationOrderEntryFindMany.mockResolvedValue([
             { scopeKind: "pinned", scopeKey: "root", itemKind: "session", itemKey: "visible-session", sortKey: "legacy-pin" },
             { scopeKind: "folder", scopeKey: "folder-1", itemKind: "session", itemKey: "visible-session", sortKey: "a" },
             { scopeKind: "folder", scopeKey: "folder-1", itemKind: "session", itemKey: "hidden-session", sortKey: "b" },
@@ -379,8 +393,8 @@ describe("session organization routes", () => {
             { scopeKind: "workspace", scopeKey: "server-1", itemKind: "workspace", itemKey: "server-1:/repo", sortKey: "g" },
         ]);
         sessionFindMany.mockResolvedValue([{ id: "visible-session" }]);
-        sessionOrganizationFolderFindMany.mockResolvedValue([{ id: "folder-1" }]);
-        sessionOrganizationTagFindMany.mockResolvedValue([{ id: "tag-1" }]);
+        txSessionOrganizationFolderFindMany.mockResolvedValue([{ id: "folder-1" }]);
+        txSessionOrganizationTagFindMany.mockResolvedValue([{ id: "tag-1" }]);
 
         const route = await createSessionRouteTestBuilder("GET", "/v2/session-organization");
         const { response } = await route.invoke({
@@ -406,30 +420,32 @@ describe("session organization routes", () => {
             }),
         }));
         expect(sessionFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                id: { in: ["visible-session", "hidden-session"] },
-                OR: expectedV2SessionVisibilityBranches(),
-            }),
+            where: {
+                AND: [
+                    { id: { in: ["visible-session", "hidden-session"] } },
+                    { OR: expectedV2SessionVisibilityBranches() },
+                ],
+            },
             select: { id: true },
         }));
-        expect(sessionOrganizationFolderFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionOrganizationFolderFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { accountId: "u1", id: { in: ["folder-1", "archived-folder"] }, archivedAt: null },
             select: { id: true },
         }));
-        expect(sessionOrganizationTagFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionOrganizationTagFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: { accountId: "u1", id: { in: ["tag-1", "archived-tag"] }, archivedAt: null },
             select: { id: true },
         }));
     });
 
     it("filters snapshot membership rows through current session visibility", async () => {
-        sessionPinFindMany.mockResolvedValue([
+        txSessionPinFindMany.mockResolvedValue([
             { sessionId: "visible-pin", sortKey: "pin-a", pinnedAt: organizationDate(1_000) },
         ]);
-        sessionFolderAssignmentFindMany.mockResolvedValue([
+        txSessionFolderAssignmentFindMany.mockResolvedValue([
             { sessionId: "visible-folder-session", folderId: "folder-1" },
         ]);
-        sessionTagAssignmentFindMany.mockResolvedValue([
+        txSessionTagAssignmentFindMany.mockResolvedValue([
             { sessionId: "visible-tag-session", tagId: "tag-1" },
         ]);
 
@@ -448,22 +464,21 @@ describe("session organization routes", () => {
                 tagAssignments: [{ sessionId: "visible-tag-session", tagIds: ["tag-1"] }],
             }),
         }));
-        const visibilityWhere = expect.objectContaining({
-            OR: expectedV2SessionVisibilityBranches(),
-        });
-        expect(sessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({ accountId: "u1", session: visibilityWhere }),
+        const visibleUnarchivedWhere = expectedVisibleUnarchivedSessionWhere();
+        const visibleWhere = { OR: expectedV2SessionVisibilityBranches() };
+        expect(txSessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ accountId: "u1", session: visibleUnarchivedWhere }),
         }));
-        expect(sessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({ accountId: "u1", session: visibilityWhere }),
+        expect(txSessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ accountId: "u1", session: visibleWhere }),
         }));
-        expect(sessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({ accountId: "u1", session: visibilityWhere }),
+        expect(txSessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ accountId: "u1", session: visibleWhere }),
         }));
     });
 
     it("fetches folder assignment snapshots from the union of requested session and folder scopes", async () => {
-        sessionFolderAssignmentFindMany.mockResolvedValue([
+        txSessionFolderAssignmentFindMany.mockResolvedValue([
             { sessionId: "s1", folderId: "folder-from-session" },
             { sessionId: "s2", folderId: "folder-a" },
         ]);
@@ -484,7 +499,7 @@ describe("session organization routes", () => {
                 ],
             }),
         }));
-        expect(sessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionFolderAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
                 OR: [
@@ -499,7 +514,7 @@ describe("session organization routes", () => {
     });
 
     it("fetches tag assignment snapshots by requested tag scope without a session scope", async () => {
-        sessionTagAssignmentFindMany.mockResolvedValue([
+        txSessionTagAssignmentFindMany.mockResolvedValue([
             { sessionId: "s1", tagId: "tag-a" },
             { sessionId: "s2", tagId: "tag-a" },
         ]);
@@ -519,7 +534,7 @@ describe("session organization routes", () => {
                 ],
             }),
         }));
-        expect(sessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
                 OR: [{ tagId: { in: ["tag-a"] } }],
@@ -531,7 +546,7 @@ describe("session organization routes", () => {
     });
 
     it("fetches tag assignment snapshots from the union of requested session and tag scopes", async () => {
-        sessionTagAssignmentFindMany.mockResolvedValue([
+        txSessionTagAssignmentFindMany.mockResolvedValue([
             { sessionId: "s1", tagId: "tag-from-session" },
             { sessionId: "s2", tagId: "tag-a" },
         ]);
@@ -552,7 +567,7 @@ describe("session organization routes", () => {
                 ],
             }),
         }));
-        expect(sessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionTagAssignmentFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
                 OR: [
@@ -617,7 +632,9 @@ describe("session organization routes", () => {
     });
 
     it("rejects pinning an archived session before writing hidden pin state", async () => {
-        sessionFindFirst.mockResolvedValue({ id: "archived" });
+        sessionFindFirst
+            .mockResolvedValueOnce({ id: "archived" })
+            .mockResolvedValue(null);
         txSessionFindFirst.mockResolvedValue(null);
         txSessionPinFindUnique.mockResolvedValue(null);
         txSessionPinCount.mockResolvedValue(0);
@@ -638,8 +655,7 @@ describe("session organization routes", () => {
         expect(txSessionFindFirst).toHaveBeenCalledWith({
             where: expect.objectContaining({
                 id: "archived",
-                archivedAt: null,
-                OR: expectedV2SessionVisibilityBranches(),
+                AND: expectedVisibleUnarchivedSessionWhere().AND,
             }),
             select: { id: true },
         });
@@ -664,10 +680,7 @@ describe("session organization routes", () => {
         expect(txSessionPinCount).toHaveBeenCalledWith({
             where: {
                 accountId: "u1",
-                session: expect.objectContaining({
-                    archivedAt: null,
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
+                session: expectedVisibleUnarchivedSessionWhere(),
             },
         });
         expect(txSessionPinUpsert).not.toHaveBeenCalled();
@@ -1049,7 +1062,7 @@ describe("session organization routes", () => {
     });
 
     it("routes generic pinned order through canonical pin sort keys", async () => {
-        txSessionFindMany.mockResolvedValue([{ id: "s1" }, { id: "s2" }]);
+        txSessionFindMany.mockResolvedValue([pagedSessionRow("s1"), pagedSessionRow("s2")]);
         txSessionPinUpsert
             .mockResolvedValueOnce({ sessionId: "s1", sortKey: "a", pinnedAt: organizationDate(1_000) })
             .mockResolvedValueOnce({ sessionId: "s2", sortKey: "b", pinnedAt: organizationDate(2_000) });
@@ -1251,7 +1264,7 @@ describe("session organization routes", () => {
         }));
         expect(txSessionOrganizationOrderEntryUpsert).not.toHaveBeenCalled();
 
-        sessionPinFindMany.mockResolvedValue([
+        txSessionPinFindMany.mockResolvedValue([
             { sessionId: "s2", sortKey: "a", pinnedAt: organizationDate(2_000) },
             { sessionId: "s1", sortKey: "b", pinnedAt: organizationDate(1_000) },
         ]);
@@ -1261,12 +1274,10 @@ describe("session organization routes", () => {
         const { response } = await listRoute.invoke({ query: { limit: 10 } });
 
         expect((response as { sessions: Array<{ id: string }> }).sessions.map((session) => session.id)).toEqual(["s2", "s1"]);
-        expect(sessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
-                session: expect.objectContaining({
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
+                session: expectedVisibleUnarchivedSessionWhere(),
             }),
             orderBy: [{ sortKey: "asc" }, { pinnedAt: "asc" }],
         }));
@@ -1292,8 +1303,7 @@ describe("session organization routes", () => {
         expect(txSessionFindMany).toHaveBeenCalledWith({
             where: expect.objectContaining({
                 id: { in: ["visible", "hidden"] },
-                archivedAt: null,
-                OR: expectedV2SessionVisibilityBranches(),
+                AND: expectedVisibleUnarchivedSessionWhere().AND,
             }),
             select: { id: true },
         });
@@ -1322,10 +1332,7 @@ describe("session organization routes", () => {
         expect(txSessionPinCount).toHaveBeenCalledWith({
             where: {
                 accountId: "u1",
-                session: expect.objectContaining({
-                    archivedAt: null,
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
+                session: expectedVisibleUnarchivedSessionWhere(),
             },
         });
         expect(txSessionPinUpsert).not.toHaveBeenCalled();
@@ -1470,7 +1477,12 @@ describe("session organization routes", () => {
             accountId: "u1",
             kind: "account",
             entityId: "session-organization",
-            hint: { sessionOrganization: true, scope: "tags", tagIds: ["tag-1"] },
+            hint: {
+                sessionOrganization: true,
+                scope: "tags",
+                tagIds: ["tag-1"],
+                deletedTagIds: ["tag-1"],
+            },
         });
         expect(markAccountChanged).toHaveBeenCalledWith(expect.anything(), {
             accountId: "u1",
@@ -1626,8 +1638,8 @@ describe("session organization routes", () => {
 
     it("archives labels idempotently and includes labels in the next snapshot", async () => {
         txSessionOrganizationLabelUpdateMany.mockResolvedValue({ count: 1 });
-        sessionOrganizationCheckpointFindUnique.mockResolvedValue({ version: 5 });
-        sessionOrganizationLabelFindMany.mockResolvedValue([
+        txSessionOrganizationCheckpointFindUnique.mockResolvedValue({ version: 5 });
+        txSessionOrganizationLabelFindMany.mockResolvedValue([
             {
                 labelKind: "workspace",
                 scopeKey: "server_1:/private/project",
@@ -1833,8 +1845,7 @@ describe("session organization routes", () => {
         expect(txSessionFindFirst).toHaveBeenCalledWith({
             where: expect.objectContaining({
                 id: "archived",
-                archivedAt: null,
-                OR: expectedV2SessionVisibilityBranches(),
+                AND: expectedVisibleUnarchivedSessionWhere().AND,
             }),
             select: { id: true },
         });

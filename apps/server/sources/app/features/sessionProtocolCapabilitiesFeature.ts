@@ -21,6 +21,7 @@ export function resolveSessionProtocolCapabilitiesFeature(): FeaturesPayloadDelt
                     publicationFenceVersion:
                         CURRENT_EXTERNAL_SESSION_IMPORT_PUBLICATION_FENCE_VERSION,
                 },
+                follow: { contextVersion: 1 },
             },
         },
     };

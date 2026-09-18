@@ -9,7 +9,7 @@ import {
     REVIEW_COMMENT_PRINCIPAL_HEADER_V1,
     ReviewCommentAttachEvidenceRequestV1Schema,
     ReviewCommentBulkTransitionRequestV1Schema,
-    ReviewCommentClaimPublicationDispatchRequestV1Schema,
+    ReviewCommentPublicationTransportRequestV1Schema,
     ReviewCommentCreateRequestV1Schema,
     ReviewCommentEditRequestV1Schema,
     ReviewCommentGetRequestV1Schema,
@@ -632,7 +632,7 @@ export function registerReviewCommentRoutes(app: Fastify, options: ReviewComment
             return await operations.claimPublicationDispatch({
                 ...principal,
                 input: parseReviewCommentRouteInput(
-                    ReviewCommentClaimPublicationDispatchRequestV1Schema,
+                    ReviewCommentPublicationTransportRequestV1Schema,
                     request.body,
                     "review_comment_invalid_request",
                 ),

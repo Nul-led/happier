@@ -23,7 +23,7 @@ export class AutomationSessionLifecycleRegistrationValidationError
 export type ValidatedSessionLifecycleTriggerRegistration = AutomationSessionLifecycleTrigger;
 
 export function validateSessionLifecycleExecutionTargetInequality(params: Readonly<{
-    automationTargetType: "new_session" | "existing_session" | "execution_run";
+    automationTargetType: "new_session" | "existing_session" | "execution_run" | null;
     automationExistingSessionId?: string | null;
     sourceSessionId: string;
 }>): void {
@@ -47,7 +47,7 @@ export function validateSessionLifecycleExecutionTargetInequality(params: Readon
 export async function validateSessionLifecycleTriggerRegistrationTx(params: Readonly<{
     tx: Tx;
     accountId: string;
-    automationTargetType: "new_session" | "existing_session" | "execution_run";
+    automationTargetType: "new_session" | "existing_session" | "execution_run" | null;
     automationExistingSessionId?: string | null;
     input: AutomationSessionLifecycleTriggerInput;
 }>): Promise<ValidatedSessionLifecycleTriggerRegistration> {

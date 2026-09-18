@@ -7,6 +7,7 @@ vi.mock('@/storage/inTx', async (importOriginal) => ({
 }));
 
 import type { Tx } from '@/storage/inTx';
+import { createEmptySessionFollowEdgeTransactionModel } from '@/app/api/testkit/txHarness';
 
 import { deleteSessionTree } from './deleteSessionTree';
 
@@ -30,6 +31,8 @@ describe('deleteSessionTree', () => {
             sessionMessage: { deleteMany: deleteMessages },
             usageReport: { deleteMany: vi.fn(async () => ({ count: 0 })) },
             accessKey: { deleteMany: vi.fn(async () => ({ count: 0 })) },
+            ephemeralRunnerActivation: { findFirst: vi.fn(async () => null) },
+            sessionFollowEdge: createEmptySessionFollowEdgeTransactionModel(),
         } as unknown as Tx, {
             sessionId: 'voice-history-session',
             sessionUpdatedAt: new Date('2026-07-01T00:00:00.000Z'),

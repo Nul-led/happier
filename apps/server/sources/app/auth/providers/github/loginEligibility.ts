@@ -1,3 +1,4 @@
+import { refreshIdentity } from "../accountIdentityLifecycle";
 import { decryptString } from "@/modules/encrypt";
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
@@ -90,8 +91,8 @@ export async function enforceGitHubLoginEligibility(params: {
             : null;
 
         if (policy.offboarding.strict) {
-            await db.accountIdentity.update({
-                where: { id: identity.id },
+            await refreshIdentity({
+                accountId, provider: "github", identityId: identity.id,
                 data: {
                     eligibilityStatus: "unknown",
                     eligibilityReason: "eligibility-check-upstream-error",
@@ -103,8 +104,8 @@ export async function enforceGitHubLoginEligibility(params: {
         }
 
         if (identity.eligibilityStatus === "eligible") {
-            await db.accountIdentity.update({
-                where: { id: identity.id },
+            await refreshIdentity({
+                accountId, provider: "github", identityId: identity.id,
                 data: {
                     eligibilityStatus: "eligible",
                     eligibilityReason: "eligibility-check-upstream-error",
@@ -115,8 +116,8 @@ export async function enforceGitHubLoginEligibility(params: {
             return { ok: true };
         }
 
-        await db.accountIdentity.update({
-            where: { id: identity.id },
+        await refreshIdentity({
+            accountId, provider: "github", identityId: identity.id,
             data: {
                 eligibilityCheckedAt: now,
                 eligibilityNextCheckAt: nextCheckAt,
@@ -132,8 +133,8 @@ export async function enforceGitHubLoginEligibility(params: {
 
     const orgEligible = restrictions.orgMatch === "all" ? memberFlags.every(Boolean) : memberFlags.some(Boolean);
 
-    await db.accountIdentity.update({
-        where: { id: identity.id },
+    await refreshIdentity({
+        accountId, provider: "github", identityId: identity.id,
         data: {
             eligibilityStatus: orgEligible ? "eligible" : "ineligible",
             eligibilityReason: orgEligible ? null : "org-not-allowed",

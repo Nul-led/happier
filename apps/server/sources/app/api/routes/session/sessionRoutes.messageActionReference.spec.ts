@@ -1,8 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
-  checkSessionAccess,
-  createSessionRouteAccessFixture,
+  txSessionFindUnique,
   createSessionRouteTestBuilder,
   resetSessionRouteMocks,
   txSessionFindFirst,
@@ -19,13 +18,11 @@ describe('session Message Action reference resolution route', () => {
 
   beforeEach(() => {
     resetSessionRouteMocks();
-    checkSessionAccess.mockReset();
     txSessionFindFirst.mockReset();
     txSessionMessageFindFirst.mockReset();
   });
 
   it('re-resolves only the opaque reference through current access and the retained publication fence', async () => {
-    checkSessionAccess.mockResolvedValue(createSessionRouteAccessFixture('owner'));
     txSessionMessageFindFirst.mockResolvedValue({
       id: reference.messageId,
       sessionId: reference.sessionId,
@@ -75,7 +72,7 @@ describe('session Message Action reference resolution route', () => {
   });
 
   it('does not create an existence oracle when Session access is gone', async () => {
-    checkSessionAccess.mockResolvedValue(null);
+    txSessionFindUnique.mockResolvedValue(null);
 
     const route = await createSessionRouteTestBuilder(
       'POST',

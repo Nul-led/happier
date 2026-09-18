@@ -1,11 +1,8 @@
+import { resolveProfileLogin } from "./resolveProfileLogin";
+import { unlinkIdentity } from "../accountIdentityLifecycle";
 import { db } from "@/storage/db";
 import { Context } from "@/context";
 import { log } from "@/utils/logging/log";
-import { buildUpdateAccountUpdate, eventRouter } from "@/app/events/eventRouter";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
-import { afterTx, inTx } from "@/storage/inTx";
-import { markAccountChanged } from "@/app/changes/markAccountChanged";
-import { fetchLinkedProvidersForAccount } from "@/app/auth/providers/linkedProviders";
 
 /**
  * Disconnects a GitHub account from a user profile.
@@ -37,42 +34,13 @@ export async function githubDisconnect(ctx: Context): Promise<void> {
     }
 
     const currentUsername = user.username?.toString().trim() || null;
-    const githubLogin = (identity.profile as any)?.login?.toString?.().trim?.() || null;
+    const githubLogin = resolveProfileLogin({ profile: identity.profile, providerLogin: null });
     const normalize = (v: string | null) => (v ?? '').trim().toLowerCase();
     const shouldClearUsername = Boolean(currentUsername) && Boolean(githubLogin) && normalize(currentUsername) === normalize(githubLogin);
 
     log({ module: 'github-disconnect' }, `Disconnecting GitHub account ${identity.providerUserId} from user ${userId}`);
 
-    // Step 2: Transaction for atomic database operations
-    await inTx(async (tx) => {
-        await tx.accountIdentity.deleteMany({
-            where: { accountId: userId, provider: "github" },
-        });
-
-        // Preserve username unless it matches the GitHub login (we treat matching usernames as "GitHub-derived").
-        if (shouldClearUsername) {
-            await tx.account.update({
-                where: { id: userId },
-                data: { username: null },
-            });
-        }
-
-        const linkedProviders = await fetchLinkedProvidersForAccount({ tx: tx as any, accountId: userId });
-        const cursor = await markAccountChanged(tx, { accountId: userId, kind: 'account', entityId: 'self', hint: { linkedProviders: true } });
-
-        afterTx(tx, () => {
-            const updatePayload = buildUpdateAccountUpdate(userId, {
-                linkedProviders,
-                username: shouldClearUsername ? null : currentUsername
-            }, cursor, randomKeyNaked(12));
-
-            eventRouter.emitUpdate({
-                userId,
-                payload: updatePayload,
-                recipientFilter: { type: 'user-scoped-only' }
-            });
-        });
-    });
+    await unlinkIdentity({ accountId: userId, provider: "github", clearMatchingUsername: shouldClearUsername ? currentUsername : null });
 
     log({ module: 'github-disconnect' }, `GitHub account ${identity.providerUserId} disconnected successfully from user ${userId}`);
 }

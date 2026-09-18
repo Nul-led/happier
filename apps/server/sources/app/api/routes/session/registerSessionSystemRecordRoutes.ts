@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { FastifyReply } from "fastify";
+import type { FastifyError, FastifyReply, FastifyRequest } from "fastify";
 
 import {
     getLatestSessionSystemRecord,
@@ -29,6 +29,7 @@ import {
     PluginIdSchema,
     SESSION_SYSTEM_RECORDS_PLUGIN_ID_HEADER,
     SessionSystemRecordAddressSchema,
+    SessionSystemRecordErrorResponseSchema,
     SessionSystemRecordDeleteRequestSchema,
     SessionSystemRecordDeleteResponseSchema,
     SessionSystemRecordListQuerySchema,
@@ -46,12 +47,7 @@ import {
     SessionPermissionMediationRecordWriteResponseSchema,
 } from "@happier-dev/protocol";
 import { type Fastify } from "../../types";
-
-const PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA = z.object({
-    error: z.string(),
-    code: z.string(),
-    currentRevision: z.string().optional(),
-}).strict();
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
 const PERMISSION_MEDIATION_RECORD_ERROR_RESPONSE_SCHEMA = z.object({
     error: z.string(),
@@ -81,6 +77,11 @@ function hasUnmistakableSystemRecordV1GetIntent(query: unknown): boolean {
         || Object.prototype.hasOwnProperty.call(query, "address");
 }
 
+function hasUnmistakableSystemRecordV1MutationIntent(body: unknown): boolean {
+    return Boolean(body && typeof body === "object" && !Array.isArray(body)
+        && Object.prototype.hasOwnProperty.call(body, "address"));
+}
+
 function sendPluginRecordError(
     reply: FastifyReply,
     result: Readonly<{ code: string; currentRevision?: string }>,
@@ -91,6 +92,7 @@ function sendPluginRecordError(
         ...(result.currentRevision ? { currentRevision: result.currentRevision } : {}),
     };
     if (result.code === "plugin_session_records_unavailable") return reply.code(503).send(payload);
+    if (result.code === "plugin_session_record_feature_disabled") return reply.code(404).send(payload);
     if (result.code === "plugin_session_record_invalid_query") return reply.code(400).send(payload);
     if (result.code === "plugin_session_record_forbidden") return reply.code(403).send(payload);
     if (result.code === "plugin_session_not_found") return reply.code(404).send(payload);
@@ -99,8 +101,35 @@ function sendPluginRecordError(
         || result.code === "plugin_session_record_kind_conflict"
         || result.code === "plugin_session_record_revision_conflict"
         || result.code === "plugin_session_record_revision_exhausted"
+        || result.code === "plugin_session_record_storage_mode_mismatch"
     ) return reply.code(409).send(payload);
     return reply.code(500).send(payload);
+}
+
+function handleSystemRecordRouteError(
+    error: FastifyError,
+    request: FastifyRequest,
+    reply: FastifyReply,
+): FastifyReply {
+    if (!error.validation) throw error;
+    if (
+        isSystemRecordV1Request(request)
+        || hasUnmistakableSystemRecordV1GetIntent(request.query)
+        || hasUnmistakableSystemRecordV1MutationIntent(request.body)
+        || request.method === "DELETE"
+    ) {
+        return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
+    }
+    return reply.code(400).send({ error: "Invalid parameters" });
+}
+
+function handleLegacySystemRecordRouteError(
+    error: FastifyError,
+    _request: FastifyRequest,
+    reply: FastifyReply,
+): FastifyReply {
+    if (!error.validation) throw error;
+    return reply.code(400).send({ error: "Invalid parameters" });
 }
 
 function sendPermissionMediationRecordError(
@@ -122,7 +151,7 @@ function sendPermissionMediationRecordError(
 
 export function registerSessionSystemRecordRoutes(app: Fastify) {
     const withPluginRecordError = <T extends z.ZodTypeAny>(legacy: T) => (
-        z.union([legacy, PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA])
+        z.union([legacy, SessionSystemRecordErrorResponseSchema])
     );
 
     // This is a narrow host-owned transport, not a generic System Records
@@ -131,6 +160,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     // plugin namespace.
     app.get("/v2/sessions/:sessionId/permission-mediation-records", {
         preHandler: app.authenticate,
+        config: { allowApiToken: true },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_LIST_ROUTE_PARAMS_SCHEMA,
             querystring: SessionPermissionMediationRecordListQuerySchema,
@@ -148,6 +178,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             actorUserId: request.userId,
             sessionId: request.params.sessionId,
             query: request.query,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) return sendPermissionMediationRecordError(reply, result);
         return reply.send({
@@ -158,6 +189,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
 
     app.get("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
+        config: { allowApiToken: true },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             response: {
@@ -174,6 +206,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             actorUserId: request.userId,
             sessionId: request.params.sessionId,
             identity: request.params,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) return sendPermissionMediationRecordError(reply, result);
         return reply.send({ record: result.record });
@@ -181,6 +214,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
 
     app.put("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
+        config: { allowApiToken: true },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             body: SessionPermissionMediationRecordWriteRequestSchema,
@@ -200,6 +234,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             sessionId: request.params.sessionId,
             identity: request.params,
             request: request.body,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) return sendPermissionMediationRecordError(reply, result);
         return reply.send({ record: result.record });
@@ -210,6 +245,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     // exact revision; this endpoint never exposes generic host CRUD.
     app.delete("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
+        config: { allowApiToken: true },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             body: SessionPermissionMediationRecordPruneRequestSchema,
@@ -229,6 +265,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             sessionId: request.params.sessionId,
             identity: request.params,
             request: request.body,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) return sendPermissionMediationRecordError(reply, result);
         return reply.send({ ok: true });
@@ -236,6 +273,8 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
 
     app.get("/v2/sessions/:sessionId/system-records", {
         preHandler: app.authenticate,
+        errorHandler: handleSystemRecordRouteError,
+        config: { allowApiToken: true },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.union([
@@ -246,9 +285,9 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
                 200: z.union([SessionSystemRecordStoredPageResponseSchema, LegacyHostSessionSystemRecordPageResponseSchema]),
                 400: withPluginRecordError(z.object({ error: z.literal("Invalid parameters") })),
                 403: withPluginRecordError(z.object({ error: z.literal("Forbidden") })),
-                404: withPluginRecordError(z.object({ error: z.literal("Session not found") })),
-                409: PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA,
-                503: PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA,
+                404: withPluginRecordError(z.object({ error: z.enum(["Session not found", "not_found"]) })),
+                409: SessionSystemRecordErrorResponseSchema,
+                503: SessionSystemRecordErrorResponseSchema,
                 500: withPluginRecordError(z.object({ error: z.literal("Failed to list system records") })),
             },
         },
@@ -257,15 +296,16 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             if (!isSessionSystemRecordsProtocolV1Active()) {
                 return sendPluginRecordError(reply, { code: "plugin_session_records_unavailable" });
             }
-            const pluginId = readSystemRecordV1PluginId(request);
-            if (!pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const parsedQuery = SessionSystemRecordListQuerySchema.safeParse(request.query ?? {});
             if (!parsedQuery.success) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
+            const pluginId = parsedQuery.data.owner === "plugin" ? readSystemRecordV1PluginId(request) : undefined;
+            if (parsedQuery.data.owner === "plugin" && !pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const result = await listSessionSystemRecordsV1({
                 actorUserId: request.userId,
                 sessionId: request.params.sessionId,
-                pluginId,
+                pluginId: pluginId ?? undefined,
                 query: parsedQuery.data,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
             if (!result.ok) return sendPluginRecordError(reply, result);
             return reply.send({
@@ -287,6 +327,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             localId: query.localId,
             limit: query.limit,
             cursor: query.cursor ?? undefined,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         if (!result.ok) {
@@ -296,15 +337,17 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             return reply.code(500).send({ error: "Failed to list system records" });
         }
 
-        return reply.send({
+        return reply.send(LegacyHostSessionSystemRecordPageResponseSchema.parse({
             records: result.records.map(toPublicSessionSystemRecord),
             nextCursor: result.nextCursor,
             hasNext: result.nextCursor !== null,
-        });
+        }));
     });
 
     app.get("/v2/sessions/:sessionId/system-records/record", {
         preHandler: app.authenticate,
+        errorHandler: handleSystemRecordRouteError,
+        config: { allowApiToken: true },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.union([SessionSystemRecordAddressSchema, LegacyHostSessionSystemRecordLookupQuerySchema]),
@@ -312,9 +355,9 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
                 200: z.union([SessionSystemRecordStoredReadResponseSchema, LegacyHostSessionSystemRecordLookupResponseSchema]),
                 400: withPluginRecordError(z.object({ error: z.literal("Invalid parameters") })),
                 403: withPluginRecordError(z.object({ error: z.literal("Forbidden") })),
-                404: withPluginRecordError(z.object({ error: z.literal("Session not found") })),
-                409: PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA,
-                503: PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA,
+                404: withPluginRecordError(z.object({ error: z.enum(["Session not found", "not_found"]) })),
+                409: SessionSystemRecordErrorResponseSchema,
+                503: SessionSystemRecordErrorResponseSchema,
                 500: withPluginRecordError(z.object({ error: z.literal("Failed to fetch system record") })),
             },
         },
@@ -323,15 +366,16 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             if (!isSessionSystemRecordsProtocolV1Active()) {
                 return sendPluginRecordError(reply, { code: "plugin_session_records_unavailable" });
             }
-            const pluginId = readSystemRecordV1PluginId(request);
-            if (!pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const parsedAddress = SessionSystemRecordAddressSchema.safeParse(request.query);
             if (!parsedAddress.success) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
+            const pluginId = parsedAddress.data.owner === "plugin" ? readSystemRecordV1PluginId(request) : undefined;
+            if (parsedAddress.data.owner === "plugin" && !pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const result = await readSessionSystemRecordV1({
                 actorUserId: request.userId,
                 sessionId: request.params.sessionId,
-                pluginId,
+                pluginId: pluginId ?? undefined,
                 address: parsedAddress.data,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
             if (!result.ok) return sendPluginRecordError(reply, result);
             return reply.send({ record: result.record });
@@ -346,6 +390,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             sessionId: request.params.sessionId,
             namespace: parsedQuery.data.namespace,
             localId: parsedQuery.data.localId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         if (!result.ok) {
@@ -355,11 +400,15 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             return reply.code(500).send({ error: "Failed to fetch system record" });
         }
 
-        return reply.send({ record: result.record ? toPublicSessionSystemRecord(result.record) : null });
+        return reply.send(LegacyHostSessionSystemRecordLookupResponseSchema.parse({
+            record: result.record ? toPublicSessionSystemRecord(result.record) : null,
+        }));
     });
 
     app.get("/v2/sessions/:sessionId/system-records/latest", {
         preHandler: app.authenticate,
+        errorHandler: handleLegacySystemRecordRouteError,
+        config: { allowApiToken: true },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: LegacyHostSessionSystemRecordLatestQuerySchema,
@@ -379,6 +428,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             sessionId: request.params.sessionId,
             namespace: parsedQuery.data.namespace,
             kind: parsedQuery.data.kind,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         if (!result.ok) {
@@ -388,11 +438,15 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             return reply.code(500).send({ error: "Failed to fetch latest system record" });
         }
 
-        return reply.send({ record: result.record ? toPublicSessionSystemRecord(result.record) : null });
+        return reply.send(LegacyHostSessionSystemRecordLatestResponseSchema.parse({
+            record: result.record ? toPublicSessionSystemRecord(result.record) : null,
+        }));
     });
 
     app.put("/v2/sessions/:sessionId/system-records", {
         preHandler: app.authenticate,
+        errorHandler: handleSystemRecordRouteError,
+        config: { allowApiToken: true },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: z.union([SessionSystemRecordStoredUpsertRequestSchema, LegacyHostSessionSystemRecordUpsertRequestSchema]),
@@ -400,9 +454,9 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
                 200: z.union([SessionSystemRecordStoredUpsertResponseSchema, LegacyHostSessionSystemRecordUpsertResponseSchema]),
                 400: withPluginRecordError(z.object({ error: z.literal("Invalid parameters"), code: z.string().optional() }).passthrough()),
                 403: withPluginRecordError(z.object({ error: z.literal("Forbidden") })),
-                404: withPluginRecordError(z.object({ error: z.literal("Session not found") })),
+                404: withPluginRecordError(z.object({ error: z.enum(["Session not found", "not_found"]) })),
                 409: withPluginRecordError(z.object({ error: z.literal("Conflict"), code: z.string() }).passthrough()),
-                503: PLUGIN_RECORD_ERROR_RESPONSE_SCHEMA,
+                503: SessionSystemRecordErrorResponseSchema,
                 500: withPluginRecordError(z.object({ error: z.literal("Failed to upsert system record") })),
             },
         },
@@ -411,15 +465,16 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             if (!isSessionSystemRecordsProtocolV1Active()) {
                 return sendPluginRecordError(reply, { code: "plugin_session_records_unavailable" });
             }
-            const pluginId = readSystemRecordV1PluginId(request);
-            if (!pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const parsedBody = SessionSystemRecordStoredUpsertRequestSchema.safeParse(request.body);
             if (!parsedBody.success) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
+            const pluginId = parsedBody.data.address.owner === "plugin" ? readSystemRecordV1PluginId(request) : undefined;
+            if (parsedBody.data.address.owner === "plugin" && !pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
             const result = await upsertSessionSystemRecordV1({
                 actorUserId: request.userId,
                 sessionId: request.params.sessionId,
-                pluginId,
+                pluginId: pluginId ?? undefined,
                 ...parsedBody.data,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
             if (!result.ok) return sendPluginRecordError(reply, result);
             return reply.send({ record: result.record });
@@ -434,6 +489,7 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             kind: body.kind,
             localId: body.localId,
             content: body.content,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         if (!result.ok) {
@@ -448,15 +504,17 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
             return reply.code(500).send({ error: "Failed to upsert system record" });
         }
 
-        return reply.send({
+        return reply.send(LegacyHostSessionSystemRecordUpsertResponseSchema.parse({
             didCreate: result.didCreate,
             didUpdate: result.didUpdate,
             record: toPublicSessionSystemRecord(result.record),
-        });
+        }));
     });
 
     app.delete("/v2/sessions/:sessionId/system-records/record", {
         preHandler: app.authenticate,
+        errorHandler: handleSystemRecordRouteError,
+        config: { allowApiToken: true },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: SessionSystemRecordDeleteRequestSchema,
@@ -480,15 +538,16 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
         if (!isSessionSystemRecordsProtocolV1Active()) {
             return sendPluginRecordError(reply, { code: "plugin_session_records_unavailable" });
         }
-        const pluginId = readSystemRecordV1PluginId(request);
-        if (!pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
         const parsedBody = SessionSystemRecordDeleteRequestSchema.safeParse(request.body);
         if (!parsedBody.success) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
+        const pluginId = parsedBody.data.address.owner === "plugin" ? readSystemRecordV1PluginId(request) : undefined;
+        if (parsedBody.data.address.owner === "plugin" && !pluginId) return sendPluginRecordError(reply, { code: "plugin_session_record_invalid_query" });
         const result = await deleteSessionSystemRecordV1({
             actorUserId: request.userId,
             sessionId: request.params.sessionId,
-            pluginId,
+            pluginId: pluginId ?? undefined,
             ...parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) return sendPluginRecordError(reply, result);
         return reply.send({ ok: true });

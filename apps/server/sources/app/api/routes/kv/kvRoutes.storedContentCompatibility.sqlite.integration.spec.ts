@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    signAccountContentKeyBindingV1,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
@@ -76,20 +77,17 @@ describe("kvRoutes Todo stored-content compatibility", () => {
         if (mode === "e2ee") {
             const signing = tweetnacl.sign.keyPair();
             const content = tweetnacl.box.keyPair();
-            const contentBinding = Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(content.publicKey),
-            ]);
+
             return await db.account.create({
                 data: {
                     publicKey: Buffer.from(signing.publicKey).toString("hex"),
                     encryptionMode: mode,
                     contentPublicKey: new Uint8Array(content.publicKey),
                     contentPublicKeySig: new Uint8Array(
-                        tweetnacl.sign.detached(
-                            contentBinding,
-                            signing.secretKey,
-                        ),
+                        signAccountContentKeyBindingV1({
+                            accountSigningSecretKey: signing.secretKey,
+                            contentPublicKey: content.publicKey,
+                        }),
                     ),
                 },
                 select: { id: true },

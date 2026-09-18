@@ -7,11 +7,14 @@ import { fileURLToPath } from 'node:url';
 
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
+import { createPresentUserSessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication.testkit';
 import { applySessionTurnMutation } from '@/app/session/sessionWriteService';
 import { db } from '@/storage/db';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
 import { createAuthenticatedTestApp } from '../../testkit/sqliteFastify';
 import { sessionRoutes } from './sessionRoutes';
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 type Deferred<T> = Readonly<{
     promise: Promise<T>;
@@ -152,6 +155,7 @@ async function createSessionWithRunningTurn(label: string) {
     const observedAt = Date.now();
     await expect(applySessionTurnMutation({
         actorUserId: account.id,
+        authentication,
         mutation: {
             v: 1,
             sessionId: session.id,

@@ -7,6 +7,7 @@ import {
     ProviderAccountUsageRecordKeyV1Schema,
     ProviderAccountUsageRecordWriteV1Schema,
     ProviderAccountUsageSnapshotV1Schema,
+    ProviderAccountSubscriptionV1Schema,
     SealedConnectedServiceQuotaSnapshotV1Schema,
     SealedProviderAccountUsageSnapshotV1Schema,
 } from "@happier-dev/protocol";
@@ -27,6 +28,7 @@ export const ProviderAccountUsageStatusSchema = z.enum([
 
 export const ProviderAccountUsageRecordMetadataSchema = z.object({
     materialFingerprint: z.string().trim().min(1).max(256).optional(),
+    subscription: ProviderAccountSubscriptionV1Schema.optional(),
     legacyQuotaCompatibilityProjections: z.array(z.object({
         source: z.object({
             serviceId: ConnectedServiceIdSchema,

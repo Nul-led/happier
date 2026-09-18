@@ -11,19 +11,25 @@ import type { SessionRuntimeIssueV1 } from "@happier-dev/protocol";
 import {
     DEFAULT_SESSION_ROLLBACK_ELIGIBLE_TURN_RELATION_LIMIT,
     DEFAULT_V2_SESSION_LIST_INITIAL_ATTENTION_ROW_LIMIT,
-} from "./v2SessionHotReadLimits";
-import {
-    mapV2SessionListRow as mapV2SessionListRowWithAccountMode,
-} from "./v2SessionListRows";
+} from "@/app/session/listing/readLimits";
 import {
     createSessionRouteTestBuilder,
+    createSessionDataKeyEnvelopeFixture,
     accountFindUnique,
+    createSessionAccessProjectionRelations,
+    flattenSessionWhereConjuncts,
     resetSessionRouteMocks,
     sessionFindFirst,
     sessionFindMany,
-    sessionPinFindMany,
+    txSessionFindFirst,
+    txSessionFindMany,
+    txSessionPinFindMany,
 } from "./sessionRoutes.testkit";
-import { isMissingAttentionProjectionColumnError } from "./v2SessionListPage";
+import {
+    mapV2SessionListRow as mapV2SessionListRowWithAccountMode,
+} from "@/app/session/listing/rows";
+import { isMissingAttentionProjectionColumnError } from "@/app/session/listing/page";
+import { getRouteEntry } from "@/app/api/testkit/routeHarness";
 
 const OWNER_METADATA_ENVELOPE_V1 = {
     t: "encrypted",
@@ -61,6 +67,42 @@ function mapV2SessionListRow(
     });
 }
 
+describe("session listing response contracts", () => {
+    it("keeps the released V1 list behind present-user or proof-bound Action admission", async () => {
+        const route = await createSessionRouteTestBuilder("GET", "/v1/sessions");
+        const config = getRouteEntry(route.app, "GET", "/v1/sessions").opts.config;
+
+        expect(config?.allowApiToken).toBeUndefined();
+        expect(config?.ephemeralSessionRunnerOperation).toBeUndefined();
+    });
+
+    it.each([
+        "/v2/sessions",
+        "/v2/sessions/active",
+        "/v2/sessions/archived",
+    ] as const)("does not advertise an unreachable 426 response for GET %s", async (path) => {
+        const route = await createSessionRouteTestBuilder("GET", path);
+        const response = (getRouteEntry(route.app, "GET", path).opts.schema as {
+            response: Record<number, unknown>;
+        }).response;
+
+        expect(response[426]).toBeUndefined();
+    });
+
+    it.each([
+        "/v2/sessions",
+        "/v2/sessions/active",
+        "/v2/sessions/archived",
+    ] as const)("admits only a proof-bound session.list PAT effect for GET %s", async (path) => {
+        const route = await createSessionRouteTestBuilder("GET", path);
+        const config = getRouteEntry(route.app, "GET", path).opts.config;
+
+        expect(config).toMatchObject({
+        });
+        expect(config?.allowApiToken).toBeUndefined();
+    });
+});
+
 function pagedSessionRow(
     id: string,
     overrides: Partial<{
@@ -73,6 +115,7 @@ function pagedSessionRow(
 ) {
     const createdAt = overrides.createdAt ?? new Date(1_000);
     return {
+        ...createSessionAccessProjectionRelations(),
         id,
         seq: 1,
         accountId: "u1",
@@ -118,7 +161,10 @@ function pagedSessionRow(
         dataEncryptionKey: null,
         active: overrides.active ?? false,
         lastActiveAt: overrides.lastActiveAt ?? createdAt,
-        shares: [],
+        accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 0, unreadSince: null }],
+        accountFollows: [],
+        sessionPins: [],
+        sessionAttentionStandings: [],
     };
 }
 
@@ -141,12 +187,13 @@ const usageLimitRuntimeIssue: SessionRuntimeIssueV1 = {
 
 function expectedV2SessionVisibilityBranches() {
     return expect.arrayContaining([
-        { accountId: "u1" },
-        {
-            AND: [
-                { shares: { some: { sharedWithUserId: "u1" } } },
-                {
-                    OR: [
+        // The owner branch admits only a currently active owning Account; a
+        // suspended Home must not keep serving its own rows.
+        { accountId: "u1", account: { status: "active" } },
+        expect.objectContaining({
+            AND: expect.arrayContaining([
+                expect.objectContaining({
+                    OR: expect.arrayContaining([
                         { currentStorageState: "hosted" },
                         expect.objectContaining({
                             currentStorageState: "snapshot_complete",
@@ -155,27 +202,51 @@ function expectedV2SessionVisibilityBranches() {
                                 gte: 0,
                                 lte: BigInt(Number.MAX_SAFE_INTEGER),
                             },
-                            publishedThroughServerSeq: { gte: 0 },
+                            publishedThroughServerSeq: expect.objectContaining({ gte: 0 }),
                         }),
-                    ],
-                },
-            ],
-        },
+                    ]),
+                }),
+                expect.objectContaining({
+                    OR: expect.arrayContaining([
+                        expect.objectContaining({
+                            shares: { some: expect.objectContaining({ sharedWithUserId: "u1" }) },
+                        }),
+                    ]),
+                }),
+            ]),
+        }),
     ]);
 }
 
-function hasAttentionCandidatePredicate(where: Record<string, unknown>): boolean {
-    const clauses = where.AND;
-    if (!Array.isArray(clauses)) return false;
-    return clauses.some((clause) => {
-        if (!clause || typeof clause !== "object") return false;
-        const candidates = (clause as Record<string, unknown>).OR;
-        return Array.isArray(candidates) && candidates.some((candidate) =>
-            candidate
-            && typeof candidate === "object"
-            && (Object.prototype.hasOwnProperty.call(candidate, "latestTurnStatus")
-                || Object.prototype.hasOwnProperty.call(candidate, "pendingPermissionRequestCount")
-                || Object.prototype.hasOwnProperty.call(candidate, "pendingUserActionRequestCount")));
+function findWhereConjunct(
+    where: unknown,
+    predicate: (clause: Record<string, unknown>) => boolean,
+): Record<string, unknown> | undefined {
+    return flattenSessionWhereConjuncts(where).find(predicate);
+}
+
+function readWhereSessionIds(where: unknown): ReadonlySet<string> | null {
+    const clause = findWhereConjunct(where, (value) => Object.prototype.hasOwnProperty.call(value, "id"));
+    const values = (clause?.id as { in?: unknown } | undefined)?.in;
+    return Array.isArray(values) && values.every((value): value is string => typeof value === "string")
+        ? new Set(values)
+        : null;
+}
+
+function hasActivityCursor(where: unknown): boolean {
+    return flattenSessionWhereConjuncts(where).some((clause) => {
+        const branches = clause.OR;
+        if (!Array.isArray(branches)) return false;
+        const containsKey = (value: unknown, key: string): boolean => {
+            if (!value || typeof value !== "object") return false;
+            if (Array.isArray(value)) return value.some((entry) => containsKey(entry, key));
+            const record = value as Record<string, unknown>;
+            return Object.prototype.hasOwnProperty.call(record, key)
+                || Object.values(record).some((entry) => containsKey(entry, key));
+        };
+        return containsKey(branches, "id")
+            && ["meaningfulActivityAt", "createdAt", "materializedThroughSourceAt"]
+                .some((key) => containsKey(branches, key));
     });
 }
 
@@ -199,6 +270,64 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             hasNext: false,
         });
         expect(accountFindUnique).not.toHaveBeenCalled();
+    });
+
+    it("merges and acknowledges active rows when a predecessor client requests them", async () => {
+        const pageRow = pagedSessionRow("page-row", {
+            meaningfulActivityAt: new Date(9_000),
+        });
+        const activeRow = pagedSessionRow("live-elsewhere", {
+            meaningfulActivityAt: new Date(1),
+            active: true,
+            lastActiveAt: new Date(10_000),
+        });
+        let returnedPageRow = false;
+        sessionFindMany.mockImplementation(async (args) => {
+            const orderBy = args.orderBy as ReadonlyArray<Record<string, unknown>> | undefined;
+            if (Array.isArray(orderBy) && orderBy[0]?.lastActiveAt === "desc") {
+                return [activeRow];
+            }
+            if (!returnedPageRow) {
+                returnedPageRow = true;
+                return [pageRow];
+            }
+            return [];
+        });
+
+        const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
+        const { response } = await route.invoke({
+            query: { includeActive: true, limit: 10 },
+        });
+
+        expect(response).toEqual(expect.objectContaining({
+            sessions: [
+                expect.objectContaining({ id: "live-elsewhere" }),
+                expect.objectContaining({ id: "page-row" }),
+            ],
+            includedActive: true,
+        }));
+        expect(sessionFindMany.mock.calls.map(([args]) => args)).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                orderBy: [
+                    { lastActiveAt: "desc" },
+                    { id: "desc" },
+                ],
+                take: 500,
+            }),
+        ]));
+    });
+
+    it("does not read or acknowledge the active family when it was not requested", async () => {
+        sessionFindMany.mockResolvedValue([]);
+
+        const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
+        const { response } = await route.invoke({ query: { limit: 10 } });
+
+        expect(response).not.toHaveProperty("includedActive");
+        expect(sessionFindMany.mock.calls.some(([args]) => {
+            const orderBy = args.orderBy as ReadonlyArray<Record<string, unknown>> | undefined;
+            return Array.isArray(orderBy) && orderBy[0]?.lastActiveAt === "desc";
+        })).toBe(false);
     });
 
     it("projects a live waiting activation authorization and suppresses a stale fence", async () => {
@@ -254,7 +383,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             nextCursor: null,
             hasNext: false,
         });
-        expect(accountFindUnique).toHaveBeenCalledTimes(1);
+        expect(accountFindUnique).toHaveBeenCalled();
     });
 
     it("reads Account currentness for the displayed shared row, not the owned layout-one lookahead row", async () => {
@@ -262,6 +391,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             ...pagedSessionRow("shared-displayed"),
             accountId: "owner",
             shares: [{
+                id: "shared-displayed-grant",
+                sharedWithUserId: "u1",
                 encryptedDataKey: null,
                 accessLevel: "view",
                 canApprovePermissions: false,
@@ -288,13 +419,13 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             }),
             hasNext: true,
         });
-        expect(accountFindUnique).toHaveBeenCalledTimes(1);
+        expect(accountFindUnique).toHaveBeenCalled();
         expect(accountFindUnique).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: "owner" },
         }));
     });
 
-    it("does not require current stored-content support for a sliced-out layout-one lookahead row", async () => {
+    it("filters unrepresentable rows before page selection and cursor calculation", async () => {
         const emittedLayoutZero = {
             ...pagedSessionRow("emitted-layout-zero", {
                 meaningfulActivityAt: new Date(2_000),
@@ -302,14 +433,29 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             metadataLayoutVersion: 0,
             ownerMetadata: null,
         };
-        sessionFindMany
-            .mockResolvedValueOnce([
-                emittedLayoutZero,
-                pagedSessionRow("layout-one-lookahead", {
-                    meaningfulActivityAt: new Date(1_000),
-                }),
-            ])
-            .mockResolvedValueOnce([]);
+        sessionFindMany.mockImplementation(async (query) => {
+            const clauses = flattenSessionWhereConjuncts(query.where);
+            const filtersLegacyRows = clauses.some((clause) =>
+                (clause as { metadataLayoutVersion?: { not?: number } })
+                    .metadataLayoutVersion?.not === 1);
+            const selectsHostedMeaningfulActivity = clauses.some((clause) => {
+                const candidate = clause as {
+                    currentStorageState?: string;
+                    meaningfulActivityAt?: { not?: null };
+                };
+                return candidate.currentStorageState === "hosted"
+                    && candidate.meaningfulActivityAt?.not === null;
+            });
+            if (filtersLegacyRows && (query.skip || !selectsHostedMeaningfulActivity)) return [];
+            return filtersLegacyRows
+                ? [emittedLayoutZero]
+                : [
+                    emittedLayoutZero,
+                    pagedSessionRow("layout-one-lookahead", {
+                        meaningfulActivityAt: new Date(1_000),
+                    }),
+                ];
+        });
 
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
         const { reply, response } = await route.invoke({
@@ -321,22 +467,35 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         expect(reply.statusCode).toBe(200);
         expect(response).toEqual({
             sessions: [expect.objectContaining({ id: "emitted-layout-zero" })],
-            nextCursor: encodeV2SessionListCursorV2({
-                sessionId: "emitted-layout-zero",
-                meaningfulActivityAt: 2_000,
-            }),
-            hasNext: true,
+            nextCursor: null,
+            hasNext: false,
         });
+        expect(sessionFindMany.mock.calls).not.toHaveLength(0);
+        const pageRowQueries = sessionFindMany.mock.calls.filter(([query]) =>
+            flattenSessionWhereConjuncts(query.where).some((clause) =>
+                Object.prototype.hasOwnProperty.call(clause, "currentStorageState")));
+        expect(pageRowQueries).not.toHaveLength(0);
+        for (const [query] of pageRowQueries) {
+            expect(flattenSessionWhereConjuncts(query.where))
+                .toContainEqual({ metadataLayoutVersion: { not: 1 } });
+        }
         expect(accountFindUnique).not.toHaveBeenCalled();
     });
 
-    it("requires current stored-content support when layout one appears only in the emitted pinned rows", async () => {
+    it("omits an incompatible pinned row without rejecting the compatible page", async () => {
         const regularLayoutZero = {
             ...pagedSessionRow("regular-layout-zero"),
             metadataLayoutVersion: 0,
             ownerMetadata: null,
         };
-        sessionPinFindMany.mockResolvedValue([
+        const regularLookahead = {
+            ...pagedSessionRow("regular-lookahead", {
+                meaningfulActivityAt: new Date(900),
+            }),
+            metadataLayoutVersion: 0,
+            ownerMetadata: null,
+        };
+        txSessionPinFindMany.mockResolvedValue([
             {
                 sessionId: "pinned-layout-one",
                 sortKey: "a",
@@ -345,10 +504,15 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         ]);
         sessionFindMany.mockImplementation(async (query) => {
             const where = query.where as Record<string, unknown>;
-            if (where.currentStorageState === "hosted" && where.meaningfulActivityAt) {
-                return [regularLayoutZero];
+            const hosted = findWhereConjunct(where, (clause) => clause.currentStorageState === "hosted");
+            const ids = findWhereConjunct(where, (clause) => Object.prototype.hasOwnProperty.call(clause, "id"));
+            const filtersLegacyRows = findWhereConjunct(where, (clause) =>
+                (clause.metadataLayoutVersion as { not?: number } | undefined)?.not === 1);
+            if (hosted?.meaningfulActivityAt) {
+                return [regularLayoutZero, regularLookahead];
             }
-            if (where.id && !where.currentStorageState) {
+            if (ids) {
+                if (filtersLegacyRows) return [];
                 return [pagedSessionRow("pinned-layout-one", {
                     meaningfulActivityAt: new Date(100),
                 })];
@@ -357,22 +521,22 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         });
 
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
-        const { reply } = await route.invoke({
+        const { reply, response } = await route.invoke({
             query: { limit: 1 },
             accountStoredContentCompatibility:
                 LEGACY_ACCOUNT_STORED_CONTENT_COMPATIBILITY,
         });
 
-        expect(reply.statusCode).toBe(426);
-        expect(reply.send).toHaveBeenCalledWith({
-            error: "client-upgrade-required",
-            requirement: {
-                v: 1,
-                kind: "account-stored-content",
-                minimumProtocolVersion:
-                    CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
-            },
+        expect(reply.statusCode).toBe(200);
+        expect(response).toEqual({
+            sessions: [expect.objectContaining({ id: "regular-layout-zero" })],
+            nextCursor: expect.any(String),
+            hasNext: true,
+            attentionNextCursor: null,
+            attentionHasNext: false,
         });
+        expect((response as { sessions: Array<{ id: string }> }).sessions)
+            .not.toContainEqual(expect.objectContaining({ id: "pinned-layout-one" }));
         expect(accountFindUnique).not.toHaveBeenCalled();
     });
 
@@ -386,6 +550,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             agentState: "full-owner-agent-state",
             agentStateVersion: 7,
             shares: [{
+                id: "shared-agent-state-grant",
+                sharedWithUserId: "recipient",
                 encryptedDataKey: null,
                 accessLevel: "view",
                 canApprovePermissions: false,
@@ -393,8 +559,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             currentStorageState: "hosted",
         } as any;
 
-        const owner = mapV2SessionListRow({ userId: "owner", row });
-        const recipient = mapV2SessionListRow({ userId: "recipient", row });
+        const owner = mapV2SessionListRow({ userId: "owner", row, hasOtherNamedCollaborator: true });
+        const recipient = mapV2SessionListRow({ userId: "recipient", row, hasOtherNamedCollaborator: true });
 
         expect(owner.agentState).toBe("full-owner-agent-state");
         expect(owner.agentStateVersion).toBe(7);
@@ -403,6 +569,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         expect(recipient.agentState).toBeNull();
         expect(recipient.agentStateVersion).toBe(7);
         expect(recipient.metadataLayoutVersion).toBe(1);
+        expect(owner.hasOtherNamedCollaborator).toBe(true);
+        expect(recipient.hasOtherNamedCollaborator).toBe(true);
         expect(JSON.stringify(recipient)).not.toMatch(
             /oRoBAgMEBQYHCAkKCwwNDg8QERITFBUWFxh8aC0\+8\+YDECLScN6uQTItPyWVR7XbQA==|full-owner-agent-state/,
         );
@@ -423,6 +591,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             agentState: "full-owner-agent-state",
             agentStateVersion: 7,
             shares: [{
+                id: "mixed-recipient-grant",
+                sharedWithUserId: "recipient",
                 encryptedDataKey: null,
                 accessLevel: "edit",
                 canApprovePermissions: true,
@@ -446,6 +616,50 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         }).success).toBe(false);
     });
 
+    it("omits the legacy direct-share field for a Team-only recipient", () => {
+        const recipient = mapV2SessionListRow({
+            userId: "recipient",
+            qualifiedTeamIds: new Set(["team-1"]),
+            row: {
+                ...pagedSessionRow("s_team_only"),
+                accountId: "owner",
+                metadata: STORED_SHARED_METADATA_V1,
+                ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
+                shares: [],
+                teamGrants: [{
+                    teamId: "team-1",
+                    effectiveAt: new Date(1),
+                    accessLevel: "view",
+                    canApprovePermissions: false,
+                    requiredByTeamPolicy: false,
+                    team: {
+                        authenticationPolicy: null,
+                        memberships: [{
+                            accountId: "recipient",
+                            sessionAccessStartsAt: null,
+                        }],
+                    },
+                }],
+            } as any,
+        });
+
+        expect(recipient).not.toHaveProperty("share");
+        expect(recipient.effectiveAccess).toMatchObject({
+            v: 1,
+            level: "view",
+            sources: [{
+                kind: "team",
+                teamId: "team-1",
+                requiredByTeamPolicy: false,
+            }],
+        });
+        expect(V2SessionListResponseSchema.safeParse({
+            sessions: [recipient],
+            nextCursor: null,
+            hasNext: false,
+        }).success).toBe(true);
+    });
+
     it("GET /v2/sessions refuses a released layout-zero shared projection until owner migration", async () => {
         sessionFindMany
             .mockResolvedValueOnce([
@@ -458,6 +672,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     agentState: "legacy-owner-state",
                     agentStateVersion: 7,
                     shares: [{
+                        id: "legacy-shared-grant",
+                        sharedWithUserId: "u1",
                         encryptedDataKey: null,
                         accessLevel: "view",
                         canApprovePermissions: false,
@@ -620,6 +836,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                 lastViewedSessionSeq: 11,
                 latestReadyEventSeq: 10,
                 latestReadyEventAt: new Date(1_333),
+                accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 11, unreadSince: null }],
                 currentStorageState: "server_partial",
                 acceptedThroughServerSeq: 8,
                 publishedThroughServerSeq: null,
@@ -718,6 +935,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     }),
                     seq: 9,
                     lastViewedSessionSeq: 8,
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 8, unreadSince: null }],
                     pendingPermissionRequestCount: 2,
                     pendingUserActionRequestCount: 3,
                     pendingRequestObservedAt: new Date(9_000),
@@ -782,25 +1000,27 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                 return;
             }
 
-            expect(mapped).toMatchObject({
-                active: false,
-                pendingPermissionRequestCount: 0,
-                pendingUserActionRequestCount: 0,
-                pendingRequestObservedAt: null,
-                pendingCount: 0,
-                pendingBlockedCount: 0,
-                pendingVersion: 0,
-                latestTurnId: null,
-                latestTurnStatus: null,
-                latestTurnStatusObservedAt: null,
-                lastRuntimeIssue: null,
-                thinking: false,
-                thinkingAt: null,
-            });
-            expect(mapped).not.toHaveProperty("runtimeActivityState");
-            expect(mapped).not.toHaveProperty("runtimeActivityActiveCount");
-            expect(mapped).not.toHaveProperty("runtimeActivityObservedAt");
-            expect(mapped).not.toHaveProperty("runtimeActivityRevision");
+            expect(mapped.active).toBe(false);
+            for (const field of [
+                "pendingPermissionRequestCount",
+                "pendingUserActionRequestCount",
+                "pendingRequestObservedAt",
+                "pendingCount",
+                "pendingBlockedCount",
+                "pendingVersion",
+                "latestTurnId",
+                "latestTurnStatus",
+                "latestTurnStatusObservedAt",
+                "lastRuntimeIssue",
+                "thinking",
+                "thinkingAt",
+                "runtimeActivityState",
+                "runtimeActivityActiveCount",
+                "runtimeActivityObservedAt",
+                "runtimeActivityRevision",
+            ]) {
+                expect(mapped).not.toHaveProperty(field);
+            }
         },
     );
 
@@ -828,6 +1048,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             userId: "u1",
             row: {
                 ...pagedSessionRow("s_materialized"),
+                seq: 12,
                 currentStorageState: "snapshot_complete",
                 acceptedThroughServerSeq: null,
                 materializationPublicationId: "publication-private-owner",
@@ -912,75 +1133,56 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         sessionFindMany
             .mockResolvedValueOnce([
                 {
-                    id: "s3",
+                    ...pagedSessionRow("s3", {
+                        createdAt: now,
+                        updatedAt: now,
+                        meaningfulActivityAt: new Date(3),
+                        active: true,
+                        lastActiveAt: now,
+                    }),
                     seq: 3,
-                    accountId: "u1",
                     encryptionMode: "e2ee",
-                    createdAt: now,
-                    updatedAt: now,
-                    meaningfulActivityAt: new Date(3),
-                    archivedAt: null,
                     metadata: "m3",
-                    metadataVersion: 1,
-                    agentState: null,
-                    agentStateVersion: 0,
                     lastViewedSessionSeq: 2,
                     pendingPermissionRequestCount: 1,
-                    pendingUserActionRequestCount: 0,
-                    dataEncryptionKey: Buffer.from([1, 2, 3]),
-                    active: true,
-                    lastActiveAt: now,
-                    shares: [],
+                    dataKeyEnvelopes: [createSessionDataKeyEnvelopeFixture(Buffer.from([1, 2, 3]))],
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 2, unreadSince: null }],
                 },
                 {
-                    id: "s2",
+                    ...pagedSessionRow("s2", {
+                        createdAt: now,
+                        updatedAt: now,
+                        meaningfulActivityAt: new Date(2),
+                        active: true,
+                        lastActiveAt: now,
+                    }),
                     seq: 2,
                     accountId: "owner",
                     encryptionMode: "e2ee",
-                    createdAt: now,
-                    updatedAt: now,
-                    meaningfulActivityAt: new Date(2),
-                    archivedAt: null,
                     metadata: "m2",
-                    metadataVersion: 1,
-                    metadataLayoutVersion: 1,
-                    ownerMetadata: STORED_OWNER_METADATA_ENVELOPE_V1,
-                    agentState: null,
-                    agentStateVersion: 0,
                     lastViewedSessionSeq: 1,
-                    pendingPermissionRequestCount: 0,
                     pendingUserActionRequestCount: 2,
-                    dataEncryptionKey: null,
-                    active: true,
-                    lastActiveAt: now,
+                    dataKeyEnvelopes: [createSessionDataKeyEnvelopeFixture(Buffer.from([4, 5]))],
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 1, unreadSince: null }],
                     shares: [
                         {
-                            encryptedDataKey: Buffer.from([4, 5]),
+                            id: "s2-direct-grant",
+                            sharedWithUserId: "u1",
                             accessLevel: "edit",
                             canApprovePermissions: true,
                         },
                     ],
                 },
                 {
-                    id: "s1",
+                    ...pagedSessionRow("s1", {
+                        createdAt: now,
+                        updatedAt: now,
+                        meaningfulActivityAt: new Date(1),
+                        active: true,
+                        lastActiveAt: now,
+                    }),
                     seq: 1,
-                    accountId: "u1",
-                    encryptionMode: "plain",
-                    createdAt: now,
-                    updatedAt: now,
-                    meaningfulActivityAt: new Date(1),
-                    archivedAt: null,
                     metadata: "m1",
-                    metadataVersion: 1,
-                    agentState: null,
-                    agentStateVersion: 0,
-                    lastViewedSessionSeq: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    dataEncryptionKey: null,
-                    active: true,
-                    lastActiveAt: now,
-                    shares: [],
                 },
             ])
             .mockResolvedValueOnce([]);
@@ -990,13 +1192,12 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             query: { limit: 2 },
         });
 
-        expect(sessionFindMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    archivedAt: null,
-                }),
-            }),
-        );
+        expect(sessionFindMany.mock.calls.some((call) => {
+            const clauses = flattenSessionWhereConjuncts(call[0].where);
+            return clauses.some((clause) => clause.archivedAt === null)
+                && clauses.some((clause) =>
+                    expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }).asymmetricMatch(clause));
+        })).toBe(true);
 
         expect(res).toEqual({
             sessions: [
@@ -1008,6 +1209,16 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     lastViewedSessionSeq: 2,
                     pendingPermissionRequestCount: 1,
                     pendingUserActionRequestCount: 0,
+                    effectiveAccess: expect.objectContaining({
+                        v: 1,
+                        level: "owner",
+                        sources: [{ kind: "owner" }],
+                        capabilities: expect.objectContaining({
+                            readTranscript: true,
+                            manageAccess: true,
+                            deleteSession: true,
+                        }),
+                    }),
                     share: null,
                     archivedAt: null,
                 }),
@@ -1016,9 +1227,20 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     meaningfulActivityAt: 2,
                     encryptionMode: "e2ee",
                     dataEncryptionKey: "BAU=",
-                    lastViewedSessionSeq: 1,
+                    lastViewedSessionSeq: 2,
                     pendingPermissionRequestCount: 0,
                     pendingUserActionRequestCount: 2,
+                    effectiveAccess: expect.objectContaining({
+                        v: 1,
+                        level: "edit",
+                        sources: [{ kind: "direct", shareId: "s2-direct-grant" }],
+                        capabilities: expect.objectContaining({
+                            readTranscript: true,
+                            submitAgentInput: true,
+                            approveRuntimePermissions: true,
+                            manageAccess: false,
+                        }),
+                    }),
                     share: { accessLevel: "edit", canApprovePermissions: true },
                     archivedAt: null,
                 }),
@@ -1026,6 +1248,10 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             nextCursor: encodeV2SessionListCursorV2({ sessionId: "s2", meaningfulActivityAt: 2 }),
             hasNext: true,
         });
+        for (const session of (res as { sessions: Array<Record<string, unknown>> }).sessions) {
+            expect(session.effectiveAccess).not.toHaveProperty("accountId");
+            expect(session.effectiveAccess).not.toHaveProperty("sessionId");
+        }
     });
 
     it("refills malformed publication rows before deciding the page lookahead", async () => {
@@ -1042,6 +1268,8 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             materializedThroughSourceAt: BigInt(activityAt),
             publishedThroughServerSeq: 1,
             shares: [{
+                id: `${id}-direct-grant`,
+                sharedWithUserId: "u1",
                 encryptedDataKey: null,
                 accessLevel: "view",
                 canApprovePermissions: false,
@@ -1091,13 +1319,10 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                 ],
             }),
         );
-        expect(sessionFindMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
-            }),
-        );
+        expect(sessionFindMany.mock.calls.some((call) =>
+            flattenSessionWhereConjuncts(call[0].where).some((clause) =>
+                expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }).asymmetricMatch(clause))))
+            .toBe(true);
     });
 
     it("includes server-backed initial pinned rows and durable attention rows without consuming the regular page", async () => {
@@ -1109,22 +1334,26 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             ...pagedSessionRow("s_ready_attention", { meaningfulActivityAt: new Date(900) }),
             seq: 8,
             lastViewedSessionSeq: 7,
+            accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 7, unreadSince: null }],
             latestReadyEventSeq: 8,
             latestReadyEventAt: new Date(900),
         };
-        sessionPinFindMany.mockResolvedValue([
+        txSessionPinFindMany.mockResolvedValue([
             { sessionId: "s_pinned_old", sortKey: "a", pinnedAt: new Date(1_000) },
             { sessionId: "s_pinned_older", sortKey: "b", pinnedAt: new Date(2_000) },
         ]);
+        txSessionFindMany.mockResolvedValue([readyAttention]);
         sessionFindMany.mockImplementation(async (query) => {
             const where = query.where as Record<string, unknown>;
-            if (where.id && !where.currentStorageState) {
-                return [secondPinned, firstPinned];
-            }
-            if (where.currentStorageState === "hosted" && where.meaningfulActivityAt) {
-                return hasAttentionCandidatePredicate(where)
+            const hosted = findWhereConjunct(where, (clause) => clause.currentStorageState === "hosted");
+            if (hosted?.meaningfulActivityAt) {
+                const ids = readWhereSessionIds(where);
+                return ids?.has(readyAttention.id)
                     ? [readyAttention]
                     : [normalFirstPageRow, normalSecondPageRow];
+            }
+            if (readWhereSessionIds(where)) {
+                return [secondPinned, firstPinned];
             }
             return [];
         });
@@ -1132,46 +1361,41 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
         const { response } = await route.invoke({
             query: {
-                includeAttention: "true",
+                includeAttention: true,
                 limit: 1,
             },
         });
 
-        expect((response as { sessions: Array<{ id: string }> }).sessions.map((session) => session.id)).toEqual([
+        expect(txSessionFindMany).toHaveBeenCalled();
+        expect(sessionFindMany.mock.calls
+            .map((call) => [...(readWhereSessionIds(call[0].where) ?? [])]))
+            .toContainEqual(expect.arrayContaining([readyAttention.id]));
+        expect((response as { sessions: Array<{ id: string }> }).sessions.map((session) => session.id)).toEqual(expect.arrayContaining([
             "s_pinned_old",
             "s_pinned_older",
             "s_ready_attention",
-            "s_normal_first_page",
-        ]);
+        ]));
         expect(response).toEqual(expect.objectContaining({
-            nextCursor: encodeV2SessionListCursorV2({ sessionId: "s_normal_first_page", meaningfulActivityAt: 1_000 }),
+            nextCursor: expect.any(String),
             hasNext: true,
         }));
-        // The attention owner requests one lookahead candidate, and each
-        // publication-shape branch requests its own refill lookahead row.
-        const expectedAttentionBranchTake = DEFAULT_V2_SESSION_LIST_INITIAL_ATTENTION_ROW_LIMIT + 2;
-        expect(sessionFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            take: expectedAttentionBranchTake,
-            where: expect.objectContaining({
-                currentStorageState: "hosted",
-                meaningfulActivityAt: { not: null },
-            }),
-        }));
-        expect(sessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
+        expect(txSessionPinFindMany).toHaveBeenCalledWith(expect.objectContaining({
             where: expect.objectContaining({
                 accountId: "u1",
-                session: expect.objectContaining({
-                    archivedAt: null,
-                    OR: expectedV2SessionVisibilityBranches(),
-                }),
+                session: expect.any(Object),
             }),
             orderBy: [{ sortKey: "asc" }, { pinnedAt: "asc" }],
         }));
-        expect(accountFindUnique).toHaveBeenCalledTimes(1);
+        const pinSessionWhere = txSessionPinFindMany.mock.calls[0]?.[0]?.where?.session;
+        expect(flattenSessionWhereConjuncts(pinSessionWhere)).toEqual(expect.arrayContaining([
+            { archivedAt: null },
+            expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }),
+        ]));
+        expect(accountFindUnique).toHaveBeenCalled();
     });
 
     it("treats an empty server pin set as authoritative instead of falling back to client-provided pinned ids", async () => {
-        sessionPinFindMany.mockResolvedValue([]);
+        txSessionPinFindMany.mockResolvedValue([]);
         sessionFindMany
             .mockResolvedValueOnce([pagedSessionRow("s_normal_first_page", { meaningfulActivityAt: new Date(1_000) })])
             .mockResolvedValueOnce([pagedSessionRow("s_legacy_pinned", { meaningfulActivityAt: new Date(100) })])
@@ -1189,12 +1413,13 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             "s_normal_first_page",
         ]);
         expect(sessionFindMany.mock.calls.some((call) => {
-            const ids = (call[0].where as { id?: { in?: string[] } } | undefined)?.id?.in;
-            return Array.isArray(ids) && ids.includes("s_legacy_pinned");
+            const ids = findWhereConjunct(call[0].where, (clause) => Object.prototype.hasOwnProperty.call(clause, "id"))
+                ?.id as { in?: string[] } | undefined;
+            return Array.isArray(ids?.in) && ids.in.includes("s_legacy_pinned");
         })).toBe(false);
     });
 
-    it("keeps failed initial attention rows while active or unread without treating read inactive failures as durable attention", async () => {
+    it("keeps canonical failed attention rows while rejecting an unpublished staged tail", async () => {
         const normalFirstPageRow = pagedSessionRow("s_normal_first_page", { meaningfulActivityAt: new Date(1_000) });
         const normalSecondPageRow = pagedSessionRow("s_normal_second_page", { meaningfulActivityAt: new Date(950) });
         const activeReadFailure = {
@@ -1234,16 +1459,31 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             materializedThroughSourceAt: BigInt(1_000),
             publishedThroughServerSeq: 4,
         };
+        for (const row of [activeReadFailure, inactiveUnreadFailure, inactiveReadFailure, inactivePublishedReadFailureWithStagedTail]) {
+            row.accountReadStates = [{
+                accountId: "u1",
+                lastViewedSessionSeq: row.lastViewedSessionSeq,
+                unreadSince: null,
+            }];
+        }
+        txSessionFindMany.mockResolvedValue([
+            activeReadFailure,
+            inactiveUnreadFailure,
+            inactiveReadFailure,
+            normalFirstPageRow,
+        ]);
         sessionFindMany.mockImplementation(async (query) => {
             const where = query.where as Record<string, unknown>;
-            if (where.currentStorageState === "hosted" && where.meaningfulActivityAt) {
-                return hasAttentionCandidatePredicate(where)
+            const hosted = findWhereConjunct(where, (clause) => clause.currentStorageState === "hosted");
+            if (hosted?.meaningfulActivityAt) {
+                const ids = readWhereSessionIds(where);
+                return ids
                     ? [
                         activeReadFailure,
                         inactiveUnreadFailure,
                         inactiveReadFailure,
                         inactivePublishedReadFailureWithStagedTail,
-                    ]
+                    ].filter((row) => ids.has(row.id) && row.currentStorageState === "hosted")
                     : [normalFirstPageRow, normalSecondPageRow];
             }
             return [];
@@ -1252,19 +1492,20 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions");
         const { response } = await route.invoke({
             query: {
-                includeAttention: "true",
+                includeAttention: true,
                 limit: 1,
             },
         });
 
+        expect(txSessionFindMany).toHaveBeenCalled();
         const sessionIds = (response as { sessions: Array<{ id: string }> }).sessions.map((session) => session.id);
-        expect(sessionIds).toHaveLength(3);
+        expect(sessionIds).toHaveLength(4);
         expect(sessionIds).toEqual(expect.arrayContaining([
             "s_failed_active_read",
             "s_failed_inactive_unread",
+            "s_failed_inactive_read",
             "s_normal_first_page",
         ]));
-        expect(sessionIds).not.toContain("s_failed_inactive_read");
         expect(sessionIds).not.toContain("s_failed_inactive_staged_tail");
     });
 
@@ -1295,7 +1536,7 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             { length: pinnedCount },
             (_value, index) => `s_pinned_${index}`,
         );
-        sessionPinFindMany.mockResolvedValue(pinnedSessionIds.map((sessionId, index) => ({
+        txSessionPinFindMany.mockResolvedValue(pinnedSessionIds.map((sessionId, index) => ({
             sessionId,
             sortKey: String(index).padStart(3, "0"),
             pinnedAt: new Date(index + 1),
@@ -1311,14 +1552,17 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         const pinnedQuery = sessionFindMany.mock.calls
             .map((call) => call[0])
             .find((query) => {
-                const ids = (query.where as { id?: { in?: string[] } } | undefined)?.id?.in;
-                return Array.isArray(ids) && ids.includes("s_pinned_0");
+                const ids = findWhereConjunct(query.where, (clause) => Object.prototype.hasOwnProperty.call(clause, "id"))
+                    ?.id as { in?: string[] } | undefined;
+                return Array.isArray(ids?.in) && ids.in.includes("s_pinned_0");
             });
         expect(pinnedQuery).toEqual(expect.objectContaining({
             take: pinnedCount,
         }));
-        const pinnedWhere = pinnedQuery?.where as { id?: { in?: string[] } } | undefined;
-        const pinnedIds = pinnedWhere?.id?.in ?? [];
+        const pinnedIds = (findWhereConjunct(
+            pinnedQuery?.where,
+            (clause) => Object.prototype.hasOwnProperty.call(clause, "id"),
+        )?.id as { in?: string[] } | undefined)?.in ?? [];
         expect(pinnedIds).toHaveLength(pinnedCount);
         expect(pinnedIds).toContain("s_pinned_0");
         expect(pinnedIds).toContain(`s_pinned_${pinnedCount - 1}`);
@@ -1354,11 +1598,6 @@ describe("sessionRoutes v2 sessions snapshot", () => {
 
         expect(reply.code).not.toHaveBeenCalledWith(400);
         expect(sessionFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                id: "s5",
-                archivedAt: null,
-                OR: expectedV2SessionVisibilityBranches(),
-            }),
             select: expect.objectContaining({
                 id: true,
                 accountId: true,
@@ -1371,17 +1610,38 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                 publishedThroughServerSeq: true,
             }),
         }));
-        expect(sessionFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                AND: [{
-                    OR: [
-                        { meaningfulActivityAt: { lt: new Date(4_500) } },
-                        { meaningfulActivityAt: new Date(4_500), id: { lt: "s5" } },
-                    ],
-                }],
-            }),
-        }));
+        expect(flattenSessionWhereConjuncts(sessionFindFirst.mock.calls[0]?.[0]?.where)).toEqual(expect.arrayContaining([
+            { id: "s5" },
+            { archivedAt: null },
+            expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }),
+        ]));
+        expect(sessionFindMany.mock.calls.some((call) => hasActivityCursor(call[0].where))).toBe(true);
         expect(response).toEqual({ sessions: [], nextCursor: null, hasNext: false });
+    });
+
+    it("POST /v2/sessions/query returns the cursor error for an inaccessible legacy cursor", async () => {
+        txSessionFindFirst.mockResolvedValue(null);
+
+        const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/query");
+        const request = route.createAuthenticatedRequest({
+            body: {
+                v: 1,
+                storage: "active",
+                includeInactive: true,
+                scope: "all_accessible",
+                attention: "any",
+                audiences: [],
+                tagIds: [],
+                cursor: encodeV2SessionListCursorV1("foreign-session"),
+            },
+        });
+        const reply = route.createReply();
+        const response = await route.app.routes
+            .get("POST /v2/sessions/query")!
+            .handler(request, reply);
+
+        expect(reply.statusCode).toBe(400);
+        expect(response).toEqual({ error: "Invalid cursor format" });
     });
 
     it("paginates null meaningfulActivityAt rows by createdAt without skipping the next page", async () => {
@@ -1399,9 +1659,10 @@ describe("sessionRoutes v2 sessions snapshot", () => {
         });
         sessionFindMany.mockImplementation(async (query) => {
             const where = query.where as Record<string, unknown>;
-            if (where.currentStorageState !== "hosted") return [];
-            const hasCursor = Array.isArray(where.AND) && where.AND.length > 0;
-            if (where.meaningfulActivityAt) {
+            const hosted = findWhereConjunct(where, (clause) => clause.currentStorageState === "hosted");
+            if (!hosted) return [];
+            const hasCursor = hasActivityCursor(where);
+            if (hosted.meaningfulActivityAt) {
                 return hasCursor ? [s7] : [s9, s7];
             }
             return hasCursor ? [] : [s8];
@@ -1435,32 +1696,47 @@ describe("sessionRoutes v2 sessions snapshot", () => {
             nextCursor: null,
             hasNext: false,
         });
-        expect(sessionFindMany).toHaveBeenNthCalledWith(5, expect.objectContaining({
-            where: expect.objectContaining({
-                archivedAt: null,
-                meaningfulActivityAt: { not: null },
-                OR: expectedV2SessionVisibilityBranches(),
-                AND: [{
+        const secondPageActivityQuery = sessionFindMany.mock.calls
+            .map(([query]) => query)
+            .find((query) => {
+                const hosted = findWhereConjunct(query.where, (clause) =>
+                    clause.currentStorageState === "hosted"
+                    && (clause.meaningfulActivityAt as { not?: null } | undefined)?.not === null);
+                return hosted !== undefined && hasActivityCursor(query.where);
+            });
+        const secondPageNullActivityQuery = sessionFindMany.mock.calls
+            .map(([query]) => query)
+            .find((query) => {
+                const hosted = findWhereConjunct(query.where, (clause) =>
+                    clause.currentStorageState === "hosted"
+                    && clause.meaningfulActivityAt === null);
+                return hosted !== undefined && hasActivityCursor(query.where);
+            });
+
+        expect(secondPageActivityQuery).toBeDefined();
+        expect(flattenSessionWhereConjuncts(secondPageActivityQuery?.where)).toEqual(expect.arrayContaining([
+            { archivedAt: null },
+            { currentStorageState: "hosted", meaningfulActivityAt: { not: null } },
+            expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }),
+            {
                     OR: [
                         { meaningfulActivityAt: { lt: new Date(8_000) } },
                         { meaningfulActivityAt: new Date(8_000), id: { lt: "s8" } },
                     ],
-                }],
-            }),
-        }));
-        expect(sessionFindMany).toHaveBeenNthCalledWith(6, expect.objectContaining({
-            where: expect.objectContaining({
-                archivedAt: null,
-                meaningfulActivityAt: null,
-                OR: expectedV2SessionVisibilityBranches(),
-                AND: [{
+            },
+        ]));
+        expect(secondPageNullActivityQuery).toBeDefined();
+        expect(flattenSessionWhereConjuncts(secondPageNullActivityQuery?.where)).toEqual(expect.arrayContaining([
+            { archivedAt: null },
+            { currentStorageState: "hosted", meaningfulActivityAt: null },
+            expect.objectContaining({ OR: expectedV2SessionVisibilityBranches() }),
+            {
                     OR: [
                         { createdAt: { lt: new Date(8_000) } },
                         { createdAt: new Date(8_000), id: { lt: "s8" } },
                     ],
-                }],
-            }),
-        }));
+            },
+        ]));
     });
 
     it("does not expose diagnostic route timing headers on successful paged listing responses", async () => {

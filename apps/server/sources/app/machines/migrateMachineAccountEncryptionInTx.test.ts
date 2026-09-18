@@ -13,6 +13,7 @@ describe("migrateMachineAccountEncryptionInTx", () => {
                 machine: {
                     findMany: vi.fn(async () => [{
                         id: "machine-1",
+                        kind: "persistent",
                         metadataVersion: 2,
                         daemonStateVersion: 3,
                     }]),
@@ -36,6 +37,7 @@ describe("migrateMachineAccountEncryptionInTx", () => {
                 machine: {
                     findMany: vi.fn(async () => [{
                         id: "machine-1",
+                        kind: "persistent",
                         metadataVersion: 2,
                         daemonStateVersion: 3,
                     }]),
@@ -92,6 +94,7 @@ describe("migrateMachineAccountEncryptionInTx", () => {
         } as const;
         const findMany = vi.fn(async () => [{
             id: item.machineId,
+            kind: "persistent" as const,
             metadataVersion: item.expectedMetadataVersion + 1,
             daemonStateVersion: item.expectedDaemonStateVersion + 1,
             metadata: item.metadata,

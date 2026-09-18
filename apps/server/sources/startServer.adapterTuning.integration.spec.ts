@@ -71,9 +71,10 @@ describe("startServer adapter tuning", () => {
         });
 
         expect(createRedisStreamsRoomEmitter).toHaveBeenCalledWith(
-            expect.objectContaining({
+            {
                 maxLen: 1234,
-            }),
+                streamName: "socket.io",
+            },
         );
         expect(serverCtor).not.toHaveBeenCalled();
     });

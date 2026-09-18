@@ -4,6 +4,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { io as ioClient } from "socket.io-client";
 
 import { auth } from "@/app/auth/auth";
+import { RedisStreamsRoomEmitter } from "@/app/events/createRedisStreamsRoomEmitter";
+import { eventRouter } from "@/app/events/connectionEventRouter";
+import type { CredentialQualifiedSessionDeliveryV1 } from "@/app/events/socketRoomEmitter";
+import { emitSessionDeletedUpdate } from "@/app/session/delete/emitSessionDeletedUpdate";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -24,6 +28,7 @@ vi.mock("@/storage/redis/redis", () => ({
     // in-process harness preserves that topology with two real Redis clients;
     // it does not replace the Redis Streams adapter or its transport.
     getRedisClient: () => redisRuntime.activeClient,
+    getRedisSocketClusterAdapterClient: () => redisRuntime.activeClient,
     getRedisSocketClusterClient: () => redisRuntime.activeClient,
     closeRedisSocketClusterClient: () => {},
 }));
@@ -128,6 +133,25 @@ async function waitForDisconnect(socket: ReturnType<typeof ioClient>): Promise<v
     });
 }
 
+async function waitFor(
+    predicate: () => boolean,
+    description: string,
+    timeoutMs = 6_000,
+): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (predicate()) return;
+        await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+    throw new Error(`Timed out waiting for ${description}`);
+}
+
+async function expectUnchangedFor(values: readonly unknown[], durationMs = 350): Promise<void> {
+    const initialLength = values.length;
+    await new Promise<void>((resolve) => setTimeout(resolve, durationMs));
+    expect(values).toHaveLength(initialLength);
+}
+
 describe("startSocket account revocation with the configured Redis adapter", () => {
     let harness: LightSqliteHarness;
     let redisMemory: RedisMemoryInstance = null;
@@ -161,9 +185,11 @@ describe("startSocket account revocation with the configured Redis adapter", () 
             redisMemory = null;
         }
         redisRuntime.activeClient = null;
+        eventRouter.clearIo();
         harness.resetEnv();
         await db.accessKey.deleteMany();
         await db.session.deleteMany();
+        await db.team.deleteMany();
         await db.machine.deleteMany();
         await db.account.deleteMany();
     });
@@ -251,4 +277,159 @@ describe("startSocket account revocation with the configured Redis adapter", () 
             expect(socket.connected, admission.name).toBe(false);
         }
     }, 45_000);
+
+    it("re-enters credential-qualified Session fanout on the receiving node for headless publishers", async () => {
+        const resolvedRedis = await resolveRedisAdapterValidationRedisUrl({ env: process.env });
+        redisMemory = resolvedRedis.redisMemory;
+        harness.resetEnv({
+            HAPPIER_SOCKET_ADAPTER: "redis-streams",
+            REDIS_URL: resolvedRedis.redisUrl,
+            HAPPY_SERVER_FLAVOR: "full",
+            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "1",
+            HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1",
+        });
+
+        const redisA = new Redis(resolvedRedis.redisUrl);
+        const redisB = new Redis(resolvedRedis.redisUrl);
+        const redisWorker = new Redis(resolvedRedis.redisUrl);
+        redisClients.push(redisA, redisB, redisWorker);
+        const replicaA = await startReplica({ instanceId: "protected-fanout-replica-a", redis: redisA });
+        const replicaB = await startReplica({ instanceId: "protected-fanout-replica-b", redis: redisB });
+        replicas.push(replicaA, replicaB);
+
+        const owner = await db.account.create({ data: { publicKey: `pk-owner-${crypto.randomUUID()}` } });
+        const actor = await db.account.create({ data: { publicKey: `pk-actor-${crypto.randomUUID()}` } });
+        const directActor = await db.account.create({ data: { publicKey: `pk-direct-${crypto.randomUUID()}` } });
+        const session = await db.session.create({ data: {
+            accountId: owner.id,
+            tag: `session-${crypto.randomUUID()}`,
+            encryptionMode: "e2ee",
+            metadata: "{}",
+        } });
+        const team = await db.team.create({ data: {
+            name: `Team ${crypto.randomUUID()}`,
+            authenticationPolicy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+        } });
+        const membership = await db.teamMembership.create({ data: {
+            teamId: team.id,
+            accountId: actor.id,
+            role: "member",
+        } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id,
+            teamId: team.id,
+            accessLevel: "view",
+            effectiveAt: new Date(),
+        } });
+        await db.sessionShare.create({ data: {
+            sessionId: session.id,
+            sharedByUserId: owner.id,
+            sharedWithUserId: directActor.id,
+            accessLevel: "view",
+        } });
+
+        const qualifiedToken = await auth.createToken(actor.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
+        const unqualifiedToken = await auth.createToken(actor.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        const directToken = await auth.createToken(directActor.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        const qualified = await connectClient({ port: replicaB.port, auth: { token: qualifiedToken } });
+        const unqualified = await connectClient({ port: replicaB.port, auth: { token: unqualifiedToken } });
+        const direct = await connectClient({ port: replicaB.port, auth: { token: directToken } });
+        clients.push(qualified, unqualified, direct);
+
+        const qualifiedUpdates: unknown[] = [];
+        const unqualifiedUpdates: unknown[] = [];
+        const directUpdates: unknown[] = [];
+        qualified.on("update", (value) => qualifiedUpdates.push(value));
+        unqualified.on("update", (value) => unqualifiedUpdates.push(value));
+        direct.on("update", (value) => directUpdates.push(value));
+
+        const workerEmitter = new RedisStreamsRoomEmitter(redisWorker, {
+            maxLen: 2_000,
+            streamName: "socket.io",
+        });
+        eventRouter.setIo(workerEmitter);
+        await new Promise<void>((resolve) => setTimeout(resolve, 200));
+
+        const protectedPayload = { body: { t: "update-session", id: session.id, phase: "initial" } };
+        await eventRouter.emitUpdate({
+            userId: actor.id,
+            payload: protectedPayload as never,
+            recipientFilter: { type: "all-interested-in-session", sessionId: session.id },
+        });
+        await eventRouter.emitUpdate({
+            userId: directActor.id,
+            payload: protectedPayload as never,
+            recipientFilter: { type: "all-interested-in-session", sessionId: session.id },
+        });
+        await waitFor(() => qualifiedUpdates.length === 1 && directUpdates.length === 1, "qualified and direct delivery");
+        await expectUnchangedFor(unqualifiedUpdates);
+        expect(qualifiedUpdates).toEqual([protectedPayload]);
+        expect(directUpdates).toEqual([protectedPayload]);
+        expect(unqualifiedUpdates).toEqual([]);
+
+        await workerEmitter.forwardCredentialQualifiedSessionDelivery({
+            v: 1,
+            accountId: actor.id,
+            sessionId: session.id,
+            eventName: "update",
+            payload: { body: { t: "update-session", phase: "forged" } },
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        } as unknown as CredentialQualifiedSessionDeliveryV1);
+        await expectUnchangedFor(qualifiedUpdates);
+
+        await db.teamMembership.update({ where: { id: membership.id }, data: { status: "suspended" } });
+        await eventRouter.emitUpdate({
+            userId: actor.id,
+            payload: { body: { t: "update-session", phase: "revoked" } } as never,
+            recipientFilter: { type: "all-interested-in-session", sessionId: session.id },
+        });
+        await expectUnchangedFor(qualifiedUpdates);
+
+        await db.teamMembership.update({ where: { id: membership.id }, data: { status: "active" } });
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "0";
+        await eventRouter.emitUpdate({
+            userId: actor.id,
+            payload: { body: { t: "update-session", phase: "disabled" } } as never,
+            recipientFilter: { type: "all-interested-in-session", sessionId: session.id },
+        });
+        await expectUnchangedFor(qualifiedUpdates);
+
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "1";
+        await db.session.delete({ where: { id: session.id } });
+        const unqualifiedCountBeforeDelete = unqualifiedUpdates.length;
+        await eventRouter.emitUpdate({
+            userId: actor.id,
+            payload: { body: { t: "new-message", sid: session.id, msg: {} } } as never,
+            recipientFilter: { type: "all-interested-in-session", sessionId: session.id },
+        });
+        await expectUnchangedFor(qualifiedUpdates);
+        await expectUnchangedFor(unqualifiedUpdates);
+
+        await emitSessionDeletedUpdate({
+            sessionId: session.id,
+            accountId: actor.id,
+            cursor: 99,
+        });
+        await waitFor(
+            () => qualifiedUpdates.length === 2 && unqualifiedUpdates.length === unqualifiedCountBeforeDelete + 1,
+            "typed post-delete Account hint",
+        );
+        await expectUnchangedFor(qualifiedUpdates);
+        expect(qualifiedUpdates[1]).toMatchObject({ body: { t: "delete-session", sid: session.id } });
+        expect(unqualifiedUpdates.at(-1)).toMatchObject({ body: { t: "delete-session", sid: session.id } });
+    }, 60_000);
 });

@@ -47,10 +47,10 @@ describe("reconcileSessionPendingQueueState", () => {
         });
         expect(inTxMock).toHaveBeenCalledTimes(1);
         expect(dbMocks.db.sessionPendingMessage.count).toHaveBeenNthCalledWith(1, {
-            where: { sessionId: "s1", status: "queued" },
+            where: { sessionId: "s1", status: "queued", targetExecutionRunId: null },
         });
         expect(dbMocks.db.sessionPendingMessage.count).toHaveBeenNthCalledWith(2, {
-            where: { sessionId: "s1", status: "queued", deliveryState: "blocked" },
+            where: { sessionId: "s1", status: "queued", targetExecutionRunId: null, deliveryState: "blocked" },
         });
         expect(dbMocks.db.session.findUniqueOrThrow).toHaveBeenNthCalledWith(1, {
             where: { id: "s1" },

@@ -3,11 +3,14 @@ import { randomUUID } from "node:crypto";
 import {
     AutomationRunExecutionInputV1Schema,
     AutomationStoredDefinitionExecutionRecipeV1Schema,
+    AutomationStoredWorkflowDefinitionRecipeV2Schema,
+    AutomationOccurrenceKeyV1Schema,
     AutomationTriggerIdSchema,
 } from "@happier-dev/protocol";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -30,6 +33,7 @@ import {
 } from "./automationCrudService";
 import { AutomationValidationError } from "./automationValidation";
 import { runAutomationScheduleWorkerPass } from "./automationScheduleWorker";
+import { admitAutomationRunTx } from "./automationRunAdmissionService";
 import { cancelAutomationRun } from "./automationRunService";
 
 function currentRecipe(templateVersion: number) {
@@ -49,6 +53,37 @@ function currentRecipe(templateVersion: number) {
                 },
             },
         },
+    });
+}
+
+function workflowRecipe(templateVersion: number, machineId: string) {
+    return AutomationStoredWorkflowDefinitionRecipeV2Schema.parse({
+        v: 2,
+        templateVersion,
+        workflow: {
+            t: "plain",
+            v: {
+                definition: {
+                    version: 1,
+                    inputs: [],
+                    defaults: {
+                        agentTarget: {
+                            kind: "agent",
+                            identity: { pluginId: "happier.agent.codex", localId: "codex" },
+                        },
+                    },
+                    blocks: [{
+                        kind: "step",
+                        id: "step",
+                        document: { text: "Work", references: [], attachments: [] },
+                        input: [],
+                        result: { kind: "text" },
+                    }],
+                },
+                project: { machineId, directory: "/tmp/automation-workflow" },
+            },
+        },
+        triggerEvidence: null,
     });
 }
 
@@ -199,6 +234,79 @@ describe("automationCrudService (integration)", () => {
             kind: "schedule", enabled: false, revision: 0, everyMs: 120_000,
         });
         expect(scheduled.triggers[0]!.id).not.toBe(scheduled.triggers[1]!.id);
+    });
+
+    it("requires workflow occurrence evidence exactly for private-input causes", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = await seedExecutionMachine(account.id);
+        const created = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(),
+                name: "Workflow evidence",
+                enabled: true,
+                executionRecipe: workflowRecipe(1, machineId),
+                assignments: [{ machineId }],
+                triggers: [],
+            },
+        });
+
+        const missingConversationEvidence = await inTx(async (tx) => await admitAutomationRunTx({
+            tx,
+            accountId: account.id,
+            automationId: created.id,
+            now: new Date(),
+            cause: {
+                kind: "conversation",
+                occurrenceKey: AutomationOccurrenceKeyV1Schema.parse(
+                    "izTbwsBetNfiXUjv6s6CRWsWzudgvK6AwVf1KjwueHs",
+                ),
+                occurredAt: Date.now(),
+            },
+        }));
+        expect(missingConversationEvidence).toEqual({ kind: "ineligible", reason: "definitionInvalid" });
+
+        const authoredManualEvidence = await inTx(async (tx) => await admitAutomationRunTx({
+            tx,
+            accountId: account.id,
+            automationId: created.id,
+            now: new Date(),
+            cause: { kind: "manual", invokedAt: Date.now() },
+            executionTriggerEvidenceEnvelope: JSON.stringify({ t: "plain", v: { input: "forged" } }),
+        }));
+        expect(authoredManualEvidence).toEqual({ kind: "ineligible", reason: "definitionInvalid" });
+        await expect(db.automationRun.count({ where: { automationId: created.id } })).resolves.toBe(0);
+    });
+
+    it("does not admit workflow recipes while the canonical workflow feature is disabled", async () => {
+        const account = await db.account.create({
+            data: { encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const machineId = await seedExecutionMachine(account.id);
+        const workflow = await createAutomation({
+            accountId: account.id,
+            input: {
+                automationId: randomUUID(), name: "Workflow", enabled: true,
+                executionRecipe: workflowRecipe(1, machineId), assignments: [{ machineId }], triggers: [],
+            },
+        });
+        const workflowAdmission = await inTx(async (tx) => await admitAutomationRunTx({
+                tx, accountId: account.id, automationId: workflow.id, now: new Date(),
+                cause: { kind: "manual", invokedAt: Date.now() },
+                recipeFeaturePolicy: { workflowsEnabled: false },
+            }));
+
+        expect(workflowAdmission).toEqual({ kind: "ineligible", reason: "featureDisabled" });
+        await expect(runAutomationNow({
+            accountId: account.id,
+            automationId: workflow.id,
+            recipeFeaturePolicy: { workflowsEnabled: false },
+        })).rejects.toThrow(/featureDisabled/);
+        await expect(db.automationRun.count({ where: { automationId: workflow.id } })).resolves.toBe(0);
     });
 
     it("advances Event catalog truth when an already-disabled trigger or Automation is deleted", async () => {
@@ -483,12 +591,14 @@ describe("automationCrudService (integration)", () => {
         });
         const firstNextRunAt = new Date("2026-08-27T10:00:00.000Z");
         const secondNextRunAt = new Date("2026-08-27T11:00:00.000Z");
+        const firstTrigger = created.triggers.find((trigger) => trigger.everyMs === 60_000)!;
+        const secondTrigger = created.triggers.find((trigger) => trigger.everyMs === 120_000)!;
         await Promise.all([
             db.automationTrigger.update({
-                where: { id: created.triggers[0]!.id }, data: { nextRunAt: firstNextRunAt },
+                where: { id: firstTrigger.id }, data: { nextRunAt: firstNextRunAt },
             }),
             db.automationTrigger.update({
-                where: { id: created.triggers[1]!.id }, data: { nextRunAt: secondNextRunAt },
+                where: { id: secondTrigger.id }, data: { nextRunAt: secondNextRunAt },
             }),
         ]);
 
@@ -509,33 +619,33 @@ describe("automationCrudService (integration)", () => {
             id: trigger.id,
             revision: trigger.revision,
             nextRunAt: trigger.nextRunAt,
-        }))).toEqual([
-            { id: created.triggers[0]!.id, revision: 0, nextRunAt: firstNextRunAt },
-            { id: created.triggers[1]!.id, revision: 0, nextRunAt: secondNextRunAt },
-        ]);
+        }))).toEqual(expect.arrayContaining([
+            { id: firstTrigger.id, revision: 0, nextRunAt: firstNextRunAt },
+            { id: secondTrigger.id, revision: 0, nextRunAt: secondNextRunAt },
+        ]));
 
         const edited = await updateAutomationTrigger({
             accountId: account.id,
             automationId: created.id,
-            triggerId: created.triggers[0]!.id,
-            expectedRevision: created.triggers[0]!.revision,
+            triggerId: firstTrigger.id,
+            expectedRevision: firstTrigger.revision,
             trigger: {
                 kind: "schedule",
                 schedule: intervalTrigger(180_000).schedule,
             },
         });
-        expect(edited?.triggers).toEqual([
+        expect(edited?.triggers).toEqual(expect.arrayContaining([
             expect.objectContaining({
-                id: created.triggers[0]!.id,
+                id: firstTrigger.id,
                 revision: 1,
                 everyMs: 180_000,
             }),
             expect.objectContaining({
-                id: created.triggers[1]!.id,
+                id: secondTrigger.id,
                 revision: 0,
                 everyMs: 120_000,
             }),
-        ]);
+        ]));
 
         const thirdTriggerId = randomUUID();
         const withThird = await createAutomationTrigger({
@@ -936,6 +1046,65 @@ describe("automationCrudService (integration)", () => {
         await expect(db.automationRun.count({
             where: { automationId: created.id },
         })).resolves.toBe(2);
+    });
+
+    it("round-trips a released V2 manual definition as zero automatic triggers", async () => {
+        const account = await db.account.create({
+            data: createSignedAccountContentBinding(), select: { id: true },
+        });
+        const created = await createAutomation({
+            accountId: account.id,
+            requireV2DefinitionRepresentability: true,
+            input: {
+                name: "Released V2 manual Automation",
+                enabled: true,
+                schedule: { kind: "manual" },
+                targetType: "new_session",
+                templateCiphertext: legacyTemplateEnvelope(),
+                assignments: [{ machineId: await seedExecutionMachine(account.id) }],
+            },
+        });
+        expect(created.triggers).toEqual([]);
+        await expect(getAutomation({
+            accountId: account.id,
+            automationId: created.id,
+            requireV2DefinitionRepresentability: true,
+        })).resolves.toMatchObject({ id: created.id, triggers: [] });
+
+        const scheduled = await updateAutomation({
+            accountId: account.id,
+            automationId: created.id,
+            requireV2DefinitionRepresentability: true,
+            input: { schedule: { kind: "interval", everyMs: 60_000, timezone: null } },
+        });
+        expect(scheduled?.triggers).toEqual([
+            expect.objectContaining({
+                kind: "schedule",
+                enabled: true,
+                scheduleKind: "interval",
+                everyMs: 60_000,
+            }),
+        ]);
+
+        const manualAgain = await updateAutomation({
+            accountId: account.id,
+            automationId: created.id,
+            requireV2DefinitionRepresentability: true,
+            input: { schedule: { kind: "manual" } },
+        });
+        expect(manualAgain?.triggers).toEqual([]);
+        await expect(listAutomations({
+            accountId: account.id,
+            requireV2DefinitionRepresentability: true,
+        })).resolves.toEqual([
+            expect.objectContaining({ id: created.id, triggers: [] }),
+        ]);
+        await expect(runAutomationNow({
+            accountId: account.id,
+            automationId: created.id,
+            idempotencyKey: "released-v2-manual-definition",
+            requireV2DefinitionRepresentability: true,
+        })).resolves.toMatchObject({ causeKind: "manual", triggerId: null });
     });
 
     it("fails closed for current E2EE authoring and inconsistent Account currentness", async () => {

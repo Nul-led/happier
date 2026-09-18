@@ -783,6 +783,7 @@ describe("Channels first-party provider Automation Event composition", () => {
                     signingKeyFingerprint: null,
                     contentKeyFingerprint: null,
                     updatedAt: account.updatedAt.getTime(),
+                    recipientEnvelopeReadiness: { status: "available" },
                 };
             };
             const app = createAuthenticatedTestApp();
@@ -1157,6 +1158,7 @@ describe("Channels first-party provider Automation Event composition", () => {
             signingKeyFingerprint: null,
             contentKeyFingerprint: null,
             updatedAt: account.updatedAt.getTime(),
+            recipientEnvelopeReadiness: { status: "available" },
         };
     }
 

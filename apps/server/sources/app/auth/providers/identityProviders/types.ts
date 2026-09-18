@@ -2,9 +2,12 @@ import type { Context } from "@/context";
 import type { AuthPolicy } from "@/app/auth/authPolicy";
 import type { LoginEligibilityResult } from "@/app/auth/loginEligibilityResult";
 import type { Tx } from "@/storage/inTx";
+import type { NormalizedVerifiedEmail } from "@happier-dev/protocol";
 
 export type PreparedIdentityConnection = Readonly<{
     connectInTx: (tx: Tx) => Promise<void>;
+    /** Provider-classified mailbox proof; only the fresh-Account transaction persists it. */
+    verifiedMailbox?: NormalizedVerifiedEmail;
 }>;
 
 export type IdentityProvider = Readonly<{
@@ -15,6 +18,7 @@ export type IdentityProvider = Readonly<{
         accessToken: string;
         refreshToken?: string;
         preferredUsername?: string | null;
+        transferFromAccountId?: string;
     }) => Promise<void>;
     prepareConnect: (params: {
         ctx: Context;
@@ -22,6 +26,7 @@ export type IdentityProvider = Readonly<{
         accessToken: string;
         refreshToken?: string;
         preferredUsername?: string | null;
+        transferFromAccountId?: string;
     }) => Promise<PreparedIdentityConnection>;
     disconnect: (params: { ctx: Context }) => Promise<void>;
     enforceLoginEligibility?: (params: {

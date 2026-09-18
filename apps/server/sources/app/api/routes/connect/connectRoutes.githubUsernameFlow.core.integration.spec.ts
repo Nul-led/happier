@@ -6,6 +6,7 @@ import { db } from "@/storage/db";
 import { connectRoutes } from "./connectRoutes";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
+import { auth } from "@/app/auth/auth";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -232,7 +233,7 @@ describe("connectRoutes (GitHub) username flow (integration)", () => {
             payload: { pending, username: "octocat_2" },
         });
         expect(finalize.statusCode).toBe(200);
-        expect(finalize.json()).toEqual({ success: true });
+        expect(finalize.json()).toEqual({ success: true, token: expect.any(String) });
 
         const updated = await db.account.findUnique({
             where: { id: u1.id },
@@ -241,10 +242,14 @@ describe("connectRoutes (GitHub) username flow (integration)", () => {
         expect(updated?.username).toBe("octocat_2");
         const identity = await db.accountIdentity.findFirst({
             where: { accountId: u1.id, provider: "github" },
-            select: { providerUserId: true, providerLogin: true },
+            select: { id: true, providerUserId: true, providerLogin: true },
         });
         expect(identity?.providerUserId).toBe(String(ghProfile.id));
         expect(identity?.providerLogin).toBe("octocat");
+        const replacement = await auth.verifyToken((finalize.json() as { token: string }).token);
+        expect(replacement?.authenticationEvidence).toEqual([
+            expect.objectContaining({ kind: "provider", providerId: "github", identityId: identity?.id }),
+        ]);
 
         const pendingRow = await db.repeatKey.findUnique({ where: { key: pending as string } });
         expect(pendingRow).toBeNull();

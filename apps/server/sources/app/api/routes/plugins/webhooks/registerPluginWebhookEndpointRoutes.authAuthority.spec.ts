@@ -3,7 +3,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { serializerCompiler, validatorCompiler, ZodTypeProvider } from "fastify-type-provider-zod";
 import { PluginWebhookActionHttpPathsV1 } from "@happier-dev/protocol";
 
-const accountFindUnique = vi.hoisted(() => vi.fn(async () => ({ id: "account-1", tokenEpoch: 0 })));
+const accountFindUnique = vi.hoisted(() => vi.fn(async () => ({
+    id: "account-1",
+    tokenEpoch: 0,
+    status: "active",
+})));
 const repeatKeyFindUnique = vi.hoisted(() => vi.fn(async () => null));
 
 vi.mock("@/storage/db", () => ({
@@ -22,7 +26,6 @@ describe("plugin webhook HTTP auth authority", () => {
         vi.stubEnv("HANDY_MASTER_SECRET", "webhook-route-real-token-authority");
         vi.stubEnv("AUTH_REQUIRED_LOGIN_PROVIDERS", "");
         vi.stubEnv("AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS", "0");
-        vi.stubEnv("AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS", "0");
         await auth.init();
     });
 

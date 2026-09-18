@@ -49,7 +49,6 @@ describe("authRoutes (API token introspection) (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -71,6 +70,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
         const daemonConnectionToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Daemon Action API",
             expiresAt: new Date("2030-08-22T12:01:00.000Z"),
         });
@@ -109,7 +109,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
         ]);
         const [otherDaemonConnectionToken, pat] = await Promise.all([
             auth.createToken(other.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createApiToken({ accountId: owner.id, label: "Other Account" }),
+            auth.createApiToken({ accountId: owner.id, tokenId: crypto.randomUUID(), label: "Other Account" }),
         ]);
         const app = createTestApp();
         await app.ready();
@@ -136,7 +136,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
         });
         const [daemonConnectionToken, pat] = await Promise.all([
             auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createApiToken({ accountId: account.id, label: "No body Account" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "No body Account" }),
         ]);
         const app = createTestApp();
         await app.ready();
@@ -173,7 +173,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
         });
         const [daemonConnectionToken, pat] = await Promise.all([
             auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createApiToken({ accountId: account.id, label: "Cross-honor guard" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "Cross-honor guard" }),
         ]);
         const app = createTestApp();
         await app.ready();
@@ -260,7 +260,7 @@ describe("authRoutes (API token introspection) (integration)", () => {
             select: { id: true },
         });
         const daemonConnectionToken = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
-        const pat = await auth.createApiToken({ accountId: account.id, label: "Revocable daemon token" });
+        const pat = await auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "Revocable daemon token" });
         await auth.revokeApiToken({ accountId: account.id, tokenId: pat.tokenId });
         const app = createTestApp();
         await app.ready();

@@ -1,11 +1,20 @@
 import {
     PendingRequestedActionV1Schema,
+    SessionInputAdmissionReceiptV1Schema,
     type PendingActivationAuthorizationV1,
     type PendingActivationFailureCodeV1,
 } from '@happier-dev/protocol';
 import type { Tx } from '@/storage/inTx';
 
 export type PendingActivationTarget = Readonly<{ accountId: string; requestId: string }>;
+
+export function shouldArmPendingActivationAuthorization(params: Readonly<{
+    requestedAction: { kind: string };
+    resumeWhenAvailable?: boolean;
+}>): boolean {
+    return params.resumeWhenAvailable === true
+        || (params.resumeWhenAvailable !== false && params.requestedAction.kind === 'send_now');
+}
 
 const AUTHORIZATION_SELECT = {
     accountId: true,
@@ -67,13 +76,11 @@ export async function armPendingActivationAuthorizationInTx(params: Readonly<{
     tx: Tx;
     sessionId: string;
     requestId: string;
-    actorAccountId: string;
-    admissionKind: 'account' | 'machine';
     now?: Date;
+    resumeWhenAvailable?: true;
 }>): Promise<PendingActivationTarget | undefined> {
-    if (params.admissionKind !== 'account') return undefined;
     const eligible = await params.tx.sessionPendingMessage.findUnique({
-        where: { sessionId_localId: { sessionId: params.sessionId, localId: params.requestId } },
+        where: { sessionId_localId: { sessionId: params.sessionId, localId: params.requestId }, targetExecutionRunId: null },
         select: {
             messageRole: true,
             status: true,
@@ -81,25 +88,40 @@ export async function armPendingActivationAuthorizationInTx(params: Readonly<{
             providerAction: true,
             requestedAction: true,
             authorAccountId: true,
+            inputAdmissionReceipt: true,
         },
     });
     const requestedAction = PendingRequestedActionV1Schema.safeParse(eligible?.requestedAction);
+    const inputAdmissionReceipt = SessionInputAdmissionReceiptV1Schema.safeParse(
+        eligible?.inputAdmissionReceipt,
+    );
     if (
         !eligible
-        || eligible.authorAccountId !== params.actorAccountId
+        || !inputAdmissionReceipt.success
+        || inputAdmissionReceipt.data.issuer !== 'authenticatedAccount'
         || eligible.messageRole !== 'user'
         || eligible.status !== 'queued'
         || eligible.deliveryState !== null
         || eligible.providerAction !== null
         || !requestedAction.success
-        || requestedAction.data.kind !== 'send_now'
+        || !shouldArmPendingActivationAuthorization({
+            requestedAction: requestedAction.data,
+            resumeWhenAvailable: params.resumeWhenAvailable,
+        })
     ) return undefined;
 
     const session = await params.tx.session.findUniqueOrThrow({
         where: { id: params.sessionId },
         select: AUTHORIZATION_SELECT,
     });
-    if (session.accountId !== params.actorAccountId) return undefined;
+    if (
+        inputAdmissionReceipt.data.sessionRelationship !== 'owner'
+        || session.accountId !== inputAdmissionReceipt.data.actorAccountId
+        || (
+            eligible.authorAccountId !== null
+            && eligible.authorAccountId !== inputAdmissionReceipt.data.actorAccountId
+        )
+    ) return undefined;
     const requestedAt = nextRequestedAt({
         now: params.now ?? new Date(),
         lastActiveAt: session.lastActiveAt,

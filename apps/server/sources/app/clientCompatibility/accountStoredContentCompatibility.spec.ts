@@ -23,6 +23,51 @@ describe('account-stored-content compatibility', () => {
         });
     });
 
+    it('withholds the additive machinePool change kind from missing, malformed and pre-V4 declarations', () => {
+        // A peer that never declared, or declared an older cumulative version, must not be assumed
+        // able to parse a change kind it does not know: an old reader blocks unknown kinds.
+        expect(evaluateAccountStoredContentCompatibility({ status: 'missing' })).toMatchObject({
+            supportsMachinePoolChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({ status: 'malformed' })).toMatchObject({
+            supportsMachinePoolChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({
+            status: 'valid',
+            declaration: { v: 1, protocolVersion: 3 },
+        })).toMatchObject({
+            supportsPluginDataProtocol: true,
+            supportsMachinePoolChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({
+            status: 'valid',
+            declaration: { v: 1, protocolVersion: 4 },
+        })).toMatchObject({
+            supportsMachinePoolChangeProtocol: true,
+        });
+    });
+
+    it('withholds Saved Secret resource invalidations from missing, malformed and pre-V4 declarations', () => {
+        expect(evaluateAccountStoredContentCompatibility({ status: 'missing' })).toMatchObject({
+            supportsSavedSecretResourceChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({ status: 'malformed' })).toMatchObject({
+            supportsSavedSecretResourceChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({
+            status: 'valid',
+            declaration: { v: 1, protocolVersion: 3 },
+        })).toMatchObject({
+            supportsSavedSecretResourceChangeProtocol: false,
+        });
+        expect(evaluateAccountStoredContentCompatibility({
+            status: 'valid',
+            declaration: { v: 1, protocolVersion: 4 },
+        })).toMatchObject({
+            supportsSavedSecretResourceChangeProtocol: true,
+        });
+    });
+
     it('keeps v1 legacy, preserves v2 current stored-content behavior, and reserves additive change-page fields by protocol version', () => {
         expect(evaluateAccountStoredContentCompatibility({
             status: 'valid',

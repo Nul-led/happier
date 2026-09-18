@@ -8,7 +8,7 @@ import {
     buildUpdateSessionUpdate,
     eventRouter,
 } from "@/app/events/eventRouter";
-import type { SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import type { SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import {
     projectSessionMetadataForRecipient,
     type SessionMetadataRecipientProjectionInput,
@@ -67,10 +67,10 @@ export type PublishSessionCurrentViewUpdatesResult =
 
 export async function publishSessionCurrentViewUpdates(params: Readonly<{
     sessionId: string;
-    participantCursors: readonly SessionParticipantCursor[];
+    recipientCursors: readonly SessionRecipientCursor[];
     source: SessionCurrentViewPublicationSourceV1;
 }>): Promise<PublishSessionCurrentViewUpdatesResult> {
-    const { sessionId, participantCursors, source } = params;
+    const { sessionId, recipientCursors, source } = params;
 
     if (source.kind === "legacy_v0") {
         let payloadProjection;
@@ -83,7 +83,7 @@ export async function publishSessionCurrentViewUpdates(params: Readonly<{
             return { ok: false };
         }
 
-        await Promise.all(participantCursors
+        await Promise.all(recipientCursors
             .filter(({ accountId }) => accountId === source.sessionOwnerId)
             .map(async ({ accountId, cursor }) => {
                 eventRouter.emitUpdate({
@@ -109,7 +109,7 @@ export async function publishSessionCurrentViewUpdates(params: Readonly<{
 
     let publications;
     try {
-        publications = participantCursors.map(({ accountId, cursor }) => ({
+        publications = recipientCursors.map(({ accountId, cursor }) => ({
             accountId,
             cursor,
             projection: SessionMetadataRecipientProjectionV1Schema.parse(

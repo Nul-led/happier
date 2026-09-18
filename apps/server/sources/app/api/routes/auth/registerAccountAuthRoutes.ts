@@ -93,7 +93,6 @@ export function registerAccountAuthRoutes(app: Fastify): void {
             "invalid_provisioning_response",
             "provisioning_kind_mismatch",
             "provisioning_material_unavailable",
-            "legacy_provisioning_unavailable",
             "account_provisioning_update_required",
             "account_provisioning_inconsistent",
             "already_completed",
@@ -352,7 +351,7 @@ export function registerAccountAuthRoutes(app: Fastify): void {
             if (hasResponse || hasResponseAccount || hasEncryptedToken) {
                 return { status: "inconsistent" } as const;
             }
-            if (pairing.expiresAt.getTime() < now.getTime()) {
+            if (pairing.expiresAt.getTime() <= now.getTime()) {
                 return { status: "expired" } as const;
             }
             return { status: "inconsistent" } as const;
@@ -457,6 +456,7 @@ export function registerAccountAuthRoutes(app: Fastify): void {
                 },
             });
             if (completed.count === 1) {
+                const finalizationNow = new Date();
                 const finalized = await tx.authPairingSession.updateMany({
                     where: {
                         id: pairing.id,
@@ -464,9 +464,9 @@ export function registerAccountAuthRoutes(app: Fastify): void {
                         accountId: request.userId,
                         requestedPublicKey: request.body.publicKey,
                         approvalStatus: null,
-                        expiresAt: { gte: now },
+                        expiresAt: { gt: finalizationNow },
                     },
-                    data: { approvalStatus: "approved", decidedAt: now },
+                    data: { approvalStatus: "approved", decidedAt: finalizationNow },
                 });
                 if (finalized.count !== 1) throw new DirectQrCompletionConflictError();
                 return { status: "success" } as const;

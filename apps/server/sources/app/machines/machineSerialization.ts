@@ -1,15 +1,21 @@
 import {
+    ACCOUNT_STORED_CONTENT_SESSION_SPAWN_PLACEMENT_ORIGIN_PROTOCOL_VERSION,
     ExternalActionMachineBootstrapV1Schema,
     MachineOperationProtocolCapabilitiesV1Schema,
+    MachineKindFromLegacyProjectionSchema,
+    RunnerMachineContentKeyBindingV1Schema,
+    type MachineKind,
 } from "@happier-dev/protocol";
 
 export type MachineSerializationRow = Readonly<{
     id: string;
+    kind?: MachineKind;
     metadata: string;
     metadataVersion: number;
     daemonState: string | null;
     daemonStateVersion: number;
     dataEncryptionKey: Uint8Array | null;
+    runnerContentKeyBinding?: unknown | null;
     installationId?: string | null;
     installationPublicKey?: Uint8Array | null;
     contentPublicKeyFingerprint?: string | null;
@@ -28,7 +34,16 @@ export type MachineSerializationRow = Readonly<{
     updatedAt: Date;
 }>;
 
-export function serializeMachineRow(row: MachineSerializationRow) {
+export function serializeMachineRow(
+    row: MachineSerializationRow,
+    options: Readonly<{
+        recipientAccountStoredContentProtocolVersion?: number | null;
+    }> = {},
+) {
+    const kind = MachineKindFromLegacyProjectionSchema.parse(row.kind);
+    const runnerContentKeyBinding = kind === "ephemeral_session_runner"
+        ? RunnerMachineContentKeyBindingV1Schema.safeParse(row.runnerContentKeyBinding)
+        : null;
     const capabilityProjection =
         MachineOperationProtocolCapabilitiesV1Schema.safeParse(
             row.operationProtocolCapabilities,
@@ -43,21 +58,40 @@ export function serializeMachineRow(row: MachineSerializationRow) {
     // proves it was an accepted complete projection. Malformed or partial
     // persistence, or a revoked/replaced Machine, is deliberately
     // indistinguishable from unsupported.
-    const operationProtocolCapabilities =
+    const completeOperationProtocolCapabilities =
         capabilityProjection.success
         && capabilityRevision !== null
         && row.revokedAt === null
         && row.replacedByMachineId === null
             ? capabilityProjection.data
             : null;
+    const operationProtocolCapabilities = completeOperationProtocolCapabilities === null
+        ? null
+        : options.recipientAccountStoredContentProtocolVersion !== undefined
+            && options.recipientAccountStoredContentProtocolVersion !== null
+            && options.recipientAccountStoredContentProtocolVersion
+                >= ACCOUNT_STORED_CONTENT_SESSION_SPAWN_PLACEMENT_ORIGIN_PROTOCOL_VERSION
+            ? completeOperationProtocolCapabilities
+            : (() => {
+                const {
+                    sessionSpawnPlacementOrigin: _withheldPlacementOrigin,
+                    ...preV4Capabilities
+                } = completeOperationProtocolCapabilities;
+                return preV4Capabilities;
+            })();
 
     return {
         id: row.id,
+        kind,
         metadata: row.metadata,
         metadataVersion: row.metadataVersion,
         daemonState: row.daemonState,
         daemonStateVersion: row.daemonStateVersion,
         dataEncryptionKey: row.dataEncryptionKey ? Buffer.from(row.dataEncryptionKey).toString("base64") : null,
+        runnerContentKeyBinding:
+            runnerContentKeyBinding?.success === true
+                ? runnerContentKeyBinding.data
+                : null,
         installationId: row.installationId ?? null,
         installationPublicKey: row.installationPublicKey ? Buffer.from(row.installationPublicKey).toString("base64") : null,
         contentPublicKeyFingerprint: row.contentPublicKeyFingerprint ?? null,

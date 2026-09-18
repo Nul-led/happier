@@ -4,10 +4,12 @@ import {
     PendingRequestedActionV1Schema,
     type PendingDeliveryStatusV1,
     type PendingRequestedActionV1,
+    type SessionMessageAccountActorV1,
 } from "@happier-dev/protocol";
 
 export type PendingMessageRow = {
     localId: string;
+    recipient?: { kind: "execution_run"; runId: string };
     messageRole: import("@happier-dev/protocol").SessionMessageRole | null;
     content: PrismaJson.SessionPendingMessageContent;
     requestedAction?: PendingRequestedActionV1;
@@ -22,10 +24,13 @@ export type PendingMessageRow = {
     discardedAt: Date | null;
     discardedReason: string | null;
     authorAccountId: string | null;
+    accountActor: SessionMessageAccountActorV1 | null;
 };
 
 export type PendingMessageRowRaw = {
+    inputAdmissionReceipt?: unknown;
     localId: string;
+    targetExecutionRunId?: string | null;
     messageRole?: unknown;
     content: PrismaJson.SessionPendingMessageContent;
     requestedAction?: unknown;
@@ -40,7 +45,7 @@ export type PendingMessageRowRaw = {
     authorAccountId: string | null;
 };
 
-export function mapPendingMessageRow(row: PendingMessageRowRaw): PendingMessageRow {
+export function mapPendingMessageRow(row: PendingMessageRowRaw, accountActor: SessionMessageAccountActorV1 | null = null): PendingMessageRow {
     const parsedRequestedAction = row.requestedAction == null
         ? PendingRequestedActionV1Schema.safeParse({ v: 1, kind: "enqueue" })
         : PendingRequestedActionV1Schema.safeParse(row.requestedAction);
@@ -50,6 +55,9 @@ export function mapPendingMessageRow(row: PendingMessageRowRaw): PendingMessageR
         typeof row.deliveryBlockedReason === "string" && row.deliveryBlockedReason.length > 0 ? row.deliveryBlockedReason : null;
     return {
         localId: row.localId,
+        ...(row.targetExecutionRunId == null ? {} : {
+            recipient: { kind: "execution_run" as const, runId: row.targetExecutionRunId },
+        }),
         messageRole: parseSessionMessageRole(row.messageRole),
         content: row.content,
         ...(parsedRequestedAction.success ? { requestedAction: parsedRequestedAction.data } : {}),
@@ -71,5 +79,6 @@ export function mapPendingMessageRow(row: PendingMessageRowRaw): PendingMessageR
         discardedAt: row.discardedAt,
         discardedReason: row.discardedReason,
         authorAccountId: row.authorAccountId,
+        accountActor,
     };
 }

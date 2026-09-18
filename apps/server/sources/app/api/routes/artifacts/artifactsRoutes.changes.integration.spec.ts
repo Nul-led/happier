@@ -126,6 +126,26 @@ describe("artifactsRoutes (AccountChange integration)", () => {
         );
     });
 
+    it("pages Artifact headers with an opaque keyset cursor", async () => {
+        const account = await seedAccount();
+        for (const index of [1, 2, 3]) {
+            await db.artifact.create({ data: {
+                id: `66666666-6666-4666-8666-66666666666${index}`, accountId: account.id,
+                header: Buffer.from(`head-${index}`), headerVersion: 1, body: Buffer.from(`body-${index}`),
+                bodyVersion: 1, dataEncryptionKey: Buffer.from(`key-${index}`), seq: index,
+            } });
+        }
+        await withAuthenticatedTestApp((app) => artifactsRoutes(app as any), async (app) => {
+            const first = await app.inject({ method: "GET", url: "/v1/artifacts?limit=2", headers: { "x-test-user-id": account.id } });
+            const rows = first.json();
+            const cursor = Buffer.from(JSON.stringify({ updatedAt: rows[1].updatedAt, id: rows[1].id })).toString("base64url");
+            const second = await app.inject({ method: "GET", url: `/v1/artifacts?limit=2&cursor=${cursor}`, headers: { "x-test-user-id": account.id } });
+            expect(second.statusCode).toBe(200);
+            expect(second.json()).toHaveLength(1);
+            expect(new Set([...rows, ...second.json()].map((row) => row.id)).size).toBe(3);
+        });
+    });
+
     it("uses a bounded default when artifact listing omits limit", async () => {
         const account = await seedAccount();
         for (let index = 0; index < 550; index += 1) {
@@ -542,6 +562,45 @@ describe("artifactsRoutes (AccountChange integration)", () => {
         );
     });
 
+    it("fails closed when persisted plain Artifact content disagrees with the Account mode", async () => {
+        const account = await seedAccount();
+        const artifactId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+        const header = encodePlainArtifactStoredContent({ title: "must-not-leak" });
+        const body = encodePlainArtifactStoredContent({ body: "must-not-leak" });
+        await db.artifact.create({
+            data: {
+                id: artifactId,
+                accountId: account.id,
+                header: Buffer.from(header, "base64"),
+                headerVersion: 1,
+                body: Buffer.from(body, "base64"),
+                bodyVersion: 1,
+                dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+                seq: 0,
+            },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => artifactsRoutes(app as any),
+            async (app) => {
+                const read = await app.inject({
+                    method: "GET",
+                    url: `/v1/artifacts/${artifactId}`,
+                    headers: {
+                        "x-test-user-id": account.id,
+                        ...currentStoredContentHeaders,
+                    },
+                });
+
+                expect(read.statusCode).toBe(500);
+                expect(read.json()).toEqual({ error: "Failed to get artifact" });
+                expect(read.body).not.toContain(header);
+                expect(read.body).not.toContain(body);
+                expect(read.body).not.toContain("must-not-leak");
+            },
+        );
+    });
+
     it("requires the current declaration for marked create/list/detail/idempotent return and stale-current exposure", async () => {
         process.env.HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST = "none";
         const account = await db.account.create({
@@ -766,6 +825,55 @@ describe("artifactsRoutes (AccountChange integration)", () => {
                 }),
             }),
         );
+    });
+
+    it("preserves a plaintext-marked Artifact when HTTP delete finds an E2EE Account", async () => {
+        const account = await seedAccount();
+        const artifactId = "99999999-9999-4999-8999-999999999999";
+        await db.artifact.create({
+            data: {
+                id: artifactId,
+                accountId: account.id,
+                header: Buffer.from(
+                    encodePlainArtifactStoredContent({ title: "plain" }),
+                    "base64",
+                ),
+                headerVersion: 1,
+                body: Buffer.from(
+                    encodePlainArtifactStoredContent({ body: "plain" }),
+                    "base64",
+                ),
+                bodyVersion: 1,
+                dataEncryptionKey: Buffer.from(
+                    ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    "base64",
+                ),
+                seq: 3,
+            },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => artifactsRoutes(app as any),
+            async (app) => {
+                const response = await app.inject({
+                    method: "DELETE",
+                    url: `/v1/artifacts/${artifactId}`,
+                    headers: {
+                        "x-test-user-id": account.id,
+                        ...currentStoredContentHeaders,
+                    },
+                });
+                expect(response.statusCode).toBe(500);
+                expect(response.json()).toEqual({
+                    error: "Failed to delete artifact",
+                });
+            },
+        );
+
+        await expect(db.artifact.findUnique({ where: { id: artifactId } }))
+            .resolves.toMatchObject({ id: artifactId });
+        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
     });
 
     it("requires current stored-content support before deleting a marked row", async () => {

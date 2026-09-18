@@ -40,7 +40,7 @@ function decodeBase64UrlField(value: string, expectedLength: number): Uint8Array
     }
 }
 
-export function verifyMachineInstallationRegistration(params: Readonly<{
+export function validateMachineInstallationProof(params: Readonly<{
     accountId: string;
     machineId: string;
     installationId: string | null | undefined;

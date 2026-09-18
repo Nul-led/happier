@@ -1,0 +1,449 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { computeTeamCredentialSourceMemberKeyV1 } from "@happier-dev/protocol/teams";
+import { ProviderConnectionIdSchema } from "@happier-dev/protocol/providers";
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import {
+    createTeamCredentialExternalApiKeyInTx,
+    listTeamCredentialExternalApiKeysInTx,
+    revokeAllTeamCredentialExternalApiKeysInTx,
+    revokeTeamCredentialExternalApiKeyInTx,
+    verifyTeamCredentialExternalApiKeyInTx,
+} from "./externalApiKey";
+import {
+    admitTeamCredentialExternalProviderRequestInTx,
+    authorizeTeamCredentialExternalProviderModelCatalogInTx,
+    recordTeamCredentialExternalProviderTerminalUsageInTx,
+} from "./externalProviderBrokerAdmission";
+import { removeTeamMemberForActorInTx } from "../memberships/memberAdministration";
+
+const TEST_AUTHENTICATION = {
+    env: process.env,
+    authenticationAuthority: "present_user",
+    authenticationEvidence: [],
+} as const;
+
+describe("Team credential external API key owner", () => {
+    let harness: LightSqliteHarness;
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({ tempDirPrefix: "team-credential-external-key-", initAuth: false });
+    }, 180_000);
+    afterAll(async () => { await harness?.close(); });
+
+    it("creates one-time resource-scoped material, lists only safe metadata, and verifies by digest", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: "External key team" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: "member" } });
+        expect(membership.id).not.toBe(recipient.id);
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: "API clients", nameKey: "api-clients" } });
+        await db.teamGroupMembership.create({ data: {
+            teamId: team.id, teamGroupId: group.id, teamMembershipId: membership.id, nativeContribution: true,
+        } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: manager.id, displayName: "Shared provider",
+            disclosureCeiling: "brokered_only", sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection-1", connectionSecurityFingerprint: "connection-security:v1:1", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        const created = await inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id,
+            label: "CI runner", expiresAt: null,
+        }));
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        expect(created.token).toMatch(/^hapek_v1_[0-9a-f-]{36}_[A-Za-z0-9_-]{43}$/u);
+        expect(created.key).toMatchObject({ resourceId: resource.id, teamMembershipId: membership.id, label: "CI runner", lastUsedAt: null, expiresAt: null });
+        const stored = await db.teamCredentialExternalApiKey.findUnique({ where: { id: created.key.keyId } });
+        expect(stored?.secretDigest).not.toContain(created.token);
+        expect(stored?.secretDigest).not.toContain(created.token.slice(-43));
+        expect(await inTx(tx => listTeamCredentialExternalApiKeysInTx(tx, { actorAccountId: manager.id, resourceId: resource.id, authentication: TEST_AUTHENTICATION }))).toMatchObject({ ok: true, keys: [created.key] });
+        expect(await inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token }))).toMatchObject({
+            ok: true,
+            keyId: created.key.keyId,
+            resourceId: resource.id,
+            teamId: team.id,
+            assignedAccountId: recipient.id,
+            assignedTeamMembershipId: membership.id,
+            custodianAccountId: manager.id,
+            brokerMachineId: null,
+        });
+        await db.teamCredentialResource.update({ where: { id: resource.id }, data: { enabled: false } });
+        await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+            .resolves.toEqual({ ok: false, reason: "invalid_token" });
+        await db.teamCredentialResource.update({ where: { id: resource.id }, data: { enabled: true } });
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt).toBeNull();
+        const broker = await db.machine.create({ data: {
+            id: `external-broker-${manager.id}`,
+            accountId: manager.id,
+            metadata: "{}",
+            kind: "persistent",
+            active: true,
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await db.teamCredentialResource.update({ where: { id: resource.id }, data: { brokerMachineId: broker.id } });
+        const modelAuthorization = {
+            v: 1 as const,
+            binding: {
+                v: 1 as const,
+                kind: "external_api_key" as const,
+                teamId: team.id,
+                resourceId: resource.id,
+                requestId: "models-1",
+                externalApiKeyId: created.key.keyId,
+                assignedAccountId: recipient.id,
+                assignedTeamMembershipId: membership.id,
+            },
+            brokerMachineId: broker.id,
+            expectedResourceRevision: resource.revision,
+            application: {
+                agentTargetKey: "agent:happier.agent.codex/codex",
+                implementationIdentity: { pluginId: "happier.provider.cliproxyapi", localId: "cliproxyapi" },
+                endpointTemplateId: "cliproxyapi-openai-responses",
+                protocol: "openai-responses" as const,
+            },
+        };
+        await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: modelAuthorization,
+            observedAt: new Date("2026-09-07T12:30:00.000Z"),
+        }))).resolves.toEqual({ ok: true });
+        await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: modelAuthorization,
+            observedAt: new Date("2026-09-07T12:30:00.000Z"),
+        }))).resolves.toEqual({ ok: true });
+        expect(await db.usageEvent.count({ where: { teamCredentialResourceId: resource.id } })).toBe(0);
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt)
+            .toEqual(new Date("2026-09-07T12:30:00.000Z"));
+        const admittedAt = new Date("2026-09-07T12:34:56.000Z");
+        const expectedSourceMemberKey = computeTeamCredentialSourceMemberKeyV1({
+            kind: "provider_credential_slot",
+            connectionId: ProviderConnectionIdSchema.parse("connection-1"),
+            credentialSlotId: "apiKey",
+        });
+        await db.teamCredentialUsageLimit.createMany({ data: [
+            { resourceId: resource.id, subjectKind: "each_member", subjectId: "", period: "day", metric: "inference_requests", maximum: "3", createdAt: new Date(admittedAt.getTime() - 1) },
+            { resourceId: resource.id, subjectKind: "team_group", subjectId: group.id, period: "day", metric: "inference_requests", maximum: "2", createdAt: new Date(admittedAt.getTime() - 1) },
+        ] });
+        const admissionRequest = (requestId: string) => ({
+            v: 1 as const,
+            binding: { ...modelAuthorization.binding, requestId },
+            brokerMachineId: broker.id,
+            expectedResourceRevision: resource.revision,
+            application: modelAuthorization.application,
+            requestFacts: {
+                generation: true,
+                routeKind: "openai_responses" as const,
+                modelId: "model-1",
+                reasoningEffort: null,
+            },
+        });
+        const countTokensAt = new Date(admittedAt.getTime());
+        const countTokensAdmission = await inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: {
+                ...admissionRequest("count-tokens-1"),
+                application: { ...modelAuthorization.application, endpointTemplateId: "cliproxyapi-anthropic", protocol: "anthropic" as const },
+                requestFacts: {
+                    generation: false,
+                    routeKind: "anthropic_messages" as const,
+                    modelId: "model-1",
+                    reasoningEffort: null,
+                },
+            },
+            observedAt: countTokensAt,
+        }));
+        expect(countTokensAdmission).toMatchObject({
+            ok: true,
+            usageEventId: expect.any(String),
+            terminalRequestId: null,
+        });
+        if (!countTokensAdmission.ok || countTokensAdmission.usageEventId === null) {
+            throw new Error("expected a metered count-tokens admission");
+        }
+        await expect(db.usageEvent.findUniqueOrThrow({
+            where: { id: countTokensAdmission.usageEventId },
+            select: { teamCredentialSourceCredentialId: true },
+        })).resolves.toEqual({ teamCredentialSourceCredentialId: expectedSourceMemberKey });
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt)
+            .toEqual(countTokensAt);
+        const admission = await inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: admissionRequest("request-1"),
+            observedAt: admittedAt,
+        }));
+        expect(admission).toMatchObject({
+            ok: true,
+            resourceId: resource.id,
+            brokerMachineId: broker.id,
+            operation: {
+                kind: "external_api_key",
+                externalApiKeyId: created.key.keyId,
+                assignedAccountId: recipient.id,
+                assignedTeamMembershipId: membership.id,
+            },
+            usageEventId: expect.any(String),
+            terminalRequestId: `external:${created.key.keyId}:request-1`,
+        });
+        if (!admission.ok || !admission.usageEventId || !admission.terminalRequestId) {
+            throw new Error("expected generation admission correlation");
+        }
+        const terminalRequest = {
+            v: 1 as const,
+            admissionUsageEventId: admission.usageEventId,
+            requestId: admission.terminalRequestId,
+            brokerMachineId: broker.id,
+            completedAtMs: admittedAt.getTime() + 250,
+            outcome: "succeeded" as const,
+            measurement: "unavailable" as const,
+        };
+        const terminal = await inTx(tx => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: terminalRequest,
+        }));
+        expect(terminal).toMatchObject({ ok: true, created: true, usageEventId: expect.any(String) });
+        await expect(db.usageEvent.findMany({
+            where: { id: { in: [admission.usageEventId, terminal.ok ? terminal.usageEventId : ""] } },
+            select: { teamCredentialSourceCredentialId: true },
+        })).resolves.toEqual([
+            { teamCredentialSourceCredentialId: expectedSourceMemberKey },
+            { teamCredentialSourceCredentialId: expectedSourceMemberKey },
+        ]);
+        await expect(inTx(tx => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: terminalRequest,
+        }))).resolves.toMatchObject({ ok: true, created: false, usageEventId: terminal.ok ? terminal.usageEventId : "" });
+        expect(await db.usageEvent.count({ where: {
+            source: "team_credential_external_terminal",
+            externalKey: admission.terminalRequestId,
+        } })).toBe(1);
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt).toEqual(admittedAt);
+        await expect(inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: {
+                ...admissionRequest("wrong-resource"),
+                binding: { ...modelAuthorization.binding, resourceId: "another-resource", requestId: "wrong-resource" },
+            },
+            observedAt: new Date(admittedAt.getTime() + 100),
+        }))).resolves.toEqual({ ok: false, reasonCode: "operation_not_current" });
+        await db.teamCredentialMemberGrant.delete({
+            where: { resourceId_teamMembershipId: { resourceId: resource.id, teamMembershipId: membership.id } },
+        });
+        await expect(inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: admissionRequest("grant-revoked"),
+            observedAt: new Date(admittedAt.getTime() + 200),
+        }))).resolves.toEqual({ ok: false, reasonCode: "resource_forbidden" });
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt).toEqual(admittedAt);
+        await db.teamCredentialMemberGrant.create({
+            data: { resourceId: resource.id, teamMembershipId: membership.id, deliveryMode: "brokered" },
+        });
+        await db.team.update({ where: { id: team.id }, data: { authenticationPolicy: {
+            v: 1,
+            mode: "restricted",
+            accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+        } } });
+        await expect(inTx(tx => authorizeTeamCredentialExternalProviderModelCatalogInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: modelAuthorization,
+            observedAt: new Date(admittedAt.getTime() + 500),
+        }))).resolves.toEqual({ ok: false, reasonCode: "resource_forbidden" });
+        await expect(inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: admissionRequest("request-restricted"),
+            observedAt: new Date(admittedAt.getTime() + 500),
+        }))).resolves.toEqual({ ok: false, reasonCode: "resource_forbidden" });
+        await db.team.update({ where: { id: team.id }, data: { authenticationPolicy: null } });
+        const deniedAt = new Date(admittedAt.getTime() + 1_000);
+        await expect(inTx(tx => admitTeamCredentialExternalProviderRequestInTx(tx, {
+            authenticatedBrokerAccountId: manager.id,
+            request: admissionRequest("request-2"),
+            observedAt: deniedAt,
+        }))).resolves.toMatchObject({ ok: false, reasonCode: "team_credential_usage_limit" });
+        expect(await db.usageEvent.count({ where: {
+            teamCredentialResourceId: resource.id,
+            source: "team_credential_admission",
+        } })).toBe(2);
+        expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: created.key.keyId } })).lastUsedAt).toEqual(admittedAt);
+        expect(await inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: `${created.token.slice(0, -1)}B` }))).toEqual({ ok: false, reason: "invalid_token" });
+        expect(await db.teamCredentialActivityEvent.count({ where: { resourceId: resource.id, kind: "external_key_created" } })).toBe(1);
+    });
+
+    it("refuses to mint an external key whose automation credential cannot satisfy a restricted Team", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: {
+            name: "Restricted external key team",
+            authenticationPolicy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+        } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: recipient.id, role: "member" },
+        });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id,
+            custodianAccountId: manager.id,
+            displayName: "Restricted provider",
+            disclosureCeiling: "brokered_only",
+            sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({
+                v: 1,
+                kind: "provider_connection",
+                connectionId: "restricted-connection",
+                connectionSecurityFingerprint: "connection-security:v1:restricted",
+                credentialSlotId: "apiKey",
+            }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+
+        await expect(inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            actorAccountId: manager.id,
+            authentication: TEST_AUTHENTICATION,
+            resourceId: resource.id,
+            teamMembershipId: membership.id,
+            label: "Unusable automation key",
+            expiresAt: null,
+        // A restricted Team can never mint an external bearer: the bearer carries
+        // no Team authentication at all, so this is one permanent typed refusal
+        // rather than a transient "policy unavailable" answer.
+        }))).resolves.toEqual({ ok: false, error: "external_api_restricted_team" });
+        expect(await db.teamCredentialExternalApiKey.count({ where: { resourceId: resource.id } })).toBe(0);
+        expect(await db.teamCredentialActivityEvent.count({
+            where: { resourceId: resource.id, kind: "external_key_created" },
+        })).toBe(0);
+    });
+
+    it("revokes assigned keys with safe activity before hard membership removal", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: "Membership key revocation" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: "member" } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: manager.id, displayName: "Removal provider",
+            disclosureCeiling: "brokered_only", sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection-removal", connectionSecurityFingerprint: "connection-security:v1:removal", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        const created = await inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id,
+            label: "Removed runner", expiresAt: null,
+        }));
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        await db.teamCredentialRecipientMaterial.create({ data: {
+            resourceId: resource.id,
+            recipientAccountId: recipient.id,
+            sourceMemberKey: "provider:connection-removal",
+            sourceVersion: "source-version-before-removal",
+            recipientMode: "plain",
+            storedMaterial: new Uint8Array([1, 2, 3]),
+        } });
+
+        const rollbackMarker = new Error("rollback membership removal");
+        await expect(inTx(async (tx) => {
+            const result = await removeTeamMemberForActorInTx(tx, {
+                teamId: team.id, actorAccountId: manager.id, membershipId: membership.id,
+            });
+            expect(result).toMatchObject({ ok: true, value: { status: "removed", membershipId: membership.id } });
+            throw rollbackMarker;
+        })).rejects.toBe(rollbackMarker);
+        expect(await db.teamMembership.count({ where: { id: membership.id } })).toBe(1);
+        expect(await db.teamCredentialExternalApiKey.count({ where: { id: created.key.keyId } })).toBe(1);
+        expect(await db.teamCredentialMemberGrant.count({
+            where: { resourceId: resource.id, teamMembershipId: membership.id },
+        })).toBe(1);
+        expect(await db.teamCredentialRecipientMaterial.count({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id },
+        })).toBe(1);
+        expect(await db.teamCredentialActivityEvent.count({
+            where: { resourceId: resource.id, kind: { in: ["external_key_revoked", "audience_changed"] } },
+        })).toBe(0);
+
+        await expect(inTx(tx => removeTeamMemberForActorInTx(tx, {
+            teamId: team.id, actorAccountId: manager.id, membershipId: membership.id,
+        }))).resolves.toMatchObject({ ok: true, value: { status: "removed", membershipId: membership.id } });
+        expect(await db.teamCredentialExternalApiKey.findUnique({ where: { id: created.key.keyId } })).toBeNull();
+        expect(await db.teamCredentialMemberGrant.count({
+            where: { resourceId: resource.id, teamMembershipId: membership.id },
+        })).toBe(0);
+        expect(await db.teamCredentialRecipientMaterial.count({
+            where: { resourceId: resource.id, recipientAccountId: recipient.id },
+        })).toBe(0);
+        expect(await db.teamCredentialActivityEvent.findMany({
+            where: { resourceId: resource.id, kind: "external_key_revoked" },
+            select: { actorAccountId: true, subjectDisplayName: true },
+        })).toEqual([{ actorAccountId: manager.id, subjectDisplayName: "Removed runner" }]);
+        expect(await db.teamCredentialActivityEvent.findMany({
+            where: { resourceId: resource.id, kind: "audience_changed" },
+            select: { actorAccountId: true, subjectDisplayName: true },
+        })).toEqual([{ actorAccountId: manager.id, subjectDisplayName: resource.displayName }]);
+        await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: created.token })))
+            .resolves.toEqual({ ok: false, reason: "invalid_token" });
+    });
+
+    it("requires current resource access and external-compatible Session policy", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: "External policy team" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: "member" } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: manager.id, displayName: "Session-only provider",
+            disclosureCeiling: "brokered_only", sessionUsePolicy: "team_context_required",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection-2", connectionSecurityFingerprint: "connection-security:v1:2", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        await expect(inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id,
+            label: "Should fail", expiresAt: null,
+        }))).resolves.toMatchObject({ ok: false, error: "session_policy_incompatible" });
+        await db.teamCredentialResource.update({ where: { id: resource.id }, data: { sessionUsePolicy: "personal_allowed" } });
+        await expect(inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id,
+            label: "Should fail", expiresAt: null,
+        }))).resolves.toMatchObject({ ok: true });
+    });
+
+    it("revokes one key idempotently and revokes all remaining keys without a second enabled flag", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: "Revoke key team" } });
+        const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: manager.id, displayName: "Revocable provider",
+            disclosureCeiling: "brokered_only", sessionUsePolicy: "personal_allowed",
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection-3", connectionSecurityFingerprint: "connection-security:v1:3", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+        } });
+        const create = (label: string) => inTx(tx => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id, resourceId: resource.id, teamMembershipId: membership.id, label, expiresAt: null,
+        }));
+        const first = await create("first");
+        const second = await create("second");
+        expect(first.ok && second.ok).toBe(true);
+        if (!first.ok || !second.ok) return;
+        await expect(inTx(tx => revokeTeamCredentialExternalApiKeyInTx(tx, { actorAccountId: manager.id, resourceId: resource.id, keyId: first.key.keyId, authentication: TEST_AUTHENTICATION })))
+            .resolves.toEqual({ ok: true, keyId: first.key.keyId, revoked: true });
+        await expect(inTx(tx => verifyTeamCredentialExternalApiKeyInTx(tx, { token: first.token }))).resolves.toEqual({ ok: false, reason: "invalid_token" });
+        await expect(inTx(tx => revokeTeamCredentialExternalApiKeyInTx(tx, { actorAccountId: manager.id, resourceId: resource.id, keyId: first.key.keyId, authentication: TEST_AUTHENTICATION })))
+            .resolves.toEqual({ ok: true, keyId: first.key.keyId, revoked: false });
+        await expect(inTx(tx => revokeAllTeamCredentialExternalApiKeysInTx(tx, { actorAccountId: manager.id, resourceId: resource.id, authentication: TEST_AUTHENTICATION })))
+            .resolves.toEqual({ ok: true, resourceId: resource.id, revokedCount: 1 });
+        await expect(inTx(tx => listTeamCredentialExternalApiKeysInTx(tx, { actorAccountId: manager.id, resourceId: resource.id, authentication: TEST_AUTHENTICATION })))
+            .resolves.toMatchObject({ ok: true, keys: [] });
+        expect(await db.teamCredentialResource.findUnique({ where: { id: resource.id }, select: { enabled: true } })).toEqual({ enabled: true });
+    });
+});

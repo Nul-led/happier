@@ -15,8 +15,13 @@ import {
     initDbPostgres,
     initDbPglite,
     initDbSqlite,
+    shutdownDbClient,
     shutdownDbPglite,
 } from '@/storage/db';
+import {
+    runHomeOwnerClaimCommand,
+    type HomeOwnerClaimRequestV1,
+} from '@/app/home/governance/claimHomeOwnerCommand';
 import { initializeSessionSystemRecordsProtocolV1Activation } from '@/app/session/systemRecords/sessionSystemRecordProtocolContract';
 import { initializeSessionTurnTranscriptAnchorProjectionProtocolActivation } from '@/app/session/turns/sessionTurnTranscriptAnchorProjectionProtocolContract';
 import {
@@ -52,10 +57,11 @@ import { resolveCachedPublicServerUrl } from '@/app/integrations/publicUrl/publi
 import { startRetentionWorker } from '@/app/retention/runtime/startRetentionWorker';
 import { startPluginWebhookCredentialRetirementWorker } from '@/app/plugins/webhooks/credentialRetirementWorker';
 import { startVoiceProviderIdentityBackfillWorker } from '@/app/voice/providerIdentityBackfill/worker';
+import { startEnterpriseIdentitySyncWorker } from '@/app/teams/directory/runtime/worker';
 import {
     assertPersonalHomeBootAdmission,
     resolvePersonalHomeRuntimeLayout,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/server';
 import { expandHomeDirPath } from '@happier-dev/cli-common/path';
 import { readPresenceRedisWorkerConfigFromEnv } from '@/config/presence';
 import { initializeServerIdentityCache } from '@/app/serverIdentity/serverIdentity';
@@ -142,7 +148,18 @@ async function warnIfSqliteDatabaseFilesExceedThreshold(env: NodeJS.ProcessEnv):
     });
 }
 
-export async function startServer(flavor: ServerFlavor): Promise<void> {
+/**
+ * The one-shot operator work `startServer` may perform instead of serving.
+ *
+ * This is deliberately one named command rather than a command registry: the
+ * Home owner claim needs the resolved database and nothing more, and a general
+ * dispatcher would invite unrelated operator surface into the boot path.
+ */
+export type StartServerOptions = Readonly<{
+    claimHomeOwner?: HomeOwnerClaimRequestV1;
+}>;
+
+export async function startServer(flavor: ServerFlavor, options?: StartServerOptions): Promise<void> {
     process.env.HAPPY_SERVER_FLAVOR = flavor;
     process.env.HAPPIER_SERVER_FLAVOR = flavor;
     initializeServerSentry(process.env);
@@ -205,6 +222,19 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         await initDbSqlite();
     } else {
         throw new Error(`Unsupported HAPPY_DB_PROVIDER/HAPPIER_DB_PROVIDER: ${dbProvider}`);
+    }
+
+    // The deployment-local Home owner claim is a one-shot that needs exactly
+    // this much of startup: the resolved database provider and nothing else.
+    // Running it here reuses the one provider dispatch above instead of giving
+    // the operator command a second, subtly different way to open the Home, and
+    // returns before any listener, file backend, or worker opens.
+    if (options?.claimHomeOwner) {
+        const claim = await runHomeOwnerClaimCommand(options.claimHomeOwner);
+        process.stdout.write(`${JSON.stringify(claim.output)}\n`);
+        process.exitCode = claim.exitCode;
+        await shutdownDbClient();
+        return;
     }
 
     if (filesBackend === 'local') {
@@ -383,7 +413,8 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
             }
             // Background workers should publish into rooms without joining the Socket.IO cluster as a fetchSockets peer.
             eventRouter.setIo(createRedisStreamsRoomEmitter({
-                maxLen: socketAdapterConfig.redisStreamsOptions.maxLen ?? 200_000,
+                maxLen: socketAdapterConfig.redisStreamsOptions.maxLen,
+                streamName: socketAdapterConfig.redisStreamsOptions.streamName,
             }));
 
             if (shouldConsumePresenceFromRedis(process.env)) {
@@ -444,6 +475,12 @@ export async function startServer(flavor: ServerFlavor): Promise<void> {
         }
 
         if (role === 'all' || role === 'worker') {
+            const enterpriseIdentitySyncWorker = startEnterpriseIdentitySyncWorker({ env: process.env });
+            if (enterpriseIdentitySyncWorker) {
+                onShutdown('enterprise-identity-sync-worker', async () => {
+                    await enterpriseIdentitySyncWorker.stop();
+                });
+            }
             const voiceProviderIdentityBackfillWorker = startVoiceProviderIdentityBackfillWorker({
                 provider: dbProvider,
                 env: process.env,

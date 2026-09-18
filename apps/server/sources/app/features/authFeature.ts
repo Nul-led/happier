@@ -1,9 +1,12 @@
 import type { FeaturesPayloadDelta, FeaturesResponse } from "./types";
 import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
-import { resolveAuthProviderRegistryResult } from "@/app/auth/providers/registry";
+import { resolveDeploymentAuthProviderFeatures } from "@/app/auth/providers/deploymentProviderFeatures";
 import { readAuthFeatureEnv, readAuthMtlsFeatureEnv } from "./catalog/readFeatureEnv";
 import { readAuthOauthKeylessFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
-import { resolveAuthMethodRegistry } from "@/app/auth/methods/registry";
+import {
+    resolveEffectiveAuthMethodDecisions,
+    toOldClientSafeAuthMethods,
+} from "@/app/auth/methods/effectiveAuthMethods";
 import { resolveKeylessAccountsEnabled } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
 import { resolveKeylessAutoProvisionEligibility } from "@/app/auth/keyless/resolveKeylessAutoProvisionEligibility";
 import { resolveKeylessAccountsAvailability } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
@@ -23,20 +26,48 @@ function uniqueStrings(values: readonly string[]): string[] {
     return out;
 }
 
+export function deriveLegacySignupMethodsFromAuthMethods(
+    authMethods: FeaturesResponse['capabilities']['auth']['methods'],
+    retainedMethodIds?: readonly string[],
+): Array<{ id: string; enabled: boolean }> {
+    const isEnabled = (legacyId: string): boolean => {
+        const methodId = legacyId.trim().toLowerCase() === 'anonymous'
+            ? 'key_challenge'
+            : legacyId.trim().toLowerCase();
+        const method = authMethods.find((candidate) => candidate.id.trim().toLowerCase() === methodId);
+        return method?.actions.some(
+            (action) => action.id === 'provision' && action.enabled && (action.mode === 'keyed' || action.mode === 'either'),
+        ) === true;
+    };
+    if (retainedMethodIds) {
+        return retainedMethodIds.map((id) => ({ id, enabled: isEnabled(id) }));
+    }
+    return [
+        { id: 'anonymous', enabled: isEnabled('anonymous') },
+        ...authMethods
+            .filter((method) => {
+                const id = method.id.trim().toLowerCase();
+                return id !== 'key_challenge' && method.actions.some(
+                    (action) => action.id === 'provision' && action.enabled && (action.mode === 'keyed' || action.mode === 'either'),
+                );
+            })
+            .map((method) => ({ id: method.id.trim().toLowerCase(), enabled: true })),
+    ];
+}
+
 export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
     const featureEnv = readAuthFeatureEnv(env);
     const mtlsEnv = readAuthMtlsFeatureEnv(env);
     const policy = resolveAuthPolicyFromEnv(env);
-    const authProviderRegistryResult = resolveAuthProviderRegistryResult(env);
+    const authProviderRegistryResult = resolveDeploymentAuthProviderFeatures(env);
     const authProviderRegistry = authProviderRegistryResult.providers;
-    const oauthKeylessEnv = readAuthOauthKeylessFeatureEnv(env);
-    const keylessAccountsEnabled = resolveKeylessAccountsEnabled(env);
-    const keylessAutoProvisionEligible = resolveKeylessAutoProvisionEligibility(env).ok;
 
-    const methodRegistry = resolveAuthMethodRegistry(env);
-    const coreAuthMethods = methodRegistry.map((m) => m.resolveAuthMethod({ env, policy }));
+    // One effective decision feeds publication, request admission, startup safety
+    // and Home administration. This function only translates it to the retained
+    // old-client-safe compatibility wire; it decides no availability itself.
+    const effectiveMethodDecisions = resolveEffectiveAuthMethodDecisions({ env });
     const keyChallengeMethod =
-        coreAuthMethods.find((m) => String(m?.id ?? "").trim().toLowerCase() === "key_challenge") ?? null;
+        effectiveMethodDecisions.find((m) => String(m?.id ?? "").trim().toLowerCase() === "key_challenge") ?? null;
     const keyChallengeLoginEnabled =
         keyChallengeMethod?.actions?.some((a: any) => a?.id === "login" && a?.enabled === true) === true;
     const keyChallengeV2Available =
@@ -46,13 +77,27 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
     const keyChallengeProvisionEnabled =
         keyChallengeMethod?.actions?.some((a: any) => a?.id === "provision" && a?.enabled === true) === true;
 
-    const mtlsMethod = coreAuthMethods.find((m) => String(m?.id ?? "").trim().toLowerCase() === "mtls") ?? null;
+    const mtlsMethod =
+        effectiveMethodDecisions.find((m) => String(m?.id ?? "").trim().toLowerCase() === "mtls") ?? null;
     const mtlsGateEnabled = mtlsMethod?.actions?.some((a: any) => a?.id === "login" && a?.enabled === true) === true;
 
     const signupProviders = uniqueStrings(policy.signupProviders);
     const requiredLoginProviders = uniqueStrings(policy.requiredLoginProviders);
 
     const misconfig: FeaturesResponse["capabilities"]["auth"]["misconfig"] = [];
+    for (const error of policy.configurationErrors ?? []) {
+        misconfig.push({
+            code: "auth_sign_in_service_config_invalid",
+            message: error,
+            kind: "auth-sign-in-service-config",
+            envVars: [
+                "HAPPIER_AUTH_SIGN_IN_SERVICE_MODE",
+                "HAPPIER_AUTH_SIGN_IN_SERVICE_URL",
+                "HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID",
+                "HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME",
+            ],
+        });
+    }
     for (const err of authProviderRegistryResult.errors) {
         misconfig.push({
             code: "auth_providers_config_invalid",
@@ -129,46 +174,14 @@ export function resolveAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta
         providers[provider.id] = provider.resolveFeatures({ env, policy });
     }
 
-    const authMethods: FeaturesResponse["capabilities"]["auth"]["methods"] = [
-        ...coreAuthMethods,
-        ...Object.entries(providers)
-            .map(([id, details]) => ({
-                id,
-                actions: ((): Array<{ id: "login" | "provision" | "connect"; enabled: boolean; mode: "keyed" | "keyless" | "either" }> => {
-                    const configured = details.configured === true;
-                    const connectEnabled = Boolean(details.enabled) && configured;
-                    const keyedProvisionEnabled = Boolean(details.enabled) && configured && signupProviders.includes(id);
-                    const keylessLoginEnabled =
-                        keylessAccountsEnabled &&
-                        configured &&
-                        oauthKeylessEnv.enabled &&
-                        oauthKeylessEnv.providers.includes(id.toLowerCase());
-                    const keylessProvisionEnabled =
-                        keylessLoginEnabled && oauthKeylessEnv.autoProvision && keylessAutoProvisionEligible;
-                    return [
-                        { id: "connect", enabled: connectEnabled, mode: "either" },
-                        { id: "provision", enabled: keyedProvisionEnabled, mode: "keyed" },
-                        { id: "login", enabled: keylessLoginEnabled, mode: "keyless" },
-                        { id: "provision", enabled: keylessProvisionEnabled, mode: "keyless" },
-                    ];
-                })(),
-                ui: details.ui?.displayName ? { displayName: details.ui.displayName, iconHint: details.ui.iconHint ?? null } : undefined,
-            }))
-            .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-    ];
+    // Retained released-client compatibility subset: the supported 0.2 web/mobile/
+    // desktop families classify an unknown method ID as an external OAuth provider,
+    // so `email_password` is omitted here. The complete contextual method list is
+    // Lane 03's `POST /v1/auth/entry` projection, not this static payload.
+    const authMethods: FeaturesResponse["capabilities"]["auth"]["methods"] =
+        toOldClientSafeAuthMethods(effectiveMethodDecisions);
 
-    const signupMethods: Array<{ id: string; enabled: boolean }> = [
-        // Back-compat: "anonymous" maps to key_challenge provisioning.
-        { id: "anonymous", enabled: keyChallengeProvisionEnabled },
-        ...authMethods
-            .filter((m) => {
-                const id = String(m?.id ?? "").trim().toLowerCase();
-                if (!id || id === "key_challenge") return false;
-                const actions = Array.isArray(m?.actions) ? m.actions : [];
-                return actions.some((a: any) => a?.id === "provision" && a?.enabled === true && (a?.mode === "keyed" || a?.mode === "either"));
-            })
-            .map((m) => ({ id: String(m.id).trim().toLowerCase(), enabled: true })),
-    ];
+    const signupMethods = deriveLegacySignupMethodsFromAuthMethods(authMethods);
 
     const loginMethods: Array<{ id: string; enabled: boolean }> = [
         { id: "key_challenge", enabled: keyChallengeLoginEnabled },

@@ -10,12 +10,16 @@ import {
 } from "@/app/features/homeConnectionDescriptorPublication";
 import { createHomeConnectionDescriptorContinuityStoreForServer } from "@/app/features/homeConnectionDescriptorContinuity";
 import type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
+import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
+import { assertAccountActive, InactiveAccountError } from "@/app/auth/accountStatus";
+import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import { resolveEffectiveHomeAuthMethodsInTx } from "@/app/auth/methods/effectiveHomeAuthMethods";
+import { resolveEffectiveHomeSignInServicePolicy } from "@/app/auth/methods/signInServicePolicy";
 import { AccountDirectoryError } from "./accountDirectoryErrors";
 import {
     AccountDirectoryLinkPutRequestSchema,
     AccountDirectoryMeResponseSchema,
     AccountDirectoryHomePutRequestSchema,
-    AccountDirectoryHomePublishRequestV2Schema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomesResponseV1Schema,
     HomeConnectionDescriptorV1Schema,
@@ -28,6 +32,7 @@ import {
     type HomeLoginAssertionV1,
     type HomeLoginRedemptionResultV1,
 } from "./accountDirectorySchemas";
+import { isAccountIdentityEligibleForGenericPresentation } from "@/app/auth/methods/registry";
 import {
     accountDirectorySigningKeyMetadata,
     mintHomeLoginAssertion,
@@ -35,7 +40,6 @@ import {
 } from "./accountDirectorySigner";
 import {
     ACCOUNT_DIRECTORY_MAX_HOME_LOGIN_CREDENTIAL_PLAINTEXT_BYTES,
-    ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES,
     computeCanonicalDomainSeparatedDigest,
     createHomeCredentialDestinationDigestV1,
     createHomeLoginAssertionSigningBytesV1,
@@ -154,10 +158,12 @@ export async function readAccountDirectoryMe(accountId: string): Promise<Account
             const path = "path" in avatar ? avatar.path : null;
             return typeof path === "string" ? getPublicUrl(path) : null;
         })(),
-        linkedAuthenticationMethods: user.AccountIdentity.map((identity) => ({
-            providerId: identity.provider,
-            login: identity.providerUserId,
-        })),
+        linkedAuthenticationMethods: user.AccountIdentity
+            .filter((identity) => isAccountIdentityEligibleForGenericPresentation(process.env, identity.provider))
+            .map((identity) => ({
+                providerId: identity.provider,
+                login: identity.providerUserId,
+            })),
     });
 }
 
@@ -184,21 +190,25 @@ async function upsertAccountHomeDirectoryEntryInTx(
         accountId: string;
         homeServerIdentityId: string;
         label: string;
+        preserveExistingLabel?: boolean;
         connectionDescriptor: HomeConnectionDescriptorV1;
     }>,
 ): Promise<ReturnType<typeof mapHomeRow>> {
     const account = await tx.account.findUnique({ where: { id: params.accountId }, select: { preferredHomeServerIdentityId: true } });
     if (!account) throw new AccountDirectoryError("not_found", "Account not found");
     const where = { accountId_homeServerIdentityId: { accountId: params.accountId, homeServerIdentityId: params.homeServerIdentityId } };
-    const data = {
-        canonicalServerUrl: params.connectionDescriptor.canonicalServerUrl,
-        label: params.label,
-        connectionDescriptor: params.connectionDescriptor,
-    };
     const existing = await tx.accountHomeDirectoryEntry.findUnique({
         where,
         select: HOME_DIRECTORY_ENTRY_SELECT,
     });
+    const label = params.preserveExistingLabel && existing
+        ? existing.label
+        : params.label;
+    const data = {
+        canonicalServerUrl: params.connectionDescriptor.canonicalServerUrl,
+        label,
+        connectionDescriptor: params.connectionDescriptor,
+    };
     const shouldAutoPrefer = account.preferredHomeServerIdentityId === null
         && !existing
         && (await tx.accountHomeDirectoryEntry.findFirst({
@@ -223,11 +233,11 @@ async function upsertAccountHomeDirectoryEntryInTx(
                     "Home descriptor revision conflicts with the current descriptor",
                 );
             }
-            row = params.label === existing.label
+            row = label === existing.label
                 ? existing
                 : await tx.accountHomeDirectoryEntry.update({
                     where,
-                    data: { label: params.label },
+                    data: { label },
                     select: HOME_DIRECTORY_ENTRY_SELECT,
                 });
         } else {
@@ -272,40 +282,6 @@ export async function upsertAccountHomeDirectoryEntry(params: Readonly<{
         label: body.label,
         connectionDescriptor: body.connectionDescriptor,
     }));
-}
-
-export async function publishAccountHomeDirectoryDescriptor(params: Readonly<{
-    accountId: string;
-    homeServerIdentityId: string;
-    label: string;
-    minimumOuterRevisionExclusive: number;
-    canonicalServerUrl: string;
-    endpoints: unknown;
-}>): Promise<ReturnType<typeof mapHomeRow>> {
-    // This V2 entrypoint is intentionally a relocation-only exception. The
-    // Home publication owner remains authoritative for ordinary descriptor
-    // composition/revision allocation; Account Directory merely materializes
-    // the already-approved destination facts at sourceRevision + 1. Ordinary
-    // directory writes must use the V1 exact-descriptor path above.
-    const body = AccountDirectoryHomePublishRequestV2Schema.parse({
-        v: 2,
-        label: params.label,
-        minimumOuterRevisionExclusive: params.minimumOuterRevisionExclusive,
-        canonicalServerUrl: params.canonicalServerUrl,
-        endpoints: params.endpoints,
-    });
-    return await upsertAccountHomeDirectoryEntry({
-        accountId: params.accountId,
-        homeServerIdentityId: params.homeServerIdentityId,
-        label: body.label,
-        connectionDescriptor: {
-            v: 1,
-            homeServerIdentityId: params.homeServerIdentityId,
-            canonicalServerUrl: body.canonicalServerUrl,
-            revision: body.minimumOuterRevisionExclusive + 1,
-            endpoints: body.endpoints,
-        },
-    });
 }
 
 export async function deleteAccountHomeDirectoryEntry(params: Readonly<{ accountId: string; homeServerIdentityId: string }>): Promise<void> {
@@ -456,73 +432,77 @@ export async function deleteAccountDirectoryLink(params: Readonly<{ accountId: s
     });
 }
 
-export type SameServiceHomeBootstrapOutcome = Readonly<
+export type SameServiceHomeEntryOutcome = Readonly<
     | { status: "ensured"; homeServerIdentityId: string; preferred: boolean }
     | {
         status: "not_dual_role";
         reason:
+            | "sign_in_service_not_self"
             | "account_service_signing_metadata_unavailable"
             | "home_descriptor_unavailable"
             | "server_identity_mismatch";
     }
 >;
 
-export type SameServiceHomeBootstrapPreparation = Readonly<
-    | SameServiceHomeBootstrapOutcome
+export type SameServiceHomeEntryPreparation = Readonly<
+    | SameServiceHomeEntryOutcome
     | {
         status: "ready";
         serverIdentityId: string;
         signingKeyId: string;
         signingPublicKey: Uint8Array<ArrayBuffer>;
         homeConnectionDescriptor: HomeConnectionDescriptorV1;
-        resolveHomeConnectionDescriptorAtWriteBoundary: HomeConnectionDescriptorResolver;
     }
 >;
 
-function sameServiceHomeEntryLabel(canonicalServerUrl: string): string {
-    // Advisory presentation metadata only. The host of the authoritative
-    // canonical origin is stable, per-instance, non-secret, and needs no
-    // display-name owner; the bounded projection keeps the stored label within
-    // the protocol label bound.
-    let host = canonicalServerUrl;
-    try {
-        host = new URL(canonicalServerUrl).host;
-    } catch {
-        // The descriptor schema already guarantees an absolute origin; keep
-        // the raw value as a bounded fallback.
-    }
-    const trimmed = host.trim();
-    const encoded = new TextEncoder().encode(trimmed);
-    if (encoded.byteLength <= ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES) return trimmed;
-    return new TextDecoder().decode(encoded.slice(0, ACCOUNT_DIRECTORY_MAX_LABEL_UTF8_BYTES));
+/**
+ * The authoritative same-service decision: the one effective Home
+ * sign-in-service composition, so a Home governance narrowing to `disabled`
+ * refuses the dual-role bootstrap exactly as `/v1/auth/entry` and `/v1/features`
+ * refuse to advertise the service. An unreadable Home policy fails closed the
+ * same way. It runs inside the caller's write transaction, where the decision
+ * and the rows it authorizes commit together.
+ */
+async function isSameServiceSignInSelfInTx(tx: Tx, env: NodeJS.ProcessEnv): Promise<boolean> {
+    const effective = await resolveEffectiveHomeAuthMethodsInTx(tx, { env });
+    return effective.status === "ready" && effective.signInService?.mode === "self";
 }
 
 /**
- * A10 same-service Cloud bootstrap, owned by the Account Directory domain.
- *
- * Invoked only by the authentication finalizers for an `account_directory`
- * completion that created the Account row in that same request (the Lane 01
- * fresh-only authorization fact). It verifies that this exact server instance
- * is currently configured for both roles — the Account Service assertion
- * signing metadata plus an authoritative Home connection descriptor bound to
- * this server's stable identity — and then ensures in one idempotent
- * transaction: the server's own canonical Home Directory entry, the
- * same-account trust link pinned to the server's current signing identity,
- * and first-Home preferred selection via the existing entry owner. It never
- * mints credentials, never generalizes to unrelated Homes, never relinks an
- * existing differing link, and never mutates existing accounts.
+ * The deployment-level preflight, composed through the same owner with no
+ * narrowing — the shape the synchronous `/v1/features` assembler uses, because
+ * this runs before any transaction and must not open one: the finalize routes
+ * call it while a concurrent finalization holds the row it will later write.
+ * It is deliberately not the decision; the narrowing is applied in the
+ * transaction above, which is the only place that authorizes a write.
  */
-export async function prepareSameServiceHomeBootstrapForNewAccount(params: Readonly<{
+function isSameServiceSignInSelfForDeployment(env: NodeJS.ProcessEnv): boolean {
+    return resolveEffectiveHomeSignInServicePolicy({
+        envPolicy: resolveAuthPolicyFromEnv(env).signInService ?? null,
+        narrowing: null,
+        // The caller proved the Account Service signing metadata immediately
+        // above, which is exactly this capability.
+        accountDirectoryCapable: true,
+    })?.mode === "self";
+}
+
+export async function prepareSameServiceHomeEntry(params: Readonly<{
     env?: NodeJS.ProcessEnv;
     /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
     resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
-}>): Promise<SameServiceHomeBootstrapPreparation> {
+}>): Promise<SameServiceHomeEntryPreparation> {
     const env = params.env ?? process.env;
+    // Signing metadata is read first: the effective sign-in-service decision
+    // also withholds `self` when the Account Service cannot sign, and that
+    // shared cause keeps its own diagnostic reason here.
     let signing: ReturnType<typeof accountDirectorySigningKeyMetadata>;
     try {
         signing = accountDirectorySigningKeyMetadata(env);
     } catch {
         return { status: "not_dual_role", reason: "account_service_signing_metadata_unavailable" };
+    }
+    if (!isSameServiceSignInSelfForDeployment(env)) {
+        return { status: "not_dual_role", reason: "sign_in_service_not_self" };
     }
     const resolveHomeConnectionDescriptor = params.resolveHomeConnectionDescriptor
         ?? createCurrentHomeConnectionDescriptorResolver(env);
@@ -546,26 +526,24 @@ export async function prepareSameServiceHomeBootstrapForNewAccount(params: Reado
             issuerSigningPublicKeyBase64Url: signing.publicKeyBase64Url,
         }),
         homeConnectionDescriptor: authoritativeDescriptor,
-        resolveHomeConnectionDescriptorAtWriteBoundary: resolveHomeConnectionDescriptor,
     };
 }
 
-export async function ensureSameServiceHomeBootstrapForNewAccountInTx(
+export async function ensureSameServiceHomeEntryInTx(
     tx: Tx,
     params: Readonly<{
         accountId: string;
-        preparation: SameServiceHomeBootstrapPreparation;
+        preparation: SameServiceHomeEntryPreparation;
+        env?: NodeJS.ProcessEnv;
     }>,
-): Promise<SameServiceHomeBootstrapOutcome> {
+): Promise<SameServiceHomeEntryOutcome> {
     if (params.preparation.status !== "ready") return params.preparation;
     const preparation = params.preparation;
-    const currentDescriptor = await preparation.resolveHomeConnectionDescriptorAtWriteBoundary();
-    if (!currentDescriptor) {
-        throw new Error("Same-service Home descriptor became unavailable before persistence");
+    if (!(await isSameServiceSignInSelfInTx(tx, params.env ?? process.env))) {
+        return { status: "not_dual_role", reason: "sign_in_service_not_self" };
     }
-    if (currentDescriptor.homeServerIdentityId !== preparation.serverIdentityId) {
-        throw new Error("Same-service Home descriptor identity changed before persistence");
-    }
+    const account = await tx.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { status: true } });
+    assertAccountActive(account.status);
     await upsertAccountDirectoryLinkInTx(tx, {
         accountId: params.accountId,
         issuerServerIdentityId: preparation.serverIdentityId,
@@ -576,30 +554,15 @@ export async function ensureSameServiceHomeBootstrapForNewAccountInTx(
     const home = await upsertAccountHomeDirectoryEntryInTx(tx, {
         accountId: params.accountId,
         homeServerIdentityId: preparation.serverIdentityId,
-        label: sameServiceHomeEntryLabel(
-            preparation.homeConnectionDescriptor.canonicalServerUrl,
-        ),
-        connectionDescriptor: currentDescriptor,
+        label: "Home",
+        preserveExistingLabel: true,
+        connectionDescriptor: preparation.homeConnectionDescriptor,
     });
     return {
         status: "ensured",
         homeServerIdentityId: home.homeServerIdentityId,
         preferred: home.preferred,
     };
-}
-
-export async function ensureSameServiceHomeBootstrapForNewAccount(params: Readonly<{
-    accountId: string;
-    env?: NodeJS.ProcessEnv;
-    /** Narrow canonical-owner seam for owner tests; production resolves the live Home descriptor. */
-    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
-}>): Promise<SameServiceHomeBootstrapOutcome> {
-    const preparation = await prepareSameServiceHomeBootstrapForNewAccount(params);
-    if (preparation.status !== "ready") return preparation;
-    return await inTx((tx) => ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
-        accountId: params.accountId,
-        preparation,
-    }));
 }
 
 export async function mintAccountHomeLoginAssertion(params: Readonly<{
@@ -633,6 +596,8 @@ export async function mintAccountHomeLoginAssertion(params: Readonly<{
     if (descriptor.homeServerIdentityId !== params.homeServerIdentityId || descriptor.canonicalServerUrl !== entry.canonicalServerUrl) {
         throw new AccountDirectoryError("invalid_request", "Stored Home descriptor does not match its directory entry");
     }
+    const account = await db.account.findUniqueOrThrow({ where: { id: params.accountId }, select: { status: true } });
+    assertAccountActive(account.status);
     return mintHomeLoginAssertion({
         issuerSubjectId: params.accountId,
         audienceHomeServerIdentityId: params.homeServerIdentityId,
@@ -756,6 +721,14 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
     const resolveHomeConnectionDescriptor = params.resolveHomeConnectionDescriptor
         ?? createCurrentHomeConnectionDescriptorResolver(params.env ?? process.env);
     await validateCredentialDestination(assertion, resolveHomeConnectionDescriptor);
+    const eligibility = await enforceLoginEligibility({
+        accountId: link.accountId,
+        env: params.env ?? process.env,
+    });
+    if (!eligibility.ok) {
+        if (eligibility.error === "account-disabled") throw new AccountDirectoryError("account_disabled");
+        throw new AccountDirectoryError("home_unavailable", eligibility.error, eligibility.statusCode);
+    }
     // Account Service assertions are inputs to the target Home only. The gate
     // and token issuer are injected from the Home auth/pairing owner; without
     // that owner this route fails closed and cannot mint an Account token.
@@ -861,7 +834,16 @@ export async function redeemHomeLoginAssertion(params: Readonly<{
                 throw new AccountDirectoryError("approval_expired");
             }
         }
-        return issueHomeToken(tx, currentLink.accountId);
+        const account = await tx.account.findUniqueOrThrow({ where: { id: currentLink.accountId }, select: { status: true } });
+        try {
+            assertAccountActive(account.status);
+            return await issueHomeToken(tx, currentLink.accountId);
+        } catch (error) {
+            // This path has validated the fresh assertion, destination and
+            // approval. Only this proof-complete boundary may reveal status.
+            if (error instanceof InactiveAccountError) throw new AccountDirectoryError("account_disabled");
+            throw error;
+        }
     });
     const credentialPayload = HomeLoginCredentialPayloadV1Schema.safeParse({ token });
     if (!credentialPayload.success) {

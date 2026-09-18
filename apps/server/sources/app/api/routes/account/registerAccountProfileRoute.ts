@@ -5,6 +5,8 @@ import { type Fastify } from "../../types";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { buildAccountConnectedServicesProjection } from "./connectedServicesProjection";
+import { inTx } from "@/storage/inTx";
+import { buildLinkedIdentityManagementProjectionInTx } from "@/app/auth/providers/accountLinkedIdentityManagement";
 
 export function registerAccountProfileRoute(app: Fastify): void {
     app.get('/v1/account/profile', {
@@ -31,7 +33,16 @@ export function registerAccountProfileRoute(app: Fastify): void {
             accountId: userId,
             includeGroups: connectedServiceAccountGroupsEnabled,
         });
-        const linkedProviders = await fetchLinkedProvidersForAccount({ tx: db as any, accountId: userId });
+        const { linkedProviders, linkedIdentityManagementV1 } = await inTx(async (tx) => {
+            const [currentLinkedProviders, currentManagement] = await Promise.all([
+                fetchLinkedProvidersForAccount({ tx, accountId: userId }),
+                buildLinkedIdentityManagementProjectionInTx(tx, { accountId: userId, env: process.env }),
+            ]);
+            return {
+                linkedProviders: currentLinkedProviders,
+                linkedIdentityManagementV1: currentManagement,
+            };
+        });
         return reply.send({
             id: userId,
             timestamp: Date.now(),
@@ -40,6 +51,7 @@ export function registerAccountProfileRoute(app: Fastify): void {
             username: user.username,
             avatar: user.avatar ? { ...user.avatar, url: getPublicUrl(user.avatar.path) } : null,
             linkedProviders,
+            linkedIdentityManagementV1,
             connectedServices: connectedServiceProjection.connectedServices,
             connectedServicesV2: connectedServiceProjection.connectedServicesV2,
             connectedServiceCredentialRevisionsV1: connectedServiceProjection.connectedServiceCredentialRevisionsV1,

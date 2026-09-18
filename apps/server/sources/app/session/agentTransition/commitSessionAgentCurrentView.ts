@@ -4,14 +4,14 @@ import {
     type SessionMetadataInactiveModelIntentOwnerPatchV1,
 } from "@happier-dev/protocol";
 
-import type { SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import type { SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import type {
     SessionCurrentViewPublicationSourceV1,
 } from "@/app/session/metadata/publishSessionCurrentViewUpdates";
 import {
     clearSessionRuntimeActivityProjectionInTx,
     clearSessionSourceRuntimeRequestProjectionsInTx,
-    ensureSessionEditAccess,
+    loadSessionOwnerMutationContextInTx,
     patchSessionInTx,
     updateSessionMetadataEnvelopeTupleInTx,
 } from "@/app/session/sessionWriteService";
@@ -87,7 +87,7 @@ export type CommitSessionAgentCurrentViewResult =
          * exact-retry short circuit: that call committed nothing, so it has
          * nothing to announce.
          */
-        participantCursors: SessionParticipantCursor[];
+        recipientCursors: SessionRecipientCursor[];
         publication: SessionCurrentViewPublicationSourceV1 | null;
       }
     | { ok: false; error: CommitSessionAgentCurrentViewError };
@@ -196,7 +196,7 @@ export async function commitSessionAgentCurrentViewInTx(
 
     // Owner access is proven here as well as inside each layout owner, because
     // the exact-retry short-circuit below returns before reaching them.
-    const access = await ensureSessionEditAccess(tx, {
+    const access = await loadSessionOwnerMutationContextInTx(tx, {
         actorUserId: params.actorUserId,
         sessionId: params.sessionId,
     });
@@ -241,7 +241,7 @@ export async function commitSessionAgentCurrentViewInTx(
         return {
             ok: true,
             currentView: alreadyCommitted,
-            participantCursors: [],
+            recipientCursors: [],
             publication: null,
         };
     }
@@ -306,7 +306,7 @@ export async function commitSessionAgentCurrentViewInTx(
                 agentStateVersion: patched.agentState?.version
                     ?? params.currentView.expectedAgentStateVersion,
             },
-            participantCursors: patched.participantCursors,
+            recipientCursors: patched.recipientCursors,
             // Read back inside the same transaction so the announced projection
             // is exactly the row this commit produced, and so the projector
             // keeps owning the layout dispatch.
@@ -343,7 +343,7 @@ export async function commitSessionAgentCurrentViewInTx(
             sharedMetadataVersion: tuple.sharedMetadata.version,
             agentStateVersion: tuple.agentState.version,
         },
-        participantCursors: tuple.participantCursors,
+        recipientCursors: tuple.recipientCursors,
         // The tuple owner's own in-memory result, not a re-read: the announced
         // envelope must be the one this write committed.
         publication: {
@@ -366,6 +366,7 @@ function toCommitError(
         | "session_archived"
         | "version-mismatch"
         | "metadata_privacy_upgrade_required"
+        | "session_team_credential_binding_rejected"
         | "publisher-superseded"
         | "internal",
 ): CommitSessionAgentCurrentViewError {
@@ -375,6 +376,7 @@ function toCommitError(
     // version conflict, which would tell the caller to refetch and retry.
     if (error === "session_archived") return "archived";
     if (error === "metadata_privacy_upgrade_required") return "invalid-params";
+    if (error === "session_team_credential_binding_rejected") return "invalid-params";
     if (error === "publisher-superseded") return "version-mismatch";
     return error;
 }

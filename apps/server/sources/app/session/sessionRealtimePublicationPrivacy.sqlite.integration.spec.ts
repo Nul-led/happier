@@ -2,22 +2,35 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Socket } from "socket.io";
 
 import { eventRouter, type ClientConnection, type UpdatePayload } from "@/app/events/eventRouter";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { publishSessionReadCursorUpdate } from "@/app/session/readCursor/publishSessionReadCursorUpdate";
 import { publishSessionReadyProjectionUpdate } from "@/app/session/ready/publishSessionReadyProjectionUpdate";
 import {
+    applySessionReadCursorOperation,
     type ApplySessionTurnMutationResult,
 } from "@/app/session/sessionWriteService";
 import { publishSessionTurnMutationUpdate } from "@/app/session/turns/publishSessionTurnMutationUpdate";
+import { initializeSessionOwnerReadStateInTx } from "@/app/session/personal/readState";
+import { inTx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 type ReceivedUpdate = Readonly<{ userId: string; payload: UpdatePayload }>;
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 function createUserConnection(
     userId: string,
     updates: ReceivedUpdate[],
 ): ClientConnection {
     const socket = {
+        id: `session-realtime-publication-${userId}-${crypto.randomUUID()}`,
+        data: {
+            userId,
+            clientType: "user-scoped",
+            authAuthority: "present_user",
+            authTokenAuthenticationEvidence: [],
+        },
         emit(event: string, payload: UpdatePayload) {
             if (event === "update") updates.push({ userId, payload });
         },
@@ -40,6 +53,7 @@ describe("session realtime publication privacy (SQLite integration)", () => {
     });
 
     afterEach(async () => {
+        eventRouter.clearIo();
         await harness.resetDbTables([
             () => db.sessionShare.deleteMany(),
             () => db.accountChange.deleteMany(),
@@ -48,7 +62,103 @@ describe("session realtime publication privacy (SQLite integration)", () => {
         ]);
     });
 
-    it("suppresses unpublished finite realtime fanout for collaborators without sanitizing a tuple", async () => {
+    async function createHostedSharedSession() {
+        const [owner, collaborator] = await Promise.all([
+            db.account.create({
+                data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" },
+            }),
+            db.account.create({
+                data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" },
+            }),
+        ]);
+        const session = await db.session.create({
+            data: {
+                accountId: owner.id,
+                tag: crypto.randomUUID(),
+                encryptionMode: "plain",
+                metadata: "{}",
+                currentStorageState: "hosted",
+                seq: 7,
+                lastViewedSessionSeq: 0,
+                active: true,
+            },
+        });
+        await db.sessionShare.create({
+            data: {
+                sessionId: session.id,
+                sharedByUserId: owner.id,
+                sharedWithUserId: collaborator.id,
+                accessLevel: "edit",
+            },
+        });
+        await inTx(tx => initializeSessionOwnerReadStateInTx(tx, { accountId: owner.id, sessionId: session.id }));
+        return { owner, collaborator, session };
+    }
+
+    it("publishes an owner's read operation only to that Account's devices", async () => {
+        const { owner, collaborator, session } = await createHostedSharedSession();
+        const updates: ReceivedUpdate[] = [];
+        const ownerConnections = [
+            createUserConnection(owner.id, updates),
+            createUserConnection(owner.id, updates),
+        ];
+        const collaboratorConnection = createUserConnection(collaborator.id, updates);
+        eventRouter.clearIo();
+        for (const connection of ownerConnections) eventRouter.addConnection(owner.id, connection);
+        eventRouter.addConnection(collaborator.id, collaboratorConnection);
+
+        try {
+            const result = await applySessionReadCursorOperation({
+                actorUserId: owner.id,
+                sessionId: session.id,
+                operation: { kind: "mark-read" },
+                authentication,
+            });
+            expect(result).toMatchObject({ ok: true, didChange: true, lastViewedSessionSeq: 7 });
+            if (!result.ok) throw new Error(`Read operation failed: ${result.error}`);
+
+            await publishSessionReadCursorUpdate({ sessionId: session.id, ...result, authentication });
+
+            expect(updates.filter(({ userId }) => userId === collaborator.id)).toEqual([]);
+            expect(updates.filter(({ userId }) => userId === owner.id)).toEqual([
+                expect.objectContaining({
+                    payload: expect.objectContaining({
+                        body: expect.objectContaining({ lastViewedSessionSeq: 7,
+                            viewer: expect.objectContaining({ readState: { state: "tracking", lastViewedSessionSeq: 7, unreadSince: null } }),
+                        }),
+                    }),
+                }),
+                expect.objectContaining({
+                    payload: expect.objectContaining({
+                        body: expect.objectContaining({ lastViewedSessionSeq: 7,
+                            viewer: expect.objectContaining({ readState: { state: "tracking", lastViewedSessionSeq: 7, unreadSince: null } }),
+                        }),
+                    }),
+                }),
+            ]);
+            expect(await db.accountChange.findMany({
+                where: { accountId: collaborator.id, sessionId: session.id },
+            })).toEqual([]);
+        } finally {
+            for (const connection of ownerConnections) eventRouter.removeConnection(owner.id, connection);
+            eventRouter.removeConnection(collaborator.id, collaboratorConnection);
+        }
+    });
+
+    it("refuses to enroll an unfollowed direct editor through a read operation", async () => {
+        const { collaborator, session } = await createHostedSharedSession();
+        const result = await applySessionReadCursorOperation({
+            actorUserId: collaborator.id,
+            sessionId: session.id,
+            operation: { kind: "mark-read" },
+            authentication,
+        });
+
+        expect(result).toEqual({ ok: false, error: "session-not-tracked" });
+        expect(await db.accountChange.findMany({ where: { sessionId: session.id } })).toEqual([]);
+    });
+
+    it("filters rollback eligibility facts while suppressing unpublished finite turn state for collaborators", async () => {
         const [owner, collaborator] = await Promise.all([
             db.account.create({
                 data: {
@@ -97,32 +207,20 @@ describe("session realtime publication privacy (SQLite integration)", () => {
             },
         });
 
+        await inTx(tx => initializeSessionOwnerReadStateInTx(tx, {
+            accountId: owner.id, sessionId: session.id, lastViewedSessionSeq: 9,
+        }));
         const updates: ReceivedUpdate[] = [];
         const ownerConnection = createUserConnection(owner.id, updates);
         const collaboratorConnection = createUserConnection(collaborator.id, updates);
+        eventRouter.clearIo();
         eventRouter.addConnection(owner.id, ownerConnection);
         eventRouter.addConnection(collaborator.id, collaboratorConnection);
-        const participantCursors = [
+        const recipientCursors = [
             { accountId: owner.id, cursor: 101 },
             { accountId: collaborator.id, cursor: 102 },
         ];
         try {
-            await publishSessionReadCursorUpdate({
-                sessionId: session.id,
-                lastViewedSessionSeq: 9,
-                participantCursors,
-                badgeAttentionChanged: false,
-            });
-            expect(updates).toEqual([
-                expect.objectContaining({
-                    userId: owner.id,
-                    payload: expect.objectContaining({
-                        body: expect.objectContaining({ lastViewedSessionSeq: 9 }),
-                    }),
-                }),
-            ]);
-
-            updates.length = 0;
             const turnResult: Extract<ApplySessionTurnMutationResult, { ok: true }> = {
                 ok: true,
                 didApply: true,
@@ -140,7 +238,8 @@ describe("session realtime publication privacy (SQLite integration)", () => {
                 latestTurnStatus: "failed",
                 latestTurnStatusObservedAt: 90_000,
                 lastRuntimeIssue: null,
-                participantCursors,
+                rollbackEligibleTurnStarts: [2, 7],
+                recipientCursors,
                 badgeAttentionChanged: false,
             };
             await publishSessionTurnMutationUpdate({
@@ -156,7 +255,14 @@ describe("session realtime publication privacy (SQLite integration)", () => {
                             latestTurnId: "realtime-publication-turn-v1",
                             latestTurnStatus: "failed",
                             latestTurnStatusObservedAt: 90_000,
+                            rollbackEligibleTurnStarts: [2, 7],
                         }),
+                    }),
+                }),
+                expect.objectContaining({
+                    userId: collaborator.id,
+                    payload: expect.objectContaining({
+                        body: expect.objectContaining({ rollbackEligibleTurnStarts: [2] }),
                     }),
                 }),
             ]);

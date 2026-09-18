@@ -1,0 +1,114 @@
+import type { Tx } from "@/storage/inTx";
+import {
+    resolveStructuralSessionAccessForSessionsInTx,
+    type EffectiveSessionAccess,
+} from "./sessionAccess";
+import { applySessionAccessTransitionEffectsInTx } from "./sessionAccessTransitionEffects";
+
+const captured = Symbol("Session access Account-status impact");
+
+/**
+ * Transaction-local structural access before an Account lifecycle mutation.
+ *
+ * The opaque capture prevents a caller from manufacturing a before-state or
+ * applying it in another transaction. Account lifecycle remains the status
+ * writer; this owner alone selects affected Sessions and evaluates access.
+ */
+export interface SessionAccessAccountStatusImpact {
+    readonly [captured]: {
+        readonly tx: Tx;
+        readonly accountId: string;
+        readonly sessions: ReadonlyMap<string, EffectiveSessionAccess | null>;
+    };
+}
+
+export interface SessionAccessAccountStatusEffects {
+    readonly changedSessionIds: readonly string[];
+    readonly grantedSessionIds: readonly string[];
+    readonly revokedSessionIds: readonly string[];
+}
+
+/**
+ * Capture every Session whose effective access can depend on one Account's
+ * status. Selection intentionally follows retained relationship rows rather
+ * than current eligibility: an inactive-to-active transition must discover the
+ * same owner, direct, Team, and Group paths that an active-to-inactive
+ * transition removes. The canonical structural evaluator decides whether each
+ * candidate actually had access.
+ */
+export async function captureSessionAccessAccountStatusImpactInTx(
+    tx: Tx,
+    input: Readonly<{ accountId: string }>,
+): Promise<SessionAccessAccountStatusImpact> {
+    const sessions = await tx.session.findMany({
+        where: {
+            OR: [
+                { accountId: input.accountId },
+                { shares: { some: { sharedWithUserId: input.accountId } } },
+                { teamGrants: { some: { team: { memberships: { some: { accountId: input.accountId } } } } } },
+                { groupGrants: { some: { teamGroup: { memberships: { some: {
+                    teamMembership: { accountId: input.accountId },
+                } } } } } },
+            ],
+        },
+        select: { id: true },
+        orderBy: { id: "asc" },
+    });
+    const sessionIds = sessions.map(session => session.id);
+    const access = await resolveStructuralSessionAccessForSessionsInTx(tx, {
+        sessionIds,
+        accountIds: [input.accountId],
+    });
+    return {
+        [captured]: {
+            tx,
+            accountId: input.accountId,
+            sessions: new Map(sessionIds.map(sessionId => [
+                sessionId,
+                access.get(sessionId)?.get(input.accountId) ?? null,
+            ])),
+        },
+    };
+}
+
+/**
+ * Apply the canonical Session access transition effects after the Account
+ * status writer has mutated the row in the same transaction.
+ *
+ * Reactivation publishes real access gains but does not create a new
+ * relationship: drafts, personal Follow, unsafe Session-to-Session Follow
+ * edges, and responsibility removed on loss are deliberately not resurrected.
+ */
+export async function applySessionAccessAccountStatusImpactInTx(
+    tx: Tx,
+    input: Readonly<{ impact: SessionAccessAccountStatusImpact }>,
+): Promise<SessionAccessAccountStatusEffects> {
+    const impact = input.impact[captured];
+    if (impact.tx !== tx) {
+        throw new Error("Account-status Session access impact must be applied in its capture transaction");
+    }
+    const sessionIds = [...impact.sessions.keys()];
+    const afterAccess = await resolveStructuralSessionAccessForSessionsInTx(tx, {
+        sessionIds,
+        accountIds: [impact.accountId],
+    });
+    const changedSessionIds: string[] = [];
+    const grantedSessionIds: string[] = [];
+    const revokedSessionIds: string[] = [];
+    for (const sessionId of sessionIds) {
+        const before = new Map([[impact.accountId, impact.sessions.get(sessionId) ?? null]]);
+        const after = new Map([[
+            impact.accountId,
+            afterAccess.get(sessionId)?.get(impact.accountId) ?? null,
+        ]]);
+        const effects = await applySessionAccessTransitionEffectsInTx(tx, {
+            sessionId,
+            before,
+            after,
+        });
+        if (effects.changedAccountIds.includes(impact.accountId)) changedSessionIds.push(sessionId);
+        if (effects.grantedAccountIds.includes(impact.accountId)) grantedSessionIds.push(sessionId);
+        if (effects.revokedAccountIds.includes(impact.accountId)) revokedSessionIds.push(sessionId);
+    }
+    return { changedSessionIds, grantedSessionIds, revokedSessionIds };
+}

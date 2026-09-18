@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -1711,6 +1711,32 @@ describe("plugin Availability operations", () => {
         })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: false,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility,
+                artifactId: "00000000-0000-4000-8000-000000000002",
+                artifact,
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_client_upgrade_required" });
+        await expect(service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility,
+                artifactId: "00000000-0000-4000-8000-000000000002",
+                artifact: {
+                    header: Buffer.from([1, 2, 3]).toString("base64"),
+                    body: Buffer.from([4, 5, 6]).toString("base64"),
+                    dataEncryptionKey: Buffer.from([7, 8, 9]).toString("base64"),
+                },
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
+        await expect(service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
             input: {
                 release: RELEASE,
@@ -1719,7 +1745,7 @@ describe("plugin Availability operations", () => {
                 artifactId: "00000000-0000-4000-8000-000000000002",
                 artifact,
             },
-        })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
+        })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -1913,9 +1939,8 @@ describe("plugin Availability operations", () => {
                 platform: slot.platform,
             },
         })).resolves.toMatchObject({ artifact });
-        // Opaque E2EE bytes remove every archive-shape check the plain path
-        // still applies, so exact Artifact identity plus byte-exact envelope
-        // equality is the whole occupied-slot retry contract here.
+        // Same-ID replay is byte-exact. A fresh publication identity rejoins
+        // the classified slot even when the client reseals equivalent bytes.
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -1938,9 +1963,16 @@ describe("plugin Availability operations", () => {
                 slot,
                 hostCompatibility: hostedArtifactLinkCompatibility(),
                 artifactId: "00000000-0000-4000-8000-000000000004",
-                artifact,
+                artifact: {
+                    header: Buffer.from([11, 12, 13]).toString("base64"),
+                    body: Buffer.from([14, 15, 16]).toString("base64"),
+                    dataEncryptionKey: Buffer.from([17, 18, 19]).toString("base64"),
+                },
             },
-        })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
+        })).resolves.toMatchObject({
+            outcome: "rejoined",
+            link: { artifactId: "00000000-0000-4000-8000-000000000003" },
+        });
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -1979,7 +2011,7 @@ describe("plugin Availability operations", () => {
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_not_found" });
     });
 
-    it("rejects an Artifact id already owned outside the qualified UI slot", async () => {
+    it.each([false, true])("rejects an Artifact id already owned outside the qualified UI slot (occupied: %s)", async (occupied) => {
         await seedAccountAndMachine();
         const service = operations();
         const { graph, archive } = createBrowserArtifactArchive();
@@ -2012,6 +2044,23 @@ describe("plugin Availability operations", () => {
                 seq: 0,
             },
         });
+        if (occupied) {
+            await service.publishUiArtifact({
+                accountId: ACCOUNT_ID,
+                supportsCurrentStoredContentProtocol: true,
+                input: {
+                    release: RELEASE,
+                    slot,
+                    hostCompatibility: hostedArtifactLinkCompatibility(),
+                    artifactId: "00000000-0000-4000-8000-000000000020",
+                    artifact: {
+                        header: encodePlainArtifactStoredContent(archive.header),
+                        body: encodePlainArtifactStoredContent({ body: encodePluginUiArtifactArchiveBodyV1(archive.body) }),
+                        dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    },
+                },
+            });
+        }
         await expect(service.publishUiArtifact({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -2029,8 +2078,57 @@ describe("plugin Availability operations", () => {
                 },
             },
         })).rejects.toMatchObject({ code: "plugin_ui_artifact_conflict" });
-        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(0);
-        await expect(db.artifact.count()).resolves.toBe(1);
+        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(occupied ? 1 : 0);
+        await expect(db.artifact.count()).resolves.toBe(occupied ? 2 : 1);
+    });
+
+    it.each([false, true])("rechecks current hosting intent when recovering a slot uniqueness race (withdrawn: %s)", async (withdrawn) => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixture = createHostedReleaseFixture({ version: RELEASE.version, ordinal: 1 });
+        await publishHostedRelease(service, fixture);
+        await selectHostedRelease(service, fixture, null);
+        const request = {
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: fixture.ref,
+                slot: fixture.slot,
+                hostCompatibility: hostedArtifactLinkCompatibility(),
+                artifactId: fixture.uiArtifactId,
+                artifact: fixture.uiArtifact,
+            },
+        };
+        // Inject the database's losing-writer outcome after another real
+        // transaction commits the winner; internal Availability logic is real.
+        const runTransaction = db.$transaction;
+        const losingTransaction = vi.fn(runTransaction).mockImplementationOnce(async () => {
+            await service.publishUiArtifact(request);
+            if (withdrawn) {
+                await db.accountPluginIntent.update({
+                    where: { accountId_pluginId: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID } },
+                    data: { offlineUiHosting: "disabled" },
+                });
+            }
+            throw Object.assign(new Error("Unique slot conflict"), { code: "P2002" });
+        });
+        // The DB adapter's generic overloads are lost by Vitest's mock type.
+        db.$transaction = losingTransaction as unknown as typeof db.$transaction;
+        try {
+            const retry = service.publishUiArtifact({
+                ...request,
+                input: { ...request.input, artifactId: "00000000-0000-4000-8000-000000000099" },
+            });
+            if (withdrawn) {
+                await expect(retry).rejects.toMatchObject({ code: "plugin_ui_artifact_hosting_not_opted_in" });
+            } else {
+                await expect(retry).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId: fixture.uiArtifactId } });
+            }
+            await expect(db.artifact.count()).resolves.toBe(1);
+            await expect(db.accountPluginUiArtifact.count()).resolves.toBe(1);
+        } finally {
+            db.$transaction = runTransaction;
+        }
     });
 
     it("publishes and rereads the exact release-declared package Asset archive through one protected Artifact link", async () => {
@@ -2115,8 +2213,8 @@ describe("plugin Availability operations", () => {
             supportsCurrentStoredContentProtocol: true,
             input: { release: RELEASE, artifactId, artifact },
         })).resolves.toMatchObject({ outcome: "rejoined" });
-        // An occupied link never adopts another proposed Artifact identity for
-        // the same bytes; that would silently repoint the protected archive.
+        // A fresh publisher rejoins the immutable release link without
+        // repointing it or persisting another Artifact.
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -2125,7 +2223,19 @@ describe("plugin Availability operations", () => {
                 artifactId: "00000000-0000-4000-8000-000000000005",
                 artifact,
             },
-        })).rejects.toMatchObject({ code: "plugin_package_asset_conflict" });
+        })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId } });
+        expect(await db.artifact.count({ where: { accountId: ACCOUNT_ID } })).toBe(1);
+        await expect(service.readIntent({ accountId: ACCOUNT_ID, input: { pluginId: PLUGIN_ID } }))
+            .resolves.toMatchObject({ packageAssets: [{ release: RELEASE, artifactId, descriptor: archive.descriptor }] });
+        await expect(service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                artifactId: "00000000-0000-4000-8000-000000000005",
+                artifact: { ...artifact, body: encodePlainArtifactStoredContent({ body: "different bytes" }) },
+            },
+        })).rejects.toMatchObject({ code: "plugin_package_asset_invalid_content" });
         await expect(service.publishPackageAsset({
             accountId: ACCOUNT_ID,
             supportsCurrentStoredContentProtocol: true,
@@ -2149,6 +2259,13 @@ describe("plugin Availability operations", () => {
         })).rejects.toMatchObject({
             code: "plugin_package_asset_hosting_not_opted_in",
         });
+        await expect(service.removePackageAsset({ accountId: "another-account", input: { release: RELEASE } }))
+            .rejects.toMatchObject({ code: "plugin_package_asset_not_found" });
+        await expect(service.removePackageAsset({ accountId: ACCOUNT_ID, input: { release: RELEASE } }))
+            .resolves.toMatchObject({ removed: true, link: { artifactId } });
+        expect(await db.artifact.count({ where: { accountId: ACCOUNT_ID } })).toBe(0);
+        expect(await db.accountPluginRelease.findFirst({ where: { accountId: ACCOUNT_ID } }))
+            .toMatchObject({ packageAssetArtifactId: null });
     });
 
     it("keeps package Asset archive bytes opaque for E2EE Accounts while currentness remains server-owned", async () => {
@@ -2188,6 +2305,32 @@ describe("plugin Availability operations", () => {
             accountId: ACCOUNT_ID,
             input: { release: RELEASE },
         })).resolves.toMatchObject({ artifact });
+        const freshArtifact = {
+            header: Buffer.from([11, 12, 13]).toString("base64"),
+            body: Buffer.from([14, 15, 16]).toString("base64"),
+            dataEncryptionKey: Buffer.from([17, 18, 19]).toString("base64"),
+        };
+        await expect(service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: { release: RELEASE, artifactId: "00000000-0000-4000-8000-000000000006", artifact: freshArtifact },
+        })).resolves.toMatchObject({ outcome: "rejoined", link: { artifactId: "00000000-0000-4000-8000-000000000005" } });
+        expect(await db.artifact.count({ where: { accountId: ACCOUNT_ID } })).toBe(1);
+        await expect(service.readPackageAsset({ accountId: ACCOUNT_ID, input: { release: RELEASE } }))
+            .resolves.toMatchObject({ artifact });
+        await expect(service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                artifactId: "00000000-0000-4000-8000-000000000006",
+                artifact: {
+                    header: encodePlainArtifactStoredContent({ title: "wrong mode" }),
+                    body: encodePlainArtifactStoredContent({ body: "wrong mode" }),
+                    dataEncryptionKey: ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                },
+            },
+        })).rejects.toMatchObject({ code: "plugin_package_asset_conflict" });
     });
 
     it("keeps unchanged-Collection release metadata while retaining hosted archives only for selected and prior across A -> B -> C", async () => {
@@ -2323,6 +2466,208 @@ describe("plugin Availability operations", () => {
             third.packageArtifactId,
         ].sort().map((id) => ({ id })));
         expect(first.uiArtifactId).not.toBe(second.uiArtifactId);
+    });
+
+    it("retains immutable release facts after archive pruning so an old coordinate can only rejoin", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixtures = [1, 2, 3].map((ordinal) => createHostedReleaseFixture({
+            version: `${ordinal}.0.0`,
+            ordinal: ordinal + 3,
+        }));
+        for (const [index, fixture] of fixtures.entries()) {
+            await publishHostedRelease(service, fixture);
+            await selectHostedRelease(service, fixture, index === 0 ? null : String(index - 1));
+            await hostReleaseArchives(service, fixture);
+        }
+
+        const first = fixtures[0]!;
+        await expect(service.publishRelease({
+            accountId: ACCOUNT_ID,
+            input: { facts: first.facts, sourceClass: "registryPackage" },
+        })).resolves.toMatchObject({ outcome: "rejoined" });
+        const changedFirst = createHostedReleaseFixture({ version: "1.0.0", ordinal: 9 });
+        await expect(service.publishRelease({
+            accountId: ACCOUNT_ID,
+            input: { facts: changedFirst.facts, sourceClass: "registryPackage" },
+        })).rejects.toMatchObject({ code: "plugin_release_content_conflict" });
+    });
+
+    it("does not prune retained archives after the persisted Account mode stops matching their marker", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixtures = [1, 2, 3].map((ordinal) => createHostedReleaseFixture({
+            version: `${ordinal}.0.0`,
+            ordinal,
+        }));
+        for (const [index, fixture] of fixtures.entries()) {
+            await publishHostedRelease(service, fixture);
+            if (index < 2) {
+                await selectHostedRelease(
+                    service,
+                    fixture,
+                    index === 0 ? null : "0",
+                );
+                await hostReleaseArchives(service, fixture);
+            }
+        }
+        await db.account.update({
+            where: { id: ACCOUNT_ID },
+            data: {
+                encryptionMode: "e2ee",
+                ...createSignedAccountContentBinding(),
+            },
+        });
+
+        await expect(selectHostedRelease(service, fixtures[2]!, "1"))
+            .rejects.toMatchObject({
+                code: "plugin_package_asset_invalid_content",
+            });
+
+        await expect(db.accountPluginIntent.findUnique({
+            where: {
+                accountId_pluginId: {
+                    accountId: ACCOUNT_ID,
+                    pluginId: PLUGIN_ID,
+                },
+            },
+            select: { desiredVersion: true, revision: true },
+        })).resolves.toMatchObject({ desiredVersion: "2.0.0", revision: BigInt(1) });
+        await expect(db.artifact.count({ where: { accountId: ACCOUNT_ID } }))
+            .resolves.toBe(4);
+        await expect(db.accountPluginUiArtifact.count()).resolves.toBe(2);
+    });
+
+    it("rejects qualified hosted reads when stored Artifact representation disagrees with Account mode", async () => {
+        await seedAccountAndMachine();
+        const service = operations();
+        const fixture = createHostedReleaseFixture({ version: "1.0.0", ordinal: 4 });
+        await publishHostedRelease(service, fixture);
+        await selectHostedRelease(service, fixture, null);
+        await hostReleaseArchives(service, fixture);
+
+        await db.artifact.updateMany({
+            where: {
+                accountId: ACCOUNT_ID,
+                id: { in: [fixture.uiArtifactId, fixture.packageArtifactId] },
+            },
+            data: { dataEncryptionKey: Buffer.from([1, 2, 3]) },
+        });
+
+        const slot = fixture.facts.uiSlots[0]!;
+        await expect(service.readUiArtifact({
+            accountId: ACCOUNT_ID,
+            input: {
+                release: fixture.ref,
+                contributionId: slot.contributionId,
+                tier: slot.tier,
+                platform: slot.platform,
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_invalid_content" });
+        await expect(service.readPackageAsset({
+            accountId: ACCOUNT_ID,
+            input: { release: fixture.ref },
+        })).rejects.toMatchObject({ code: "plugin_package_asset_invalid_content" });
+    });
+
+    it("keeps qualified links and Artifact content when removal finds a persisted mode mismatch", async () => {
+        await seedAccountAndMachine({ encryptionMode: "e2ee" });
+        const service = operations();
+        const facts = releaseFacts();
+        const slot = facts.uiSlots[0]!;
+        const uiArtifactId = "00000000-0000-4000-8000-000000000081";
+        const packageArtifactId = "00000000-0000-4000-8000-000000000082";
+        const encryptedArtifact = {
+            header: Buffer.from([1, 2, 3]).toString("base64"),
+            body: Buffer.from([4, 5, 6]).toString("base64"),
+            dataEncryptionKey: Buffer.from([7, 8, 9]).toString("base64"),
+        };
+        await service.publishRelease({
+            accountId: ACCOUNT_ID,
+            input: { facts, sourceClass: "registryPackage" },
+        });
+        await db.accountPluginIntent.create({
+            data: {
+                accountId: ACCOUNT_ID,
+                pluginId: PLUGIN_ID,
+                desiredVersion: RELEASE.version,
+                enabled: true,
+                offlineUiHosting: "enabled",
+                writableCollections: [],
+                revision: BigInt(1),
+            },
+        });
+        await service.publishUiArtifact({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                slot,
+                hostCompatibility: hostedArtifactLinkCompatibility(),
+                artifactId: uiArtifactId,
+                artifact: encryptedArtifact,
+            },
+        });
+        await service.publishPackageAsset({
+            accountId: ACCOUNT_ID,
+            supportsCurrentStoredContentProtocol: true,
+            input: {
+                release: RELEASE,
+                artifactId: packageArtifactId,
+                artifact: encryptedArtifact,
+            },
+        });
+        await db.artifact.updateMany({
+            where: { id: { in: [uiArtifactId, packageArtifactId] } },
+            data: {
+                dataEncryptionKey: Buffer.from(
+                    ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    "base64",
+                ),
+            },
+        });
+
+        await expect(service.removePackageAsset({
+            accountId: ACCOUNT_ID,
+            input: { release: RELEASE },
+        })).rejects.toMatchObject({ code: "plugin_package_asset_invalid_content" });
+        await expect(service.removeUiArtifact({
+            accountId: ACCOUNT_ID,
+            input: {
+                release: RELEASE,
+                contributionId: slot.contributionId,
+                tier: slot.tier,
+                platform: slot.platform,
+            },
+        })).rejects.toMatchObject({ code: "plugin_ui_artifact_invalid_content" });
+
+        const retainedArtifacts = await db.artifact.findMany({
+            where: { id: { in: [uiArtifactId, packageArtifactId] } },
+            select: { id: true, header: true, body: true },
+            orderBy: { id: "asc" },
+        });
+        expect(retainedArtifacts).toHaveLength(2);
+        expect(retainedArtifacts).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                id: uiArtifactId,
+                header: Buffer.from([1, 2, 3]),
+                body: Buffer.from([4, 5, 6]),
+            }),
+            expect.objectContaining({
+                id: packageArtifactId,
+                header: Buffer.from([1, 2, 3]),
+                body: Buffer.from([4, 5, 6]),
+            }),
+        ]));
+        await expect(db.accountPluginUiArtifact.count({
+            where: { artifactId: uiArtifactId },
+        })).resolves.toBe(1);
+        await expect(db.accountPluginRelease.findFirst({
+            where: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID },
+            select: { packageAssetArtifactId: true },
+        })).resolves.toMatchObject({
+            packageAssetArtifactId: packageArtifactId,
+        });
     });
 
     it("keeps the captured prior-version archives when a later intent mutation stays on the selected version", async () => {

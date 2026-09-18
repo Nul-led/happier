@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import type { RouteOptions } from "fastify";
 
 import {
     catchupFetchesInc,
     catchupReturnedInc,
-    checkSessionAccess,
+    createSessionAccessProjectionRelations,
     createSessionRouteTestBuilder,
     resetSessionRouteMocks,
     txSessionFindUnique as sessionFindUnique,
@@ -35,12 +36,30 @@ describe("sessionRoutes v1 messages pagination", () => {
             },
             sessionTurn: { count: async () => 0 },
         });
-        checkSessionAccess.mockReset();
         sessionMessageFindMany.mockReset();
         txSessionTurnFindFirst.mockClear();
         txSessionTurnFindMany.mockClear();
         catchupFetchesInc.mockReset();
         catchupReturnedInc.mockReset();
+    });
+
+    it("admits preview reads only for a proof-bound session.list effect", async () => {
+        const app = createAuthenticatedTestApp();
+        let routeConfig: RouteOptions["config"];
+        app.addHook("onRoute", (route: RouteOptions) => {
+            if (route.method === "GET" && route.url === "/v1/sessions/:sessionId/messages") {
+                routeConfig = route.config;
+            }
+        });
+        registerSessionMessageRoutes(app);
+        try {
+            expect(routeConfig).toMatchObject({
+                ephemeralSessionRunnerOperation: "session_runtime",
+            });
+            expect(routeConfig?.allowApiToken).toBeUndefined();
+        } finally {
+            await app.close();
+        }
     });
 
     it("returns a validation 400 for an external page above its cap", async () => {
@@ -61,7 +80,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("returns forward page in ascending order with nextAfterSeq when hasMore", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -94,8 +112,8 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(res).toEqual({
             messages: [
-                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, messageRole: "user", deliveryResolution: { v: 1, kind: "manual_handled" }, createdAt: 1, updatedAt: 1 },
-                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, messageRole: "user", createdAt: 1, updatedAt: 1 },
+                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, messageRole: "user", deliveryResolution: { v: 1, kind: "manual_handled" }, createdAt: 1, updatedAt: 1, accountActor: null },
+                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, messageRole: "user", createdAt: 1, updatedAt: 1, accountActor: null },
             ],
             hasMore: true,
             nextBeforeSeq: null,
@@ -104,7 +122,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("fails the complete forward page when an authoritative stored-content row is malformed", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -125,7 +142,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("intersects old-client pagination with the current operation's accepted sequence", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "server_partial",
             acceptedThroughServerSeq: 4,
             publishedThroughServerSeq: null,
@@ -150,7 +167,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("uses the canonical shareable publication fence and returns only the server-derived coarse admission actor", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 9,
             acceptedThroughServerSeq: 9,
@@ -224,7 +241,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("returns the coarse machine actor only for history-observed user rows without exposing an input receipt", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 2,
             acceptedThroughServerSeq: null,
@@ -284,7 +301,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("does not let an unpublished row produce an external cursor", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "server_partial",
             acceptedThroughServerSeq: 4,
             publishedThroughServerSeq: null,
@@ -308,7 +325,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("returns the same-transaction hidden-turn barrier before a later-publishable user row", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 9,
             acceptedThroughServerSeq: 9,
@@ -385,7 +402,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("holds the external cursor at a committed admitted input until its turn is durably witnessed", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 7,
             acceptedThroughServerSeq: 7,
@@ -425,7 +442,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("holds the external cursor while the matching active turn has not persisted anchors", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 7,
             acceptedThroughServerSeq: 7,
@@ -477,7 +494,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("re-blocks an otherwise active external cursor when a legacy v0 turn projection reappears", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 7,
             acceptedThroughServerSeq: 7,
@@ -522,7 +539,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("advances past a durably manual-handled input without a turn after the historical v0 rows are backfilled", async () => {
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             seq: 7,
             acceptedThroughServerSeq: 7,
@@ -563,7 +580,7 @@ describe("sessionRoutes v1 messages pagination", () => {
         resetSessionTurnTranscriptAnchorProjectionProtocolActivationForTests();
         // Deliberately omit Session.seq: an incomplete complete-snapshot
         // publication tuple must fail closed at sequence zero.
-        sessionFindUnique.mockResolvedValue({
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1",
             currentStorageState: "snapshot_complete",
             acceptedThroughServerSeq: 7,
             materializationPublicationId: "publication-1",
@@ -602,7 +619,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("returns exact out-of-page consumed inputs in the same transaction snapshot", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         const inputReceiptActorId = "account-private-actor-id";
         const input = {
@@ -694,7 +711,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("uses one bounded v1 turn snapshot and holds the cursor when that witness is full", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([{
             id: "m7",
@@ -758,7 +775,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("keeps a final with an exact bounded out-of-page user witness publishable", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         const userMessageSeqs = Array.from({ length: 100 }, (_, index) => index + 1);
         const final = {
@@ -828,7 +845,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("does not advance through a final whose exact out-of-page user witness exceeds the bounded snapshot", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         const final = {
             id: "m102",
@@ -878,7 +895,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("does not advance through finals whose combined out-of-page user witnesses exceed the bounded snapshot", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         const firstUserMessageSeqs = Array.from({ length: 60 }, (_, index) => index + 1);
         const secondUserMessageSeqs = Array.from({ length: 60 }, (_, index) => index + 61);
@@ -967,7 +984,7 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("fails closed when a selected v1 row's private anchor projection disagrees with its stored anchors", async () => {
-        sessionFindUnique.mockResolvedValue({ currentStorageState: "hosted" });
+        sessionFindUnique.mockResolvedValue({ ...createSessionAccessProjectionRelations(), id: "s1", accountId: "u1", currentStorageState: "hosted" });
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([{
             id: "m102",
@@ -1016,7 +1033,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("includes legacy null-role rows in user role filters for encrypted history recovery", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
         sessionMessageFindMany.mockResolvedValue([]);
 
         const route = await createSessionRouteTestBuilder("GET", "/v1/sessions/:sessionId/messages");
@@ -1037,7 +1053,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("rejects unsupported role filters", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const route = await createSessionRouteTestBuilder("GET", "/v1/sessions/:sessionId/messages");
         const { reply } = await route.invoke({
@@ -1050,7 +1065,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("unions singular role and CSV roles filters", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
         sessionMessageFindMany.mockResolvedValue([]);
 
         const route = await createSessionRouteTestBuilder("GET", "/v1/sessions/:sessionId/messages");
@@ -1072,7 +1086,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("rejects repeated role query parameters instead of widening the query", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const route = await createSessionRouteTestBuilder("GET", "/v1/sessions/:sessionId/messages");
         const { reply } = await route.invoke({
@@ -1085,7 +1098,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("returns nextAfterSeq=null when forward page has no more", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -1103,7 +1115,7 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(res).toEqual({
             messages: [
-                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
+                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
             ],
             hasMore: false,
             nextBeforeSeq: null,
@@ -1112,7 +1124,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("keeps legacy default behavior (backward paging newest-first) when afterSeq is not provided", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -1140,8 +1151,8 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(res).toEqual({
             messages: [
-                { id: "m5", seq: 5, content: { t: "encrypted", c: "c5" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m5", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
-                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
+                { id: "m5", seq: 5, content: { t: "encrypted", c: "c5" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m5", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
+                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
             ],
             hasMore: true,
             nextBeforeSeq: 4,
@@ -1150,7 +1161,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("keeps legacy beforeSeq behavior when afterSeq is not provided", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -1177,8 +1187,8 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(res).toEqual({
             messages: [
-                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
-                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
+                { id: "m4", seq: 4, content: { t: "encrypted", c: "c4" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m4", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
+                { id: "m3", seq: 3, content: { t: "encrypted", c: "c3" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m3", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
             ],
             hasMore: false,
             nextBeforeSeq: null,
@@ -1187,7 +1197,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("can fetch all chains when scope=all", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([
@@ -1209,8 +1218,8 @@ describe("sessionRoutes v1 messages pagination", () => {
 
         expect(res).toEqual({
             messages: [
-                { id: "m2", seq: 2, content: { t: "encrypted", c: "c2" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m2", observedRevision: "message-updated-at:1" }, localId: null, sidechainId: "sc-1", createdAt: 1, updatedAt: 1 },
-                { id: "m1", seq: 1, content: { t: "encrypted", c: "c1" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m1", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1 },
+                { id: "m2", seq: 2, content: { t: "encrypted", c: "c2" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m2", observedRevision: "message-updated-at:1" }, localId: null, sidechainId: "sc-1", createdAt: 1, updatedAt: 1, accountActor: null },
+                { id: "m1", seq: 1, content: { t: "encrypted", c: "c1" }, messageActionReference: { v: 1, sessionId: "s1", messageId: "m1", observedRevision: "message-updated-at:1" }, localId: null, createdAt: 1, updatedAt: 1, accountActor: null },
             ],
             hasMore: false,
             nextBeforeSeq: null,
@@ -1219,7 +1228,6 @@ describe("sessionRoutes v1 messages pagination", () => {
     });
 
     it("can fetch a single sidechain when scope=sidechain", async () => {
-        checkSessionAccess.mockResolvedValue({ level: "owner" });
 
         const t0 = new Date(1);
         sessionMessageFindMany.mockResolvedValue([

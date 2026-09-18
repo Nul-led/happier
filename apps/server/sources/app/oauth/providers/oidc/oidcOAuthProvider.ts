@@ -2,9 +2,19 @@ import * as oidcClient from "openid-client";
 
 import type { OAuthFlowProvider, OAuthTokenExchangeResult } from "@/app/oauth/providers/types";
 import type { OidcAuthProviderInstanceConfig } from "@/app/auth/providers/oidc/oidcProviderConfig";
+import {
+    createOidcIdentityProfile,
+    normalizeOidcIdentityClaims,
+} from "@/app/auth/providers/oidc/normalizeOidcIdentityClaims";
 import { discoverOidcConfiguration } from "./oidcDiscovery";
+import type { OutboundIdentityNetworkPolicy } from "@/app/net/outboundIdentityNetworkPolicy";
+import { evaluateOidcEligibility } from "@/app/auth/providers/oidc/oidcEligibility";
 
-export function createOidcOAuthProvider(instance: OidcAuthProviderInstanceConfig): OAuthFlowProvider {
+export function createOidcOAuthProvider(
+    instance: OidcAuthProviderInstanceConfig,
+    runtimeFingerprint: string,
+    networkPolicy?: OutboundIdentityNetworkPolicy,
+): OAuthFlowProvider {
     const isConfigured = () => Boolean(instance.clientId && instance.clientSecret && instance.redirectUrl && instance.issuer);
     const configured = isConfigured();
 
@@ -14,11 +24,15 @@ export function createOidcOAuthProvider(instance: OidcAuthProviderInstanceConfig
         isConfigured: () => configured,
         resolveRedirectUrl: () => instance.redirectUrl,
         resolveScope: () => instance.scopes,
+        validateConfiguration: async () => {
+            if (!configured) throw new Error("oauth_not_configured");
+            await discoverOidcConfiguration(instance, runtimeFingerprint, networkPolicy);
+        },
         resolveAuthorizeUrl: async ({ state, scope, codeChallenge, codeChallengeMethod, nonce }) => {
             if (!instance.clientId || !instance.clientSecret || !instance.redirectUrl || !instance.issuer) {
                 throw new Error("oauth_not_configured");
             }
-            const cfg = await discoverOidcConfiguration(instance);
+            const cfg = await discoverOidcConfiguration(instance, runtimeFingerprint, networkPolicy);
             const url = oidcClient.buildAuthorizationUrl(cfg, {
                 redirect_uri: instance.redirectUrl,
                 scope,
@@ -34,7 +48,7 @@ export function createOidcOAuthProvider(instance: OidcAuthProviderInstanceConfig
             if (!instance.clientId || !instance.clientSecret || !instance.redirectUrl || !instance.issuer) {
                 throw new Error("oauth_not_configured");
             }
-            const cfg = await discoverOidcConfiguration(instance);
+            const cfg = await discoverOidcConfiguration(instance, runtimeFingerprint, networkPolicy);
             const callbackUrl = new URL(instance.redirectUrl);
             callbackUrl.searchParams.set("code", code);
             if (typeof state === "string" && state) {
@@ -51,53 +65,65 @@ export function createOidcOAuthProvider(instance: OidcAuthProviderInstanceConfig
                 idTokenExpected: true,
             });
 
-            const accessToken = (tokens as any).access_token?.toString?.() ?? "";
+            const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : "";
             if (!accessToken) {
                 throw new Error("missing_access_token");
             }
-            const idToken = (tokens as any).id_token?.toString?.() ?? undefined;
+            const idToken = typeof tokens.id_token === "string" ? tokens.id_token : undefined;
             const idTokenClaims = tokens.claims?.() ?? undefined;
-            const refreshToken = (tokens as any).refresh_token?.toString?.() ?? undefined;
+            const refreshToken = typeof tokens.refresh_token === "string" ? tokens.refresh_token : undefined;
 
             return { accessToken, idToken, idTokenClaims, refreshToken };
         },
         fetchProfile: async ({ env: _env, accessToken, idTokenClaims }) => {
-            if (!idTokenClaims || typeof idTokenClaims !== "object") {
-                throw new Error("invalid_profile");
+            const idTokenResult = normalizeOidcIdentityClaims({
+                idTokenClaims,
+                claims: instance.claims,
+            });
+            if (!idTokenResult.ok) throw new Error(idTokenResult.error);
+
+            if (!instance.fetchUserInfo) {
+                return createOidcIdentityProfile(idTokenResult.value, instance.claims);
             }
 
-            if (!instance.fetchUserInfo) return idTokenClaims;
-
-            const cfg = await discoverOidcConfiguration(instance);
+            const cfg = await discoverOidcConfiguration(instance, runtimeFingerprint, networkPolicy);
             try {
-                const expectedSubject = (idTokenClaims as any)?.sub?.toString?.().trim?.() ?? "";
-                if (!expectedSubject) {
-                    throw new Error("invalid_profile");
-                }
-                const userinfo = await oidcClient.fetchUserInfo(cfg, accessToken, expectedSubject);
-                if (!userinfo || typeof userinfo !== "object") {
-                    throw new Error("invalid_userinfo");
-                }
-                return { ...(idTokenClaims as any), ...(userinfo as any) };
+                const userInfo = await oidcClient.fetchUserInfo(cfg, accessToken, oidcClient.skipSubjectCheck);
+                const result = normalizeOidcIdentityClaims({
+                    idTokenClaims,
+                    userInfo,
+                    claims: instance.claims,
+                });
+                if (!result.ok) throw new Error(result.error);
+                return createOidcIdentityProfile(result.value, instance.claims);
             } catch (err) {
                 throw new Error("profile_fetch_failed", { cause: err });
             }
         },
         getLogin: (profile) => {
-            const record = profile as any;
-            const mapped = record?.[instance.claims.login]?.toString?.().trim?.() ?? "";
-            if (mapped) return mapped;
-
-            const preferred = record?.preferred_username?.toString?.().trim?.() ?? "";
-            if (preferred) return preferred;
-            const email = record?.email?.toString?.().trim?.() ?? "";
-            if (email) return email;
-            const upn = record?.upn?.toString?.().trim?.() ?? "";
-            return upn ? upn : null;
+            const result = normalizeOidcIdentityClaims({ idTokenClaims: profile, claims: instance.claims });
+            return result.ok ? result.value.login : null;
         },
         getProviderUserId: (profile) => {
-            const sub = (profile as any)?.sub?.toString?.().trim?.() ?? "";
-            return sub ? sub : null;
+            const result = normalizeOidcIdentityClaims({ idTokenClaims: profile, claims: instance.claims });
+            return result.ok ? result.value.subject : null;
+        },
+        describeIdentityTest: async ({ profile }) => {
+            const normalized = normalizeOidcIdentityClaims({ idTokenClaims: profile, claims: instance.claims });
+            if (!normalized.ok) throw new Error(normalized.error);
+            const claims = normalized.value;
+            return {
+                subjectPresent: Boolean(claims.subject),
+                loginAvailable: claims.login !== null,
+                emailAvailable: claims.email !== null,
+                emailVerified: claims.emailVerified,
+                groups: claims.groupsIncomplete
+                    ? { state: "incomplete" }
+                    : claims.groups === null
+                        ? { state: "absent" }
+                        : { state: "complete", values: claims.groups },
+                eligibility: evaluateOidcEligibility(instance.allow, claims),
+            };
         },
     });
 

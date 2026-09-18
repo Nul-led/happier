@@ -5,12 +5,18 @@ import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { auth } from "@/app/auth/auth";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import {
+    parseAccountApiTokenBearerV1,
+    type AuthTokenAuthenticationEvidenceV1,
+} from "@happier-dev/protocol";
 
 type ApiTokenAuth = typeof auth & {
     createApiToken(params: Readonly<{
         accountId: string;
+        tokenId: string;
         label: string;
         expiresAt?: Date | null;
+        authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     }>, now?: Date): Promise<Readonly<{
         tokenId: string;
         token: string;
@@ -18,6 +24,8 @@ type ApiTokenAuth = typeof auth & {
         displayPrefix: string;
         createdAt: Date;
         expiresAt: Date | null;
+        hasEncryptionAccess: boolean;
+        hasUnattendedTeamAccess: boolean;
     }>>;
     listApiTokens(accountId: string): Promise<ReadonlyArray<Readonly<{
         tokenId: string;
@@ -26,6 +34,8 @@ type ApiTokenAuth = typeof auth & {
         createdAt: Date;
         lastUsedAt: Date | null;
         expiresAt: Date | null;
+        hasEncryptionAccess: boolean;
+        hasUnattendedTeamAccess: boolean;
     }>>>;
     revokeApiToken(params: Readonly<{ accountId: string; tokenId: string }>): Promise<boolean>;
     verifyPat(token: string, signal?: AbortSignal): Promise<
@@ -36,6 +46,7 @@ type ApiTokenAuth = typeof auth & {
             credentialId: string;
             expiresAt: Date | null;
             authority: "account_automation";
+            authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
         }>
         | Readonly<{ ok: false; reason: "invalid_token" }>
     >;
@@ -66,7 +77,6 @@ describe("auth (API tokens)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -77,7 +87,6 @@ describe("auth (API tokens)", () => {
         harness.resetEnv({
             AUTH_REQUIRED_LOGIN_PROVIDERS: "",
             AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-            AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
         });
     });
 
@@ -142,12 +151,16 @@ describe("auth (API tokens)", () => {
 
         const minted = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "CI deploy",
         });
-        const secret = minted.token.split("_")[3] ?? "";
+        const parsed = parseAccountApiTokenBearerV1(minted.token);
+        expect(parsed).not.toBeNull();
+        const secret = parsed?.secret ?? "";
 
         expect(minted.token).toMatch(/^hap_v1_[0-9a-f-]{36}_[A-Za-z0-9_-]{43}$/);
         expect(minted.displayPrefix).toBe(`hap_v1_${minted.tokenId.slice(0, 8)}`);
+        expect(minted.hasEncryptionAccess).toBe(false);
         await expect(auth.verifyToken(minted.token)).resolves.toEqual({
             userId: account.id,
             authority: "account_automation",
@@ -198,6 +211,7 @@ describe("auth (API tokens)", () => {
                 displayPrefix: minted.displayPrefix,
                 lastUsedAt: expect.any(Date),
                 expiresAt: null,
+                hasEncryptionAccess: false,
             }),
         ]);
         const listed = await apiTokenAuth.listApiTokens(account.id);
@@ -232,6 +246,7 @@ describe("auth (API tokens)", () => {
 
         const minted = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Boundary expiry",
             expiresAt,
         }, creationTime);
@@ -247,6 +262,7 @@ describe("auth (API tokens)", () => {
         });
         const minted = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Daemon cache",
             expiresAt: new Date("2026-08-22T13:00:00.000Z"),
         });
@@ -269,6 +285,52 @@ describe("auth (API tokens)", () => {
         });
     });
 
+    it("copies only explicit server-verified evidence into the PAT row and fails malformed snapshots closed", async () => {
+        const account = await db.account.create({
+            data: { publicKey: "api-token-evidence" },
+            select: { id: true },
+        });
+        const evidence = [{ kind: "home_method" as const, methodId: "key_challenge" }];
+        const minted = await auth.createApiToken({
+            accountId: account.id,
+            tokenId: crypto.randomUUID(),
+            label: "Qualified automation",
+            authenticationEvidence: evidence,
+        });
+
+        await expect(auth.verifyToken(minted.token)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "api_token",
+            authority: "account_automation",
+            authenticationEvidence: evidence,
+        });
+        await expect(auth.listApiTokens(account.id)).resolves.toEqual([
+            expect.objectContaining({ hasUnattendedTeamAccess: true }),
+        ]);
+
+        await db.accountApiToken.update({
+            where: { id: minted.tokenId },
+            data: { authenticationEvidence: { v: 99, evidence } },
+        });
+        await expect(auth.verifyToken(minted.token)).resolves.toMatchObject({
+            userId: account.id,
+            authTokenKind: "api_token",
+            authority: "account_automation",
+        });
+        expect((await auth.verifyToken(minted.token))?.authenticationEvidence).toBeUndefined();
+
+        await expect(auth.createApiToken({
+            accountId: account.id,
+            tokenId: crypto.randomUUID(),
+            label: "Over-bound automation",
+            authenticationEvidence: Array.from({ length: 33 }, (_, index) => ({
+                kind: "home_method" as const,
+                methodId: `method-${index}`,
+            })),
+        })).rejects.toMatchObject({ code: "credential_authentication_evidence_limit" });
+        expect(await db.accountApiToken.count({ where: { accountId: account.id } })).toBe(1);
+    });
+
     it("invalidates signed sessions at sign-out-everywhere while preserving PATs", async () => {
         const account = await db.account.create({
             data: { publicKey: "api-token-sign-out-everywhere" },
@@ -276,6 +338,7 @@ describe("auth (API tokens)", () => {
         });
         const preEpochToken = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Pre-epoch automation",
         });
         const preEpochSigned = await auth.createToken(account.id, undefined, {
@@ -304,6 +367,7 @@ describe("auth (API tokens)", () => {
         // Credentials minted after the epoch change remain valid.
         const postEpochToken = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Post-epoch automation",
         });
         await expect(auth.verifyToken(postEpochToken.token)).resolves.not.toBeNull();
@@ -327,6 +391,7 @@ describe("auth (API tokens)", () => {
         });
         const expiringToken = await apiTokenAuth.createApiToken({
             accountId: expiringAccount.id,
+            tokenId: crypto.randomUUID(),
             label: "Short-lived tool",
             expiresAt: new Date("2026-08-22T12:01:00.000Z"),
         });
@@ -339,6 +404,7 @@ describe("auth (API tokens)", () => {
         });
         const deletedAccountToken = await apiTokenAuth.createApiToken({
             accountId: deletedAccount.id,
+            tokenId: crypto.randomUUID(),
             label: "Deleted account tool",
         });
         await db.account.delete({ where: { id: deletedAccount.id } });
@@ -364,6 +430,7 @@ describe("auth (API tokens)", () => {
         });
         const minted = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Build agent",
         });
 
@@ -385,7 +452,6 @@ describe("auth (API tokens)", () => {
         harness.resetEnv({
             AUTH_REQUIRED_LOGIN_PROVIDERS: "github",
             AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-            AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
         });
         const account = await db.account.create({
             data: { publicKey: "api-token-ineligible" },
@@ -393,6 +459,7 @@ describe("auth (API tokens)", () => {
         });
         const minted = await apiTokenAuth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Ineligible automation",
         });
 

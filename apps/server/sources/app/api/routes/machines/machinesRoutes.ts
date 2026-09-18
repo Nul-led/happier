@@ -1,12 +1,9 @@
-import { eventRouter } from "@/app/events/eventRouter";
 import { Fastify } from "../../types";
+import { persistentMachineWhere } from '@/app/machines/machineSelection';
 import { z } from "zod";
 import { db, isPrismaErrorCode } from "@/storage/db";
 import { log } from "@/utils/logging/log";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
-import { buildNewMachineUpdate, buildUpdateMachineUpdate } from "@/app/events/eventRouter";
-import { activityCache } from "@/app/presence/sessionCache";
-import { afterTx, inTx } from "@/storage/inTx";
+import { inTx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { timingSafeEqual } from "node:crypto";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
@@ -19,17 +16,22 @@ import {
     MachineRegistrationReplacementError,
     type MachineRegistrationReplacementResult,
 } from "@/app/machines/applyVerifiedMachineRegistrationReplacement";
-import { removeAutomationMachineAssignmentsTx } from "@/app/automations/automationMachineAssignmentRemoval";
 import {
     computeContentPublicKeyFingerprint,
     normalizeContentPublicKeyFingerprint,
-    verifyMachineInstallationRegistration,
+    validateMachineInstallationProof,
     type VerifiedMachineInstallationIdentity,
 } from "@/app/machines/installationProof";
 import {
+    createMachineWithInstallationIdentityInTx,
+    revokeMachineInTx,
+} from "@/app/machines/machineMutations";
+import {
     serializeExternalActionMachineBootstrapRow,
     serializeMachineRow,
+    type MachineSerializationRow,
 } from "@/app/machines/machineSerialization";
+import type { FastifyRequest } from "fastify";
 import {
     isPlainMachineDataKeyMarker,
     machineStoredContentMatchesAccountMode,
@@ -43,6 +45,7 @@ import {
     readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { registerMachineReplacementRoutes } from "./registerMachineReplacementRoutes";
+import { registerMachinePoolRoutes } from "./pools/registerMachinePoolRoutes";
 
 function bytesEqual(a: Uint8Array | null, b: Uint8Array | null) {
     if (a === b) return true;
@@ -51,16 +54,21 @@ function bytesEqual(a: Uint8Array | null, b: Uint8Array | null) {
     return timingSafeEqual(a, b);
 }
 
-function copyToArrayBufferBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
-    const copy = new Uint8Array(bytes.byteLength);
-    copy.set(bytes);
-    return copy;
-}
-
 function isMachineRevokedError(value: unknown): value is { error: 'machine_revoked' } {
     if (typeof value !== 'object' || value === null) return false;
     if (!('error' in value)) return false;
     return (value as { error?: unknown }).error === 'machine_revoked';
+}
+
+function serializeMachineRowForRequest(
+    row: MachineSerializationRow,
+    request: FastifyRequest,
+) {
+    return serializeMachineRow(row, {
+        recipientAccountStoredContentProtocolVersion:
+            readAccountStoredContentCompatibilityForHttpRequest(request)
+                .declaration?.protocolVersion,
+    });
 }
 
 type ExistingMachineInstallationIdentity = Readonly<{
@@ -131,6 +139,7 @@ function describeUnknownError(error: unknown): { code?: string; message: string 
 
 export function machinesRoutes(app: Fastify) {
     registerMachineReplacementRoutes(app);
+    registerMachinePoolRoutes(app, { io: app.machineDaemonPresence });
 
     app.post('/v1/machines', {
         preHandler: app.authenticate,
@@ -401,7 +410,7 @@ export function machinesRoutes(app: Fastify) {
             ? replacementReason.trim()
             : "machine_rotation";
 
-        const installationRegistration = verifyMachineInstallationRegistration({
+        const installationRegistration = validateMachineInstallationProof({
             accountId: userId,
             machineId: id,
             installationId,
@@ -428,7 +437,6 @@ export function machinesRoutes(app: Fastify) {
                         ? new Uint8Array(Buffer.from(dataEncryptionKey, 'base64'))
                         : undefined;
 
-            const wantsMetadataUpdate = metadata !== machine.metadata;
             const wantsDaemonStateUpdate = typeof daemonState === 'string' && daemonState !== (machine.daemonState ?? null);
             const wantsDataEncryptionKeyUpdate =
                 nextDataEncryptionKey !== undefined
@@ -441,8 +449,7 @@ export function machinesRoutes(app: Fastify) {
             const wantsAutomaticReplacement = Boolean(verifiedInstallationIdentity?.replacesMachineId);
 
             if (
-                !wantsMetadataUpdate
-                && !wantsDaemonStateUpdate
+                !wantsDaemonStateUpdate
                 && !wantsDataEncryptionKeyUpdate
                 && !wantsInstallationUpdate
                 && !wantsAutomaticReplacement
@@ -453,7 +460,7 @@ export function machinesRoutes(app: Fastify) {
                 log({ module: 'machines', machineId: id, userId }, 'Found existing machine');
                 return reply.send({
                     machine: {
-                        ...serializeMachineRow(machine),
+                        ...serializeMachineRowForRequest(machine, request),
                     }
                 });
             }
@@ -497,7 +504,6 @@ export function machinesRoutes(app: Fastify) {
                         return { error: 'machine_storage_mode_mismatch' as const };
                     }
 
-                    const currentWantsMetadataUpdate = metadata !== current.metadata;
                     const currentWantsDaemonStateUpdate =
                         typeof daemonState === 'string' && daemonState !== (current.daemonState ?? null);
                     const currentWantsDataEncryptionKeyUpdate =
@@ -511,8 +517,7 @@ export function machinesRoutes(app: Fastify) {
                     const currentWantsAutomaticReplacement = Boolean(verifiedInstallationIdentity?.replacesMachineId);
 
                     if (
-                        !currentWantsMetadataUpdate
-                        && !currentWantsDaemonStateUpdate
+                        !currentWantsDaemonStateUpdate
                         && !currentWantsDataEncryptionKeyUpdate
                         && !currentWantsInstallationUpdate
                         && !currentWantsAutomaticReplacement
@@ -520,16 +525,16 @@ export function machinesRoutes(app: Fastify) {
                         return current;
                     }
 
-                    const updatedMachine = currentWantsMetadataUpdate
-                        || currentWantsDaemonStateUpdate
+                    // Registration metadata is create-only. Existing metadata also contains
+                    // user-owned fields such as displayName, and the server cannot merge its
+                    // encrypted value. Daemons refresh their owned fields through the versioned
+                    // machine-update-metadata socket after registration.
+                    const updatedMachine = currentWantsDaemonStateUpdate
                         || currentWantsDataEncryptionKeyUpdate
                         || currentWantsInstallationUpdate
                         ? await tx.machine.update({
                             where: { accountId_id: { accountId: userId, id } },
                             data: {
-                                ...(currentWantsMetadataUpdate
-                                    ? { metadata, metadataVersion: { increment: 1 } }
-                                    : {}),
                                 ...(currentWantsDaemonStateUpdate
                                     ? { daemonState, daemonStateVersion: { increment: 1 } }
                                     : {}),
@@ -544,8 +549,7 @@ export function machinesRoutes(app: Fastify) {
                         : current;
 
                     if (
-                        currentWantsMetadataUpdate
-                        || currentWantsDaemonStateUpdate
+                        currentWantsDaemonStateUpdate
                         || currentWantsDataEncryptionKeyUpdate
                         || currentWantsInstallationUpdate
                     ) {
@@ -591,7 +595,7 @@ export function machinesRoutes(app: Fastify) {
                     );
                     return reply.send({
                         machine: {
-                            ...serializeMachineRow(machine),
+                            ...serializeMachineRowForRequest(machine, request),
                         },
                     });
                 }
@@ -620,7 +624,7 @@ export function machinesRoutes(app: Fastify) {
 
             return reply.send({
                 machine: {
-                    ...serializeMachineRow(updated),
+                    ...serializeMachineRowForRequest(updated, request),
                 },
                 ...(machineReplacement ? { machineReplacement } : {}),
             });
@@ -631,71 +635,18 @@ export function machinesRoutes(app: Fastify) {
             let newMachine;
             let machineReplacement: MachineRegistrationReplacementResult | null = null;
             try {
-                newMachine = await inTx(async (tx) => {
-                    const created = await tx.machine.create({
-                        data: {
-                            id,
-                            accountId: userId,
-                            metadata,
-                            metadataVersion: 1,
-                            daemonState: daemonState || null,
-                            daemonStateVersion: daemonState ? 1 : 0,
-                            dataEncryptionKey: dataEncryptionKey
-                                ? copyToArrayBufferBytes(Buffer.from(dataEncryptionKey, 'base64'))
-                                : undefined,
-                            ...(verifiedInstallationIdentity
-                                ? {
-                                    installationId: verifiedInstallationIdentity.installationId,
-                                    installationPublicKey: verifiedInstallationIdentity.installationPublicKey,
-                                    contentPublicKeyFingerprint: verifiedInstallationIdentity.contentPublicKeyFingerprint,
-                                }
-                                : resolvedContentPublicKeyFingerprint
-                                    ? { contentPublicKeyFingerprint: resolvedContentPublicKeyFingerprint }
-                                    : {}),
-                            // Default to offline - in case the user does not start daemon
-                            active: false,
-                            // lastActiveAt and activeAt defaults to now() in schema
-                        }
-                    });
-
-                    if (verifiedInstallationIdentity?.replacesMachineId) {
-                        machineReplacement = await applyVerifiedMachineRegistrationReplacement({
-                            tx,
-                            accountId: userId,
-                            replacementMachineId: created.id,
-                            replacementMachine: created,
-                            replacesMachineId: verifiedInstallationIdentity.replacesMachineId,
-                            reason: automaticReplacementReason,
-                        });
-                    }
-
-                    const cursor = await markAccountChanged(tx, {
-                        accountId: userId,
-                        kind: 'machine',
-                        entityId: created.id,
-                    });
-
-                    afterTx(tx, () => {
-                        // Emit both new-machine and update-machine events for backward compatibility.
-                        // IMPORTANT: Both share the same cursor (one durable change).
-                        const newMachinePayload = buildNewMachineUpdate(created, cursor, randomKeyNaked(12));
-                        eventRouter.emitUpdate({
-                            userId,
-                            payload: newMachinePayload,
-                            recipientFilter: { type: 'user-scoped-only' }
-                        });
-
-                        const machineMetadata = { version: 1, value: metadata };
-                        const updatePayload = buildUpdateMachineUpdate(created.id, cursor, randomKeyNaked(12), machineMetadata);
-                        eventRouter.emitUpdate({
-                            userId,
-                            payload: updatePayload,
-                            recipientFilter: { type: 'machine-scoped-only', machineId: created.id }
-                        });
-                    });
-
-                    return created;
-                });
+                const created = await inTx(async (tx) => createMachineWithInstallationIdentityInTx(tx, {
+                    accountId: userId,
+                    machineId: id,
+                    metadata,
+                    daemonState,
+                    dataEncryptionKey,
+                    installationIdentity: verifiedInstallationIdentity,
+                    contentPublicKeyFingerprint: resolvedContentPublicKeyFingerprint,
+                    replacementReason: automaticReplacementReason,
+                }));
+                newMachine = created.machine;
+                machineReplacement = created.machineReplacement;
             } catch (e) {
                 if (e instanceof MachineRegistrationReplacementError) {
                     return reply.code(e.statusCode).send({ error: "invalid-params", reason: e.reason });
@@ -745,7 +696,7 @@ export function machinesRoutes(app: Fastify) {
                         log({ module: 'machines', machineId: id, userId }, 'Machine created concurrently; returning existing machine');
                         return reply.send({
                             machine: {
-                                ...serializeMachineRow(existingSameAccount),
+                                ...serializeMachineRowForRequest(existingSameAccount, request),
                             },
                             ...(machineReplacement ? { machineReplacement } : {}),
                         });
@@ -762,7 +713,7 @@ export function machinesRoutes(app: Fastify) {
 
             return reply.send({
                 machine: {
-                    ...serializeMachineRow(newMachine),
+                    ...serializeMachineRowForRequest(newMachine, request),
                 },
                 ...(machineReplacement ? { machineReplacement } : {}),
             });
@@ -799,63 +750,13 @@ export function machinesRoutes(app: Fastify) {
                 return { kind: 'upgrade_required' as const };
             }
 
-            const now = new Date();
-            const revokedAt = machine.revokedAt ?? now;
-
-            let updated = machine;
-
-            // Assignment removal goes through the canonical Automation-owned
-            // composition: an enabled Automation that loses its last enabled
-            // execution assignment is disabled atomically (with schedule
-            // cursors cleared, Event catalog/source projection advanced, and
-            // post-commit publication) instead of staying enabled with no
-            // executable placement. Frozen admitted-Run assignment snapshots
-            // are preserved untouched. The composition acquires the Account
-            // fence before it invokes the revocation/access-key mutation, then
-            // the same composition settles the nonterminal Runs whose complete
-            // frozen snapshot has no eligible machine left: queued/claimed Runs
-            // cancel, running Runs settle outcome-uncertain.
-            await removeAutomationMachineAssignmentsTx({
-                tx,
+            const revoked = await revokeMachineInTx(tx, {
                 accountId: userId,
                 machineId: id,
-                markMachineUnavailableTx: async (fencedTx) => {
-                    updated = await fencedTx.machine.update({
-                        where: { accountId_id: { accountId: userId, id } },
-                        data: {
-                            active: false,
-                            revokedAt,
-                        },
-                    });
-                    await fencedTx.accessKey.deleteMany({
-                        where: {
-                            accountId: userId,
-                            machineId: id,
-                        },
-                    });
-                },
             });
-
-            const cursor = await markAccountChanged(tx, { accountId: userId, kind: 'machine', entityId: updated.id });
-
-            afterTx(tx, () => {
-                const updatePayload = buildUpdateMachineUpdate(
-                    updated.id,
-                    cursor,
-                    randomKeyNaked(12),
-                    undefined,
-                    undefined,
-                    { active: false, revokedAt: revokedAt.getTime() },
-                );
-                eventRouter.emitUpdate({
-                    userId,
-                    payload: updatePayload,
-                    recipientFilter: { type: 'user-scoped-only' },
-                });
-                activityCache.invalidateMachine(updated.id);
-            });
-
-            return { kind: 'ok' as const, machine: updated };
+            return revoked.ok
+                ? { kind: 'ok' as const, machine: revoked.machine }
+                : { kind: 'not_found' as const };
         });
 
         if (result.kind === 'not_found') {
@@ -866,7 +767,7 @@ export function machinesRoutes(app: Fastify) {
             return;
         }
 
-        return reply.send({ machine: serializeMachineRow(result.machine) });
+        return reply.send({ machine: serializeMachineRowForRequest(result.machine, request) });
     });
 
 
@@ -881,7 +782,7 @@ export function machinesRoutes(app: Fastify) {
         const userId = request.userId;
 
         const machines = await db.machine.findMany({
-            where: { accountId: userId },
+            where: { accountId: userId, ...persistentMachineWhere },
             orderBy: { lastActiveAt: 'desc' }
         });
         if (request.authTokenKind === "api_token") {
@@ -901,7 +802,9 @@ export function machinesRoutes(app: Fastify) {
             return;
         }
 
-        return machines.map(serializeMachineRow);
+        return machines.map((machine) =>
+            serializeMachineRowForRequest(machine, request)
+        );
     });
 
     // GET /v1/machines/:id - Get single machine by ID
@@ -943,7 +846,7 @@ export function machinesRoutes(app: Fastify) {
 
         return {
             machine: {
-                ...serializeMachineRow(machine),
+                ...serializeMachineRowForRequest(machine, request),
             }
         };
     });

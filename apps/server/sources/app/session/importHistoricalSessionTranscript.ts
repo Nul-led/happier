@@ -3,7 +3,8 @@ import { inTx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 
 import { resolveSessionMessageRole } from "./messageRole/resolveSessionMessageRole";
-import { ensureSessionEditAccess } from "./sessionWriteService";
+import type { SessionAccessAuthentication } from "./access/sessionAccessAuthentication";
+import { loadSessionInputMutationContextInTx } from "./sessionWriteService";
 import {
     HISTORICAL_IMPORT_TRANSCRIPT_OBSERVATION_PROVENANCE,
     writeHistoricalSessionMessageBatchInTx,
@@ -35,14 +36,16 @@ export type HistoricalSessionTranscriptImportResult =
 export async function importHistoricalSessionTranscript(
     params: Readonly<{
         actorUserId: string;
+        authentication: SessionAccessAuthentication;
         sessionId: string;
         items: readonly HistoricalSessionTranscriptImportItem[];
     }>,
 ): Promise<HistoricalSessionTranscriptImportResult> {
     const storagePolicy = readEncryptionFeatureEnv(process.env).storagePolicy;
     const attempt = async (): Promise<HistoricalSessionTranscriptImportResult> => await inTx<HistoricalSessionTranscriptImportResult>(async (tx) => {
-        const access = await ensureSessionEditAccess(tx, {
+        const access = await loadSessionInputMutationContextInTx(tx, {
             actorUserId: params.actorUserId,
+            authentication: params.authentication,
             sessionId: params.sessionId,
         });
         if (!access.ok) {

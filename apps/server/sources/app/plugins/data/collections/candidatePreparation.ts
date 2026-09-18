@@ -14,6 +14,7 @@ import {
     computeCanonicalDomainSeparatedDigest,
     decodeBase64,
     encodeBase64,
+    isPluginCollectionOptionalPrivateSchemaAdditionV1,
     measurePluginCollectionCandidatePreparationStageRequestEncodedBytesV1,
     PluginUiArtifactDigestV1Schema,
     type NormalizedPluginAccountCollectionContractV1,
@@ -45,6 +46,7 @@ import {
     finalizePluginCollectionDerivedStateForPromotionInTx,
     preparePluginCollectionDerivedStateForPromotionInTx,
     preparePluginCollectionRelationReplacementInTx,
+    resolveDerivedCollectionInTx,
     retirePluginCollectionRelationsForSourceCollectionInTx,
     PluginCollectionMutationOperationError,
     type ResolvedWritableCollection,
@@ -873,6 +875,133 @@ function isExactPersistedRef(input: Readonly<{
 }
 
 /**
+ * Adopts only the durable contract identity for the one evolution whose
+ * physical row/index semantics are proven unchanged. Availability owns the
+ * enclosing intent transaction, so any late intent CAS loss rolls these
+ * metadata updates back with it. Payload, revision, projections, index
+ * entries, and relations remain untouched.
+ */
+async function adoptOptionalPrivateSchemaContractIdentityInTx(input: Readonly<{
+    tx: Tx;
+    accountId: string;
+    encryptionMode: "plain" | "e2ee";
+    source: ResolvedCandidateContract;
+    target: ResolvedCandidateContract;
+    liveRowCount: number;
+}>): Promise<void> {
+    let sourceDerived: ResolvedWritableCollection;
+    try {
+        sourceDerived = await resolveDerivedCollectionInTx({
+            tx: input.tx,
+            accountId: input.accountId,
+            encryptionMode: input.encryptionMode,
+            contractId: input.source.id,
+            contract: input.source.contract,
+        });
+    } catch (error) {
+        if (error instanceof PluginCollectionMutationOperationError) promotionNotReady();
+        throw error;
+    }
+
+    const adoptedRows = await input.tx.pluginCollectionRow.updateMany({
+        where: {
+            accountId: input.accountId,
+            pluginId: input.source.ref.pluginId,
+            collectionId: input.source.ref.collectionId,
+            contractId: input.source.id,
+            schemaVersion: input.source.ref.schemaVersion,
+            contractDigest: input.source.ref.contractDigest,
+            deletedAt: null,
+        },
+        data: {
+            contractId: input.target.id,
+            schemaVersion: input.target.ref.schemaVersion,
+            contractDigest: input.target.ref.contractDigest,
+        },
+    });
+    if (adoptedRows.count !== input.liveRowCount) promotionNotReady();
+
+    for (const state of sourceDerived.indexStates) {
+        const targetState = await input.tx.pluginCollectionIndexState.findUnique({
+            where: {
+                accountId_pluginId_collectionId_indexId_contractDigest: {
+                    accountId: input.accountId,
+                    pluginId: input.target.ref.pluginId,
+                    collectionId: input.target.ref.collectionId,
+                    indexId: state.indexId,
+                    contractDigest: input.target.ref.contractDigest,
+                },
+            },
+            select: {
+                id: true,
+                contractId: true,
+                contractDigest: true,
+                buildState: true,
+                indexedThroughRevision: true,
+            },
+        });
+        if (targetState) {
+            if (
+                targetState.contractId !== input.target.id
+                || targetState.contractDigest !== input.target.ref.contractDigest
+                || targetState.buildState !== "ready"
+                || targetState.indexedThroughRevision !== 0
+            ) {
+                promotionNotReady();
+            }
+            const targetEntryCount = await input.tx.pluginCollectionIndexEntry.count({
+                where: { indexStateId: targetState.id },
+            });
+            if (targetEntryCount !== 0) promotionNotReady();
+            const retiredTargetState = await input.tx.pluginCollectionIndexState.deleteMany({
+                where: {
+                    id: targetState.id,
+                    accountId: input.accountId,
+                    pluginId: input.target.ref.pluginId,
+                    collectionId: input.target.ref.collectionId,
+                    indexId: state.indexId,
+                    contractId: input.target.id,
+                    contractDigest: input.target.ref.contractDigest,
+                    buildState: "ready",
+                    indexedThroughRevision: 0,
+                },
+            });
+            if (retiredTargetState.count !== 1) promotionNotReady();
+        }
+        const adoptedState = await input.tx.pluginCollectionIndexState.updateMany({
+            where: {
+                id: state.id,
+                accountId: input.accountId,
+                pluginId: input.source.ref.pluginId,
+                collectionId: input.source.ref.collectionId,
+                contractId: input.source.id,
+                contractDigest: input.source.ref.contractDigest,
+                buildState: "ready",
+                indexedThroughRevision: state.indexedThroughRevision,
+            },
+            data: {
+                contractId: input.target.id,
+                contractDigest: input.target.ref.contractDigest,
+            },
+        });
+        if (adoptedState.count !== 1) promotionNotReady();
+    }
+
+    try {
+        await resolveDerivedCollectionInTx({
+            tx: input.tx,
+            accountId: input.accountId,
+            encryptionMode: input.encryptionMode,
+            contractId: input.target.id,
+            contract: input.target.contract,
+        });
+    } catch (error) {
+        if (error instanceof PluginCollectionMutationOperationError) promotionNotReady();
+        throw error;
+    }
+}
+
+/**
  * Re-censuses and promotes one fully prepared candidate only while
  * Availability owns the surrounding intent CAS transaction. It cannot select
  * a release, expose staged bytes, or publish an intent by itself.
@@ -972,6 +1101,44 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             throw error;
         }
         if (liveRowCount === 0) continue;
+        if (isPluginCollectionOptionalPrivateSchemaAdditionV1({
+            source: source.contract,
+            target: target.contract,
+        })) {
+            let lastRowId: string | null = null;
+            for (;;) {
+                const rows: CandidatePreparationPromotableLiveRow[] = await input.tx.pluginCollectionRow.findMany({
+                    where: {
+                        ...liveRowWhere,
+                        ...(lastRowId ? { id: { gt: lastRowId } } : {}),
+                    },
+                    orderBy: { id: "asc" },
+                    take: maximumBatchRows,
+                    select: {
+                        id: true,
+                        rowId: true,
+                        revision: true,
+                        contractId: true,
+                        schemaVersion: true,
+                        contractDigest: true,
+                    },
+                });
+                if (rows.length === 0) break;
+                if (rows.some((row) => !isExactPersistedRef({ row, materialized: source }))) {
+                    promotionNotReady();
+                }
+                lastRowId = rows[rows.length - 1]!.id;
+            }
+            await adoptOptionalPrivateSchemaContractIdentityInTx({
+                tx: input.tx,
+                accountId: input.accountId,
+                encryptionMode: fence.account.currentness.encryptionMode,
+                source,
+                target,
+                liveRowCount,
+            });
+            continue;
+        }
         if (!hasDeclaredMigrationChain({
             sourceSchemaVersion: source.ref.schemaVersion,
             target: target.contract,
@@ -1000,22 +1167,6 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
         });
         if (completeCandidateIdentities.length !== 1) promotionNotReady();
         const selectedCandidateIdentity = completeCandidateIdentities[0]!.candidateIdentity;
-
-        let derived: ResolvedWritableCollection;
-        try {
-            derived = await preparePluginCollectionDerivedStateForPromotionInTx({
-                tx: input.tx,
-                accountId: input.accountId,
-                encryptionMode: fence.account.currentness.encryptionMode,
-                contractId: target.id,
-                contract: target.contract,
-            });
-        } catch (error) {
-            if (error instanceof PluginCollectionMutationOperationError) {
-                promotionNotReady();
-            }
-            throw error;
-        }
 
         let validatedLiveRows = 0;
         let maximumPromotedRevision = 0;
@@ -1129,6 +1280,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                         projection: row.projection,
                     })),
                     maximumBatchRows,
+                    authentication: undefined,
                     skipPersistedUniqueRelationCollisionCheck: true,
                 });
             } catch (error) {
@@ -1147,6 +1299,21 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
             lastRowId = liveRows[liveRows.length - 1]!.id;
         }
         if (validatedLiveRows !== liveRowCount) promotionNotReady();
+        let derived: ResolvedWritableCollection;
+        try {
+            derived = await preparePluginCollectionDerivedStateForPromotionInTx({
+                tx: input.tx,
+                accountId: input.accountId,
+                encryptionMode: fence.account.currentness.encryptionMode,
+                contractId: target.id,
+                contract: target.contract,
+            });
+        } catch (error) {
+            if (error instanceof PluginCollectionMutationOperationError) {
+                promotionNotReady();
+            }
+            throw error;
+        }
         await retirePluginCollectionRelationsForSourceCollectionInTx({
             tx: input.tx,
             accountId: input.accountId,
@@ -1265,6 +1432,7 @@ export async function promotePluginCollectionCandidatePreparationInTx(input: Rea
                         projection: row.projection,
                     })),
                     maximumBatchRows,
+                    authentication: undefined,
                     skipPersistedUniqueRelationCollisionCheck: true,
                 });
                 promoted = await materializeCandidatePromotionSetwiseInTx({
@@ -1586,10 +1754,11 @@ export async function stagePluginCollectionCandidatePreparation(input: Readonly<
                 results[item.index] = { status: "staged" };
                 continue;
             }
-            if (!admittedSourceRowDbIds.add(item.sourceRow.id)) {
+            if (admittedSourceRowDbIds.has(item.sourceRow.id)) {
                 results[item.index] = { status: "staged" };
                 continue;
             }
+            admittedSourceRowDbIds.add(item.sourceRow.id);
             prospective.push({
                 index: item.index,
                 sourceRowDbId: item.sourceRow.id,

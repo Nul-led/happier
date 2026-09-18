@@ -1,3 +1,10 @@
+// This module only parses arguments and defers its database and identity
+// owners, so importing it here costs the capability probe nothing.
+import {
+    readHomeOwnerClaimRequest,
+    runHomeOwnerClaimCommand,
+} from '@/app/home/governance/claimHomeOwnerCommand';
+
 const LIGHT_RUNTIME_CAPABILITY_PROBE_ARGUMENT = '--probe-runtime-capabilities';
 const LIGHT_RUNTIME_CAPABILITY_PROBE_RESULT = {
     schemaVersion: 1,
@@ -53,7 +60,7 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
         applyLightDefaultEnv(process.env);
         applyPackagedLightRuntimeSqliteDefaults(process.env);
         if (process.env.HAPPIER_MANAGED_RELAY_PURPOSE !== 'personal-home') return;
-        const { assertPersonalHomeBootAdmission, resolvePersonalHomeRuntimeLayout } = await import('@happier-dev/cli-common/firstPartyRuntime');
+        const { assertPersonalHomeBootAdmission, resolvePersonalHomeRuntimeLayout } = await import('@happier-dev/cli-common/firstPartyRuntime/server');
         const layout = resolvePersonalHomeRuntimeLayout({ env: process.env });
         if (action === 'ordinary') {
             await assertPersonalHomeBootAdmission(layout, {
@@ -123,22 +130,37 @@ export async function runLightServerMain(argv: readonly string[] = process.argv.
             }
             const materialized = await materializeHomeIrohEndpointDescriptor({
                 env: process.env,
-                sourceDescriptorRevision,
                 continuityStore,
             });
-            if (materialized.status === 'ready') {
-                await reserveRelocatedHomeConnectionDescriptor({
-                    env: process.env,
-                    continuityStore,
-                    minimumOuterRevisionExclusive: sourceDescriptorRevision,
-                    irohEndpoint: materialized.endpoint,
-                });
-            }
-            return materialized;
+            if (materialized.status === 'failed') return materialized;
+            const connectionDescriptor = await reserveRelocatedHomeConnectionDescriptor({
+                env: process.env,
+                continuityStore,
+                minimumOuterRevisionExclusive: sourceDescriptorRevision,
+                irohEndpoint: materialized.status === 'ready' ? materialized.endpoint : null,
+            });
+            return { status: 'ready', connectionDescriptor };
         })().finally(async () => {
             await shutdownDbClient();
         });
         process.stdout.write(`${JSON.stringify(result)}\n`);
+        return;
+    }
+
+    const claimHomeOwner = readHomeOwnerClaimRequest(argv);
+    if (claimHomeOwner) {
+        // The claim needs the Home's database and nothing else: no auth module,
+        // no master secret, no key material. It grants Home governance only, so
+        // opening any of those would be unnecessary exposure for a command an
+        // operator runs from a shell.
+        await admitPersonalHomeMaintenance('ordinary');
+        const { initDbSqlite, shutdownDbClient } = await import('@/storage/db');
+        await initDbSqlite();
+        const claim = await runHomeOwnerClaimCommand(claimHomeOwner).finally(async () => {
+            await shutdownDbClient();
+        });
+        process.stdout.write(`${JSON.stringify(claim.output)}\n`);
+        process.exitCode = claim.exitCode;
         return;
     }
 

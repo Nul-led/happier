@@ -17,7 +17,7 @@ import {
     accountDirectoryProtocolErrorResponse,
 } from "./accountDirectoryErrors";
 import {
-    AccountDirectoryHomeWriteRequestSchema,
+    AccountDirectoryHomePutRequestSchema,
     AccountDirectoryHomePutResponseV1Schema,
     AccountDirectoryHomeDeleteParamsV1Schema,
     AccountDirectoryHomeDeleteRequestV1Schema,
@@ -43,7 +43,6 @@ import {
     deleteAccountHomeDirectoryEntry,
     listAccountHomeDirectory,
     mintAccountHomeLoginAssertion,
-    publishAccountHomeDirectoryDescriptor,
     readAccountDirectoryMe,
     redeemHomeLoginAssertion,
     setPreferredAccountHome,
@@ -93,17 +92,8 @@ export function registerAccountDirectoryRoutes(app: Fastify): void {
         errorHandler: accountDirectoryRouteErrorHandler,
         preHandler: [app.authenticate],
         config: { allowAccountDirectoryToken: true, connectionAuthFailureError: "invalid_token", rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.mutate") },
-        schema: { params: AccountDirectoryHomeDeleteParamsV1Schema, body: AccountDirectoryHomeWriteRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryHomePutResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 409: AccountDirectoryRouteErrorResponseV1Schema } },
-    }, async (request, reply) => reply.send(request.body.v === 2
-        ? await publishAccountHomeDirectoryDescriptor({
-            accountId: request.userId,
-            homeServerIdentityId: request.params.homeServerIdentityId,
-            label: request.body.label,
-            minimumOuterRevisionExclusive: request.body.minimumOuterRevisionExclusive,
-            canonicalServerUrl: request.body.canonicalServerUrl,
-            endpoints: request.body.endpoints,
-        })
-        : await upsertAccountHomeDirectoryEntry({
+        schema: { params: AccountDirectoryHomeDeleteParamsV1Schema, body: AccountDirectoryHomePutRequestSchema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: AccountDirectoryHomePutResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 409: AccountDirectoryRouteErrorResponseV1Schema } },
+    }, async (request, reply) => reply.send(await upsertAccountHomeDirectoryEntry({
             accountId: request.userId,
             homeServerIdentityId: request.params.homeServerIdentityId,
             label: request.body.label,
@@ -193,7 +183,7 @@ export function registerHomeLoginRoute(app: Fastify, params: Readonly<{
     app.post(HOME_LOGIN_HTTP_PATH_V1, {
         errorHandler: accountDirectoryRouteErrorHandler,
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, "accountDirectory.assertionRedeem") },
-        schema: { body: HomeLoginRedemptionRequestV1Schema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: HomeLoginRedemptionResponseV1Schema, 202: HomeLoginRedemptionApprovalRequiredV1Schema, 401: AccountDirectoryRouteErrorResponseV1Schema, 503: AccountDirectoryRouteErrorResponseV1Schema } },
+        schema: { body: HomeLoginRedemptionRequestV1Schema, response: { ...ACCOUNT_DIRECTORY_BOUNDARY_ERROR_RESPONSES, 200: HomeLoginRedemptionResponseV1Schema, 202: HomeLoginRedemptionApprovalRequiredV1Schema, 401: AccountDirectoryRouteErrorResponseV1Schema, 403: AccountDirectoryRouteErrorResponseV1Schema, 503: AccountDirectoryRouteErrorResponseV1Schema } },
     }, async (request, reply) => {
         await auth.init();
         const body = request.body;
@@ -208,7 +198,10 @@ export function registerHomeLoginRoute(app: Fastify, params: Readonly<{
                 tx,
                 accountId,
                 undefined,
-                { kind: "account", authority: "present_user" },
+                {
+                    kind: "account",
+                    authority: "present_user",
+                },
             ),
         });
         return "outcome" in result && result.outcome === "approval_required"

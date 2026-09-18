@@ -1,10 +1,13 @@
 import { type Fastify } from "../../types";
 import { z } from "zod";
 import { logPublicShareAccess, getIpAddress, getUserAgent } from "@/app/share/accessLogger";
-import { PROFILE_SELECT, toShareUserProfile } from "@/app/share/types";
+import { isPublicSessionShareActive } from "@/app/share/publicSessionSharePublication";
+import { ACCOUNT_DISPLAY_PROFILE_SELECT, toShareUserProfile } from "@/app/account/profile/accountDisplayProfile";
 import { createHash } from "crypto";
-import { auth } from "@/app/auth/auth";
-import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
+import {
+    SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR,
+} from "@/app/api/utils/apiTokenRouteAdmission";
+import { readOptionalPublicAuthDisposition } from "@/app/api/utils/optionalPublicAuth";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { parseSessionMessageRole } from "@/app/session/messageRole/resolveSessionMessageRole";
 import {
@@ -64,23 +67,6 @@ const PublicShareMessagesQuerySchema = z.object({
     limit: z.coerce.number().int().min(1).max(PUBLIC_SHARE_MESSAGES_MAX_PAGE_ROWS).optional(),
 }).optional();
 
-async function getOptionalAuthenticatedUserId(request: any): Promise<string | null> {
-    const authHeader = request?.headers?.authorization;
-    if (!authHeader || typeof authHeader !== 'string' || !authHeader.startsWith('Bearer ')) {
-        return null;
-    }
-
-    try {
-        const token = authHeader.substring(7);
-        const verified = await auth.verifyTokenForRoute(token);
-        return verified && !isRestrictedAuthTokenKind(verified.authTokenKind)
-            ? verified.userId
-            : null;
-    } catch {
-        return null;
-    }
-}
-
 type PublicShareUseRecord = Readonly<{
     id: string;
     maxUses: number | null;
@@ -128,6 +114,12 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             querystring: PublicShareConsentQuerySchema,
         }
     }, async (request, reply) => {
+        // Resolve a presented credential before processing the public capability.
+        // A restricted Session runtime must never fall through as an anonymous viewer.
+        const optionalAuth = await readOptionalPublicAuthDisposition(request.headers?.authorization);
+        if (optionalAuth.status === "session_runtime_forbidden") {
+            return reply.code(403).send({ error: SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR });
+        }
         const { token } = request.params;
         const { consent } = request.query || {};
         const tokenHashDigest = createHash('sha256').update(token, 'utf8').digest();
@@ -135,9 +127,9 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
         tokenHash.set(tokenHashDigest);
         const tokenHashHex = tokenHashDigest.toString("hex");
 
-        // Optional auth: never call `app.authenticate()` here because it sends a reply on failure,
-        // which can cause "Reply was already sent" issues for public routes.
-        const userId = await getOptionalAuthenticatedUserId(request);
+        const userId = optionalAuth.status === "authenticated"
+            ? optionalAuth.principal.userId
+            : null;
         const ipAddress = getIpAddress(request.headers);
         const userAgent = getUserAgent(request.headers);
         captureAccountStoredContentCompatibilityForHttpRequest(request);
@@ -165,7 +157,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             }
 
             // Check if expired
-            if (publicShare.expiresAt && publicShare.expiresAt < new Date()) {
+            if (!isPublicSessionShareActive(publicShare)) {
                 return { error: 'Public share not found or expired' };
             }
 
@@ -185,7 +177,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                     active: true,
                     lastActiveAt: true,
                     account: {
-                        select: PROFILE_SELECT,
+                        select: ACCOUNT_DISPLAY_PROFILE_SELECT,
                     },
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 },
@@ -376,6 +368,12 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             querystring: PublicShareMessagesQuerySchema,
         }
     }, async (request, reply) => {
+        // Resolve a presented credential before processing either public capability.
+        // A restricted Session runtime must never fall through as an anonymous viewer.
+        const optionalAuth = await readOptionalPublicAuthDisposition(request.headers?.authorization);
+        if (optionalAuth.status === "session_runtime_forbidden") {
+            return reply.code(403).send({ error: SESSION_RUNTIME_PUBLIC_AUTH_FORBIDDEN_ERROR });
+        }
         const { token } = request.params;
         const { consent, beforeSeq, limit: requestedLimit } = request.query || {};
         const limit = requestedLimit ?? PUBLIC_SHARE_MESSAGES_DEFAULT_PAGE_ROWS;
@@ -385,10 +383,6 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
         const messagesAccessToken = Array.isArray(messageAccessTokenHeader)
             ? messageAccessTokenHeader[0]
             : messageAccessTokenHeader;
-
-        // Optional auth: never call `app.authenticate()` here because it sends a reply on failure,
-        // which can cause "Reply was already sent" issues for public routes.
-        await getOptionalAuthenticatedUserId(request);
 
         const accessResult = await inTx(async (tx) => {
             const publicShare = await tx.publicSessionShare.findUnique({
@@ -408,7 +402,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
             }
 
             // Check if expired
-            if (publicShare.expiresAt && publicShare.expiresAt < new Date()) {
+            if (!isPublicSessionShareActive(publicShare)) {
                 return { error: 'Public share not found or expired' };
             }
 
@@ -417,7 +411,7 @@ export function registerPublicShareReadRoutes(app: Fastify): void {
                 select: {
                     encryptionMode: true,
                     account: {
-                        select: PROFILE_SELECT,
+                        select: ACCOUNT_DISPLAY_PROFILE_SELECT,
                     },
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 },

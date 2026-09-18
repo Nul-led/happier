@@ -59,7 +59,7 @@ function readAutomationConversationTargetLabel(row: Readonly<{ id: string; name:
  * owner.
  */
 export function classifyAutomationConversationTargetEligibilityV1(params: Readonly<{
-    targetType: AutomationTargetType;
+    targetType: AutomationTargetType | null;
     resultDelivery: "none" | "finalResult";
 }>): "eligible" | "resultDeliveryUnsupported" {
     return params.resultDelivery === "finalResult" && params.targetType === "execution_run"

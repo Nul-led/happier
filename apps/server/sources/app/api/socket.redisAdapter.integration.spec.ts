@@ -32,15 +32,26 @@ const relayAdmissionRedis = {
     on: vi.fn(),
     set: vi.fn(),
 };
-const redisClient = {
-    name: "redis",
-    duplicate: vi.fn(() => relayAdmissionRedis),
+const adapterRedisClient = {
+    name: "redis-adapter-facing",
+    duplicate: vi.fn(),
 };
-const getRedisClient = vi.fn(() => redisClient);
+const getAdapterRedisClient = vi.fn(() => adapterRedisClient);
+const createRelayAdmissionRedisClient = vi.fn(() => relayAdmissionRedis);
 vi.mock("@/storage/redis/redis", () => ({
     closeRedisSocketClusterClient,
-    getRedisSocketClusterClient: () => getRedisClient(),
+    createRedisSocketClusterRelayAdmissionClient: () => createRelayAdmissionRedisClient(),
+    getRedisSocketClusterAdapterClient: () => getAdapterRedisClient(),
 }));
+
+const FIXED_ADAPTER_OPTIONS = {
+    streamName: "socket.io",
+    streamCount: 1,
+    channelPrefix: "socket.io",
+    useShardedPubSub: false,
+    blockTimeInMs: 100,
+    onlyPlaintext: false,
+} as const;
 
 function createFastifyLikeApp(): AppFastify {
     return { server: {} } as unknown as AppFastify;
@@ -77,19 +88,24 @@ describe("startSocket redis adapter config", () => {
 
         startSocket(createFastifyLikeApp());
 
-        expect(createAdapter).toHaveBeenCalledWith(
-            redisClient,
-            expect.objectContaining({
-                maxLen: 200000,
-                readCount: 2000,
-            }),
-        );
+        // The adapter receives the adapter-facing wrapper (whose `duplicate()`
+        // builds independently instrumented connections), while peer/tunnel
+        // coordination gets its own fail-closed connection from the same
+        // canonical Redis factory.
+        expect(createAdapter).toHaveBeenCalledWith(adapterRedisClient, {
+            ...FIXED_ADAPTER_OPTIONS,
+            maxLen: 200000,
+            readCount: 2000,
+        });
+        expect(getAdapterRedisClient).toHaveBeenCalledOnce();
+        expect(createRelayAdmissionRedisClient).toHaveBeenCalledOnce();
         expect(serverCtor).toHaveBeenCalledWith(
             expect.anything(),
             expect.objectContaining({
                 adapter: {
                     name: "adapter",
                     opts: {
+                        ...FIXED_ADAPTER_OPTIONS,
                         maxLen: 200000,
                         readCount: 2000,
                     },
@@ -108,7 +124,7 @@ describe("startSocket redis adapter config", () => {
         startSocket(createFastifyLikeApp());
 
         expect(createAdapter).toHaveBeenCalledWith(
-            redisClient,
+            adapterRedisClient,
             expect.objectContaining({
                 maxLen: 200000,
                 readCount: 2000,
@@ -118,6 +134,7 @@ describe("startSocket redis adapter config", () => {
         expect(options?.adapter).toEqual({
             name: "adapter",
             opts: {
+                ...FIXED_ADAPTER_OPTIONS,
                 maxLen: 200000,
                 readCount: 2000,
             },
@@ -134,7 +151,8 @@ describe("startSocket redis adapter config", () => {
         startSocket(createFastifyLikeApp());
 
         expect(createAdapter).not.toHaveBeenCalled();
-        expect(getRedisClient).not.toHaveBeenCalled();
+        expect(getAdapterRedisClient).not.toHaveBeenCalled();
+        expect(createRelayAdmissionRedisClient).not.toHaveBeenCalled();
         expect(serverCtor).toHaveBeenCalledWith(expect.anything(), expect.not.objectContaining({ adapter: expect.anything() }));
     });
 
@@ -148,7 +166,8 @@ describe("startSocket redis adapter config", () => {
         startSocket(createFastifyLikeApp());
 
         expect(createAdapter).not.toHaveBeenCalled();
-        expect(getRedisClient).not.toHaveBeenCalled();
+        expect(getAdapterRedisClient).not.toHaveBeenCalled();
+        expect(createRelayAdmissionRedisClient).not.toHaveBeenCalled();
     });
 
     it("supports the legacy boolean redis adapter flag when REDIS_URL is present", async () => {
@@ -162,7 +181,7 @@ describe("startSocket redis adapter config", () => {
         startSocket(createFastifyLikeApp());
 
         expect(createAdapter).toHaveBeenCalledWith(
-            redisClient,
+            adapterRedisClient,
             expect.objectContaining({
                 maxLen: 200000,
                 readCount: 2000,
@@ -181,13 +200,11 @@ describe("startSocket redis adapter config", () => {
 
         startSocket(createFastifyLikeApp());
 
-        expect(createAdapter).toHaveBeenCalledWith(
-            redisClient,
-            expect.objectContaining({
-                maxLen: 54321,
-                readCount: 222,
-            }),
-        );
+        expect(createAdapter).toHaveBeenCalledWith(adapterRedisClient, {
+            ...FIXED_ADAPTER_OPTIONS,
+            maxLen: 54321,
+            readCount: 222,
+        });
     });
 
     it("disconnects the dedicated redis client during socket shutdown", async () => {
@@ -202,6 +219,8 @@ describe("startSocket redis adapter config", () => {
         expect(shutdown).toEqual(expect.any(Function));
         await shutdown();
 
+        expect(relayAdmissionRedis.disconnect).toHaveBeenCalledWith(false);
+        expect(relayAdmissionRedis.disconnect).toHaveBeenCalledTimes(1);
         expect(closeRedisSocketClusterClient).toHaveBeenCalledTimes(1);
     });
 });

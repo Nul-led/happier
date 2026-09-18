@@ -21,6 +21,22 @@ describe("parseAutomationPatchInput", () => {
     });
 });
 
+describe("released V2 manual schedule compatibility", () => {
+    it("accepts manual create and patch input without treating it as a cadence", () => {
+        expect(parseAutomationUpsertInput({
+            name: "Run on demand",
+            enabled: true,
+            schedule: { kind: "manual" },
+            targetType: "new_session",
+            templateCiphertext: TEST_TEMPLATE_ENVELOPE,
+        }).schedule).toEqual({ kind: "manual" });
+        const patch = parseAutomationPatchInput({
+            schedule: { kind: "manual" },
+        });
+        expect("schedule" in patch ? patch.schedule : undefined).toEqual({ kind: "manual" });
+    });
+});
+
 describe("parseAutomationUpsertInput", () => {
     it("accepts existing_session target for encrypted templates", () => {
         expect(() =>

@@ -1,0 +1,277 @@
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { HOME_GOVERNANCE_POLICY_ID } from "@/app/home/governance/governancePolicy";
+import type { HomeRole } from "@/storage/enums.generated";
+
+import { archiveTeamInTx } from "./lifecycle";
+import { listTeamsForActorInTx, resolveGrantableTeamForActorInTx } from "./queries";
+
+describe("Team directory (SQLite integration)", () => {
+    let harness: LightSqliteHarness;
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({ tempDirPrefix: "happier-team-directory-", initAuth: false });
+        await db.homeGovernancePolicy.upsert({
+            where: { id: HOME_GOVERNANCE_POLICY_ID },
+            create: { id: HOME_GOVERNANCE_POLICY_ID, revision: 1, teamCreationPolicy: "self_service" },
+            update: { teamCreationPolicy: "self_service" },
+        });
+    }, 180_000);
+    afterAll(async () => { if (harness) await harness.close(); });
+
+    async function account(
+        homeRole: HomeRole = "member",
+        encryptionMode: "plain" | "e2ee" = "plain",
+    ) {
+        return db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode, homeRole },
+        });
+    }
+
+    async function team(name: string, members: ReadonlyArray<Readonly<{ id: string }>> = []) {
+        const created = await db.team.create({ data: { name } });
+        for (const member of members) {
+            await db.teamMembership.create({ data: { teamId: created.id, accountId: member.id, role: "owner" } });
+        }
+        return created;
+    }
+
+    async function list(actorAccountId: string, input: Record<string, unknown> = {}) {
+        return inTx(tx => listTeamsForActorInTx(tx, {
+            actorAccountId,
+            v: 1,
+            scope: "member",
+            archived: "active",
+            ...input,
+        } as Parameters<typeof listTeamsForActorInTx>[1]));
+    }
+
+    it("shows only the viewer's active Teams and hides archived ones from the active page", async () => {
+        const viewer = await account();
+        const stranger = await account();
+        const mine = await team(`AA ${crypto.randomUUID()}`, [viewer]);
+        const theirs = await team(`AB ${crypto.randomUUID()}`, [stranger]);
+        const archived = await team(`AC ${crypto.randomUUID()}`, [viewer]);
+        await inTx(tx => archiveTeamInTx(tx, { actorAccountId: viewer.id, teamId: archived.id }));
+
+        const active = await list(viewer.id);
+        expect(active.ok).toBe(true);
+        if (!active.ok) return;
+        const ids = active.page.items.map(item => item.id);
+        expect(ids).toContain(mine.id);
+        expect(ids).not.toContain(theirs.id);
+        expect(ids).not.toContain(archived.id);
+
+        const archivedPage = await list(viewer.id, { archived: "archived" });
+        expect(archivedPage.ok).toBe(true);
+        if (!archivedPage.ok) return;
+        expect(archivedPage.page.items.map(item => item.id)).toEqual([archived.id]);
+        expect(archivedPage.page.items[0]?.capabilities.restoreTeam).toBe(true);
+    });
+
+    it("excludes a suspended membership, which confers nothing", async () => {
+        const viewer = await account();
+        const suspended = await team(`AD ${crypto.randomUUID()}`, [viewer]);
+        await db.teamMembership.updateMany({
+            where: { teamId: suspended.id, accountId: viewer.id },
+            data: { status: "suspended" },
+        });
+
+        const page = await list(viewer.id);
+        expect(page.ok).toBe(true);
+        if (!page.ok) return;
+        expect(page.page.items.map(item => item.id)).not.toContain(suspended.id);
+    });
+
+    it("keeps the administrative scope explicit and reserved to Home authority", async () => {
+        const admin = await account("admin");
+        const stranger = await account();
+        const foreign = await team(`AE ${crypto.randomUUID()}`, [stranger]);
+
+        // The administrator's ordinary directory is still the Teams they belong to.
+        const asMember = await list(admin.id);
+        expect(asMember.ok).toBe(true);
+        if (!asMember.ok) return;
+        expect(asMember.page.items.map(item => item.id)).not.toContain(foreign.id);
+
+        const administered = await list(admin.id, { scope: "administered" });
+        expect(administered.ok).toBe(true);
+        if (!administered.ok) return;
+        const row = administered.page.items.find(item => item.id === foreign.id);
+        expect(row).toBeDefined();
+        // Administrative visibility is not membership.
+        expect(row?.viewerRole).toBeNull();
+        expect(row?.capabilities.manageMembers).toBe(false);
+
+        expect(await list(stranger.id, { scope: "administered" })).toEqual({ ok: false, error: "team_forbidden" });
+    });
+
+    it("qualifies member-derived rows while preserving the independent Home directory", async () => {
+        const viewer = await account("member", "e2ee");
+        const restricted = await team(`Restricted ${crypto.randomUUID()}`, [viewer]);
+        await db.team.update({ where: { id: restricted.id }, data: { authenticationPolicy: {
+            v: 1,
+            mode: "restricted",
+            accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+        } } });
+
+        expect(await list(viewer.id)).toEqual({ ok: false, error: "team_authentication_required" });
+        const qualified = await list(viewer.id, { authentication: {
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            authenticationAuthority: "present_user",
+        } });
+        expect(qualified.ok).toBe(true);
+        if (!qualified.ok) return;
+        expect(qualified.page.items.map((item) => item.id)).toContain(restricted.id);
+
+        const homeAdmin = await account("admin");
+        const administered = await list(homeAdmin.id, { scope: "administered" });
+        expect(administered.ok).toBe(true);
+        if (!administered.ok) return;
+        expect(administered.page.items.map((item) => item.id)).toContain(restricted.id);
+    });
+
+    it("lets structural Team administrators list a malformed policy only as repair-required", async () => {
+        const owner = await account();
+        const admin = await account();
+        const ordinary = await account();
+        const outsider = await account();
+        const malformed = await team(`Malformed ${crypto.randomUUID()}`, [owner]);
+        await db.teamMembership.createMany({ data: [
+            { teamId: malformed.id, accountId: admin.id, role: "admin" },
+            { teamId: malformed.id, accountId: ordinary.id, role: "member" },
+        ] });
+        await db.team.update({
+            where: { id: malformed.id },
+            data: { authenticationPolicy: { v: 99, mode: "restricted", providerSecret: "must-not-leak" } },
+        });
+
+        for (const actorAccountId of [owner.id, admin.id]) {
+            const result = await list(actorAccountId);
+            expect(result.ok).toBe(true);
+            if (!result.ok) continue;
+            const projected = result.page.items.find((item) => item.id === malformed.id);
+            expect(projected?.policy).toMatchObject({
+                authenticationPolicy: null,
+                authenticationPolicyStatus: "repair_required",
+            });
+            expect(JSON.stringify(projected)).not.toContain("must-not-leak");
+        }
+
+        expect(await list(ordinary.id)).toEqual({ ok: false, error: "team_authentication_unavailable" });
+        const outside = await list(outsider.id);
+        expect(outside.ok).toBe(true);
+        if (outside.ok) expect(outside.page.items.map((item) => item.id)).not.toContain(malformed.id);
+    });
+
+    it("projects owner recovery for every visible row without granting recovery authority to Team roles", async () => {
+        const homeAdmin = await account("admin");
+        const teamAdmin = await account();
+        const ordinaryMember = await account();
+        const ownerless = await db.team.create({ data: { name: `Ownerless ${crypto.randomUUID()}` } });
+        await db.teamMembership.createMany({
+            data: [
+                { teamId: ownerless.id, accountId: teamAdmin.id, role: "admin" },
+                { teamId: ownerless.id, accountId: ordinaryMember.id, role: "member" },
+            ],
+        });
+
+        const administered = await list(homeAdmin.id, { scope: "administered" });
+        expect(administered.ok).toBe(true);
+        if (!administered.ok) return;
+        expect(administered.page.items.find((item) => item.id === ownerless.id)?.recovery).toEqual({
+            kind: "owner_required",
+            canAppointOwner: true,
+        });
+
+        const asTeamAdmin = await list(teamAdmin.id);
+        expect(asTeamAdmin.ok).toBe(true);
+        if (!asTeamAdmin.ok) return;
+        expect(asTeamAdmin.page.items.find((item) => item.id === ownerless.id)?.recovery).toEqual({
+            kind: "owner_required",
+            canAppointOwner: false,
+        });
+
+        const asMember = await list(ordinaryMember.id);
+        expect(asMember.ok).toBe(true);
+        if (!asMember.ok) return;
+        expect(asMember.page.items.find((item) => item.id === ownerless.id)?.recovery).toEqual({
+            kind: "owner_required",
+            canAppointOwner: false,
+        });
+    });
+
+    it("projects null recovery while a structurally active owner exists", async () => {
+        const owner = await account();
+        const owned = await team(`Owned ${crypto.randomUUID()}`, [owner]);
+
+        const page = await list(owner.id);
+        expect(page.ok).toBe(true);
+        if (!page.ok) return;
+        expect(page.page.items.find((item) => item.id === owned.id)?.recovery).toBeNull();
+    });
+
+    it("pages by name then opaque ID, so duplicate names stay ordered and complete", async () => {
+        const viewer = await account();
+        const prefix = `Dup ${crypto.randomUUID()}`;
+        const created = [await team(prefix, [viewer]), await team(prefix, [viewer]), await team(prefix, [viewer])];
+        const expected = created.map(row => row.id).sort();
+
+        const first = await list(viewer.id, { limit: 2 });
+        expect(first.ok).toBe(true);
+        if (!first.ok) return;
+        const firstPage = first.page.items.filter(item => item.name === prefix);
+        expect(first.page.nextCursor).not.toBeNull();
+
+        const second = await list(viewer.id, { limit: 2, cursor: first.page.nextCursor });
+        expect(second.ok).toBe(true);
+        if (!second.ok) return;
+        const seen = [...firstPage, ...second.page.items.filter(item => item.name === prefix)].map(item => item.id);
+        expect([...new Set(seen)].sort()).toEqual(expected);
+    });
+
+    it("rejects a cursor minted for a different query rather than restarting at page one", async () => {
+        const viewer = await account();
+        await team(`AF ${crypto.randomUUID()}`, [viewer]);
+        const active = await list(viewer.id, { limit: 1 });
+        expect(active.ok).toBe(true);
+        if (!active.ok || active.page.nextCursor === null) return;
+
+        expect(await list(viewer.id, { archived: "archived", cursor: active.page.nextCursor }))
+            .toEqual({ ok: false, error: "invalid_team_cursor" });
+        expect(await list(viewer.id, { cursor: "not-a-cursor" }))
+            .toEqual({ ok: false, error: "invalid_team_cursor" });
+    });
+
+    it("refuses a directory read from an inactive Account", async () => {
+        const viewer = await account();
+        await team(`AG ${crypto.randomUUID()}`, [viewer]);
+        await db.account.update({ where: { id: viewer.id }, data: { status: "suspended" } });
+
+        expect(await list(viewer.id)).toEqual({ ok: false, error: "team_forbidden" });
+    });
+
+    it("resolves grantability only for an active Account's active membership in an active Team", async () => {
+        const viewer = await account("admin");
+        const active = await team(`Grantable ${crypto.randomUUID()}`, [viewer]);
+        const unrelated = await team(`Admin-only ${crypto.randomUUID()}`);
+        await expect(inTx((tx) => resolveGrantableTeamForActorInTx(tx, {
+            actorAccountId: viewer.id,
+            teamId: active.id,
+        }))).resolves.toEqual({ teamId: active.id });
+        await expect(inTx((tx) => resolveGrantableTeamForActorInTx(tx, {
+            actorAccountId: viewer.id,
+            teamId: unrelated.id,
+        }))).resolves.toBeNull();
+        await db.teamMembership.updateMany({
+            where: { teamId: active.id, accountId: viewer.id },
+            data: { status: "suspended" },
+        });
+        await expect(inTx((tx) => resolveGrantableTeamForActorInTx(tx, {
+            actorAccountId: viewer.id,
+            teamId: active.id,
+        }))).resolves.toBeNull();
+    });
+});

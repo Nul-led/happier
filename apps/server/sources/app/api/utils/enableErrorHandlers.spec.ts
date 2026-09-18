@@ -7,8 +7,22 @@ import { tmpdir } from 'node:os';
 import { z } from "zod";
 import { applyEnvValues, snapshotEnv, restoreEnv } from "../testkit/env";
 import { enableErrorHandlers } from './enableErrorHandlers';
+import { InactiveAccountError } from '@/app/auth/accountStatus';
 
 describe('enableErrorHandlers', () => {
+    it('keeps an effect-time Account lifecycle rejection opaque to an issued credential', async () => {
+        const app = Fastify();
+        enableErrorHandlers(app as Parameters<typeof enableErrorHandlers>[0]);
+        app.post('/effect-time-admission', async () => { throw new InactiveAccountError(); });
+        try {
+            const response = await app.inject({ method: 'POST', url: '/effect-time-admission' });
+            expect(response.statusCode).toBe(401);
+            expect(response.json()).toEqual({ error: 'invalid_token' });
+        } finally {
+            await app.close();
+        }
+    });
+
     it('responds 404 when UI index.html is missing (instead of 500)', async () => {
         const dir = await mkdtemp(join(tmpdir(), 'happy-ui-missing-'));
         const app = Fastify();

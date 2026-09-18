@@ -29,7 +29,7 @@ import {
     automationRunItemSelect,
 } from "./automationPersistenceSelect";
 import { classifyAutomationReplyHandoffDispatchability } from "./automationReplyHandoffDispatchability";
-import { decodeAutomationRunCause } from "./automationRunCauseCodec";
+import { decodeAutomationRunCause, isAutomationCauseRow } from "./automationRunCauseCodec";
 import type { AutomationRunItem } from "./automationTypes";
 
 export const DEFAULT_AUTOMATION_REPLY_HANDOFF_LEASE_DURATION_MS = 30_000;
@@ -54,6 +54,7 @@ export type AutomationReplyHandoffClaim = Readonly<{
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     /** Run-row revision after the durable `ready -> handingOff` claim. */
     runRevision: number;
+    recipeKind: "legacy" | "workflow-v2";
     resultEnvelope: string;
     replyContextEnvelope: string;
     target: Readonly<{
@@ -83,6 +84,7 @@ const automationReplyHandoffCandidateSelect = {
     replyHandoffAttempt: true,
     replyHandoffDueAt: true,
     revision: true,
+    workflowCustodyState: true,
     account: {
         select: automationAccountCurrentnessSelect,
     },
@@ -222,7 +224,14 @@ function isClaimPostEffectSuccessorCurrent(input: Readonly<{
         && sameAutomationAccountContentIdentityV1(input.suppliedCurrentness, currentness);
 }
 
-function isDispatchableCandidate(candidate: AutomationReplyHandoffCandidate): boolean {
+function isDispatchableCandidate(
+    candidate: AutomationReplyHandoffCandidate,
+): candidate is AutomationReplyHandoffCandidate & Readonly<{
+    originKind: "automation";
+    automationId: string;
+    causeKind: NonNullable<AutomationReplyHandoffCandidate["causeKind"]>;
+}> {
+    if (!isAutomationCauseRow(candidate)) return false;
     const currentness = deriveAutomationAccountCurrentnessWitness(candidate.account);
     if (!currentness) return false;
     return classifyAutomationReplyHandoffDispatchability({
@@ -560,6 +569,7 @@ export async function claimNextAutomationReplyHandoff(params: Readonly<{
             attempt: candidate.replyHandoffAttempt + 1,
             accountCurrentness,
             runRevision: candidate.revision + 1,
+            recipeKind: candidate.workflowCustodyState !== null ? "workflow-v2" as const : "legacy" as const,
             resultEnvelope: candidate.resultEnvelope,
             replyContextEnvelope: candidate.replyContextEnvelope,
             target: {

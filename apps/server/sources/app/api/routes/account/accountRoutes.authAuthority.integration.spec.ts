@@ -32,7 +32,6 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -65,6 +64,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
             auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
             auth.createApiToken({
                 accountId: account.id,
+                tokenId: crypto.randomUUID(),
                 label: "Settings automation regression",
             }),
         ]);
@@ -123,6 +123,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
         });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Encryption migration regression",
         });
         const app = createTestApp();
@@ -168,6 +169,7 @@ describe("accountRoutes (direct-route auth authority) (integration)", () => {
         });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Read-only automation",
         });
         const app = createTestApp();

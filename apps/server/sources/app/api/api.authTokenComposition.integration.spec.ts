@@ -11,7 +11,9 @@ import {
     ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1,
     createHomeCredentialDestinationDigestV1,
     createKeyChallengeV2SigningInput,
+    decodeBase64,
     encodeBase64,
+    openBoxBundle,
     type HomeLoginAssertionV1,
     type KeyChallengeV2IssueResponse,
 } from "@happier-dev/protocol";
@@ -96,7 +98,6 @@ describe("API auth-token composition (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -133,7 +134,7 @@ describe("API auth-token composition (integration)", () => {
                 kind: "terminal",
                 authority: "account_automation",
             }),
-            auth.createApiToken({ accountId: account.id, label: "Composition PAT" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "Composition PAT" }),
         ]);
         const app = createProductionCompositionApp();
 
@@ -154,7 +155,28 @@ describe("API auth-token composition (integration)", () => {
                 url: "/v1/account-directory/me",
                 headers: { authorization: `Bearer ${accountToken}` },
             });
-            expect(accountDirectoryResponse.statusCode).toBe(200);
+            expect(accountDirectoryResponse.statusCode).toBe(403);
+            expect(accountDirectoryResponse.json()).toEqual({ error: "invalid_request" });
+            const forbiddenMutation = await app.inject({
+                method: "PUT",
+                url: "/v1/account-directory/homes/srv_forbidden_home",
+                headers: { authorization: `Bearer ${accountToken}` },
+                payload: {
+                    v: 1,
+                    label: "Must not be written",
+                    connectionDescriptor: {
+                        v: 1,
+                        homeServerIdentityId: "srv_forbidden_home",
+                        canonicalServerUrl: "https://forbidden-home.example.test",
+                        revision: 1,
+                        endpoints: [{ kind: "https", url: "https://forbidden-home.example.test" }],
+                    },
+                },
+            });
+            expect(forbiddenMutation.statusCode).toBe(403);
+            expect(forbiddenMutation.json()).toEqual({ error: "invalid_request" });
+            expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } }))
+                .toBe(0);
 
             for (const url of [
                 "/v1/auth/ping",
@@ -386,6 +408,95 @@ describe("API auth-token composition (integration)", () => {
             expect(homeResponse.json()).toEqual({
                 error: "present_user_required",
             });
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("redeems an Account Service assertion into an evidence-free ordinary Home credential", async () => {
+        const canonicalServerUrl = "https://home-assertion-credential.example.test";
+        harness.resetEnv({
+            HAPPIER_CANONICAL_SERVER_URL: canonicalServerUrl,
+            HAPPIER_PUBLIC_SERVER_URL: canonicalServerUrl,
+            HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED: "0",
+        });
+        resetHomeConnectionDescriptorRevisionOwnerForTests();
+
+        const homeServerIdentityId = await getOrCreateServerIdentityId(process.env);
+        const descriptor = {
+            v: 1 as const,
+            homeServerIdentityId,
+            canonicalServerUrl,
+            revision: 1,
+            endpoints: [{ kind: "https" as const, url: canonicalServerUrl }],
+        };
+        const issuerKeyPair = tweetnacl.sign.keyPair();
+        const clientKeyPair = tweetnacl.box.keyPair();
+        const account = await db.account.create({
+            data: { publicKey: "api-home-assertion-credential-account" },
+            select: { id: true },
+        });
+        const issuerServerIdentityId = "srv_home_assertion_credential_issuer";
+        const issuerSigningKeyId = createHash("sha256")
+            .update(issuerKeyPair.publicKey)
+            .digest("hex");
+        await db.accountDirectoryLink.create({
+            data: {
+                accountId: account.id,
+                issuerServerIdentityId,
+                issuerSubjectId: account.id,
+                issuerSigningKeyId,
+                issuerSigningPublicKey: copyOwnedBytes(issuerKeyPair.publicKey),
+            },
+        });
+        const nowMs = Date.now();
+        const unsignedAssertion: Omit<HomeLoginAssertionV1, "signatureBase64Url"> = {
+            v: 1,
+            purpose: "happier.home-login",
+            issuerServerIdentityId,
+            issuerSubjectId: account.id,
+            audienceHomeServerIdentityId: homeServerIdentityId,
+            credentialDestinationDigestBase64Url: createHomeCredentialDestinationDigestV1(descriptor),
+            clientBoxPublicKeyBase64: encodeOwned(clientKeyPair.publicKey),
+            issuedAtMs: nowMs,
+            expiresAtMs: nowMs + 120_000,
+            keyId: issuerSigningKeyId,
+        };
+        const assertion: HomeLoginAssertionV1 = {
+            ...unsignedAssertion,
+            signatureBase64Url: encodeBase64(
+                tweetnacl.sign.detached(
+                    canonicalHomeLoginAssertionBytes(unsignedAssertion),
+                    issuerKeyPair.secretKey,
+                ),
+                "base64url",
+            ),
+        };
+        const app = createProductionCompositionApp();
+
+        try {
+            await app.ready();
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/home-login",
+                payload: { v: 1, assertion },
+            });
+
+            expect(response.statusCode).toBe(200);
+            const body = response.json() as { sealedHomeTokenBase64Url: string };
+            const opened = openBoxBundle({
+                bundle: decodeBase64(body.sealedHomeTokenBase64Url, "base64url"),
+                recipientSecretKeyOrSeed: clientKeyPair.secretKey,
+            });
+            expect(opened).not.toBeNull();
+            const credential = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(opened!)) as { token: string };
+            const verified = await auth.verifyToken(credential.token);
+            expect(verified).toMatchObject({
+                userId: account.id,
+                authTokenKind: "account",
+                authority: "present_user",
+            });
+            expect(verified).not.toHaveProperty("authenticationEvidence");
         } finally {
             await app.close();
         }

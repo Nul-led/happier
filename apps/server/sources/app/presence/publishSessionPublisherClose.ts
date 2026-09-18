@@ -1,4 +1,4 @@
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import {
     buildSessionActivityEphemeral,
     buildUpdateSessionUpdate,
@@ -24,7 +24,7 @@ export async function publishSessionPublisherClose(params: Readonly<{
     skipSenderConnection?: ClientConnection;
 }>): Promise<void> {
     const session = await loadSessionTranscriptPublicationRecipientProjection(params.sessionId);
-    if (session) await Promise.all(params.closed.participantCursors.map(async ({ accountId, cursor }) => {
+    if (session) await Promise.all(params.closed.recipientCursors.map(async ({ accountId, cursor }) => {
         const projection = projectSessionTranscriptPublicationRealtimeProjection(
             {
                 active: false,
@@ -62,8 +62,8 @@ export async function publishSessionPublisherClose(params: Readonly<{
         ),
         recipientFilter: { type: "user-scoped-only" },
     });
-    await refreshSessionParticipantBadgePushes({
+    await refreshTrackedSessionAccountBadgePushes({
         badgeAttentionChanged: params.closed.badgeAttentionChanged,
-        participantCursors: params.closed.participantCursors,
+        sessionId: params.sessionId,
     });
 }

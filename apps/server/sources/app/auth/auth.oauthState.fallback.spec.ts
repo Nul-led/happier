@@ -11,7 +11,13 @@ vi.mock("@/storage/db", () => ({
     },
 }));
 
-describe("auth (oauth state fallback)", () => {
+/**
+ * Both cases reset modules and re-import the auth graph, then run the real
+ * `auth.init()`; that cold import plus key derivation costs tens of seconds on a
+ * loaded machine, well past the suite default. The timeout is the observed cost
+ * of this file's own setup, not a tolerance for slow product code.
+ */
+describe("auth (oauth state fallback)", { timeout: 120_000 }, () => {
     const envBackup = snapshotEnv();
 
     afterEach(() => {
@@ -23,7 +29,7 @@ describe("auth (oauth state fallback)", () => {
 
     it("keeps auth token flow available when oauth-state backend init fails", async () => {
         applyEnvValues({ HANDY_MASTER_SECRET: "fallback-seed" });
-        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status: "active" });
 
         vi.doMock("privacy-kit", async (importOriginal) => {
             const actual = await importOriginal<typeof import("privacy-kit")>();

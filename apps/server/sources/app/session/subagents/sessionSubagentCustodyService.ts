@@ -21,7 +21,8 @@ import {
 } from '@happier-dev/protocol';
 import { readEncryptionFeatureEnv } from '@/app/features/catalog/readFeatureEnv';
 import { resolveEncryptionWriteRejectionCode, type EncryptionPolicyRejectionCode } from '@/app/session/encryptionRejectionCodes';
-import { checkSessionAccess } from '@/app/share/accessControl';
+import { assertSessionCapabilityInTx } from "@/app/session/access/sessionAccess";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { inTx, type Tx } from '@/storage/inTx';
 import { isPrismaErrorCode } from '@/storage/prisma';
 
@@ -31,6 +32,7 @@ export type MutateSessionSubagentCustodyParams = Readonly<{
     actorUserId: string;
     sessionId: string;
     request: SessionSubagentCustodyMutationRequestV1;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type MutateSessionSubagentCustodyResult =
@@ -180,9 +182,10 @@ async function mutateInTx(params: Readonly<{
     request: SessionSubagentCustodyMutationRequestV1;
     digest: string;
     now: Date;
+    authentication: SessionAccessAuthentication;
 }>): Promise<MutateSessionSubagentCustodyResult> {
     const { tx, actorUserId, sessionId, request, digest, now } = params;
-    if (!await checkSessionAccess(actorUserId, sessionId, tx)) return { ok: false, error: 'session-not-found' };
+    if (!(await assertSessionCapabilityInTx({ tx, accountId: actorUserId, sessionId, capability: 'readTranscript', authentication: params.authentication })).ok) return { ok: false, error: 'session-not-found' };
     const session = await tx.session.findUnique({ where: { id: sessionId }, select: { encryptionMode: true } });
     if (!session) return { ok: false, error: 'session-not-found' };
     if (!hasValidCustodyKey({ sessionId, request })) return { ok: false, error: 'invalid-params' };
@@ -310,12 +313,12 @@ export async function mutateSessionSubagentCustody(params: MutateSessionSubagent
     const request = parsed.data;
     const digest = requestDigest(request);
     try {
-        return await inTx((tx) => mutateInTx({ tx, actorUserId: params.actorUserId, sessionId: params.sessionId, request, digest, now: new Date() }));
+        return await inTx((tx) => mutateInTx({ tx, actorUserId: params.actorUserId, sessionId: params.sessionId, request, digest, now: new Date(), authentication: params.authentication }));
     } catch (error) {
         if (isPrismaErrorCode(error, 'P2002')) {
             try {
                 const receipt = await inTx(async (tx) => {
-                    if (!await checkSessionAccess(params.actorUserId, params.sessionId, tx)) return undefined;
+                    if (!(await assertSessionCapabilityInTx({ tx, accountId: params.actorUserId, sessionId: params.sessionId, capability: 'readTranscript', authentication: params.authentication })).ok) return undefined;
                     return tx.sessionSubagentCustodyReceipt.findUnique({
                         where: {
                             accountId_sessionId_custodyKey_operationId: {
@@ -344,13 +347,14 @@ export async function listSessionSubagentCustody(params: Readonly<{
     actorUserId: string;
     sessionId: string;
     query: SessionSubagentCustodyListQueryV1;
+    authentication: SessionAccessAuthentication;
 }>): Promise<ListSessionSubagentCustodyResult> {
     const parsed = SessionSubagentCustodyListQueryV1Schema.safeParse(params.query);
     if (!params.actorUserId || !params.sessionId || !parsed.success) return { ok: false, error: 'invalid-params' };
     if (!hasValidCustodyKey({ sessionId: params.sessionId, request: parsed.data })) return { ok: false, error: 'invalid-params' };
     try {
         const rows = await inTx(async (tx) => {
-            if (!await checkSessionAccess(params.actorUserId, params.sessionId, tx)) return null;
+            if (!(await assertSessionCapabilityInTx({ tx, accountId: params.actorUserId, sessionId: params.sessionId, capability: 'readTranscript', authentication: params.authentication })).ok) return null;
             const retiredGeneration = await tx.sessionSubagentCustodyRetiredGeneration.findUnique({
                 where: {
                     accountId_pluginId_immutableGenerationId: {

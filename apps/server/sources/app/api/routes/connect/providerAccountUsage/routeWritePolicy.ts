@@ -7,6 +7,11 @@ import type {
     SealedProviderAccountUsageSnapshotV1,
 } from "@happier-dev/protocol";
 import { isPrismaErrorCode, type TransactionClient } from "@/storage/prisma";
+import {
+    compareConnectedServiceQuotaObservationRecency,
+    isConnectedServiceQuotaObservationAtOrBeforeNow,
+    mergeProviderAccountSubscription,
+} from "@happier-dev/protocol";
 
 import { inTx } from "@/storage/inTx";
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
@@ -146,6 +151,10 @@ function sameLegacyQuotaProjections(
 async function writeProviderAccountUsageRecordWithPolicyInClient(
     params: ProviderAccountUsageWritePolicyParams & Readonly<{ client: ProviderAccountUsagePolicyClient }>,
 ): Promise<"written" | "noop" | "stale"> {
+    const nowMs = Date.now();
+    if (!isConnectedServiceQuotaObservationAtOrBeforeNow({ observedAtMs: params.fetchedAt, nowMs })) {
+        throw new ProviderAccountUsagePayloadInvariantError("Provider account usage observation time must not be in the future");
+    }
     const account = await params.client.account.findUnique({
         where: { id: params.accountId },
         select: {
@@ -200,9 +209,17 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
 
         const existingFingerprint = normalizeFingerprint(existing.metadata?.materialFingerprint);
         const existingFetchedAt = existing.fetchedAt ?? null;
-        const isNewer = existingFetchedAt === null || params.fetchedAt > existingFetchedAt;
+        const isNewer = existingFetchedAt === null || compareConnectedServiceQuotaObservationRecency({
+            existingObservedAtMs: existingFetchedAt,
+            incomingObservedAtMs: params.fetchedAt,
+            nowMs,
+        }) === "incoming_newer";
         const clearsRefreshRequest = shouldClearRefreshRequest(existing.refreshRequestedAt, params.fetchedAt);
         const preservesRefreshRequest = shouldPreserveRefreshRequest(existing.refreshRequestedAt, params.fetchedAt);
+        const previousSubscription = existing.snapshot?.subscription;
+        const incomingSubscription = params.snapshot?.subscription;
+        const mergedSubscription = mergeProviderAccountSubscription(previousSubscription, incomingSubscription);
+        const subscriptionAdvanced = JSON.stringify(mergedSubscription) !== JSON.stringify(previousSubscription);
         const existingLegacyQuotaProjections =
             existing.metadata?.legacyQuotaCompatibilityProjections ?? [];
         const nextLegacyQuotaProjections =
@@ -224,7 +241,7 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
         let nextWrite;
         let result: "written" | "noop" | "stale";
         if (!incomingFingerprint) {
-            if (!isNewer) return "stale";
+            if (!isNewer && !subscriptionAdvanced) return "stale";
             nextWrite = buildWriteParams(params, {
                 legacyQuotaCompatibilityProjections:
                     nextLegacyQuotaProjections,
@@ -236,6 +253,7 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
                 !isNewer
                 && !clearsRefreshRequest
                 && !compatibilityProjectionChanged
+                && !subscriptionAdvanced
             ) return "noop";
             const preservedStatus = existing.status === "refresh_requested" ? params.status : existing.status;
             nextWrite = buildWriteParams(params, {
@@ -255,7 +273,7 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
             });
             result = "written";
         } else {
-            if (!isNewer) return "stale";
+            if (!isNewer && !subscriptionAdvanced) return "stale";
             nextWrite = buildWriteParams(params, {
                 materialFingerprint: incomingFingerprint,
                 legacyQuotaCompatibilityProjections:
@@ -263,6 +281,19 @@ async function writeProviderAccountUsageRecordWithPolicyInClient(
                 ...(preservesRefreshRequest ? { refreshRequestedAt: existing.refreshRequestedAt } : {}),
             });
             result = "written";
+        }
+
+        if (subscriptionAdvanced && mergedSubscription) {
+            const baseSnapshot = isNewer ? params.snapshot : existing.snapshot;
+            nextWrite = {
+                ...nextWrite,
+                snapshot: baseSnapshot ? { ...baseSnapshot, subscription: mergedSubscription } : undefined,
+                ...(!isNewer ? {
+                    fetchedAt: existing.fetchedAt ?? params.fetchedAt,
+                    staleAfterMs: existing.staleAfterMs ?? params.staleAfterMs,
+                    status: existing.status === "refresh_requested" ? params.status : existing.status,
+                } : {}),
+            };
         }
 
         const updated = await updateProviderAccountUsageRecordIfCurrent(nextWrite, {

@@ -5,9 +5,10 @@ import {
 } from "@happier-dev/protocol";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-    applySessionTurnMutation,
+    applySessionTurnMutation as applySessionTurnMutationWithAuthentication,
     updateSessionAgentState,
 } from "@/app/session/sessionWriteService";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { eventRouter } from "@/app/events/eventRouter";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
@@ -17,6 +18,14 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { admitSessionLifecycleAutomationRunsTx } from "./automationSessionLifecycleAdmission";
 import { encodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
+
+const authentication = createPresentUserSessionAccessAuthentication();
+
+function applySessionTurnMutation(
+    params: Omit<Parameters<typeof applySessionTurnMutationWithAuthentication>[0], "authentication">,
+) {
+    return applySessionTurnMutationWithAuthentication({ ...params, authentication });
+}
 
 function failRunCreate(automationId: string) {
     const mutable = db as any;

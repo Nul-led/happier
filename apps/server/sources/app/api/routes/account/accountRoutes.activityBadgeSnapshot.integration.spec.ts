@@ -7,7 +7,7 @@ import { auth } from "@/app/auth/auth";
 import { enableAuthentication } from "../../utils/enableAuthentication";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
-import { accountRoutes } from "./accountRoutes";
+import { registerAccountActivityBadgeSnapshotRoute } from "./registerAccountActivityBadgeSnapshotRoute";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
 
@@ -17,7 +17,7 @@ function createTestApp() {
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
     enableAuthentication(typed);
-    accountRoutes(typed);
+    registerAccountActivityBadgeSnapshotRoute(typed);
     return trackApp(typed);
 }
 
@@ -66,11 +66,22 @@ describe("accountRoutes (activity badge snapshot) (integration)", () => {
             select: { id: true },
         });
 
-        // Intentionally use raw SQL so this test is valid before the schema is implemented.
-        // Once the column exists, this becomes the simplest way to set it without expanding test fixtures.
-        await db.$executeRawUnsafe(
-            `UPDATE "Session" SET "lastViewedSessionSeq" = 1 WHERE "id" = '${session.id}'`,
-        );
+        await db.accountSessionReadState.create({
+            data: {
+                accountId: account.id,
+                sessionId: session.id,
+                lastViewedSessionSeq: 1,
+                unreadSince: null,
+            },
+        });
+        await db.accountSessionFollow.create({
+            data: {
+                accountId: account.id,
+                sessionId: session.id,
+                following: true,
+                notificationLevel: "important",
+            },
+        });
 
         const res = await app.inject({
             method: "GET",
@@ -107,9 +118,21 @@ describe("accountRoutes (activity badge snapshot) (integration)", () => {
             select: { id: true },
         });
 
-        await db.$executeRawUnsafe(
-            `UPDATE "Session" SET "lastViewedSessionSeq" = 1, "pendingPermissionRequestCount" = 2, "pendingUserActionRequestCount" = 1 WHERE "id" = '${session.id}'`,
-        );
+        await db.session.update({
+            where: { id: session.id },
+            data: {
+                pendingPermissionRequestCount: 2,
+                pendingUserActionRequestCount: 1,
+            },
+        });
+        await db.accountSessionReadState.create({
+            data: {
+                accountId: account.id,
+                sessionId: session.id,
+                lastViewedSessionSeq: 1,
+                unreadSince: null,
+            },
+        });
 
         const res = await app.inject({
             method: "GET",

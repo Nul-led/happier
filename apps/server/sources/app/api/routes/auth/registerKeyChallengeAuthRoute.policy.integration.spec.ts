@@ -64,7 +64,8 @@ describe("key-challenge v2 policy and stable audience (integration)", () => {
             url: "/v1/auth",
             payload,
         });
-        expect(ordinaryResponse.statusCode).not.toBe(426);
+        expect(ordinaryResponse.statusCode, ordinaryResponse.body).toBe(200);
+        expect(ordinaryResponse.json()).toMatchObject({ success: true });
         await ordinaryApp.close();
     });
 

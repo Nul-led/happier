@@ -167,7 +167,7 @@ describe("machineUpdateHandler authenticated machine identity binding", () => {
         finalizeMachineSessionTerminal.mockResolvedValueOnce({
             status: "closed",
             activeAt: committedFence,
-            participantCursors: [],
+            recipientCursors: [],
             badgeAttentionChanged: false,
         });
         const socket = createFakeSocket({
@@ -292,11 +292,6 @@ describe("machineUpdateHandler authenticated machine identity binding", () => {
 
     it.each([
         {
-            name: "user-scoped",
-            data: { clientType: "user-scoped" },
-            machine: { revokedAt: null, replacedByMachineId: null },
-        },
-        {
             name: "revoked",
             data: { clientType: "machine-scoped", machineId: "m1" },
             machine: { revokedAt: new Date(1), replacedByMachineId: null },
@@ -306,12 +301,13 @@ describe("machineUpdateHandler authenticated machine identity binding", () => {
             data: { clientType: "machine-scoped", machineId: "m1" },
             machine: { revokedAt: null, replacedByMachineId: "m2" },
         },
-    ])("rejects machine terminal capture and finalize from $name sockets before presence", async ({
+    ])("rejects machine terminal capture from $name sockets but delegates finalize retry to the canonical owner", async ({
         data,
         machine,
     }) => {
         const { machineUpdateHandler } = await import("./machineUpdateHandler");
         machineFindFirst.mockResolvedValue(machine);
+        finalizeMachineSessionTerminal.mockResolvedValueOnce({ status: "already_inactive" });
         const socket = createFakeSocket({ data });
         machineUpdateHandler("u1", socket as any, defaultMachineUpdateHandlerOptions);
 
@@ -331,15 +327,41 @@ describe("machineUpdateHandler authenticated machine identity binding", () => {
         );
 
         expect(captureMachineSessionTerminal).not.toHaveBeenCalled();
-        expect(finalizeMachineSessionTerminal).not.toHaveBeenCalled();
+        expect(finalizeMachineSessionTerminal).toHaveBeenCalledWith({
+            target: {
+                binding: { accountId: "u1", machineId: "m1", sessionId: "s1" },
+                authority: { kind: "generation", publisherGeneration: 7n },
+            },
+        });
         expect(captureCallback).toHaveBeenCalledWith(expect.objectContaining({
             status: "rejected",
             reason: "wrong_machine_socket",
         }));
         expect(finalizeCallback).toHaveBeenCalledWith(expect.objectContaining({
-            status: "rejected",
-            reason: "wrong_machine_socket",
+            status: "already_inactive",
         }));
+    }, 30_000);
+
+    it("rejects terminal capture and finalize from a non-machine socket", async () => {
+        const { machineUpdateHandler } = await import("./machineUpdateHandler");
+        const socket = createFakeSocket({ data: { clientType: "user-scoped" } });
+        machineUpdateHandler("u1", socket as any, defaultMachineUpdateHandlerOptions);
+
+        const captureCallback = vi.fn();
+        await getSocketHandler(socket, MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1)(
+            { v: 1, sessionId: "s1" },
+            captureCallback,
+        );
+        const finalizeCallback = vi.fn();
+        await getSocketHandler(socket, MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1)(
+            { v: 1, sessionId: "s1", authority: { kind: "generation", publisherGeneration: "7" } },
+            finalizeCallback,
+        );
+
+        expect(captureMachineSessionTerminal).not.toHaveBeenCalled();
+        expect(finalizeMachineSessionTerminal).not.toHaveBeenCalled();
+        expect(captureCallback).toHaveBeenCalledWith(expect.objectContaining({ reason: "wrong_machine_socket" }));
+        expect(finalizeCallback).toHaveBeenCalledWith(expect.objectContaining({ reason: "wrong_machine_socket" }));
     });
 
     it("keeps machine-alive failures structural in logs", async () => {

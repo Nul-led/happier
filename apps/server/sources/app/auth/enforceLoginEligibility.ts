@@ -1,19 +1,16 @@
 import { LRUTtlMap } from "@/utils/collections/lru";
 import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
 import type { LoginEligibilityResult } from "@/app/auth/loginEligibilityResult";
-import { isAccountDisabled } from "@/app/auth/accountDisable";
-import { findIdentityProviderById } from "@/app/auth/providers/identityProviders/registry";
+import { isActiveHomeAccountStatus, type AccountStatusV1 } from "@happier-dev/protocol";
+import { resolveIdentityRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import { observeLoginEligibilityStage, recordLoginEligibilityCache } from "@/app/monitoring/metrics/authMetrics";
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 
 const DEFAULT_LOGIN_ELIGIBILITY_CACHE_TTL_MS = 1_000;
 const DEFAULT_LOGIN_ELIGIBILITY_CACHE_MAX_ENTRIES = 20_000;
-const DEFAULT_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS = 5_000;
-const DEFAULT_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_MAX_ENTRIES = 20_000;
 
 let loginEligibilityPositiveCache: LRUTtlMap<string, true> | null = null;
-let loginEligibilityAccountSnapshotCache: LRUTtlMap<string, true> | null = null;
 let loginEligibilityInflight = new Map<string, Promise<LoginEligibilityResult>>();
 
 function resolveLoginEligibilityCacheTtlMsFromEnv(env: NodeJS.ProcessEnv): number {
@@ -54,44 +51,6 @@ function getLoginEligibilityPositiveCache(env: NodeJS.ProcessEnv): LRUTtlMap<str
     return loginEligibilityPositiveCache;
 }
 
-function resolveLoginEligibilityAccountSnapshotCacheTtlMsFromEnv(env: NodeJS.ProcessEnv): number {
-    const raw = (env.AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS ?? "").toString().trim();
-    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        return DEFAULT_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS;
-    }
-    return Math.max(0, Math.min(60_000, parsed));
-}
-
-function resolveLoginEligibilityAccountSnapshotCacheMaxEntriesFromEnv(env: NodeJS.ProcessEnv): number {
-    const raw = (env.AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_MAX_ENTRIES ?? "").toString().trim();
-    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-    if (!Number.isFinite(parsed) || parsed < 0) {
-        return DEFAULT_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_MAX_ENTRIES;
-    }
-    return Math.max(0, Math.min(200_000, parsed));
-}
-
-function getLoginEligibilityAccountSnapshotCache(env: NodeJS.ProcessEnv): LRUTtlMap<string, true> | null {
-    const ttlMs = resolveLoginEligibilityAccountSnapshotCacheTtlMsFromEnv(env);
-    const maxEntries = resolveLoginEligibilityAccountSnapshotCacheMaxEntriesFromEnv(env);
-    if (ttlMs <= 0 || maxEntries <= 0) {
-        loginEligibilityAccountSnapshotCache = null;
-        return null;
-    }
-
-    const existing = loginEligibilityAccountSnapshotCache;
-    if (existing) {
-        return existing;
-    }
-
-    loginEligibilityAccountSnapshotCache = new LRUTtlMap<string, true>({
-        ttlMs,
-        maxSize: maxEntries,
-    });
-    return loginEligibilityAccountSnapshotCache;
-}
-
 export async function enforceLoginEligibility(params: {
     accountId: string;
     env: NodeJS.ProcessEnv;
@@ -108,8 +67,57 @@ export async function enforceLoginEligibility(params: {
         return { ok: false, statusCode: 401, error: "invalid-token" };
     }
 
+    // Lifecycle facts are never cached: another replica may disable or erase
+    // this Account while a provider eligibility result remains hot.
+    let account: { id: string; status: AccountStatusV1 } | null = null;
+    const accountLookupStartedAt = Date.now();
+    try {
+        account = await db.account.findUnique({
+            where: { id: accountId },
+            select: { id: true, status: true },
+        });
+        observeLoginEligibilityStage({
+            stage: "account_lookup",
+            result: "ok",
+            durationMs: Date.now() - accountLookupStartedAt,
+        });
+    } catch (error) {
+        observeLoginEligibilityStage({
+            stage: "account_lookup",
+            result: "error",
+            durationMs: Date.now() - accountLookupStartedAt,
+        });
+        log(
+            { module: "auth-login-eligibility", level: "error" },
+            "Failed to look up account for eligibility enforcement",
+            { accountId, error },
+        );
+        observeLoginEligibilityStage({
+            stage: "total",
+            result: "error",
+            durationMs: Date.now() - startedAt,
+        });
+        return { ok: false, statusCode: 503, error: "upstream_error" };
+    }
+    if (!account) {
+        observeLoginEligibilityStage({
+            stage: "total",
+            result: "error",
+            durationMs: Date.now() - startedAt,
+        });
+        return { ok: false, statusCode: 401, error: "invalid-token" };
+    }
+
+    if (!isActiveHomeAccountStatus(account.status)) {
+        observeLoginEligibilityStage({
+            stage: "total",
+            result: "error",
+            durationMs: Date.now() - startedAt,
+        });
+        return { ok: false, statusCode: 403, error: "account-disabled" };
+    }
+
     const positiveCache = getLoginEligibilityPositiveCache(params.env);
-    const accountSnapshotCache = getLoginEligibilityAccountSnapshotCache(params.env);
     if (positiveCache?.get(accountId) === true) {
         recordLoginEligibilityCache({ cache: "positive_result", result: "hit" });
         observeLoginEligibilityStage({
@@ -130,92 +138,8 @@ export async function enforceLoginEligibility(params: {
 
     const eligibilityPromise = (async (): Promise<LoginEligibilityResult> => {
         const policy = resolveAuthPolicyFromEnv(params.env);
-        let account: { id: string } | null = null;
-        if (accountSnapshotCache?.get(accountId) === true) {
-            recordLoginEligibilityCache({ cache: "account_snapshot", result: "hit" });
-            account = { id: accountId };
-        } else {
-            recordLoginEligibilityCache({ cache: "account_snapshot", result: "miss" });
-
-            const accountLookupStartedAt = Date.now();
-            try {
-                account = await db.account.findUnique({
-                    where: { id: accountId },
-                    select: { id: true },
-                });
-                observeLoginEligibilityStage({
-                    stage: "account_lookup",
-                    result: "ok",
-                    durationMs: Date.now() - accountLookupStartedAt,
-                });
-            } catch (error) {
-                observeLoginEligibilityStage({
-                    stage: "account_lookup",
-                    result: "error",
-                    durationMs: Date.now() - accountLookupStartedAt,
-                });
-                log(
-                    { module: "auth-login-eligibility", level: "error" },
-                    "Failed to look up account for eligibility enforcement",
-                    { accountId, error },
-                );
-                observeLoginEligibilityStage({
-                    stage: "total",
-                    result: "error",
-                    durationMs: Date.now() - startedAt,
-                });
-                return { ok: false, statusCode: 503, error: "upstream_error" };
-            }
-            if (!account) {
-                observeLoginEligibilityStage({
-                    stage: "total",
-                    result: "error",
-                    durationMs: Date.now() - startedAt,
-                });
-                return { ok: false, statusCode: 401, error: "invalid-token" };
-            }
-
-            const disabledCheckStartedAt = Date.now();
-            let disabled = false;
-            try {
-                disabled = await isAccountDisabled({ accountId: account.id });
-                observeLoginEligibilityStage({
-                    stage: "disabled_check",
-                    result: "ok",
-                    durationMs: Date.now() - disabledCheckStartedAt,
-                });
-            } catch (error) {
-                observeLoginEligibilityStage({
-                    stage: "disabled_check",
-                    result: "error",
-                    durationMs: Date.now() - disabledCheckStartedAt,
-                });
-                log(
-                    { module: "auth-login-eligibility", level: "error" },
-                    "Failed to check account disabled status",
-                    { accountId: account.id, error },
-                );
-                observeLoginEligibilityStage({
-                    stage: "total",
-                    result: "error",
-                    durationMs: Date.now() - startedAt,
-                });
-                return { ok: false, statusCode: 503, error: "upstream_error" };
-            }
-            if (disabled) {
-                observeLoginEligibilityStage({
-                    stage: "total",
-                    result: "error",
-                    durationMs: Date.now() - startedAt,
-                });
-                return { ok: false, statusCode: 403, error: "account-disabled" };
-            }
-
-            accountSnapshotCache?.set(account.id, true);
-        }
-
         if (policy.requiredLoginProviders.length === 0) {
-            positiveCache?.set(account.id, true);
+            positiveCache?.set(accountId, true);
             observeLoginEligibilityStage({
                 stage: "total",
                 result: "ok",
@@ -230,30 +154,29 @@ export async function enforceLoginEligibility(params: {
             const providerId = providerIdRaw.toString().trim().toLowerCase();
             if (!providerId) continue;
 
-            const provider = findIdentityProviderById(params.env, providerId);
-            if (!provider?.enforceLoginEligibility) {
-                observeLoginEligibilityStage({
-                    stage: "provider_checks",
-                    result: "error",
-                    durationMs: Date.now() - providerChecksStartedAt,
-                });
-                log(
-                    { module: "auth-policy", level: "warn" },
-                    "Required login provider is not registered for eligibility enforcement",
-                    { providerId },
-                );
-                observeLoginEligibilityStage({
-                    stage: "total",
-                    result: "error",
-                    durationMs: Date.now() - startedAt,
-                });
-                return { ok: false, statusCode: 503, error: "upstream_error" };
-            }
-
             let result: LoginEligibilityResult;
             try {
+                const provider = (await resolveIdentityRuntimeById(params.env, providerId))?.provider;
+                if (!provider?.enforceLoginEligibility) {
+                    observeLoginEligibilityStage({
+                        stage: "provider_checks",
+                        result: "error",
+                        durationMs: Date.now() - providerChecksStartedAt,
+                    });
+                    log(
+                        { module: "auth-policy", level: "warn" },
+                        "Required login provider is not registered for eligibility enforcement",
+                        { providerId },
+                    );
+                    observeLoginEligibilityStage({
+                        stage: "total",
+                        result: "error",
+                        durationMs: Date.now() - startedAt,
+                    });
+                    return { ok: false, statusCode: 503, error: "upstream_error" };
+                }
                 result = await provider.enforceLoginEligibility({
-                    accountId: account.id,
+                    accountId: accountId,
                     env: params.env,
                     policy,
                     now,
@@ -267,7 +190,7 @@ export async function enforceLoginEligibility(params: {
                 log(
                     { module: "auth-login-eligibility", level: "error" },
                     "Required login provider eligibility enforcement failed",
-                    { accountId: account.id, providerId, error },
+                    { accountId: accountId, providerId, error },
                 );
                 observeLoginEligibilityStage({
                     stage: "total",
@@ -297,7 +220,7 @@ export async function enforceLoginEligibility(params: {
         });
 
         const result = { ok: true } satisfies LoginEligibilityResult;
-        positiveCache?.set(account.id, true);
+        positiveCache?.set(accountId, true);
         observeLoginEligibilityStage({
             stage: "total",
             result: "ok",

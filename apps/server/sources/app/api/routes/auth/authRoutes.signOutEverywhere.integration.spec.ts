@@ -104,7 +104,6 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -127,6 +126,7 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
         const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Retained by sign out everywhere",
         });
         const app = createTestApp();
@@ -178,7 +178,7 @@ describe("authRoutes (sign out everywhere) (integration)", () => {
         });
         const [signedToken, pat] = await Promise.all([
             auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createApiToken({ accountId: account.id, label: "Automation cannot sign out" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "Automation cannot sign out" }),
         ]);
         const app = createTestApp();
         await app.ready();

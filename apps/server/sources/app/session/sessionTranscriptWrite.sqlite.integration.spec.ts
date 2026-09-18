@@ -14,6 +14,7 @@ import {
     buildSessionMessagePublicationWhere,
     loadSessionTranscriptPublication,
 } from "@/app/session/sessionTranscriptPublicationPolicy";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { createSessionMessage } from "@/app/session/sessionWriteService";
 import { createSessionMessageFromPending } from "@/app/session/pending/pendingMessageTranscriptCommit";
 import {
@@ -37,6 +38,7 @@ const defaultHistoricalImportSocketLimits = {
     maxItems: 200,
     maxSerializedBytes: 512 * 1024,
 } as const;
+const authentication = createPresentUserSessionAccessAuthentication();
 const LIVE_EXTERNAL_LINK_OWNER_METADATA =
     "oRoBAgMEBQYHCAkKCwwNDg8QERITFBUWFxh8aC0+8+YDECLScN6uQTItPyWVR7XbQA==";
 const RETIRED_EXTERNAL_LINK_OWNER_METADATA =
@@ -123,6 +125,82 @@ describe("canonical transcript sequence writer on SQLite", () => {
         );
 
         expect(columns.map((column) => column.name)).toContain("rowRevision");
+    });
+
+    it("preserves the admitted Account across direct retries and never attributes transcript-only observations", async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const editor = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const session = await db.session.create({ data: {
+            accountId: owner.id, tag: randomUUID(), encryptionMode: "plain",
+            metadata: STORED_SHARED_METADATA, metadataLayoutVersion: 1,
+            ownerMetadata: STORED_PLAIN_OWNER_METADATA_ENVELOPE,
+        } });
+        const share = await db.sessionShare.create({ data: {
+            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: editor.id, accessLevel: "edit",
+        } });
+        const input = {
+            actorUserId: editor.id, sessionId: session.id, localId: randomUUID(),
+            inputAdmission: "authenticatedAccount" as const, authentication, messageRole: "user" as const,
+            content: { t: "plain" as const, v: { role: "user", content: { type: "text", text: "Hello" } } },
+        };
+        const created = await createSessionMessage(input);
+        expect(created).toMatchObject({ ok: true, didWrite: true, message: {
+            authorAccountId: editor.id,
+            inputAdmissionReceipt: { v: 1, issuer: "authenticatedAccount", actorAccountId: editor.id, sessionRelationship: "sharedEditor" },
+        } });
+        await db.sessionShare.update({ where: { id: share.id }, data: { accessLevel: "admin" } });
+        expect(await createSessionMessage(input)).toMatchObject({ ok: true, didWrite: false, message: {
+            authorAccountId: editor.id, inputAdmissionReceipt: { sessionRelationship: "sharedEditor" },
+        } });
+        expect(await createSessionMessage({ ...input, actorUserId: owner.id })).toEqual({ ok: false, error: "local-id-conflict" });
+        expect(await createSessionMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId: randomUUID(),
+            inputAdmission: "transcriptOnly",
+            messageRole: "user",
+            content: input.content,
+        })).toMatchObject({
+            ok: true, message: { inputAdmissionReceipt: null, authorAccountId: null },
+        });
+        await withAuthenticatedTestApp(sessionRoutes, async (app) => {
+            for (const url of [
+                `/v1/sessions/${session.id}/messages`,
+                `/v2/sessions/${session.id}/messages/by-local-id/${input.localId}`,
+            ]) {
+                const response = await app.inject({ method: "GET", url, headers: { "x-test-user-id": owner.id } });
+                expect(response.statusCode).toBe(200);
+                const body = response.json();
+                const message = body.message ?? body.messages.find((row: { localId: string }) => row.localId === input.localId);
+                expect.soft(message.accountActor).toMatchObject({ v: 1, accountId: editor.id });
+                expect.soft(message).not.toHaveProperty("inputAdmissionReceipt");
+            }
+        });
+        await db.sessionMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId: input.localId } }, data: { authorAccountId: owner.id } });
+        expect(await createSessionMessage(input)).toEqual({ ok: false, error: "local-id-conflict" });
+    });
+
+    it("materializes a historical Account receipt after Account deletion without recreating its foreign key", async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const author = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const session = await db.session.create({ data: {
+            accountId: owner.id, tag: randomUUID(), encryptionMode: "plain",
+            metadata: STORED_SHARED_METADATA, metadataLayoutVersion: 1,
+            ownerMetadata: STORED_PLAIN_OWNER_METADATA_ENVELOPE,
+        } });
+        const receipt = { v: 1, issuer: "authenticatedAccount", actorAccountId: author.id, sessionRelationship: "sharedEditor" } as const;
+        await db.account.delete({ where: { id: author.id } });
+        const input = {
+            sessionId: session.id, sessionEncryptionMode: "plain" as const, storagePolicy: "optional" as const,
+            localId: randomUUID(), messageRole: "user" as const,
+            content: { t: "plain" as const, v: { role: "user", content: { type: "text", text: "Accepted before deletion" } } },
+            inputAdmissionReceipt: receipt,
+        };
+        const committed = await inTx((tx) => createSessionMessageFromPending(tx, input));
+        expect(committed).toMatchObject({ ok: true, didWrite: true, message: { inputAdmissionReceipt: receipt, authorAccountId: null } });
+        expect(await inTx((tx) => createSessionMessageFromPending(tx, input))).toMatchObject({
+            ok: true, didWrite: false, didUpdate: false, message: { inputAdmissionReceipt: receipt, authorAccountId: null },
+        });
     });
 
     it("keeps non-owner recency byte-stable during hidden catch-up and advances it only on publication", async () => {
@@ -478,6 +556,8 @@ describe("canonical transcript sequence writer on SQLite", () => {
         const ordinary = await createSessionMessage({
             actorUserId: account.id,
             sessionId: session.id,
+            inputAdmission: "authenticatedAccount",
+            authentication,
             localId: "ordinary:item-1",
             messageRole: "event",
             content: { t: "plain", v: { role: "agent", content: { type: "event", data: { type: "ready" } } } },
@@ -724,6 +804,8 @@ describe("canonical transcript sequence writer on SQLite", () => {
             await expect(createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId: `ordinary:${currentStorageState}`,
                 messageRole: "user",
                 content: { t: "plain", v: { text: "ordinary" } },
@@ -735,6 +817,8 @@ describe("canonical transcript sequence writer on SQLite", () => {
             await expect(createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId: `existing:${currentStorageState}`,
                 messageRole: "agent",
                 content: baselineContent,
@@ -913,6 +997,22 @@ describe("canonical transcript sequence writer on SQLite", () => {
             },
             select: { id: true },
         });
+        const follower = await db.account.create({ data: { publicKey: randomUUID() } });
+        const directReader = await db.account.create({ data: { publicKey: randomUUID() } });
+        await db.sessionShare.createMany({ data: [follower, directReader].map(viewer => ({
+            sessionId: session.id, sharedByUserId: account.id, sharedWithUserId: viewer.id, accessLevel: "view" as const,
+        })) });
+        await db.accountSessionFollow.create({ data: {
+            sessionId: session.id, accountId: follower.id, following: true, notificationLevel: "none",
+        } });
+        await db.accountSessionReadState.createMany({ data: [account, follower].map(viewer => ({
+            sessionId: session.id, accountId: viewer.id, lastViewedSessionSeq: 0,
+        })) });
+        const readPrivateFrontiers = () => db.accountSessionReadState.findMany({
+            where: { sessionId: session.id },
+            orderBy: { accountId: "asc" },
+            select: { accountId: true, lastViewedSessionSeq: true, unreadSince: true },
+        });
         const claim = {
             sessionId: session.id,
             operationId: "materialize-operation-1",
@@ -1086,9 +1186,11 @@ describe("canonical transcript sequence writer on SQLite", () => {
                 localId: "history:oldest",
                 sidechainId: null,
                 messageRole: "user" as const,
+                sourceCreatedAtMs: 1,
                 content: { t: "plain" as const, v: { role: "user", text: "oldest" } },
             }],
         };
+        const acceptedAtOrAfter = Date.now();
         const concurrentBatchResults = await Promise.all([
             executeExternalSessionHistoricalImportCommand({
                 actorUserId: account.id,
@@ -1113,6 +1215,14 @@ describe("canonical transcript sequence writer on SQLite", () => {
                 acceptedThroughServerSeq: 1,
             }),
         ]);
+        const firstUnreadFrontiers = await readPrivateFrontiers();
+        expect(firstUnreadFrontiers).toEqual([account, follower]
+            .map(viewer => ({ accountId: viewer.id, lastViewedSessionSeq: 0, unreadSince: expect.any(Date) }))
+            .sort((left, right) => left.accountId.localeCompare(right.accountId)));
+        for (const frontier of firstUnreadFrontiers) {
+            expect(frontier.unreadSince!.getTime()).toBeGreaterThanOrEqual(acceptedAtOrAfter);
+            expect(frontier.unreadSince!.getTime()).toBeLessThanOrEqual(Date.now());
+        }
         await expect(executeExternalSessionHistoricalImportCommand({
             actorUserId: account.id,
             transportMachineId: "machine-1",
@@ -1150,6 +1260,12 @@ describe("canonical transcript sequence writer on SQLite", () => {
             errorCode: "wrong_machine_socket",
         });
 
+        await expect(readPrivateFrontiers()).resolves.toEqual(firstUnreadFrontiers);
+        await db.accountSessionReadState.update({
+            where: { accountId_sessionId: { accountId: account.id, sessionId: session.id } },
+            data: { lastViewedSessionSeq: 1, unreadSince: null },
+        });
+        const caughtUpFrontiers = await readPrivateFrontiers();
         const privateTail = await writeHistoricalSessionMessageBatch({
             sessionId: session.id,
             storagePolicy: "optional",
@@ -1166,6 +1282,7 @@ describe("canonical transcript sequence writer on SQLite", () => {
             firstSeq: 2,
             lastSeq: 2,
         });
+        await expect(readPrivateFrontiers()).resolves.toEqual(caughtUpFrontiers);
         const readVisibleRows = async () => {
             const publication = await loadSessionTranscriptPublication(db, session.id);
             return await db.sessionMessage.findMany({
@@ -1242,6 +1359,7 @@ describe("canonical transcript sequence writer on SQLite", () => {
             publishedThroughServerSeq: 1,
         };
         expect(finalized).toMatchObject({ publication: expectedPublication });
+        await expect(readPrivateFrontiers()).resolves.toEqual(caughtUpFrontiers);
         await expect(readVisibleRows()).resolves.toEqual([
             { seq: 1, localId: "history:oldest" },
         ]);
@@ -1344,6 +1462,40 @@ describe("canonical transcript sequence writer on SQLite", () => {
             kind: "error",
             errorCode: "stale_revision",
         });
+
+        // Extending a completed snapshot keeps its old ceiling visible until finalize.
+        await expect(executeExternalSessionHistoricalImportCommand({
+            actorUserId: account.id,
+            transportMachineId: "machine-1",
+            command: {
+                v: 1, kind: "batch", claim: replacementClaim, expectedRevision: 0,
+                batchId: makeExternalSessionHistoricalImportBatchIdV1(["history:extension"]),
+                items: [{
+                    localId: "history:extension", sidechainId: null, messageRole: "agent",
+                    sourceCreatedAtMs: 2,
+                    content: { t: "plain", v: { text: "extension" } },
+                }],
+            },
+        })).resolves.toMatchObject({ kind: "batch_accepted", acceptedThroughServerSeq: 3 });
+        await expect(readPrivateFrontiers()).resolves.toEqual(caughtUpFrontiers);
+        const extensionFinalized = await executeExternalSessionHistoricalImportCommand({
+            actorUserId: account.id,
+            transportMachineId: "machine-1",
+            command: {
+                v: 1, kind: "finalize", claim: replacementClaim, expectedRevision: 0,
+                expectedAcceptedThroughServerSeq: 3,
+            },
+        });
+        expect(extensionFinalized).toMatchObject({ kind: "finalized" });
+        if (extensionFinalized.kind !== "finalized") throw new Error("Expected snapshot extension publication.");
+        const extendedFrontiers = await readPrivateFrontiers();
+        expect(extendedFrontiers.find(frontier => frontier.accountId === account.id)).toEqual({
+            accountId: account.id, lastViewedSessionSeq: 1,
+            unreadSince: new Date(extensionFinalized.publication.materializedThroughSourceAt),
+        });
+        expect(extendedFrontiers.find(frontier => frontier.accountId === follower.id))
+            .toEqual(firstUnreadFrontiers.find(frontier => frontier.accountId === follower.id));
+        expect(extendedFrontiers).toHaveLength(2);
     }, 120_000);
 
     it.each([

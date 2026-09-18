@@ -1,66 +1,48 @@
-import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 
 import {
+  AnyClientUpgradeRequiredV1Schema,
+  OperationUpdateRequiredV1Schema,
   SESSION_METADATA_LAYOUT_VERSION_V1,
+  SESSION_LIST_PAGE_DEFAULT_LIMIT,
+  SESSION_LIST_PAGE_MAX_LIMIT,
   V2SessionByIdNotFoundSchema,
   V2SessionByIdResponseSchema,
   V2SessionListResponseSchema,
 } from "@happier-dev/protocol";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
-import { PROFILE_SELECT, toShareUserProfile } from "@/app/share/types";
-import { fetchSessionOrganizationPinnedSessionIds } from "@/app/session/organization/organizationQueries";
-import { db } from "@/storage/db";
+import { inTx, type Tx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
 import {
-    createSessionRollbackEligibleTurnsSelect,
-    encodeSessionDataEncryptionKey,
-    parseStoredSessionLatestTurnStatus,
-    parseStoredSessionRuntimeIssue,
-    readSessionTranscriptAuthorityFields,
-    readSessionTurnRollbackEligibleStarts,
-    omitSessionListProjectionFallbackColumns,
-} from "./v2SessionListRows";
+    createV2SessionListRowSelect,
+    createV2SessionListLegacyRowSelect,
+    mapV2SessionListRow,
+    type V2SessionListRowCompat,
+} from "@/app/session/listing/rows";
+import { readSessionListOtherNamedCollaboratorFacts, readSessionListViewerDiscussionFacts } from "@/app/session/listing/page";
 import {
-    createV2SessionListCursorWhere,
-    createV2SessionListPage,
-    findV2SessionListRows,
-    isMissingAttentionProjectionColumnError,
     runWithSessionListProjectionFallback,
-    mapV2SessionListRows,
-    resolveV2SessionListCursorForVisibleRows,
-    V2_ACTIVE_SESSION_LIST_ORDER_BY,
-    V2_SESSION_LIST_ORDER_BY,
-} from "./v2SessionListPage";
+    V2_ACTIVE_SESSION_LIST_ROW_LIMIT,
+} from "@/app/session/listing/page";
+import { listLegacyV1SessionsForAccount } from "@/app/session/listing/legacy";
+import { listSessionsForAccount, SessionListInvalidCursorError } from "@/app/session/listing/service";
+import { createV2SessionListServerTiming } from "@/app/session/listing/timing";
+import { registerSessionFilteredListingRoute } from "./registerSessionFilteredListingRoute";
 import {
-    createV2SessionAttentionPage,
-    createV2SessionListInitialPage,
-} from "./v2SessionListInitialPage";
-import { createV2SessionListServerTiming } from "./v2SessionListServerTiming";
-import {
-    collectSessionTranscriptVisibleRowsBeforeTake,
-    createSessionTranscriptPublicationLiveFactsWhere,
-    createSessionTranscriptPublicationRecencyQueryBranches,
-    createSessionTranscriptShareableRecencyQueryBranches,
-    filterSessionTranscriptPublicationSequenceFacts,
-    isSessionTranscriptShareable,
-    projectSessionTranscriptPublicationPreview,
-    resolveSessionTranscriptNonOwnerRecencyMs,
-    SESSION_TRANSCRIPT_PUBLICATION_SELECT,
-} from "@/app/session/sessionTranscriptPublicationPolicy";
-import {
+    createSessionMetadataListRepresentabilityWhere,
     createSessionMetadataPrivacyUpgradeRequiredResponse,
     isSessionMetadataPrivacyUpgradeRequiredError,
-    projectSessionMetadataForRecipient,
     readSessionMetadataOwnerAccountMode,
-    readSessionMetadataOwnerAccountModes,
     requiresSessionMetadataOwnerAccountMode,
-    type SessionMetadataOwnerAccountMode,
 } from "@/app/session/metadata/sessionMetadataRecipientProjection";
 import {
     enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
+    readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { mapPendingActivationAuthorization } from "@/app/session/pending/pendingActivationAuthorization";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { listQueuedExecutionRunPendingTargetsForSessions } from "@/app/session/pending/pendingMessageService";
+import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 
 const SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA = z.object({
     error: z.literal("Session metadata privacy upgrade required"),
@@ -68,7 +50,9 @@ const SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA = z.object({
 }).strict();
 
 const V2_ACTIVE_SESSION_LIST_QUERYSTRING_SCHEMA = z.object({
-    limit: z.coerce.number().int().min(1).max(500).default(150),
+    limit: z.coerce.number().int().min(1)
+        .max(V2_ACTIVE_SESSION_LIST_ROW_LIMIT)
+        .default(V2_ACTIVE_SESSION_LIST_ROW_LIMIT),
 }).optional();
 
 const OPTIONAL_BOOLEAN_QUERY_PARAM_SCHEMA = z.preprocess((value) => {
@@ -79,504 +63,132 @@ const OPTIONAL_BOOLEAN_QUERY_PARAM_SCHEMA = z.preprocess((value) => {
 
 const V2_PAGED_SESSION_LIST_QUERYSTRING_SCHEMA = z.object({
     cursor: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(200).default(50),
+    limit: z.coerce.number().int().min(1).max(SESSION_LIST_PAGE_MAX_LIMIT).default(SESSION_LIST_PAGE_DEFAULT_LIMIT),
 }).optional();
 
 const V2_SESSION_LIST_QUERYSTRING_SCHEMA = z.object({
     cursor: z.string().optional(),
     attentionCursor: z.string().optional(),
-    limit: z.coerce.number().int().min(1).max(200).default(50),
+    limit: z.coerce.number().int().min(1).max(SESSION_LIST_PAGE_MAX_LIMIT).default(SESSION_LIST_PAGE_DEFAULT_LIMIT),
     includeAttention: OPTIONAL_BOOLEAN_QUERY_PARAM_SCHEMA,
+    includeActive: OPTIONAL_BOOLEAN_QUERY_PARAM_SCHEMA,
 }).refine(
     (value) => !(value.cursor && value.attentionCursor),
     { message: "cursor and attentionCursor cannot be combined" },
 ).optional();
 
-const ACTIVE_SESSION_WINDOW_MS = 1000 * 60 * 15;
-
-async function readSessionOwnerAccountModesForRows(
-    rows: readonly Readonly<{
-        accountId: string;
-        metadataLayoutVersion?: number | null;
-    }>[],
-): Promise<ReadonlyMap<string, SessionMetadataOwnerAccountMode>> {
-    return await readSessionMetadataOwnerAccountModes(
-        db,
-        rows
-            .filter((session) =>
-                requiresSessionMetadataOwnerAccountMode({
-                    session,
-                }))
-            .map((session) => session.accountId),
-    );
-}
-
-function parseInitialIncludeAttention(value: unknown): boolean {
-    return value === true || value === "true" || value === "1";
-}
-
-function readLatestTurnStatusObservedAt(value: bigint | number | null | undefined): number | null {
-    if (typeof value === "bigint") return Number(value);
-    return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function projectSessionListingPublicationPreview<T extends Readonly<{
-    seq: number;
-    lastViewedSessionSeq?: number | null;
-    createdAt: Date;
-    updatedAt: Date;
-    meaningfulActivityAt?: Date | null;
-    lastActiveAt: Date;
-}>>(session: T) {
-    return projectSessionTranscriptPublicationPreview({
-        seq: session.seq,
-        lastViewedSessionSeq: session.lastViewedSessionSeq,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt,
-        meaningfulActivityAt: session.meaningfulActivityAt,
-        lastActiveAt: session.lastActiveAt,
-    }, session);
-}
-
-const SESSION_ROLLBACK_ELIGIBLE_TURNS_SELECT = createSessionRollbackEligibleTurnsSelect();
-
-const V1_SESSION_ROW_SELECT = {
-    id: true,
-    ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
-    createdAt: true,
-    updatedAt: true,
-    meaningfulActivityAt: true,
-    archivedAt: true,
-    encryptionMode: true,
-    metadata: true,
-    metadataVersion: true,
-    metadataLayoutVersion: true,
-    ownerMetadata: true,
-    agentState: true,
-    agentStateVersion: true,
-    lastViewedSessionSeq: true,
-    pendingPermissionRequestCount: true,
-    pendingUserActionRequestCount: true,
-    latestTurnId: true,
-    latestTurnStatus: true,
-    latestTurnStatusObservedAt: true,
-    lastRuntimeIssue: true,
-    turns: SESSION_ROLLBACK_ELIGIBLE_TURNS_SELECT,
-    dataEncryptionKey: true,
-    pendingCount: true,
-    pendingBlockedCount: true,
-    pendingVersion: true,
-    pendingActivationRequestId: true,
-    pendingActivationRequestedAt: true,
-    pendingActivationStatus: true,
-    pendingActivationFailureCode: true,
-    active: true,
-    lastActiveAt: true,
-} as const satisfies Prisma.SessionSelect;
-
-function createV1SessionShareSelect(sessionSelect: Prisma.SessionSelect = V1_SESSION_ROW_SELECT): Prisma.SessionShareSelect {
-    return {
-        accessLevel: true,
-        canApprovePermissions: true,
-        encryptedDataKey: true,
-        sharedByUserId: true,
-        sharedByUser: { select: PROFILE_SELECT },
-        session: {
-            select: sessionSelect,
-        },
-    };
-}
-
-const V1_SESSION_ROW_LEGACY_SELECT = omitSessionListProjectionFallbackColumns(V1_SESSION_ROW_SELECT);
-
-async function findV1SessionListRows(userId: string) {
-    return await runWithSessionListProjectionFallback(
-        () => findV1SessionListRowsWithSelect(userId, V1_SESSION_ROW_SELECT),
-        () => findV1SessionListRowsWithSelect(userId, V1_SESSION_ROW_LEGACY_SELECT),
-    );
-}
-
-async function findV1SessionListRowsWithSelect(userId: string, sessionSelect: Prisma.SessionSelect) {
-    const [ownedBranches, shareBranches] = await Promise.all([
-            Promise.all(createSessionTranscriptPublicationRecencyQueryBranches().map((branch) =>
-                collectSessionTranscriptVisibleRowsBeforeTake({
-                    take: 150,
-                    fetchPage: async (page) =>
-                        await db.session.findMany({
-                            where: {
-                                accountId: userId,
-                                archivedAt: null,
-                                AND: [branch.where],
-                            },
-                            orderBy: [...branch.orderBy],
-                            ...(page.skip === undefined ? {} : { skip: page.skip }),
-                            ...(page.take === undefined ? {} : { take: page.take }),
-                            select: sessionSelect,
-                        }),
-                    isOwner: () => true,
-                    readPublication: (session) => session,
-                }),
-            )),
-            Promise.all(createSessionTranscriptShareableRecencyQueryBranches().map((branch) =>
-                collectSessionTranscriptVisibleRowsBeforeTake({
-                    take: 150,
-                    fetchPage: async (page) =>
-                        await db.sessionShare.findMany({
-                            where: {
-                                sharedWithUserId: userId,
-                                session: {
-                                    archivedAt: null,
-                                    AND: [branch.where],
-                                },
-                            },
-                            orderBy: branch.orderBy.map((orderBy) => ({ session: orderBy })),
-                            ...(page.skip === undefined ? {} : { skip: page.skip }),
-                            ...(page.take === undefined ? {} : { take: page.take }),
-                            select: createV1SessionShareSelect(sessionSelect),
-                        }),
-                    isOwner: () => false,
-                    readPublication: (share) => share.session,
-                }),
-            )),
-        ]);
-        const ownedBySessionId = new Map(
-            ownedBranches
-                .flat()
-                .map((session) => [session.id, session] as const),
+async function findV2SessionByIdRowInTx(tx: Tx, params: Readonly<{
+    userId: string;
+    sessionId: string;
+    authentication: SessionAccessAuthentication;
+    accessProjectionVersion?: number;
+}>) {
+    if (params.accessProjectionVersion !== 1) {
+        const row = await runWithSessionListProjectionFallback<V2SessionListRowCompat | null>(
+            () => tx.session.findUnique({
+                where: { id: params.sessionId },
+                select: createV2SessionListRowSelect(params),
+            }),
+            () => tx.session.findUnique({
+                where: { id: params.sessionId },
+                select: createV2SessionListLegacyRowSelect(params),
+            }),
         );
-        const sharesBySessionId = new Map(
-            shareBranches
-                .flat()
-                .map((share) => [share.session.id, share] as const),
-        );
-    return [[...ownedBySessionId.values()], [...sharesBySessionId.values()]] as const;
-}
-
-const V2_SESSION_BY_ID_SELECT = {
-    id: true,
-    ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
-    accountId: true,
-    createdAt: true,
-    updatedAt: true,
-    meaningfulActivityAt: true,
-    archivedAt: true,
-    encryptionMode: true,
-    metadata: true,
-    metadataVersion: true,
-    metadataLayoutVersion: true,
-    ownerMetadata: true,
-    agentState: true,
-    agentStateVersion: true,
-    lastViewedSessionSeq: true,
-    pendingPermissionRequestCount: true,
-    pendingUserActionRequestCount: true,
-    latestTurnId: true,
-    latestTurnStatus: true,
-    latestTurnStatusObservedAt: true,
-    lastRuntimeIssue: true,
-    turns: SESSION_ROLLBACK_ELIGIBLE_TURNS_SELECT,
-    dataEncryptionKey: true,
-    pendingCount: true,
-    pendingBlockedCount: true,
-    pendingVersion: true,
-    pendingActivationRequestId: true,
-    pendingActivationRequestedAt: true,
-    pendingActivationStatus: true,
-    pendingActivationFailureCode: true,
-    active: true,
-    lastActiveAt: true,
-    shares: {
-        select: {
-            encryptedDataKey: true,
-            accessLevel: true,
-            canApprovePermissions: true,
-        },
-    },
-} as const satisfies Prisma.SessionSelect;
-
-const {
-    turns: _v2SessionByIdLegacyTurns,
-    pendingActivationRequestId: _v2SessionByIdLegacyPendingActivationRequestId,
-    pendingActivationRequestedAt: _v2SessionByIdLegacyPendingActivationRequestedAt,
-    pendingActivationStatus: _v2SessionByIdLegacyPendingActivationStatus,
-    pendingActivationFailureCode: _v2SessionByIdLegacyPendingActivationFailureCode,
-    ...V2_SESSION_BY_ID_LEGACY_SELECT
-} = V2_SESSION_BY_ID_SELECT;
-
-function createV2SessionByIdSelect(params: Readonly<{ userId: string; includeRollbackTurns: boolean }>): Prisma.SessionSelect {
-    const baseSelect = params.includeRollbackTurns ? V2_SESSION_BY_ID_SELECT : V2_SESSION_BY_ID_LEGACY_SELECT;
-    return {
-        ...baseSelect,
-        shares: {
-            where: { sharedWithUserId: params.userId },
-            select: {
-                encryptedDataKey: true,
-                accessLevel: true,
-                canApprovePermissions: true,
-            },
-        },
-    };
-}
-
-async function findV2SessionByIdRow(params: Readonly<{ userId: string; sessionId: string }>) {
-    const query = (includeRollbackTurns: boolean) => db.session.findFirst({
-        where: {
-            id: params.sessionId,
-            OR: [
-                { accountId: params.userId },
-                { shares: { some: { sharedWithUserId: params.userId } } },
-            ],
-        },
-        select: createV2SessionByIdSelect({ userId: params.userId, includeRollbackTurns }),
+        if (!row) return { admission: { status: "unavailable" as const }, row: null };
+        // The released seam is a second presentation of one access decision, not a
+        // second admission. Routing it through the canonical owner with the row
+        // this route already loaded keeps runtime-credential capping and
+        // runtime-principal currentness identical on both projections.
+        const admission = await resolveSessionAccessForOperation(tx, {
+            accountId: params.userId,
+            sessionId: params.sessionId,
+            authentication: params.authentication,
+            accessMode: "legacy_owner_or_direct",
+            row,
+        });
+        return admission.status === "allowed"
+            ? { admission, row }
+            : { admission, row: null };
+    }
+    const admission = await resolveSessionAccessForOperation(tx, {
+        accountId: params.userId,
+        sessionId: params.sessionId,
+        authentication: params.authentication,
     });
-
-    let row: Awaited<ReturnType<typeof query>>;
-    try {
-        row = await query(true);
-    } catch (error) {
-        if (!isMissingAttentionProjectionColumnError(error)) {
-            throw error;
-        }
-        row = await query(false);
-    }
-    if (
-        row
-        && row.accountId !== params.userId
-        && !isSessionTranscriptShareable(row)
-    ) {
-        return null;
-    }
-    return row;
+    if (admission.status !== "allowed") return { admission, row: null };
+    // Version-qualified current detail promises the complete current access,
+    // viewer and publication projection. The migration-skew fallback belongs
+    // only to released bare detail/list adapters.
+    const row = await tx.session.findUnique({
+        where: { id: params.sessionId },
+        select: createV2SessionListRowSelect(params),
+    });
+    return { admission, row };
 }
 
 export function registerSessionListingRoutes(app: Fastify) {
+    registerSessionFilteredListingRoute(app);
+
     app.get('/v1/sessions', {
         preHandler: app.authenticate,
         config: {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "sessions.list"),
         },
     }, async (request, reply) => {
-        const userId = request.userId;
-
-        const [ownedSessions, shares] = await findV1SessionListRows(userId);
-        const emittedRows = [
-            ...ownedSessions.map((session) => ({
-                recipient: "owner" as const,
-                session,
-                updatedAt: projectSessionListingPublicationPreview(session).updatedAt,
-            })),
-            ...shares
-                .filter((share) =>
-                    isSessionTranscriptShareable(share.session))
-                .map((share) => ({
-                    recipient: "shared" as const,
-                    session: share.session,
-                    share,
-                    updatedAt: resolveSessionTranscriptNonOwnerRecencyMs(
-                        share.session,
-                        share.session.updatedAt,
-                    ),
-                })),
-        ]
-            .sort((a, b) => b.updatedAt - a.updatedAt)
-            .slice(0, 150);
-        if (
-            emittedRows.some((row) =>
-                row.session.metadataLayoutVersion
-                    === SESSION_METADATA_LAYOUT_VERSION_V1)
-            && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                request,
-                reply,
-            )
-        ) {
-            return;
-        }
-
-        let sessions;
         try {
-            const ownerAccountModes =
-                await readSessionOwnerAccountModesForRows(
-                    emittedRows.map((row) => row.session),
-                );
-            sessions = emittedRows.map((row) => {
-                const v = row.session;
-                if (row.recipient === "owner") {
-                    const publicationProjection = projectSessionListingPublicationPreview(v);
-                    const hasLiveFacts = publicationProjection.hasLiveFacts;
-                    return {
-                        id: v.id,
-                        seq: publicationProjection.seq,
-                        createdAt: v.createdAt.getTime(),
-                        updatedAt: publicationProjection.updatedAt,
-                        meaningfulActivityAt: publicationProjection.meaningfulActivityAt,
-                        active: hasLiveFacts && v.active,
-                        activeAt: publicationProjection.activeAt,
-                        archivedAt: v.archivedAt?.getTime() ?? null,
-                        encryptionMode: v.encryptionMode === "plain" ? "plain" : "e2ee",
-                        ...projectSessionMetadataForRecipient({
-                            session: v,
-                            recipient:
-                                requiresSessionMetadataOwnerAccountMode({
-                                    session: v,
-                                }) && ownerAccountModes.has(v.accountId)
-                                    ? {
-                                        type: "owner",
-                                        accountId: userId,
-                                        accountMode: ownerAccountModes.get(v.accountId)!,
-                                      }
-                                    : {
-                                        type: "legacy_owner",
-                                        accountId: userId,
-                                      },
-                        }),
-                        lastViewedSessionSeq: publicationProjection.lastViewedSessionSeq ?? null,
-                        pendingPermissionRequestCount: hasLiveFacts ? v.pendingPermissionRequestCount : 0,
-                        pendingUserActionRequestCount: hasLiveFacts ? v.pendingUserActionRequestCount : 0,
-                        latestTurnId: hasLiveFacts ? v.latestTurnId ?? null : null,
-                        latestTurnStatus: hasLiveFacts ? parseStoredSessionLatestTurnStatus(v.latestTurnStatus) : null,
-                        latestTurnStatusObservedAt: hasLiveFacts
-                            ? readLatestTurnStatusObservedAt(v.latestTurnStatusObservedAt)
-                            : null,
-                        lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(v.lastRuntimeIssue) : null,
-                        rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
-                            readSessionTurnRollbackEligibleStarts(v),
-                            v,
-                        ),
-                        ...readSessionTranscriptAuthorityFields(v),
-                        acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
-                        pendingCount: hasLiveFacts ? v.pendingCount : 0,
-                        pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
-                        pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
-                        ...(hasLiveFacts
-                            ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
-                            : {}),
-                        dataEncryptionKey: encodeSessionDataEncryptionKey(v.dataEncryptionKey),
-                        lastMessage: null,
-                    };
-                }
-
-                const share = row.share;
-                const publicationProjection = projectSessionListingPublicationPreview(v);
-                const hasLiveFacts = publicationProjection.hasLiveFacts;
-                return {
-                    id: v.id,
-                    seq: publicationProjection.seq,
-                    createdAt: v.createdAt.getTime(),
-                    updatedAt: publicationProjection.updatedAt,
-                    meaningfulActivityAt: publicationProjection.meaningfulActivityAt,
-                    active: hasLiveFacts && v.active,
-                    activeAt: publicationProjection.activeAt,
-                    archivedAt: v.archivedAt?.getTime() ?? null,
-                    encryptionMode: v.encryptionMode === "plain" ? "plain" : "e2ee",
-                    ...projectSessionMetadataForRecipient({
-                        session: v,
-                        recipient: {
-                            type: "shared",
-                            accountId: userId,
-                            ownerAccountMode: ownerAccountModes.get(v.accountId),
-                        },
-                    }),
-                    lastViewedSessionSeq: publicationProjection.lastViewedSessionSeq ?? null,
-                    pendingPermissionRequestCount: hasLiveFacts ? v.pendingPermissionRequestCount : 0,
-                    pendingUserActionRequestCount: hasLiveFacts ? v.pendingUserActionRequestCount : 0,
-                    latestTurnId: hasLiveFacts ? v.latestTurnId ?? null : null,
-                    latestTurnStatus: hasLiveFacts ? parseStoredSessionLatestTurnStatus(v.latestTurnStatus) : null,
-                    latestTurnStatusObservedAt: hasLiveFacts
-                        ? readLatestTurnStatusObservedAt(v.latestTurnStatusObservedAt)
-                        : null,
-                    lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(v.lastRuntimeIssue) : null,
-                    rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
-                        readSessionTurnRollbackEligibleStarts(v),
-                        v,
-                    ),
-                    ...readSessionTranscriptAuthorityFields(v),
-                    acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
-                    pendingCount: hasLiveFacts ? v.pendingCount : 0,
-                    pendingBlockedCount: hasLiveFacts ? v.pendingBlockedCount : 0,
-                    pendingVersion: hasLiveFacts ? v.pendingVersion : 0,
-                    ...(hasLiveFacts
-                        ? { pendingActivationAuthorization: mapPendingActivationAuthorization(v) }
-                        : {}),
-                    dataEncryptionKey:
-                        v.encryptionMode === "plain"
-                            ? null
-                            : (share.encryptedDataKey ? Buffer.from(share.encryptedDataKey).toString('base64') : null),
-                    lastMessage: null,
-                    owner: share.sharedByUserId,
-                    ownerProfile: toShareUserProfile(share.sharedByUser),
-                    accessLevel: share.accessLevel,
-                    canApprovePermissions: share.canApprovePermissions,
-                };
+            const payload = await listLegacyV1SessionsForAccount({
+                userId: request.userId,
+                rowRepresentabilityWhere: createSessionMetadataListRepresentabilityWhere(
+                    readAccountStoredContentCompatibilityForHttpRequest(request),
+                ),
             });
+            if (payload) return reply.send(payload);
         } catch (error) {
             if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
                 return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
             }
             throw error;
         }
-
-        return reply.send({ sessions });
     });
 
     app.get('/v2/sessions/active', {
         preHandler: app.authenticate,
+        config: {
+            rateLimit: resolveApiHotEndpointRateLimit(process.env, "sessions.list"),
+        },
         schema: {
             response: {
                 200: V2SessionListResponseSchema,
                 409: SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA,
-                426: z.unknown(),
             },
             querystring: V2_ACTIVE_SESSION_LIST_QUERYSTRING_SCHEMA,
         },
     }, async (request, reply) => {
-        const userId = request.userId;
         const timing = createV2SessionListServerTiming(request);
-        const limit = request.query?.limit || 150;
-
-        const sessions = await timing.measureAsync("query", async () => findV2SessionListRows({
-            userId,
-            where: {
-                ...createSessionTranscriptPublicationLiveFactsWhere(),
-                active: true,
-                archivedAt: null,
-                lastActiveAt: { gt: new Date(Date.now() - ACTIVE_SESSION_WINDOW_MS) },
-            },
-            orderBy: V2_ACTIVE_SESSION_LIST_ORDER_BY,
-            take: limit,
-        }));
-        if (
-            sessions.some((session) =>
-                session.metadataLayoutVersion
-                    === SESSION_METADATA_LAYOUT_VERSION_V1)
-            && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                request,
-                reply,
-            )
-        ) {
-            return;
-        }
-
-        let payload;
         try {
-            const ownerAccountModes =
-                await readSessionOwnerAccountModesForRows(
-                    sessions,
-                );
-            payload = timing.measure("page", () => ({
-                sessions: mapV2SessionListRows({
-                    rows: sessions,
-                    userId,
-                    ownerAccountModes,
-                }),
-            }));
+            const payload = await listSessionsForAccount({
+                userId: request.userId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
+                source: {
+                    kind: "legacy",
+                    storage: "active",
+                    activeOnly: true,
+                    limit: request.query?.limit ?? V2_ACTIVE_SESSION_LIST_ROW_LIMIT,
+                },
+                timing,
+                rowRepresentabilityWhere: createSessionMetadataListRepresentabilityWhere(
+                    readAccountStoredContentCompatibilityForHttpRequest(request),
+                ),
+            });
+            if (!payload) return;
+            timing.apply(reply);
+            return reply.send(payload);
         } catch (error) {
             if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
                 return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
             }
             throw error;
         }
-        timing.apply(reply);
-        return reply.send(payload);
     });
 
     app.get('/v2/sessions', {
@@ -586,7 +198,6 @@ export function registerSessionListingRoutes(app: Fastify) {
                 200: V2SessionListResponseSchema,
                 400: z.object({ error: z.literal('Invalid cursor format') }),
                 409: SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA,
-                426: z.unknown(),
             },
             querystring: V2_SESSION_LIST_QUERYSTRING_SCHEMA,
         },
@@ -594,357 +205,200 @@ export function registerSessionListingRoutes(app: Fastify) {
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "sessions.list"),
         },
     }, async (request, reply) => {
-        const userId = request.userId;
         const timing = createV2SessionListServerTiming(request);
-        const {
-            cursor,
-            attentionCursor,
-            limit = 50,
-            includeAttention = false,
-        } = request.query || {};
-
-        if (attentionCursor) {
-            const decodedAttentionCursor = await timing.measureAsync(
-                "cursor",
-                async () => resolveV2SessionListCursorForVisibleRows({
-                    cursor: attentionCursor,
-                    userId,
-                    cursorRowWhere: { archivedAt: null },
-                }),
-            );
-            if (!decodedAttentionCursor) {
+        try {
+            const payload = await listSessionsForAccount({
+                userId: request.userId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
+                source: { kind: "legacy", storage: "active", ...request.query },
+                timing,
+                rowRepresentabilityWhere: createSessionMetadataListRepresentabilityWhere(
+                    readAccountStoredContentCompatibilityForHttpRequest(request),
+                ),
+            });
+            if (!payload) return;
+            timing.apply(reply);
+            return reply.send(payload);
+        } catch (error) {
+            if (error instanceof SessionListInvalidCursorError) {
                 return reply.code(400).send({ error: "Invalid cursor format" });
             }
-
-            try {
-                const attentionPage = await createV2SessionAttentionPage({
-                    userId,
-                    cursor: decodedAttentionCursor,
-                    timing: timing.initialPageTiming(),
-                });
-                if (
-                    attentionPage.rows.some((session) =>
-                        session.metadataLayoutVersion
-                            === SESSION_METADATA_LAYOUT_VERSION_V1)
-                    && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                        request,
-                        reply,
-                    )
-                ) {
-                    return;
-                }
-                const ownerAccountModes =
-                    await readSessionOwnerAccountModesForRows(
-                        attentionPage.rows,
-                    );
-                timing.apply(reply);
-                return reply.send({
-                    sessions: mapV2SessionListRows({
-                        rows: attentionPage.rows,
-                        userId,
-                        ownerAccountModes,
-                    }),
-                    nextCursor: null,
-                    hasNext: false,
-                    attentionNextCursor: attentionPage.attentionNextCursor,
-                    attentionHasNext: attentionPage.attentionHasNext,
-                });
-            } catch (error) {
-                if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
-                    return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
-                }
-                throw error;
-            }
-        }
-
-        const serverPinnedSessionIds = !cursor
-            ? await timing.measureAsync("cursor", async () => fetchSessionOrganizationPinnedSessionIds(userId))
-            : [];
-        const includeInitialAttention = !cursor && parseInitialIncludeAttention(includeAttention);
-
-        let decodedCursor: { sessionId: string; meaningfulActivityAt: number } | undefined;
-        if (cursor) {
-            const decoded = await timing.measureAsync("cursor", async () => resolveV2SessionListCursorForVisibleRows({
-                cursor,
-                userId,
-                cursorRowWhere: { archivedAt: null },
-            }));
-            if (!decoded) {
-                return reply.code(400).send({ error: 'Invalid cursor format' });
-            }
-            decodedCursor = decoded;
-        }
-
-        const where: Prisma.SessionWhereInput = {
-            archivedAt: null,
-            ...createV2SessionListCursorWhere(decodedCursor),
-        };
-
-        const sessions = await timing.measureAsync("query", async () => findV2SessionListRows({
-            userId,
-            where,
-            orderBy: V2_SESSION_LIST_ORDER_BY,
-            take: limit + 1,
-        }));
-
-        let payload;
-        try {
-            if (!cursor && (serverPinnedSessionIds.length > 0 || includeInitialAttention)) {
-                payload = await createV2SessionListInitialPage({
-                    userId,
-                    admitFinalRows: async (rows) =>
-                        !rows.some((session) =>
-                            session.metadataLayoutVersion
-                                === SESSION_METADATA_LAYOUT_VERSION_V1)
-                        || await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                            request,
-                            reply,
-                        ),
-                    readOwnerAccountModes: async (accountIds) =>
-                        await readSessionMetadataOwnerAccountModes(
-                            db,
-                            accountIds,
-                        ),
-                    pageRows: sessions,
-                    limit,
-                    pinnedSessionIds: serverPinnedSessionIds,
-                    includeAttentionRows: includeInitialAttention,
-                    timing: timing.initialPageTiming(),
-                });
-                if (!payload) {
-                    return;
-                }
-            } else {
-                const emittedRows = sessions.slice(0, limit);
-                if (
-                    emittedRows.some((session) =>
-                        session.metadataLayoutVersion
-                            === SESSION_METADATA_LAYOUT_VERSION_V1)
-                    && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                        request,
-                        reply,
-                    )
-                ) {
-                    return;
-                }
-                const ownerAccountModes =
-                    await readSessionOwnerAccountModesForRows(
-                        emittedRows,
-                    );
-                payload = timing.measure("page", () => createV2SessionListPage({
-                    rows: sessions,
-                    userId,
-                    ownerAccountModes,
-                    limit,
-                }));
-            }
-        } catch (error) {
             if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
                 return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
             }
             throw error;
         }
-
-        timing.apply(reply);
-        return reply.send(payload);
     });
 
     app.get('/v2/sessions/archived', {
         preHandler: app.authenticate,
+        config: {
+            rateLimit: resolveApiHotEndpointRateLimit(process.env, "sessions.list"),
+        },
         schema: {
             response: {
                 200: V2SessionListResponseSchema,
                 400: z.object({ error: z.literal('Invalid cursor format') }),
                 409: SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA,
-                426: z.unknown(),
             },
             querystring: V2_PAGED_SESSION_LIST_QUERYSTRING_SCHEMA,
         },
     }, async (request, reply) => {
-        const userId = request.userId;
         const timing = createV2SessionListServerTiming(request);
-        const { cursor, limit = 50 } = request.query || {};
-
-        let decodedCursor: { sessionId: string; meaningfulActivityAt: number } | undefined;
-        if (cursor) {
-            const decoded = await timing.measureAsync("cursor", async () => resolveV2SessionListCursorForVisibleRows({
-                cursor,
-                userId,
-                cursorRowWhere: { archivedAt: { not: null } },
-            }));
-            if (!decoded) {
-                return reply.code(400).send({ error: 'Invalid cursor format' });
-            }
-            decodedCursor = decoded;
-        }
-
-        const where: Prisma.SessionWhereInput = {
-            archivedAt: { not: null },
-            ...createV2SessionListCursorWhere(decodedCursor),
-        };
-
-        const sessions = await timing.measureAsync("query", async () => findV2SessionListRows({
-            userId,
-            where,
-            orderBy: V2_SESSION_LIST_ORDER_BY,
-            take: limit + 1,
-        }));
-        const emittedRows = sessions.slice(0, limit);
-        if (
-            emittedRows.some((session) =>
-                session.metadataLayoutVersion
-                    === SESSION_METADATA_LAYOUT_VERSION_V1)
-            && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
-                request,
-                reply,
-            )
-        ) {
-            return;
-        }
-
-        let payload;
         try {
-            const ownerAccountModes =
-                await readSessionOwnerAccountModesForRows(
-                    emittedRows,
-                );
-            payload = timing.measure("page", () => createV2SessionListPage({
-                rows: sessions,
-                userId,
-                ownerAccountModes,
-                limit,
-            }));
+            const payload = await listSessionsForAccount({
+                userId: request.userId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
+                source: { kind: "legacy", storage: "archived", ...request.query },
+                timing,
+                rowRepresentabilityWhere: createSessionMetadataListRepresentabilityWhere(
+                    readAccountStoredContentCompatibilityForHttpRequest(request),
+                ),
+            });
+            if (!payload) return;
+            timing.apply(reply);
+            return reply.send(payload);
         } catch (error) {
+            if (error instanceof SessionListInvalidCursorError) {
+                return reply.code(400).send({ error: "Invalid cursor format" });
+            }
             if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
                 return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
             }
             throw error;
         }
-        timing.apply(reply);
-        return reply.send(payload);
     });
 
     app.get('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
         config: {
+            ephemeralSessionRunnerOperation: "session_detail",
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.detail"),
         },
         schema: {
             params: z.object({
                 sessionId: z.string(),
             }),
+            querystring: z.object({
+                accessProjectionVersion: z.coerce.number().int().positive().optional(),
+            }).optional(),
             response: {
                 200: V2SessionByIdResponseSchema,
+                403: z.union([
+                    z.object({ error: z.literal("team_authentication_required") }).strict(),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }).strict(),
+                ]),
                 404: V2SessionByIdNotFoundSchema,
                 409: SESSION_METADATA_PRIVACY_UPGRADE_REQUIRED_RESPONSE_SCHEMA,
-                426: z.unknown(),
+                426: z.union([
+                    OperationUpdateRequiredV1Schema,
+                    AnyClientUpgradeRequiredV1Schema,
+                ]),
+                503: z.object({ error: z.literal("team_authentication_unavailable") }).strict(),
             },
         },
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
 
-        const session = await findV2SessionByIdRow({ userId, sessionId });
-
-        if (!session) {
-            return reply.code(404).send({ error: 'Session not found' });
-        }
         if (
-            session.metadataLayoutVersion
-                === SESSION_METADATA_LAYOUT_VERSION_V1
-            && !await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
+            request.query?.accessProjectionVersion !== undefined
+            && request.query.accessProjectionVersion !== 1
+        ) {
+            return reply.code(426).send({
+                kind: "update_required",
+                operation: "session.detail",
+                component: "client",
+                reason: "access_projection_version_unsupported",
+            });
+        }
+
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
+        const supportsCurrentStoredContent = readAccountStoredContentCompatibilityForHttpRequest(request)
+            .supportsCurrentProtocol;
+        const result = await inTx(async (tx) => {
+            const { admission, row: session } = await findV2SessionByIdRowInTx(tx, {
+                userId,
+                sessionId,
+                authentication,
+                accessProjectionVersion: request.query?.accessProjectionVersion,
+            });
+            if (admission.status !== "allowed") return { kind: admission.status } as const;
+            if (!session) return { kind: "unavailable" } as const;
+            if (
+                session.metadataLayoutVersion === SESSION_METADATA_LAYOUT_VERSION_V1
+                && !supportsCurrentStoredContent
+            ) {
+                return { kind: "client_update_required" } as const;
+            }
+            try {
+                // The access owner has already verified this exact runtime
+                // principal. Do not load or project its hosting Account's
+                // private Follow/read/attention/authorship state.
+                const verifiedSessionRuntimePrincipal = authentication.sessionRuntimePrincipal !== undefined;
+                const ownerAccountMode = requiresSessionMetadataOwnerAccountMode({ session })
+                    ? await readSessionMetadataOwnerAccountMode(tx, session.accountId)
+                    : undefined;
+                const mappedSession = mapV2SessionListRow({
+                    row: session,
+                    userId,
+                    ownerAccountMode,
+                    ...(verifiedSessionRuntimePrincipal
+                        ? {}
+                        : { discussionFacts: await readSessionListViewerDiscussionFacts([session], userId, tx) }),
+                    hasOtherNamedCollaborator: (await readSessionListOtherNamedCollaboratorFacts([session], userId, tx)).get(session.id),
+                    effectiveAccess: admission.access,
+                    verifiedSessionRuntimePrincipal,
+                });
+                if (admission.access.level !== "owner") {
+                    return {
+                        kind: "found",
+                        payload: V2SessionByIdResponseSchema.parse({ session: mappedSession }),
+                    } as const;
+                }
+                const targets = await listQueuedExecutionRunPendingTargetsForSessions({
+                    accountId: userId,
+                    sessionIds: [session.id],
+                    reader: tx,
+                });
+                return {
+                    kind: "found",
+                    payload: V2SessionByIdResponseSchema.parse({
+                        session: {
+                            ...mappedSession,
+                            pendingExecutionRunIds: targets.map((target) => target.runId),
+                        },
+                    }),
+                } as const;
+            } catch (error) {
+                if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
+                    return { kind: "metadata_privacy_upgrade_required" } as const;
+                }
+                throw error;
+            }
+        });
+        if (result.kind === "authentication_required") {
+            return reply.code(403).send({ error: "team_authentication_required" });
+        }
+        if (result.kind === "authentication_unavailable") {
+            return reply.code(503).send({ error: "team_authentication_unavailable" });
+        }
+        if (result.kind === "unavailable") {
+            return reply.code(404).send({ error: "Session not found" });
+        }
+        if (result.kind === "client_update_required") {
+            await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
                 request,
                 reply,
-            )
-        ) {
+            );
             return;
         }
-        const publicationProjection = projectSessionListingPublicationPreview(session);
-        const hasLiveFacts = publicationProjection.hasLiveFacts;
-        let metadataProjection;
-        try {
-            const ownerAccountMode =
-                requiresSessionMetadataOwnerAccountMode({
-                    session,
-                })
-                    ? await readSessionMetadataOwnerAccountMode(
-                        db,
-                        session.accountId,
-                    )
-                    : undefined;
-            const recipient = session.accountId !== userId
-                ? {
-                    type: "shared" as const,
-                    accountId: userId,
-                    ownerAccountMode,
-                  }
-                : requiresSessionMetadataOwnerAccountMode({
-                    session,
-                  })
-                    ? {
-                        type: "owner" as const,
-                        accountId: userId,
-                        accountMode: ownerAccountMode!,
-                      }
-                    : {
-                        type: "legacy_owner" as const,
-                        accountId: userId,
-                      };
-            metadataProjection = projectSessionMetadataForRecipient({
-                session,
-                recipient,
-            });
-        } catch (error) {
-            if (isSessionMetadataPrivacyUpgradeRequiredError(error)) {
-                return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
-            }
-            throw error;
+        if (result.kind === "metadata_privacy_upgrade_required") {
+            return reply.code(409).send(createSessionMetadataPrivacyUpgradeRequiredResponse());
         }
-
-        return reply.send({
-            session: {
-                id: session.id,
-                seq: publicationProjection.seq,
-                createdAt: session.createdAt.getTime(),
-                updatedAt: publicationProjection.updatedAt,
-                meaningfulActivityAt: publicationProjection.meaningfulActivityAt,
-                active: hasLiveFacts && session.active,
-                activeAt: publicationProjection.activeAt,
-                archivedAt: session.archivedAt?.getTime() ?? null,
-                encryptionMode: session.encryptionMode === "plain" ? "plain" : "e2ee",
-                ...metadataProjection,
-                lastViewedSessionSeq: publicationProjection.lastViewedSessionSeq ?? null,
-                pendingPermissionRequestCount: hasLiveFacts ? session.pendingPermissionRequestCount : 0,
-                pendingUserActionRequestCount: hasLiveFacts ? session.pendingUserActionRequestCount : 0,
-                latestTurnId: hasLiveFacts ? session.latestTurnId ?? null : null,
-                latestTurnStatus: hasLiveFacts
-                    ? parseStoredSessionLatestTurnStatus(session.latestTurnStatus)
-                    : null,
-                latestTurnStatusObservedAt: hasLiveFacts
-                    ? readLatestTurnStatusObservedAt(session.latestTurnStatusObservedAt)
-                    : null,
-                lastRuntimeIssue: hasLiveFacts ? parseStoredSessionRuntimeIssue(session.lastRuntimeIssue) : null,
-                rollbackEligibleTurnStarts: filterSessionTranscriptPublicationSequenceFacts(
-                    readSessionTurnRollbackEligibleStarts(session),
-                    session,
-                ),
-                ...readSessionTranscriptAuthorityFields(session),
-                acceptedThroughServerSeq: publicationProjection.acceptedThroughServerSeq,
-                pendingCount: hasLiveFacts ? session.pendingCount : 0,
-                pendingBlockedCount: hasLiveFacts ? session.pendingBlockedCount : 0,
-                pendingVersion: hasLiveFacts ? session.pendingVersion : 0,
-                ...(hasLiveFacts
-                    ? { pendingActivationAuthorization: mapPendingActivationAuthorization(session) }
-                    : {}),
-                dataEncryptionKey: session.accountId === userId
-                    ? encodeSessionDataEncryptionKey(session.dataEncryptionKey)
-                    : (session.shares[0]?.encryptedDataKey ? Buffer.from(session.shares[0].encryptedDataKey).toString('base64') : null),
-                share: session.accountId === userId
-                    ? null
-                    : (session.shares[0]
-                        ? { accessLevel: session.shares[0].accessLevel, canApprovePermissions: session.shares[0].canApprovePermissions }
-                        : null),
-            },
-        });
+        if (result.kind === "found") {
+            return reply.send(result.payload);
+        }
+        throw new Error(`Unexpected Session detail result: ${result.kind}`);
     });
 }

@@ -17,8 +17,12 @@ export function resolveConnectedServicesFeature(
                 // consult this value, and new servers always advertise them as available.
                 enabled: true,
                 quotas: { enabled: quotasEnabled },
+                subscription: { enabled: true },
                 accountGroups: { enabled: accountGroupsEnabled },
                 accountFallback: { enabled: accountFallbackEnabled },
+                autoQuotaReset: { enabled: true },
+                autoDisablePlanInvalid: { enabled: true },
+                poolQuotaLimitSelection: { enabled: true },
             },
         },
         capabilities: {

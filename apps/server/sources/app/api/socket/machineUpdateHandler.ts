@@ -10,13 +10,18 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { recordMachineAlive } from "@/app/presence/presenceRecorder";
 import {
     EXTERNAL_SESSION_OPERATION_SOCKET_EVENT_V1,
+    ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
     ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1,
     EXTERNAL_SESSION_TRANSCRIPT_INVALIDATION_EVENT_V1,
+    EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1,
     ExternalSessionTranscriptInvalidationV1Schema,
+    ExternalSessionSourceUnavailableOccurrenceV1Schema,
     MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1,
     MACHINE_SESSION_TERMINAL_FINALIZE_EVENT_V1,
     MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
     SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
+    SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2,
+    SessionPendingExecutionRunEnqueueByMachineRequestV2Schema,
     SESSION_SERVER_START_INGRESS_EVENT_V1,
     MachineSessionTerminalCaptureRequestV1Schema,
     MachineSessionTerminalFinalizeRequestV1Schema,
@@ -34,6 +39,8 @@ import { enqueuePendingMessageByAuthenticatedMachine } from "@/app/session/pendi
 import { executeExternalSessionHistoricalImportCommand } from "@/app/session/externalSessionHistoricalImportCommand";
 import type { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
 import { publishSessionPublisherClose } from "@/app/presence/publishSessionPublisherClose";
+import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
+import { scheduleSessionActivityRemoteAlerts } from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
 import {
     classifyMachineAvailabilityState,
     readMachineAvailabilityState,
@@ -161,62 +168,66 @@ export function machineUpdateHandler(
         }
     });
 
-    socket.on(SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1, async (
-        request: unknown,
-        callback?: (response: unknown) => void,
-    ) => {
-        const parsed = SessionPendingEnqueueByMachineRequestV1Schema.safeParse(request);
-        const sourceMachineId = readAuthenticatedMachineId(socket);
-        if (!parsed.success) {
-            callback?.({
-                v: 1,
-                result: { status: "rejected", code: "session_input_invalid" },
-            });
-            return;
-        }
-        if (
-            !sourceMachineId
-            || !(await isMachineAvailableForSocket(userId, sourceMachineId))
-        ) {
-            if (sourceMachineId) activityCache.invalidateMachine(sourceMachineId);
-            callback?.({
-                v: 1,
-                result: { status: "rejected", code: "session_input_unauthorized" },
-            });
-            return;
-        }
+    for (const version of [1, 2] as const) {
+        const event = version === 2 ? SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2 : SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1;
+        socket.on(event, async (
+            request: unknown,
+            callback?: (response: unknown) => void,
+        ) => {
+            const parsed = (version === 2 ? SessionPendingExecutionRunEnqueueByMachineRequestV2Schema : SessionPendingEnqueueByMachineRequestV1Schema).safeParse(request);
+            const sourceMachineId = readAuthenticatedMachineId(socket);
+            if (!parsed.success) {
+                callback?.({
+                    v: version,
+                    result: { status: "rejected", code: "session_input_invalid" },
+                });
+                return;
+            }
+            if (
+                !sourceMachineId
+                || !(await isMachineAvailableForSocket(userId, sourceMachineId))
+            ) {
+                if (sourceMachineId) activityCache.invalidateMachine(sourceMachineId);
+                callback?.({
+                    v: version,
+                    result: { status: "rejected", code: "session_input_unauthorized" },
+                });
+                return;
+            }
 
-        try {
-            const result = await enqueuePendingMessageByAuthenticatedMachine({
-                accountId: userId,
-                sourceMachineId,
-                targetMachineId: parsed.data.targetMachineId,
-                sessionId: parsed.data.sessionId,
-                localId: parsed.data.localId,
-                content: parsed.data.content,
-                requestedAction: parsed.data.requestedAction,
-                ...(parsed.data.requestEqualityEvidenceV1
-                    ? { requestEqualityEvidenceV1: parsed.data.requestEqualityEvidenceV1 }
-                    : {}),
-            });
-            callback?.({ v: 1, result });
-        } catch {
-            log({
-                module: "websocket",
-                level: "error",
-                event: SESSION_PENDING_ENQUEUE_BY_MACHINE_EVENT_V1,
-                errorCode: "internal_error",
-            }, "Machine Session Pending enqueue failed.");
-            callback?.({
-                v: 1,
-                result: {
-                    status: "outcomeUnknown",
+            try {
+                const result = await enqueuePendingMessageByAuthenticatedMachine({
+                    accountId: userId,
+                    sourceMachineId,
+                    targetMachineId: parsed.data.targetMachineId,
+                    ...(parsed.data.v === 2 ? { targetExecutionRunId: parsed.data.recipient.runId } : {}),
+                    sessionId: parsed.data.sessionId,
                     localId: parsed.data.localId,
-                    code: "session_input_admission_acknowledgement_lost",
-                },
-            });
-        }
-    });
+                    content: parsed.data.content,
+                    requestedAction: parsed.data.requestedAction,
+                    ...(parsed.data.requestEqualityEvidenceV1
+                        ? { requestEqualityEvidenceV1: parsed.data.requestEqualityEvidenceV1 }
+                        : {}),
+                });
+                callback?.({ v: version, result });
+            } catch {
+                log({
+                    module: "websocket",
+                    level: "error",
+                    event,
+                    errorCode: "internal_error",
+                }, "Machine Session Pending enqueue failed.");
+                callback?.({
+                    v: version,
+                    result: {
+                        status: "outcomeUnknown",
+                        localId: parsed.data.localId,
+                        code: "session_input_admission_acknowledgement_lost",
+                    },
+                });
+            }
+        });
+    }
 
     socket.on(MACHINE_SESSION_TERMINAL_CAPTURE_EVENT_V1, async (
         request: unknown,
@@ -308,8 +319,7 @@ export function machineUpdateHandler(
             callback?.({ v: 1, status: "rejected", reason: "invalid_request" });
             return;
         }
-        if (!machineId || !(await isMachineAvailableForSocket(userId, machineId))) {
-            if (machineId) activityCache.invalidateMachine(machineId);
+        if (!machineId) {
             callback?.({
                 v: 1,
                 status: "rejected",
@@ -383,7 +393,7 @@ export function machineUpdateHandler(
         }
     });
 
-    socket.on(ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1, (raw: unknown) => {
+    const handleActionOperationSnapshotPush = (raw: unknown) => {
         const payload = projectActionOperationSnapshotPush(raw, readAuthenticatedMachineId(socket));
         if (!payload) return;
         eventRouter.emitEphemeral({
@@ -391,7 +401,9 @@ export function machineUpdateHandler(
             payload,
             recipientFilter: { type: 'user-scoped-only' },
         });
-    });
+    };
+    socket.on(ACTION_OPERATION_SNAPSHOT_PUSH_EVENT_V1, handleActionOperationSnapshotPush);
+    socket.on(ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1, handleActionOperationSnapshotPush);
 
     socket.on(EXTERNAL_SESSION_OPERATION_SOCKET_EVENT_V1, async (
         command: unknown,
@@ -551,6 +563,41 @@ export function machineUpdateHandler(
                 },
                 'External Session transcript invalidation handling failed.',
             );
+        }
+    });
+
+    socket.on(EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1, async (data: unknown) => {
+        try {
+            websocketEventsCounter.inc({ event_type: EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1 });
+            const clientType = typeof (socket.data as Record<string, unknown> | undefined)?.clientType === "string"
+                ? (socket.data as Record<string, unknown>).clientType
+                : "";
+            const machineId = typeof (socket.data as Record<string, unknown> | undefined)?.machineId === "string"
+                ? (socket.data as Record<string, unknown>).machineId as string
+                : "";
+            const parsed = ExternalSessionSourceUnavailableOccurrenceV1Schema.safeParse(data);
+            if (clientType !== "machine-scoped" || !machineId || !parsed.success || parsed.data.machineId !== machineId) return;
+            if (!(await isMachineAvailableForSocket(userId, machineId))) {
+                activityCache.invalidateMachine(machineId);
+                return;
+            }
+            const admitted = await inTx(async (tx) => await hasCurrentSessionScopedMachineAccessInTx({
+                tx,
+                accountId: userId,
+                machineId,
+                sessionId: parsed.data.sessionId,
+            }));
+            if (!admitted) return;
+            // The daemon emits only after its canonical status metadata write
+            // commits. Recipient access, Follow and policy are rechecked by the
+            // Activity owner at submission time.
+            scheduleSessionActivityRemoteAlerts({
+                sessionId: parsed.data.sessionId,
+                event: "source_unavailable",
+            });
+        } catch {
+            log({ module: "websocket", level: "error", event: EXTERNAL_SESSION_SOURCE_UNAVAILABLE_OCCURRENCE_EVENT_V1, errorCode: "internal_error" },
+                "External Session source-unavailable occurrence handling failed.");
         }
     });
 

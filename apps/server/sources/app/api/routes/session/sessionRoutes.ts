@@ -1,7 +1,10 @@
 import { type Fastify } from "../../types";
+import { registerSessionAccessGrantRoutes } from "./registerSessionAccessGrantRoutes";
 import { registerSessionAgentTransitionRoute } from "./registerSessionAgentTransitionRoute";
 import { registerSessionCreateOrLoadRoute } from "./registerSessionCreateOrLoadRoute";
+import { registerSessionDataKeyEnvelopeRoutes } from "./registerSessionDataKeyEnvelopeRoutes";
 import { registerSessionDeleteRoute } from "./registerSessionDeleteRoute";
+import { registerSessionDiscussionRoutes } from "./registerSessionDiscussionRoutes";
 import { registerSessionArchiveRoutes } from "./registerSessionArchiveRoutes";
 import { registerSessionListingRoutes } from "./registerSessionListingRoutes";
 import { registerSessionLookupByTagsRoute } from "./registerSessionLookupByTagsRoute";
@@ -9,15 +12,24 @@ import { registerSessionMessageRoutes } from "./registerSessionMessageRoutes";
 import { registerSessionOrganizationRoutes } from "./registerSessionOrganizationRoutes";
 import { registerSessionPatchRoute } from "./registerSessionPatchRoute";
 import { registerSessionReadStateRoutes } from "./registerSessionReadStateRoutes";
+import { registerSessionResponsibilityRoutes } from "./registerSessionResponsibilityRoutes";
 import { registerSessionTurnMutationRoute } from "./registerSessionTurnMutationRoute";
 import { registerSessionSystemRecordRoutes } from "./registerSessionSystemRecordRoutes";
 import { registerSessionSubagentCustodyRoutes } from "./registerSessionSubagentCustodyRoutes";
+import { registerSessionFollowRoutes } from "./registerSessionFollowRoutes";
+import { registerSessionFollowSourceRoutes } from "./registerSessionFollowSourceRoutes";
+import { registerSessionBoardRoutes } from "./registerSessionBoardRoutes";
 
 export function sessionRoutes(app: Fastify) {
+    registerSessionAccessGrantRoutes(app);
+    registerSessionBoardRoutes(app);
+    registerSessionFollowRoutes(app);
+    registerSessionFollowSourceRoutes(app);
     registerSessionListingRoutes(app);
     registerSessionLookupByTagsRoute(app);
     registerSessionOrganizationRoutes(app);
     registerSessionCreateOrLoadRoute(app);
+    registerSessionDataKeyEnvelopeRoutes(app);
     registerSessionArchiveRoutes(app);
     registerSessionMessageRoutes(app);
     registerSessionPatchRoute(app);
@@ -26,5 +38,7 @@ export function sessionRoutes(app: Fastify) {
     registerSessionSubagentCustodyRoutes(app);
     registerSessionTurnMutationRoute(app);
     registerSessionReadStateRoutes(app);
+    registerSessionResponsibilityRoutes(app);
+    registerSessionDiscussionRoutes(app);
     registerSessionDeleteRoute(app);
 }

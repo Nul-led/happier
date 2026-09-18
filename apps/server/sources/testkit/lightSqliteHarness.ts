@@ -2,10 +2,9 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { renderPrismaCompatibleSqliteDatabaseUrl } from "@happier-dev/cli-common/firstPartyRuntime";
+import { renderPrismaCompatibleSqliteDatabaseUrl } from "@happier-dev/cli-common/firstPartyRuntime/server";
 
 import { applyLightDefaultEnv, ensureHandyMasterSecret } from "@/flavors/light/env";
-import { auth } from "@/app/auth/auth";
 import { initEncrypt } from "@/modules/encrypt";
 import { initFilesLocalFromEnv, loadFiles } from "@/storage/blob/files";
 import { db, initDbSqlite, shutdownDbClient } from "@/storage/db";
@@ -80,6 +79,7 @@ export async function createLightSqliteHarness(options: LightSqliteHarnessOption
         await db.$connect();
 
         if (options.initAuth) {
+            const { auth } = await import("@/app/auth/auth");
             await auth.init();
         }
         if (options.initEncrypt) {

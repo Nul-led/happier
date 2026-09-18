@@ -4,7 +4,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/storage/db";
 import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { applyReleasedUiV021SessionEnd } from "./applyReleasedUiV021SessionEnd";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 describe("released UI v0.2.1 Stop lifecycle compatibility", () => {
     let harness: LightSqliteHarness;
@@ -52,6 +55,7 @@ describe("released UI v0.2.1 Stop lifecycle compatibility", () => {
                 turnId: "turn-1",
                 observedAt: 1_000,
             },
+            authentication,
         })).resolves.toMatchObject({ ok: true, didApply: true });
 
         await expect(applyReleasedUiV021SessionEnd({

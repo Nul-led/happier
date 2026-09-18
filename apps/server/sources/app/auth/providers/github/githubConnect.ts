@@ -1,15 +1,11 @@
-import { db } from "@/storage/db";
+import { prepareIdentityLink, preflightIdentityLink } from "../accountIdentityLifecycle";
 import { Context } from "@/context";
 import { encryptString } from "@/modules/encrypt";
-import { uploadImage } from "@/storage/blob/uploadImage";
+import { prepareUploadedImage } from "@/storage/blob/uploadImage";
 import { separateName } from "@/utils/strings/separateName";
 import { type GitHubProfile } from "@/app/auth/providers/github/types";
-import { buildUpdateAccountUpdate, eventRouter } from "@/app/events/eventRouter";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
-import { afterTx, inTx } from "@/storage/inTx";
-import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { inTx } from "@/storage/inTx";
 import { resolveGitHubAuthRestrictionsFromEnv } from "@/app/auth/providers/github/restrictions";
-import { fetchLinkedProvidersForAccount } from "@/app/auth/providers/linkedProviders";
 import type { PreparedIdentityConnection } from "@/app/auth/providers/identityProviders/types";
 
 function parseExplicitGithubStoreTokenSetting(env: NodeJS.ProcessEnv): boolean | null {
@@ -31,32 +27,18 @@ function shouldStoreGithubAccessToken(params: { env: NodeJS.ProcessEnv }): boole
     return restrictions.orgMembershipSource === "oauth_user_token" && restrictions.allowedOrgs.length > 0;
 }
 
-export class ProviderAlreadyLinkedError extends Error {
-    constructor() {
-        super("provider-already-linked");
-        this.name = "ProviderAlreadyLinkedError";
-    }
-}
+export { ProviderAlreadyLinkedError } from "../accountIdentityLifecycle";
 
 /**
- * Connects a GitHub account to a user profile.
- *
- * Flow:
- * 1. Check if already connected to same account - early exit if yes
- * 2. If GitHub account is connected to another user - throw error
- * 3. Upload avatar to S3 (non-transactional operation)
- * 4. In transaction: persist GitHub account and link to user with GitHub username
- * 5. Send socket update after transaction completes
- *
- * @param ctx - Request context containing user ID
- * @param githubProfile - GitHub profile data from OAuth
- * @param accessToken - GitHub access token for API access
+ * Validates the GitHub link before external avatar preparation and supplies its
+ * profile/token/presentation intent to the shared transaction lifecycle.
+ * Same-subject reconnects remain no-ops, rechecked inside the final transaction.
  */
 export async function prepareGithubConnect(
     ctx: Context,
     githubProfile: GitHubProfile,
     accessToken: string,
-    opts?: { preferredUsername?: string | null }
+    opts?: { preferredUsername?: string | null; transferFromAccountId?: string }
 ): Promise<PreparedIdentityConnection> {
     const userId = ctx.uid;
     const githubUserId = githubProfile.id.toString();
@@ -64,135 +46,51 @@ export async function prepareGithubConnect(
     const githubLoginUsername = githubLogin ? githubLogin.toLowerCase() : null;
     const preferredUsername = opts?.preferredUsername?.toString().trim().toLowerCase() || null;
 
-    // Step 1: Check if user is already connected to this exact GitHub account
-    const existingIdentity = await db.accountIdentity.findFirst({
-        where: { accountId: userId, provider: "github" },
-        select: { providerUserId: true },
+    const sameSubject = await preflightIdentityLink({
+        accountId: userId, provider: 'github', providerUserId: githubUserId,
+        transferFromAccountId: opts?.transferFromAccountId,
     });
-    if (existingIdentity?.providerUserId?.toString?.() === githubUserId) {
-        return { connectInTx: async () => {} };
-    }
-
-    // Step 2: Check if GitHub account is connected to another user
-    const existingConnection = await db.accountIdentity.findFirst({
-        where: {
-            provider: "github",
-            providerUserId: githubUserId,
-            NOT: { accountId: userId },
-        },
-        select: { id: true },
-    });
-    if (existingConnection) {
-        throw new ProviderAlreadyLinkedError();
-    }
 
     // Step 3: Upload avatar to S3 (outside transaction for performance)
-    let avatar: any | null = null;
+    let preparedAvatar: Awaited<ReturnType<typeof prepareUploadedImage>> | null = null;
     try {
         const avatarUrl = githubProfile.avatar_url?.toString?.() ?? "";
-        if (avatarUrl.trim()) {
+        if (!sameSubject && avatarUrl.trim()) {
             const imageResponse = await fetch(avatarUrl);
             if (imageResponse.ok) {
                 const imageBuffer = await imageResponse.arrayBuffer();
-                avatar = await uploadImage(userId, "avatars", "github", avatarUrl, Buffer.from(imageBuffer));
+                preparedAvatar = await prepareUploadedImage(userId, "avatars", "github", avatarUrl, Buffer.from(imageBuffer));
             }
         }
     } catch {
-        avatar = null;
+        preparedAvatar = null;
     }
 
     // Extract name from GitHub profile
     const name = separateName(githubProfile.name);
 
-    // Step 4 is returned to the caller so a larger auth finalization can own
-    // one mutation boundary. Network/blob preparation above never runs while
-    // that database transaction is open.
+    const identityConnection = await prepareIdentityLink({
+        accountId: userId,
+        provider: "github",
+        providerUserId: githubUserId,
+        providerLogin: githubLoginUsername,
+        profile: {
+            id: githubProfile.id, login: githubProfile.login,
+            ...(githubProfile.name !== undefined ? { name: githubProfile.name } : {}),
+            ...(githubProfile.avatar_url !== undefined ? { avatar_url: githubProfile.avatar_url } : {}),
+            ...(typeof githubProfile.html_url === 'string' ? { html_url: githubProfile.html_url } : {}),
+            ...(typeof githubProfile.bio === 'string' ? { bio: githubProfile.bio } : {}),
+        },
+        token: shouldStoreGithubAccessToken({ env: process.env })
+            ? encryptString(['user', userId, 'github', 'token'], accessToken) : null,
+        presentation: { username: preferredUsername ?? githubLoginUsername, ...name, ...(preparedAvatar ? { avatar: preparedAvatar.image } : {}) },
+        sameSubject: 'unchanged',
+        transferFromAccountId: opts?.transferFromAccountId,
+    });
     return {
         connectInTx: async (tx) => {
-        const currentUser = await tx.account.findUnique({
-            where: { id: userId },
-            select: { username: true },
-        });
-        if (!currentUser) {
-            throw new Error('account-not-found');
-        }
-        const conflictingIdentity = await tx.accountIdentity.findFirst({
-            where: {
-                provider: "github",
-                providerUserId: githubUserId,
-                NOT: { accountId: userId },
-            },
-            select: { id: true },
-        });
-        if (conflictingIdentity) throw new ProviderAlreadyLinkedError();
-        const existingUsername = currentUser.username?.toString().trim() || null;
-
-        const shouldPersistToken = shouldStoreGithubAccessToken({ env: process.env });
-        let usernameToSet: string | null = null;
-        if (!existingUsername) {
-            const candidate = preferredUsername ?? githubLoginUsername;
-            if (candidate) {
-                const taken = await tx.account.findFirst({
-                    where: {
-                        username: candidate,
-                        NOT: { id: userId },
-                    },
-                    select: { id: true },
-                });
-                if (!taken) {
-                    usernameToSet = candidate;
-                }
-            }
-        }
-
-        await tx.accountIdentity.upsert({
-            where: { accountId_provider: { accountId: userId, provider: "github" } },
-            update: {
-                providerUserId: githubUserId,
-                providerLogin: githubLoginUsername,
-                profile: githubProfile as any,
-                token: shouldPersistToken ? (encryptString(['user', userId, 'github', 'token'], accessToken) as any) : null,
-            },
-            create: {
-                accountId: userId,
-                provider: "github",
-                providerUserId: githubUserId,
-                providerLogin: githubLoginUsername,
-                profile: githubProfile as any,
-                token: shouldPersistToken ? (encryptString(['user', userId, 'github', 'token'], accessToken) as any) : null,
-            },
-        });
-
-        // Link GitHub account to user
-        const finalUsername = existingUsername ?? usernameToSet;
-        await tx.account.update({
-            where: { id: userId },
-            data: {
-                firstName: name.firstName,
-                lastName: name.lastName,
-                ...(avatar ? { avatar } : {}),
-                ...(usernameToSet ? { username: usernameToSet } : {}),
-            }
-        });
-
-        const linkedProviders = await fetchLinkedProvidersForAccount({ tx: tx as any, accountId: userId });
-        const cursor = await markAccountChanged(tx, { accountId: userId, kind: 'account', entityId: 'self', hint: { linkedProviders: true } });
-
-        afterTx(tx, () => {
-            const updatePayload = buildUpdateAccountUpdate(userId, {
-                linkedProviders,
-                username: finalUsername,
-                firstName: name.firstName,
-                lastName: name.lastName,
-                ...(avatar ? { avatar } : {}),
-            }, cursor, randomKeyNaked(12));
-
-            eventRouter.emitUpdate({
-                userId,
-                payload: updatePayload,
-                recipientFilter: { type: 'user-scoped-only' }
-            });
-        });
+            await preparedAvatar?.persist(tx);
+            await identityConnection.connectInTx(tx);
         },
     };
 }
@@ -201,7 +99,7 @@ export async function githubConnect(
     ctx: Context,
     githubProfile: GitHubProfile,
     accessToken: string,
-    opts?: { preferredUsername?: string | null },
+    opts?: { preferredUsername?: string | null; transferFromAccountId?: string },
 ): Promise<void> {
     const prepared = await prepareGithubConnect(ctx, githubProfile, accessToken, opts);
     await inTx(prepared.connectInTx);

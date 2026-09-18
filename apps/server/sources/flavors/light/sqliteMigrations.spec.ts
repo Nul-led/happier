@@ -269,10 +269,14 @@ describe('light sqlite migrations (unit)', () => {
     expect(getSqliteState(dbPath).applied.has('20260101000000_first')).toBe(true);
   });
 
-  it('refuses the real Qualified Connected Accounts V4 migration before opening SQLite without updater handoff', async () => {
+  it.each([
+    '20260725100000_activate_qualified_connected_accounts_v4',
+    '20260905220000_add_team_home_governance',
+    '20260905235000_add_account_session_read_state',
+    '20260906160100_contract_session_data_key_envelopes',
+  ])('refuses %s before opening SQLite without updater handoff', async (boundaryMigration) => {
     vi.stubGlobal('Bun', {});
     const dir = await mkdtemp(join(tmpdir(), 'happier-sqlite-migrations-v4-admission-'));
-    const boundaryMigration = '20260725100000_activate_qualified_connected_accounts_v4';
     const migrationDir = join(dir, boundaryMigration);
     await mkdir(migrationDir, { recursive: true });
     // Candidate bytes are the current migration; the immutable cli-v0.2.11

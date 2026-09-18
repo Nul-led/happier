@@ -5,11 +5,26 @@ import { db } from '@/storage/db';
 import { inTx } from '@/storage/inTx';
 import { auth } from '@/app/auth/auth';
 import { getOrCreateServerIdentityId } from '@/app/serverIdentity/serverIdentity';
-import { createSessionMessage } from '@/app/session/sessionWriteService';
+import { createPresentUserSessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication.testkit';
+import { createSessionMessage as createSessionMessageWithAuthentication } from '@/app/session/sessionWriteService';
 import { deleteSessionTree } from '@/app/session/delete/deleteSessionTree';
 import { runSessionSidechainMessageRetentionRule } from '@/app/retention/rules/sessionSidechainMessageRetentionRule';
 
 const shutdownHandlers = vi.hoisted(() => new Map<string, Array<() => Promise<void>>>());
+const authentication = createPresentUserSessionAccessAuthentication();
+
+type AuthenticatedSessionMessageInput = Omit<
+    Extract<Parameters<typeof createSessionMessageWithAuthentication>[0], { content: unknown }>,
+    'authentication' | 'inputAdmission'
+>;
+
+function createSessionMessage(params: AuthenticatedSessionMessageInput) {
+    return createSessionMessageWithAuthentication({
+        ...params,
+        inputAdmission: 'authenticatedAccount',
+        authentication,
+    });
+}
 
 /**
  * Bounded real-clock polling over the live derived projection. The projection is
@@ -71,6 +86,7 @@ describe('startApi Home search production composition', () => {
                 HAPPIER_FILES_BACKEND: 'local',
                 HAPPY_FILES_BACKEND: 'local',
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'plaintext_only',
+                HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
                 AUTH_REQUIRED_LOGIN_PROVIDERS: '',
                 PORT: '0',
             },
@@ -290,14 +306,9 @@ describe('startApi Home search production composition', () => {
                 },
                 select: { id: true },
             });
-            await db.sessionShare.create({
-                data: {
-                    sessionId: session.id,
-                    sharedByUserId: owner.id,
-                    sharedWithUserId: viewer.id,
-                    accessLevel: 'view',
-                },
-            });
+            const team = await db.team.create({ data: { name: `home-search-team-${randomUUID()}` } });
+            await db.teamMembership.create({ data: { teamId: team.id, accountId: viewer.id, role: 'member' } });
+            await db.sessionTeamGrant.create({ data: { sessionId: session.id, teamId: team.id, accessLevel: 'view', effectiveAt: new Date() } });
             const published = await createSessionMessage({
                 actorUserId: owner.id,
                 sessionId: session.id,

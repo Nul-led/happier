@@ -32,6 +32,12 @@ function createTx(session: Record<string, unknown>, row?: Record<string, unknown
                 providerAction: null,
                 requestedAction: { v: 1, kind: 'send_now' },
                 authorAccountId: 'owner',
+                inputAdmissionReceipt: {
+                    v: 1,
+                    issuer: 'authenticatedAccount',
+                    actorAccountId: 'owner',
+                    sessionRelationship: 'owner',
+                },
             }),
         },
     } as any;
@@ -51,8 +57,6 @@ describe('pending activation authorization owner', () => {
             tx: createTx(session),
             sessionId: 's1',
             requestId: 'p1',
-            actorAccountId: 'owner',
-            admissionKind: 'account',
             now: new Date(50),
         });
         expect(result).toEqual({ accountId: 'owner', requestId: 'p1' });
@@ -77,8 +81,6 @@ describe('pending activation authorization owner', () => {
             tx: createTx(session),
             sessionId: 's1',
             requestId: 'p1',
-            actorAccountId: 'owner',
-            admissionKind: 'account',
             now: new Date(90),
         });
         expect(session).toMatchObject({
@@ -88,9 +90,81 @@ describe('pending activation authorization owner', () => {
         });
     });
 
+    it('arms an Account-authored enqueue row only for an explicit resume-on-availability request', async () => {
+        const session = {
+            accountId: 'owner',
+            lastActiveAt: new Date(100),
+            pendingActivationRequestId: null,
+            pendingActivationRequestedAt: null,
+            pendingActivationStatus: null,
+            pendingActivationFailureCode: null,
+        };
+        const row = {
+            localId: 'p1',
+            messageRole: 'user',
+            status: 'queued',
+            deliveryState: null,
+            providerAction: null,
+            requestedAction: { v: 1, kind: 'enqueue' },
+            authorAccountId: null,
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: 'authenticatedAccount',
+                actorAccountId: 'owner',
+                sessionRelationship: 'owner',
+            },
+        };
+        const tx = createTx(session, row);
+
+        await expect(armPendingActivationAuthorizationInTx({
+            tx,
+            sessionId: 's1',
+            requestId: 'p1',
+        })).resolves.toBeUndefined();
+        await expect(armPendingActivationAuthorizationInTx({
+            tx,
+            sessionId: 's1',
+            requestId: 'p1',
+            resumeWhenAvailable: true,
+        })).resolves.toEqual({ accountId: 'owner', requestId: 'p1' });
+    });
+
+    it('fails closed when the mutable author projection conflicts with the immutable Account receipt', async () => {
+        const session = {
+            accountId: 'owner',
+            lastActiveAt: new Date(100),
+            pendingActivationRequestId: null,
+            pendingActivationRequestedAt: null,
+            pendingActivationStatus: null,
+            pendingActivationFailureCode: null,
+        };
+        const tx = createTx(session, {
+            messageRole: 'user',
+            status: 'queued',
+            deliveryState: null,
+            providerAction: null,
+            requestedAction: { v: 1, kind: 'send_now' },
+            authorAccountId: 'attacker',
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: 'authenticatedAccount',
+                actorAccountId: 'owner',
+                sessionRelationship: 'owner',
+            },
+        });
+
+        await expect(armPendingActivationAuthorizationInTx({
+            tx,
+            sessionId: 's1',
+            requestId: 'p1',
+        })).resolves.toBeUndefined();
+        expect(tx.session.update).not.toHaveBeenCalled();
+    });
+
     it.each([
-        ['machine admission', { admissionKind: 'machine' as const }],
-        ['different author', { actorAccountId: 'shared' }],
+        ['machine admission', { row: { inputAdmissionReceipt: { v: 1, issuer: 'authenticatedMachine' } } }],
+        ['malformed receipt', { row: { inputAdmissionReceipt: { v: 1, issuer: 'authenticatedAccount', actorAccountId: '' } } }],
+        ['different receipt actor', { row: { inputAdmissionReceipt: { v: 1, issuer: 'authenticatedAccount', actorAccountId: 'shared', sessionRelationship: 'sharedAdmin' } } }],
         ['non-user row', { row: { messageRole: 'agent' } }],
         ['blocked row', { row: { deliveryState: 'blocked' } }],
         ['claimed row', { row: { providerAction: 'send' } }],
@@ -110,14 +184,18 @@ describe('pending activation authorization owner', () => {
             providerAction: null,
             requestedAction: { v: 1, kind: 'send_now' },
             authorAccountId: 'owner',
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: 'authenticatedAccount',
+                actorAccountId: 'owner',
+                sessionRelationship: 'owner',
+            },
         };
         const tx = createTx(session, { ...baseRow, ...('row' in override ? override.row : {}) });
         await expect(armPendingActivationAuthorizationInTx({
             tx,
             sessionId: 's1',
             requestId: 'p1',
-            actorAccountId: 'actorAccountId' in override ? override.actorAccountId : 'owner',
-            admissionKind: 'admissionKind' in override ? override.admissionKind : 'account',
         })).resolves.toBeUndefined();
         expect(tx.session.update).not.toHaveBeenCalled();
     });

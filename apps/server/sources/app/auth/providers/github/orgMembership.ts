@@ -1,91 +1,15 @@
-import { App } from "octokit";
+export { isOrgMemberViaDeploymentApp as isGithubOrgMemberViaApp } from "@/app/integrations/github/githubDeploymentApp";
 
-type GithubAppConfig = Readonly<{
-    appId: string;
-    privateKey: string;
-    installationsByOrg: ReadonlyMap<string, number>;
-}>;
-
-let cachedApp: App | null = null;
-let cachedConfigKey: string | null = null;
-
-function parseInstallationMap(raw: string | undefined): Map<string, number> {
-    const out = new Map<string, number>();
-    if (typeof raw !== "string") return out;
-    for (const part of raw.split(/[,\s]+/g)) {
-        const trimmed = part.trim();
-        if (!trimmed) continue;
-        const [orgRaw, idRaw] = trimmed.split("=");
-        const org = (orgRaw ?? "").trim().toLowerCase();
-        const id = Number.parseInt((idRaw ?? "").trim(), 10);
-        if (!org || !Number.isFinite(id) || id <= 0) continue;
-        out.set(org, id);
-    }
-    return out;
-}
-
-function resolveGithubAppConfigFromEnv(env: NodeJS.ProcessEnv): GithubAppConfig | null {
-    const appId = (env.AUTH_GITHUB_APP_ID ?? "").toString().trim();
-    const privateKey = (env.AUTH_GITHUB_APP_PRIVATE_KEY ?? "").toString();
-    const mapRaw = (env.AUTH_GITHUB_APP_INSTALLATION_ID_BY_ORG ?? "").toString().trim();
-    if (!appId || !privateKey || !mapRaw) return null;
-
-    const installationsByOrg = parseInstallationMap(mapRaw);
-    if (installationsByOrg.size === 0) return null;
-
-    return Object.freeze({
-        appId,
-        privateKey,
-        installationsByOrg,
-    });
-}
-
-async function getGithubAppFromEnv(env: NodeJS.ProcessEnv): Promise<{ app: App; config: GithubAppConfig } | null> {
-    const config = resolveGithubAppConfigFromEnv(env);
-    if (!config) return null;
-
-    const configKey = `${config.appId}\n${config.privateKey}`;
-    if (!cachedApp || cachedConfigKey !== configKey) {
-        cachedConfigKey = configKey;
-        cachedApp = new App({
-            appId: config.appId,
-            privateKey: config.privateKey,
-        });
-    }
-
-    return { app: cachedApp, config };
-}
-
-export async function isGithubOrgMemberViaApp(params: {
-    org: string;
-    username: string;
-    env: NodeJS.ProcessEnv;
-}): Promise<boolean> {
-    const org = params.org.toString().trim().toLowerCase();
-    const username = params.username.toString().trim();
-    const resolved = await getGithubAppFromEnv(params.env);
-    if (!resolved) {
-        return false;
-    }
-
-    const installationId = resolved.config.installationsByOrg.get(org);
-    if (!installationId) {
-        return false;
-    }
-
-    const octokit = await resolved.app.getInstallationOctokit(installationId);
-
-    try {
-        // https://docs.github.com/en/rest/orgs/members#check-organization-membership-for-a-user
-        await octokit.request("GET /orgs/{org}/members/{username}", { org, username });
-        return true;
-    } catch (error: any) {
-        const status = error?.status;
-        if (status === 404) return false;
-        throw error;
-    }
-}
-
+/**
+ * Organization membership check using the signing-in user's own GitHub OAuth
+ * access token (`AUTH_GITHUB_ORG_MEMBERSHIP_SOURCE=oauth_user_token`).
+ *
+ * App-authenticated membership checks are purpose-bound operations of the
+ * single deployment GitHub App owner at
+ * `@/app/integrations/github/githubDeploymentApp`; the `isGithubOrgMemberViaApp`
+ * signature above is re-exported unchanged for the existing eligibility
+ * contract.
+ */
 export async function isGithubOrgMemberViaUserToken(params: {
     org: string;
     username: string;

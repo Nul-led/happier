@@ -7,6 +7,8 @@ import {
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { AutomationValidationError } from "./automationValidation";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -15,7 +17,7 @@ import {
     heartbeatAutomationRun,
     toAutomationV3WorkerClaimResponse,
 } from "./automationClaimService";
-import { listDaemonAssignments } from "./automationAssignmentService";
+import { listDaemonAssignments, replaceAutomationAssignmentsTx } from "./automationAssignmentService";
 import { encodeAutomationRunCause } from "./automationRunCauseCodec";
 import {
     automationAccountCurrentnessSelect,
@@ -242,6 +244,166 @@ describe("automationClaimService (integration)", () => {
             () => db.machine.deleteMany(),
             () => db.account.deleteMany(),
         ]);
+    });
+
+    it("claims a workflow occurrence from its opaque definition envelope only for a current worker", async () => {
+        const machineId = "machine-workflow-definition-claim";
+        const { accountId } = await createAccountWithMachine(machineId, "plain");
+        const automation = await createAutomationWithAssignments({
+            accountId,
+            machineIds: [machineId],
+            name: "Workflow definition claim",
+        });
+        const definitionEnvelope = JSON.stringify({
+            t: "plain",
+            v: {
+                definition: {
+                    version: 1,
+                    inputs: [],
+                    defaults: {},
+                    blocks: [{
+                        kind: "step",
+                        id: "step-1",
+                        document: { text: "Do it", references: [], attachments: [] },
+                        input: [],
+                        result: { kind: "text" },
+                    }],
+                },
+            },
+        });
+        const run = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                ...scheduleRunCause(automation.triggerId),
+                accountId,
+                state: "queued",
+                scheduledAt: new Date(Date.now() - 1_000),
+                dueAt: new Date(Date.now() - 1_000),
+                executionInputEnvelope: definitionEnvelope,
+                workflowCustodyState: "pending",
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+        const oneShot = await db.automationRun.create({
+            data: {
+                automationId: automation.id,
+                ...scheduleRunCause(automation.triggerId),
+                accountId,
+                state: "queued",
+                scheduledAt: new Date(Date.now() - 500),
+                dueAt: new Date(Date.now() - 500),
+                executionInputEnvelope: strictPlainRecipeForAssignments([machineId]),
+                assignments: frozenRunAssignments([machineId]),
+            },
+            select: { id: true },
+        });
+
+        await expect(claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            recipeFeaturePolicy: { workflowsEnabled: false },
+        })).resolves.toMatchObject({ run: { id: oneShot.id, recipeKind: "legacy" } });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: run.id },
+            select: { state: true, claimedAt: true },
+        })).resolves.toEqual({ state: "queued", claimedAt: null });
+
+        await expect(claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            recipeFeaturePolicy: { workflowsEnabled: true },
+        })).resolves.toMatchObject({
+            run: {
+                id: run.id,
+                recipeKind: "workflow-v2",
+                executionInputEnvelope: definitionEnvelope,
+            },
+        });
+
+        await db.automationRun.update({
+            where: { id: run.id },
+            data: { state: "queued", claimedAt: null, claimedByMachineId: null, leaseExpiresAt: null },
+        });
+        await expect(claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+            requireV2RunRepresentability: true,
+        })).resolves.toEqual({ run: null, accountCurrentness: null });
+    });
+
+    it("claims a direct Workflow Run without an Automation relation", async () => {
+        const machineId = "machine-direct-workflow-claim";
+        const { accountId } = await createAccountWithMachine(machineId, "plain");
+        const runId = randomUUID();
+        const acceptedSnapshotEnvelope = JSON.stringify({
+            t: "plain",
+            v: {
+                v: 1,
+                binding: { v: 1, purpose: "accepted_snapshot", accountId, runId },
+                content: {
+                    definition: {
+                        version: 1,
+                        inputs: [],
+                        defaults: {},
+                        blocks: [{
+                            kind: "step",
+                            id: "step-1",
+                            document: { text: "Do it", references: [], attachments: [] },
+                            input: [],
+                            result: { kind: "text" },
+                        }],
+                    },
+                    source: { kind: "inline" },
+                    inputs: {},
+                    machineId,
+                    executionTarget: { kind: "session" },
+                    workspaceTarget: {
+                        project: { machineId, directory: "/repo", checkoutRootPath: "/repo" },
+                    },
+                    origin: { kind: "direct" },
+                    authorization: {
+                        admittedPermissionCeiling: "default",
+                        principal: { kind: "host" },
+                    },
+                },
+            },
+        });
+        await db.automationRun.create({
+            data: {
+                id: runId,
+                originKind: "direct",
+                automationId: null,
+                accountId,
+                state: "queued",
+                causeKind: null,
+                scheduledAt: new Date(Date.now() - 1_000),
+                dueAt: new Date(Date.now() - 1_000),
+                workflowAcceptedSnapshotEnvelope: acceptedSnapshotEnvelope,
+                workflowCustodyState: "pending",
+                assignments: frozenRunAssignments([machineId]),
+            },
+        });
+
+        const claimed = toAutomationV3WorkerClaimResponse(await claimAutomationRun({
+            accountId,
+            machineId,
+            leaseDurationMs: 30_000,
+        }));
+        expect(claimed).toMatchObject({
+            run: {
+                id: runId,
+                automationId: null,
+                origin: { kind: "direct" },
+                workflowAcceptedSnapshotEnvelope: acceptedSnapshotEnvelope,
+                attempt: 1,
+                revision: 1,
+            },
+            automation: null,
+        });
     });
 
     async function createLeasedRetirementRun(params: Readonly<{
@@ -573,7 +735,12 @@ describe("automationClaimService (integration)", () => {
 
         // The claim candidate read is a cause reader: a partial select would
         // make every Session lifecycle Run permanently unclaimable.
-        expect(toAutomationV3WorkerClaimResponse(claim).run?.cause).toEqual(cause);
+        const response = toAutomationV3WorkerClaimResponse(claim);
+        expect(response.run?.automationId).toBe(automation.id);
+        if (response.run === null || response.run.automationId === null) {
+            throw new Error("Expected an Automation-origin claim response");
+        }
+        expect(response.run.cause).toEqual(cause);
     });
 
     it("converges concurrent and response-loss retries of one signed V3 claim onto one Run", async () => {
@@ -1211,7 +1378,19 @@ describe("automationClaimService (integration)", () => {
         })).resolves.toEqual({ run: null, accountCurrentness: null });
     });
 
+    it("rejects ephemeral Machines when writing Automation assignments", async () => {
+        const machineId = "ephemeral-assignment";
+        const { accountId } = await createAccountWithMachine(machineId);
+        const automation = await createAutomationWithAssignments({ accountId, machineIds: [], name: "Assignment eligibility" });
+        await db.machine.update({ where: { id: machineId }, data: { kind: "ephemeral_session_runner" } });
+        await expect(inTx((tx) => replaceAutomationAssignmentsTx({
+            tx, accountId, automationId: automation.id, assignments: [{ machineId, enabled: true }],
+        }))).rejects.toBeInstanceOf(AutomationValidationError);
+        expect(await db.automationAssignment.count({ where: { automationId: automation.id } })).toBe(0);
+    });
+
     it.each([
+        ["ephemeral", { kind: "ephemeral_session_runner" }],
         ["revoked", { revokedAt: new Date("2026-08-27T00:00:00.000Z") }],
         ["replaced", { replacedByMachineId: "machine-current-replacement" }],
     ] as const)("does not grant a claim to a %s machine", async (_state, machineUpdate) => {

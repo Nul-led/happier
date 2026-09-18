@@ -5,9 +5,9 @@ import {
     buildSessionAgentTransitionDividerLocalId,
     serializeSessionInputRequestEqualityIntentV1,
 } from "@happier-dev/protocol";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 
-type ResolveSessionPendingAccess =
-    typeof import("./resolveSessionPendingAccess").resolveSessionPendingEditAccess;
+const authentication = createPresentUserSessionAccessAuthentication();
 
 let currentTx: any;
 
@@ -26,27 +26,33 @@ vi.mock("@/utils/logging/log", async (importOriginal) => ({
     warn: loggingHarness.warn,
 }));
 
-const resolveSessionPendingEditAccess = vi.fn<ResolveSessionPendingAccess>(
-    async () => ({ ok: true, isOwner: true, level: "owner" }),
-);
-vi.mock("@/app/session/pending/resolveSessionPendingAccess", () => ({
-    resolveSessionPendingEditAccess: (...args: Parameters<ResolveSessionPendingAccess>) =>
-        resolveSessionPendingEditAccess(...args),
-    resolveSessionPendingOwnerAccess: (...args: Parameters<ResolveSessionPendingAccess>) =>
-        resolveSessionPendingEditAccess(...args),
-    resolveSessionPendingViewAccess: vi.fn<ResolveSessionPendingAccess>(
-        async () => ({ ok: true, isOwner: true, level: "owner" }),
-    ),
-}));
+// Keep access projection real; only the persistent database boundary is stubbed.
+vi.mock("@/storage/db", async (importOriginal) => {
+    const original = await importOriginal<typeof import("@/storage/db")>();
+    return {
+        getActivePrismaRuntime: () => original.prismaRuntime,
+        db: {
+            session: {
+                findUnique: (...args: unknown[]) => currentTx.session.findUnique(...args),
+            },
+        },
+    };
+});
 
 const applyPendingSessionStateChange = vi.fn(async (params: { meaningfulActivityAt?: Date } = {}) => ({
     pendingCount: 1,
+    pendingBlockedCount: 0,
     pendingVersion: 1,
-    participantCursors: [],
+    recipientCursors: [],
     ...(params.meaningfulActivityAt ? { meaningfulActivityAt: params.meaningfulActivityAt } : {}),
 }));
 vi.mock("@/app/session/pending/applyPendingSessionStateChange", () => ({
     applyPendingSessionStateChange: (...args: any[]) => applyPendingSessionStateChange(...args),
+}));
+
+const pendingPublicationHarness = vi.hoisted(() => ({ emitPendingChanged: vi.fn(async () => undefined) }));
+vi.mock("@/app/session/pending/publishPendingMutation", () => ({
+    emitPendingChanged: pendingPublicationHarness.emitPendingChanged,
 }));
 
 import {
@@ -62,6 +68,13 @@ const sendPendingDeliveryAsNewCompat = sendPendingDeliveryAsNew as unknown as (p
 const updatePendingMessageCompat = updatePendingMessage as unknown as (params: any) => Promise<any>;
 
 type PendingSessionFixture = Readonly<{
+    id: string;
+    currentStorageState: "hosted";
+    shares: { id: string; sharedWithUserId: string; accessLevel: "view" | "edit" | "admin"; canApprovePermissions: boolean }[];
+    account: { status: "active" };
+    teamGrants: [];
+    groupGrants: [];
+    primaryTeamId: null;
     accountId: string;
     active: boolean;
     archivedAt: null;
@@ -76,6 +89,13 @@ function createPendingSessionFixture(
     overrides: Partial<PendingSessionFixture> = {},
 ): PendingSessionFixture {
     return {
+        id: "s1",
+        currentStorageState: "hosted",
+        shares: [],
+        account: { status: "active" },
+        teamGrants: [],
+        groupGrants: [],
+        primaryTeamId: null,
         accountId: "u1",
         active: true,
         archivedAt: null,
@@ -97,20 +117,20 @@ describe("pendingMessageService", () => {
         loggingHarness.warn.mockClear();
         transactionHarness.inTx.mockReset();
         transactionHarness.inTx.mockImplementation(async (fn: any) => await fn(currentTx));
-        resolveSessionPendingEditAccess.mockReset();
-        resolveSessionPendingEditAccess.mockResolvedValue({ ok: true, isOwner: true, level: "owner" });
         applyPendingSessionStateChange.mockReset();
         applyPendingSessionStateChange.mockImplementation(async (params: { meaningfulActivityAt?: Date } = {}) => ({
             pendingCount: 1,
+            pendingBlockedCount: 0,
             pendingVersion: 1,
-            participantCursors: [],
+            recipientCursors: [],
             ...(params.meaningfulActivityAt ? { meaningfulActivityAt: params.meaningfulActivityAt } : {}),
         }));
+        pendingPublicationHarness.emitPendingChanged.mockClear();
         storagePolicyEnv.restore();
 
         currentTx = {
             session: {
-                findUnique: vi.fn(),
+                findUnique: vi.fn(async () => createPendingSessionFixture()),
                 update: vi.fn(async () => ({ pendingQueueSeq: 1 })),
             },
             sessionMessage: {
@@ -121,6 +141,9 @@ describe("pendingMessageService", () => {
                 findFirst: vi.fn(),
                 create: vi.fn(),
                 update: vi.fn(),
+            },
+            account: {
+                findMany: vi.fn(async () => []),
             },
             machine: {
                 findFirst: vi.fn(async () => ({
@@ -182,6 +205,61 @@ describe("pendingMessageService", () => {
         );
     });
 
+    it("returns typed correlated transaction unavailability when enqueue cannot acquire a transaction", async () => {
+        const actualTransactions = await vi.importActual<typeof import("@/storage/inTx")>("@/storage/inTx");
+        const acquisitionError = Object.assign(
+            new Error("Transaction API error: Unable to start a transaction in the given time."),
+            { code: "P2028", meta: { error: "Unable to start a transaction in the given time." } },
+        );
+        const unavailableError = new actualTransactions.TransactionAcquisitionUnavailableError(acquisitionError);
+        transactionHarness.inTx.mockRejectedValueOnce(unavailableError);
+
+        await expect(enqueuePendingMessageCompat({
+            actorUserId: "u1",
+            sessionId: "s1",
+            localId: "enqueue-acquisition-unavailable",
+            ciphertext: "cipher",
+            requestedAction: { v: 1, kind: "enqueue" },
+            authentication,
+            diagnosticCorrelationId: "enqueue-acquisition-unavailable-correlation",
+        })).resolves.toEqual({
+            ok: false,
+            error: "transaction-unavailable",
+            retryAfterMs: 1_000,
+            correlationId: "enqueue-acquisition-unavailable-correlation",
+        });
+        expect(loggingHarness.warn).toHaveBeenCalledWith(
+            expect.objectContaining({
+                operation: "enqueue",
+                correlationId: "enqueue-acquisition-unavailable-correlation",
+            }),
+            "pending delivery transaction acquisition failed",
+        );
+    });
+
+    it("projects Machine enqueue transaction acquisition exhaustion as outcome unknown", async () => {
+        const actualTransactions = await vi.importActual<typeof import("@/storage/inTx")>("@/storage/inTx");
+        transactionHarness.inTx.mockRejectedValueOnce(
+            new actualTransactions.TransactionAcquisitionUnavailableError(
+                Object.assign(new Error("Unable to start a transaction in the given time."), { code: "P2028" }),
+            ),
+        );
+
+        await expect(enqueuePendingMessageByAuthenticatedMachine({
+            accountId: "u1",
+            sourceMachineId: "source-machine",
+            targetMachineId: "target-machine",
+            sessionId: "s1",
+            localId: "machine-enqueue-acquisition-unavailable",
+            content: { t: "encrypted", c: "cipher" },
+            requestedAction: { v: 1, kind: "enqueue" },
+        })).resolves.toEqual({
+            status: "outcomeUnknown",
+            localId: "machine-enqueue-acquisition-unavailable",
+            code: "session_input_admission_outcome_unknown",
+        });
+    });
+
     it("keeps transaction-body P2028 classified as an internal operation failure", async () => {
         const actualTransactions = await vi.importActual<typeof import("@/storage/inTx")>("@/storage/inTx");
         const operationError = Object.assign(
@@ -213,6 +291,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
         currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
         currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "l1",
             content: { t: "plain", v: { type: "user", text: "hi" } },
             messageRole: "user",
@@ -229,6 +308,7 @@ describe("pendingMessageService", () => {
         });
 
         const res = await enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -250,6 +330,7 @@ describe("pendingMessageService", () => {
 
     it("rejects caller-supplied equality evidence on the Account admission path", async () => {
         await expect(enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "account-equality-forbidden",
@@ -266,11 +347,15 @@ describe("pendingMessageService", () => {
     it("derives an immutable shared-admin admission receipt instead of accepting caller receipt data", async () => {
         const createdAt = new Date("2020-01-01T00:00:00.000Z");
         storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
-        resolveSessionPendingEditAccess.mockResolvedValue({ ok: true, isOwner: false, level: "admin" });
-        currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture({ encryptionMode: "plain" }));
+        currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture({
+            accountId: "owner",
+            encryptionMode: "plain",
+            shares: [{ id: "admin-share", sharedWithUserId: "u1", accessLevel: "admin", canApprovePermissions: false }],
+        }));
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
         currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
         currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "receipt-admin",
             content: { t: "plain", v: { type: "user", text: "hi" } },
             messageRole: "user",
@@ -293,6 +378,7 @@ describe("pendingMessageService", () => {
         });
 
         await expect(enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "receipt-admin",
@@ -351,6 +437,8 @@ describe("pendingMessageService", () => {
             id: "terminal-1",
             seq: 4,
             localId: "digest-retry",
+            sidechainId: null,
+            targetExecutionRunId: null,
             content: {
                 t: "plain",
                 v: {
@@ -366,12 +454,14 @@ describe("pendingMessageService", () => {
             messageRole: "user",
             deliveryResolution: null,
             inputAdmissionReceipt: receipt,
+            authorAccountId: "u1",
             requestEqualityEvidenceV1,
             createdAt,
             updatedAt: createdAt,
         });
 
         await expect(enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "digest-retry",
@@ -386,6 +476,58 @@ describe("pendingMessageService", () => {
         expect(currentTx.sessionPendingMessage.create).not.toHaveBeenCalled();
     });
 
+    it("rejoins a materialized plain Pending request by its server-derived digest", async () => {
+        const createdAt = new Date("2020-01-01T00:00:00.000Z");
+        storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
+        const content = { t: "plain" as const, v: { type: "user", text: "hello" } };
+        const requestedAction = { v: 1, kind: "enqueue" } as const;
+        const requestEqualityEvidenceV1 = {
+            kind: "plainDigest",
+            digest: createHash("sha256")
+                .update(serializeSessionInputRequestEqualityIntentV1({ requestEnvelope: content, requestedAction }), "utf8")
+                .digest("base64url"),
+        } as const;
+
+        currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture({ encryptionMode: "plain" }));
+        currentTx.sessionPendingMessage.findUnique.mockResolvedValue({
+            targetExecutionRunId: null,
+            localId: "pending-digest-retry",
+            content,
+            messageRole: "user",
+            requestedAction,
+            status: "queued",
+            deliveryState: null,
+            deliveryBlockedReason: null,
+            position: 1,
+            createdAt,
+            updatedAt: createdAt,
+            discardedAt: null,
+            discardedReason: null,
+            authorAccountId: "u1",
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: "authenticatedAccount",
+                actorAccountId: "u1",
+                sessionRelationship: "owner",
+            },
+            requestEqualityEvidenceV1,
+        });
+
+        await expect(enqueuePendingMessageCompat({
+            authentication,
+            actorUserId: "u1",
+            sessionId: "s1",
+            localId: "pending-digest-retry",
+            content,
+            requestedAction,
+        })).resolves.toMatchObject({
+            ok: true,
+            didWrite: false,
+            pending: { localId: "pending-digest-retry" },
+        });
+        expect(currentTx.sessionPendingMessage.create).not.toHaveBeenCalled();
+    });
+
     it("stores supplied encrypted pending message role metadata", async () => {
         const createdAt = new Date("2020-01-01T00:00:00.000Z");
 
@@ -393,6 +535,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
         currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
         currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "l1",
             content: { t: "encrypted", c: "cipher" },
             messageRole: "user",
@@ -409,6 +552,7 @@ describe("pendingMessageService", () => {
         });
 
         const res = await enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -440,6 +584,7 @@ describe("pendingMessageService", () => {
             pendingVersion: 1,
         }));
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "l1",
             content: { t: "encrypted", c: "first-random-cipher" },
             messageRole: null,
@@ -497,12 +642,102 @@ describe("pendingMessageService", () => {
         }));
     });
 
+    it("publishes the exact Run recovery hint after authenticated Machine target custody is durable", async () => {
+        const createdAt = new Date("2020-01-01T00:00:00.000Z");
+        storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
+        currentTx.session.findUnique.mockResolvedValue({
+            ...createPendingSessionFixture({ encryptionMode: "plain" }),
+            account: { status: "active" },
+            teamGrants: [],
+            groupGrants: [],
+            primaryTeamId: null,
+        });
+        currentTx.accessKey.findUnique.mockResolvedValue({
+            session: { accountId: "u1" },
+            machine: {
+                revokedAt: null,
+                replacedByMachineId: null,
+                operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
+        currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
+        currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: "run-1",
+            localId: "target-1",
+            content: {
+                t: "plain",
+                v: {
+                    type: "user",
+                    text: "continue",
+                    meta: {
+                        happier: {
+                            kind: "participant_message.v1",
+                            payload: { recipient: { kind: "execution_run", runId: "run-1" } },
+                        },
+                    },
+                },
+            },
+            messageRole: "user",
+            requestedAction: { v: 1, kind: "enqueue" },
+            status: "queued",
+            deliveryState: null,
+            deliveryBlockedReason: null,
+            position: 1,
+            createdAt,
+            updatedAt: createdAt,
+            discardedAt: null,
+            discardedReason: null,
+            authorAccountId: null,
+            inputAdmissionReceipt: { v: 1, issuer: "authenticatedMachine" },
+            requestEqualityEvidenceV1: null,
+        });
+        applyPendingSessionStateChange.mockResolvedValue({
+            pendingCount: 0,
+            pendingBlockedCount: 0,
+            pendingVersion: 2,
+            recipientCursors: [],
+        });
+
+        const result = await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: "u1",
+            sourceMachineId: "source-machine",
+            targetMachineId: "target-machine",
+            sessionId: "s1",
+            targetExecutionRunId: "run-1",
+            localId: "target-1",
+            content: {
+                t: "plain",
+                v: {
+                    type: "user",
+                    text: "continue",
+                    meta: {
+                        happier: {
+                            kind: "participant_message.v1",
+                            payload: { recipient: { kind: "execution_run", runId: "run-1" } },
+                        },
+                    },
+                },
+            },
+            requestedAction: { v: 1, kind: "enqueue" },
+        });
+
+        expect(result).toEqual({ status: "accepted", localId: "target-1" });
+        expect(pendingPublicationHarness.emitPendingChanged).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "s1",
+            pendingVersion: 2,
+            recipient: { kind: "execution_run", runId: "run-1" },
+        }));
+    });
+
     it("refuses the reserved Agent-transition divider namespace for every Pending adapter", async () => {
         const createdAt = new Date("2020-01-01T00:00:00.000Z");
         currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture());
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
         currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
         currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "plugin-input-v1:abc",
             content: { t: "encrypted", c: "cipher" },
             messageRole: "user",
@@ -548,13 +783,15 @@ describe("pendingMessageService", () => {
     it("rechecks current access without rewriting historical collaborator attribution", async () => {
         const createdAt = new Date("2020-01-01T00:00:00.000Z");
         storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
-        resolveSessionPendingEditAccess.mockResolvedValue({ ok: true, isOwner: false, level: "edit" });
         currentTx.session.findUnique.mockResolvedValue(createPendingSessionFixture({
+            accountId: "owner",
+            shares: [{ id: "editor-share", sharedWithUserId: "u1", accessLevel: "edit", canApprovePermissions: false }],
             encryptionMode: "plain",
             pendingCount: 1,
             pendingVersion: 1,
         }));
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "relationship-drift",
             content: { t: "plain", v: { type: "user", text: "hello" } },
             messageRole: "user",
@@ -578,6 +815,7 @@ describe("pendingMessageService", () => {
         });
 
         await expect(enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "relationship-drift",
@@ -594,6 +832,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.findUnique.mockResolvedValue(null);
         currentTx.sessionPendingMessage.findFirst.mockResolvedValue(null);
         currentTx.sessionPendingMessage.create.mockResolvedValue({
+            targetExecutionRunId: null,
             localId: "l1",
             content: { t: "encrypted", c: "cipher" },
             status: "queued",
@@ -606,6 +845,7 @@ describe("pendingMessageService", () => {
         });
 
         const res = await enqueuePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -629,6 +869,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.update = vi.fn();
 
         const res = await updatePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -651,6 +892,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.update = vi.fn();
 
         const res = await updatePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "l1",
@@ -680,6 +922,7 @@ describe("pendingMessageService", () => {
         currentTx.sessionPendingMessage.update = vi.fn();
 
         const res = await updatePendingMessageCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "p2",
@@ -700,6 +943,7 @@ describe("pendingMessageService", () => {
     });
 
     it("does not copy request equality evidence when resend-as-new changes the requested action", async () => {
+        currentTx.session.findUniqueOrThrow = vi.fn(async () => ({ pendingActivationRequestId: null }));
         currentTx.sessionPendingMessage.findUnique
             .mockResolvedValueOnce({
                 status: "queued",
@@ -723,6 +967,7 @@ describe("pendingMessageService", () => {
         currentTx.session.update.mockResolvedValue({ pendingQueueSeq: 1 });
 
         await expect(sendPendingDeliveryAsNewCompat({
+            authentication,
             actorUserId: "u1",
             sessionId: "s1",
             localId: "original",
@@ -760,6 +1005,7 @@ describe("pendingMessageService", () => {
 
         const [first, second] = await Promise.all([
             enqueuePendingMessageCompat({
+                authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "l1",
@@ -767,6 +1013,7 @@ describe("pendingMessageService", () => {
                 requestedAction: { v: 1, kind: "enqueue" },
             }),
             enqueuePendingMessageCompat({
+                authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "l2",

@@ -218,8 +218,7 @@ export function registerPluginWebhookIngressRoute(
         maxWorkingBytes: policy.process.maxWorkingBytes,
     });
     const distributedAdmission = resolveDistributedAdmissionV1(env, options.distributedAdmission);
-    const distributedAdmissionRequired = options.distributedAdmission === undefined
-        && env.HAPPIER_SERVER_FLAVOR?.trim() !== "light";
+    const distributedAdmissionRequired = options.distributedAdmission === undefined;
     const reservations = new WeakMap<object, RequestReservationV1>();
     const releaseTrackedReservation = async (request: object): Promise<void> => {
         const reservation = reservations.get(request);

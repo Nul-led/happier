@@ -8,6 +8,7 @@ import { captureFastifyExceptionForSentry } from "@/app/monitoring/sentry";
 import { isServerApiRequestPath } from "./serverApiPath";
 import { redactPublicShareCapabilityUrl } from "@happier-dev/protocol";
 import { redactHttpRequestUrlForLog } from "@/utils/logging/redactHttpRequestUrlForLog";
+import { InactiveAccountError } from "@/app/auth/accountStatus";
 
 function sendGlobalErrorResponse(
     reply: FastifyReply,
@@ -28,6 +29,11 @@ function isFastifyValidationError(error: FastifyError): boolean {
 export function enableErrorHandlers(app: Fastify) {
     // Global error handler
     app.setErrorHandler(async (error: FastifyError, request, reply) => {
+        // Fresh sign-in proof adapters map this to account-disabled themselves.
+        // An already-issued credential reveals no lifecycle state at effect time.
+        if (error instanceof InactiveAccountError) {
+            return sendGlobalErrorResponse(reply, 401, { error: "invalid_token" });
+        }
         const method = request.method;
         const url = redactHttpRequestUrlForLog(request.url);
         const errorMessage = redactPublicShareCapabilityUrl(error.message);

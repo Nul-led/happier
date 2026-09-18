@@ -1,6 +1,7 @@
 import { Server, Socket } from "socket.io";
 
 import type { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import type { EphemeralRunnerSocketAdmission } from "./ephemeralRunnerSocketAdmission";
 
 import { registerSocketRpcHandlers } from "./rpc/registerSocketRpcHandlers";
 
@@ -16,6 +17,7 @@ export function rpcHandler(
             | "isCurrentPublisherProjection"
             | "runAsProjectedCurrentPublisher"
         >;
+        ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission | null;
     },
 ) {
     registerSocketRpcHandlers({
@@ -23,5 +25,8 @@ export function rpcHandler(
         socket,
         io: ctx.io,
         sessionPublisherPresence: ctx.sessionPublisherPresence,
+        ...(ctx.ephemeralRunnerAdmission !== undefined
+            ? { ephemeralRunnerAdmission: ctx.ephemeralRunnerAdmission }
+            : {}),
     });
 }

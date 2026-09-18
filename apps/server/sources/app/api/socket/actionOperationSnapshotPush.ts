@@ -1,29 +1,34 @@
 import {
-    ACTION_OPERATION_SNAPSHOT_EPHEMERAL_TYPE_V1,
+    ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
+    ActionOperationRevisionEphemeralV1Schema,
     ActionOperationSnapshotPushV1Schema,
     isAccountScopedBlobCiphertextForKind,
-    type ActionOperationSnapshotEphemeralV1,
+    type ActionOperationRevisionEphemeralV1,
 } from '@happier-dev/protocol';
 
 export function projectActionOperationSnapshotPush(
     raw: unknown,
     authenticatedMachineId: string | null,
-): ActionOperationSnapshotEphemeralV1 | null {
-    const parsed = ActionOperationSnapshotPushV1Schema.safeParse(raw);
+): ActionOperationRevisionEphemeralV1 | null {
+    const current = ActionOperationSnapshotPushV1Schema.safeParse(raw);
+    const released = current.success ? null : ActionOperationRevisionEphemeralV1Schema.safeParse(raw);
+    const machineId = current.success ? current.data.machineId : released?.success ? released.data.machineId : null;
+    const ciphertext = current.success ? current.data.ciphertext : released?.success ? released.data.content.c : null;
     if (
-        !parsed.success
+        !machineId
+        || !ciphertext
         || !authenticatedMachineId
-        || parsed.data.machineId !== authenticatedMachineId
+        || machineId !== authenticatedMachineId
         || !isAccountScopedBlobCiphertextForKind({
             kind: 'action_operation_snapshot',
-            ciphertext: parsed.data.ciphertext,
+            ciphertext,
         })
     ) {
         return null;
     }
     return {
-        type: ACTION_OPERATION_SNAPSHOT_EPHEMERAL_TYPE_V1,
+        type: ACTION_OPERATION_REVISION_EPHEMERAL_EVENT_V1,
         machineId: authenticatedMachineId,
-        ciphertext: parsed.data.ciphertext,
+        content: { t: 'encrypted', c: ciphertext },
     };
 }

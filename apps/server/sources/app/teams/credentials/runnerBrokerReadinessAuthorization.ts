@@ -1,0 +1,160 @@
+import {
+    readMachineIrohEndpointAuthorityV1,
+    type RunnerBrokerReadinessRequestV1,
+    type TeamCredentialResourceReadinessV1,
+    type RunnerCredentialSelectionBindingV1,
+    type RunnerBrokerReadinessProjectionV1,
+} from "@happier-dev/protocol";
+
+import { verifyRunnerBrokerReadinessCurrentnessInTx } from "@/app/ephemeralRunner/runnerBrokerReadinessVerification";
+import { inTx } from "@/storage/inTx";
+import type { Tx } from "@/storage/inTx";
+import { resolveTeamCredentialEntitlementInTx } from "./resourceAccess";
+import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
+import { resolveTeamActorContextInTx, type TeamOperationAuthenticationContext } from "../actorContext";
+import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
+import { readRunnerActivationAuthentication } from "@/app/ephemeralRunner/activationAuthentication";
+import { readRunnerCreatorCurrentnessInTx } from "@/app/ephemeralRunner/activationCurrentness";
+import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
+import { teamCredentialBrokerPlacementPinsMachine } from "./brokerPlacementResolver";
+
+export type RunnerBrokerReadinessAuthorization = Readonly<{
+    ok: true;
+    request: RunnerBrokerReadinessRequestV1;
+    readiness: TeamCredentialResourceReadinessV1;
+    credentialSelectionBinding: RunnerCredentialSelectionBindingV1;
+}> | Readonly<{
+    ok: false;
+    error: "team_authentication_required" | "team_authentication_policy_unavailable";
+}>;
+
+/** Proof-bound endpoint projection before it can construct the signed carrier request. */
+export async function readRunnerBrokerReadinessProjectionInTx(
+    tx: Tx,
+    input: Readonly<{ activationId: string; selection: RunnerCredentialSelectionBindingV1; env?: NodeJS.ProcessEnv }>,
+): Promise<RunnerBrokerReadinessProjectionV1 | null> {
+    const activation = await tx.ephemeralRunnerActivation.findUnique({ where: { id: input.activationId } });
+    if (!activation || activation.state === "closed") return null;
+    const creatorCurrentness = await readRunnerCreatorCurrentnessInTx(tx, activation.creatorAccountId);
+    if (creatorCurrentness.status !== "ready" || creatorCurrentness.creatorTokenEpoch !== activation.creatorTokenEpoch) {
+        return null;
+    }
+    const resource = await tx.teamCredentialResource.findUnique({
+        where: { id: input.selection.resourceId },
+        select: { id: true, teamId: true, custodianAccountId: true, revision: true, sourceBindingJson: true, brokerMachineId: true, brokerPoolId: true },
+    });
+    if (!resource || resource.revision !== input.selection.revision
+        || !teamCredentialBrokerPlacementPinsMachine(resource, input.selection.brokerMachineId)) return null;
+    const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
+        resourceId: resource.id, accountId: activation.creatorAccountId,
+    });
+    if (!entitlement.ok || !entitlement.mayBroker) return null;
+    const actor = await resolveTeamActorContextInTx(tx, {
+        teamId: resource.teamId,
+        actorAccountId: activation.creatorAccountId,
+    });
+    if (!actor) return null;
+    const activationAuthentication = readRunnerActivationAuthentication(activation, input.env ?? process.env);
+    const qualification = await qualifyTeamCredentialOperationInTx(tx, actor, {
+        authenticationAuthority: activationAuthentication.authority,
+        authenticationEvidence: activationAuthentication.authenticationEvidence,
+        env: activationAuthentication.env,
+    });
+    if (!qualification.ok) return null;
+    let source: unknown;
+    try { source = JSON.parse(resource.sourceBindingJson); } catch { return null; }
+    if ((await resolveTeamCredentialResourceSourceInTx(tx, {
+        custodianAccountId: resource.custodianAccountId, source,
+    })).status !== "current") return null;
+    const eligibleBroker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
+        custodianAccountId: resource.custodianAccountId,
+        brokerMachineId: resource.brokerMachineId,
+    });
+    if (!eligibleBroker.ok) return null;
+    const machine = await tx.machine.findUnique({
+        where: { id: eligibleBroker.machineId },
+        select: { operationProtocolCapabilities: true, operationProtocolCapabilitiesRevision: true },
+    });
+    if (!machine) return null;
+    const endpoint = readMachineIrohEndpointAuthorityV1({ capabilities: machine.operationProtocolCapabilities,
+        revision: machine.operationProtocolCapabilitiesRevision });
+    return endpoint ? {
+        credentialSelectionBinding: input.selection,
+        target: endpoint,
+        provider: { identity: input.selection.application.implementationIdentity, definitionRevision: 1 },
+        readiness: { kind: "available" },
+    } : null;
+}
+
+/** Content-free Home authorization. It creates no Session, Machine, key, usage, or lease. */
+export async function authorizeRunnerBrokerReadiness(input: Readonly<{
+    custodianAccountId: string;
+    resourceId: string;
+    request: unknown;
+    authentication: TeamOperationAuthenticationContext;
+}>): Promise<RunnerBrokerReadinessAuthorization | null> {
+    return await inTx(async (tx) => {
+        const activation = await verifyRunnerBrokerReadinessCurrentnessInTx(tx, {
+            activationId: (input.request as { activationId?: string } | null)?.activationId ?? "",
+            request: input.request,
+        });
+        if (!activation || activation.resourceId !== input.resourceId) return null;
+        const resource = await tx.teamCredentialResource.findUnique({ where: { id: input.resourceId } });
+        if (!resource || resource.custodianAccountId !== input.custodianAccountId) return null;
+        const actor = await resolveTeamActorContextInTx(tx, {
+            teamId: resource.teamId,
+            actorAccountId: activation.creatorAccountId,
+        });
+        if (!actor) return null;
+        const qualification = await qualifyTeamCredentialOperationInTx(
+            tx,
+            actor,
+            {
+                env: input.authentication.env,
+                authenticationAuthority: "account_automation",
+                authenticationEvidence: activation.authenticationEvidence,
+            },
+        );
+        if (!qualification.ok) return qualification;
+        if (resource.revision !== activation.resourceRevision
+            || !teamCredentialBrokerPlacementPinsMachine(resource, activation.brokerMachineId)) {
+            return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "resource_unavailable" } };
+        }
+        const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
+            resourceId: resource.id,
+            accountId: activation.creatorAccountId,
+        });
+        if (!entitlement.ok || !entitlement.mayBroker) {
+            return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "policy_denied" } };
+        }
+        let source: unknown;
+        try { source = JSON.parse(resource.sourceBindingJson); } catch { return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "resource_unavailable" } }; }
+        if ((await resolveTeamCredentialResourceSourceInTx(tx, {
+            custodianAccountId: resource.custodianAccountId,
+            source,
+        })).status !== "current") return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "source_unavailable" } };
+        const eligibleBroker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
+            custodianAccountId: input.custodianAccountId,
+            brokerMachineId: resource.brokerMachineId,
+        });
+        if (!eligibleBroker.ok) return {
+            ok: true,
+            request: activation.request,
+            credentialSelectionBinding: activation.credentialSelectionBinding,
+            readiness: { kind: eligibleBroker.error },
+        };
+        const machine = await tx.machine.findUnique({
+            where: { id: eligibleBroker.machineId },
+            select: { operationProtocolCapabilities: true, operationProtocolCapabilitiesRevision: true },
+        });
+        if (!machine) return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "broker_unavailable" } };
+        const endpoint = readMachineIrohEndpointAuthorityV1({
+            capabilities: machine.operationProtocolCapabilities,
+            revision: machine.operationProtocolCapabilitiesRevision,
+        });
+        if (!endpoint || endpoint.endpointId !== activation.request.target.endpointId) {
+            return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "broker_unavailable" } };
+        }
+        return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "available" } };
+    });
+}

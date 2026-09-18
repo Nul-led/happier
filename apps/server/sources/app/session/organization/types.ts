@@ -1,6 +1,6 @@
-import type { Prisma } from "@prisma/client";
+import type { Tx } from "@/storage/inTx";
 
-export type SessionOrganizationTx = Prisma.TransactionClient;
+export type SessionOrganizationTx = Tx;
 
 export interface SessionOrganizationPinRecord {
     readonly sessionId: string;
@@ -11,6 +11,8 @@ export interface SessionOrganizationPinRecord {
 export interface SessionAttentionStandingRecord {
     readonly sessionId: string;
     readonly standing: boolean;
+    readonly remindAt: Date | null;
+    readonly standingBeforeReminder?: boolean | null;
     readonly updatedAt: Date;
 }
 

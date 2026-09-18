@@ -4,6 +4,7 @@ import { createDbMocks, installDbModuleMock } from "../testkit/dbMocks";
 import { createInTxHarness } from "../testkit/txHarness";
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 import type { EphemeralPayload } from "@/app/events/eventPayloadTypes";
+import { sealAccountScopedBlobCiphertext } from "@happier-dev/protocol";
 
 const emitUpdate = vi.fn();
 const emitEphemeral = vi.fn();
@@ -82,6 +83,67 @@ describe("machineUpdateHandler (AccountChange integration)", () => {
             return null;
         });
         txDbMocks.db.machine.updateMany.mockResolvedValue({ count: 1 });
+    });
+
+    it("accepts and rebroadcasts the immutable released 0.2.11 Action operation envelope", async () => {
+        const { machineUpdateHandler } = await import("./machineUpdateHandler");
+        const ciphertext = sealAccountScopedBlobCiphertext({
+            kind: "action_operation_snapshot",
+            material: { type: "legacy", secret: new Uint8Array(32).fill(7) },
+            payload: { operationId: "operation-1" },
+            randomBytes: (length) => new Uint8Array(length).fill(3),
+        });
+        const socket = createFakeSocket({
+            data: { clientType: "machine-scoped", machineId: "m1" },
+        });
+        machineUpdateHandler("u1", socket as any, machineUpdateHandlerOptions);
+
+        await getSocketHandler(socket, "action-operation-updated")({
+            type: "action-operation-updated",
+            machineId: "m1",
+            content: { t: "encrypted", c: ciphertext },
+        });
+
+        expect(emitEphemeral).toHaveBeenCalledWith({
+            userId: "u1",
+            payload: {
+                type: "action-operation-updated",
+                machineId: "m1",
+                content: { t: "encrypted", c: ciphertext },
+            },
+            recipientFilter: { type: "user-scoped-only" },
+        });
+    });
+
+    it("drains pre-release current-dev Action operation ingress into only the released 0.2.11 broadcast", async () => {
+        const { machineUpdateHandler } = await import("./machineUpdateHandler");
+        const ciphertext = sealAccountScopedBlobCiphertext({
+            kind: "action_operation_snapshot",
+            material: { type: "legacy", secret: new Uint8Array(32).fill(7) },
+            payload: { operationId: "operation-1" },
+            randomBytes: (length) => new Uint8Array(length).fill(3),
+        });
+        const socket = createFakeSocket({
+            data: { clientType: "machine-scoped", machineId: "m1" },
+        });
+        machineUpdateHandler("u1", socket as any, machineUpdateHandlerOptions);
+
+        await getSocketHandler(socket, "action-operation-snapshot.v1")({
+            v: 1,
+            machineId: "m1",
+            ciphertext,
+        });
+
+        expect(emitEphemeral).toHaveBeenCalledTimes(1);
+        expect(emitEphemeral).toHaveBeenCalledWith({
+            userId: "u1",
+            payload: {
+                type: "action-operation-updated",
+                machineId: "m1",
+                content: { t: "encrypted", c: ciphertext },
+            },
+            recipientFilter: { type: "user-scoped-only" },
+        });
     });
 
     it("marks machine metadata changes and emits updates using the returned cursor", async () => {

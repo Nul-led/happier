@@ -4,7 +4,7 @@ import {
     AutomationStoredDefinitionExecutionRecipeV1Schema,
     AutomationTriggerIdSchema,
 } from "@happier-dev/protocol";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -12,7 +12,7 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { claimAutomationRun } from "./automationClaimService";
 import { createAutomation } from "./automationCrudService";
 import { failAutomationRun, startAutomationRun } from "./automationRunService";
-import { runAutomationScheduleWorkerPass } from "./automationScheduleWorker";
+import { runAutomationScheduleWorkerPass, startAutomationScheduleWorker } from "./automationScheduleWorker";
 
 const MACHINE_ID = "machine-schedule-firing";
 
@@ -150,6 +150,42 @@ describe("Automation schedule trigger firing (integration)", () => {
             orderBy: [{ triggerId: "asc" }, { id: "asc" }],
         });
     }
+
+    it("discovers a newly due trigger without a local wake while a future schedule is sleeping", async () => {
+        await seedTwoScheduleTriggers();
+        const futureAt = new Date(Date.now() + 60_000);
+        await db.automationTrigger.updateMany({
+            where: { automationId },
+            data: { nextRunAt: futureAt },
+        });
+        const template = await db.automationTrigger.findUniqueOrThrow({ where: { id: fastTriggerId } });
+        const idlePollMs = 100;
+        const timers = vi.spyOn(globalThis, "setTimeout");
+        const worker = startAutomationScheduleWorker({ idlePollMs });
+        try {
+            await vi.waitFor(() => expect(timers.mock.calls.some(([, delay]) => (
+                delay === idlePollMs || (typeof delay === "number" && delay > 10_000)
+            ))).toBe(true), { interval: 20 });
+            // A database-only commit models another API replica: its process-
+            // local wake cannot reach this worker.
+            const triggerId = randomUUID();
+            await db.automationTrigger.create({
+                data: { ...template, id: triggerId, nextRunAt: new Date() },
+            });
+            await vi.waitFor(async () => {
+                await expect(readRuns()).resolves.toMatchObject([
+                    { triggerId, state: "queued", causeKind: "trigger", causeTriggerKind: "schedule" },
+                ]);
+            }, { timeout: 2_000, interval: 20 });
+            await expect(db.automationTrigger.findUniqueOrThrow({
+                where: { id: fastTriggerId },
+                select: { nextRunAt: true, revision: true },
+            })).resolves.toEqual({ nextRunAt: futureAt, revision: template.revision });
+        } finally {
+            await worker.stop();
+            timers.mockRestore();
+        }
+    });
 
     it("admits one independent occurrence per enabled schedule trigger and never fires a disabled sibling", async () => {
         await seedTwoScheduleTriggers();

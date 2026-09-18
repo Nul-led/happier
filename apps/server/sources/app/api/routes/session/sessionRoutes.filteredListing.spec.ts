@@ -1,0 +1,113 @@
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { getRouteEntry } from '@/app/api/testkit/routeHarness';
+import { createRouteTestBuilder } from '@/app/api/testkit/routeTestBuilder';
+import { registerSessionFilteredListingRoute } from './registerSessionFilteredListingRoute';
+
+describe('POST /v2/sessions/query activation', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('declares only the reachable strict response contracts', () => {
+        const route = createRouteTestBuilder({
+            method: 'POST',
+            path: '/v2/sessions/query',
+            registerRoutes: (app) => registerSessionFilteredListingRoute(app as never),
+        });
+        const response = (getRouteEntry(route.app, 'POST', '/v2/sessions/query').opts.schema as {
+            response: Record<number, unknown>;
+        }).response;
+
+        expect(Object.keys(response).sort()).toEqual(['200', '400', '404', '409']);
+    });
+
+    it('admits only a proof-bound session.list PAT effect through the canonical auth owner', () => {
+        const route = createRouteTestBuilder({
+            method: 'POST',
+            path: '/v2/sessions/query',
+            registerRoutes: (app) => registerSessionFilteredListingRoute(app as never),
+        });
+
+        const config = getRouteEntry(route.app, 'POST', '/v2/sessions/query').opts.config;
+        expect(config).toMatchObject({
+        });
+        expect(config?.allowApiToken).toBeUndefined();
+    });
+
+    it('registers the endpoint but fails closed before authentication while its producers are unavailable', async () => {
+        const route = createRouteTestBuilder({
+            method: 'POST',
+            path: '/v2/sessions/query',
+            registerRoutes: (app) => registerSessionFilteredListingRoute(app as never),
+        });
+        expect(route.routeExists).toBe(true);
+
+        const { reply } = await route.invoke({
+            body: {
+                v: 1,
+                storage: 'active',
+                includeInactive: false,
+                scope: 'my_work',
+                attention: 'any',
+                audiences: [],
+                tagIds: [],
+            },
+        });
+
+        expect(reply.statusCode).toBe(404);
+        expect(reply.send).toHaveBeenCalledWith({ error: 'not_found' });
+        expect(route.app.authenticate).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        {
+            name: 'following',
+            env: { HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: '0' },
+            body: {
+                v: 1,
+                storage: 'active',
+                includeInactive: false,
+                scope: 'following',
+                attention: 'any',
+                audiences: [],
+                tagIds: [],
+            },
+            reason: 'following',
+        },
+        {
+            name: 'audience',
+            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0' },
+            body: {
+                v: 1,
+                storage: 'active',
+                includeInactive: false,
+                scope: 'my_work',
+                attention: 'any',
+                audiences: [{ kind: 'team', teamId: 'team-1' }],
+                tagIds: [],
+            },
+            reason: 'audience',
+        },
+    ] as const)('returns the Protocol unavailable response only for a missing $name producer', async ({ env, body, reason }) => {
+        for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+        const route = createRouteTestBuilder({
+            method: 'POST',
+            path: '/v2/sessions/query',
+            registerRoutes: (app) => registerSessionFilteredListingRoute(app as never),
+        });
+
+        const request = route.createAuthenticatedRequest({
+            body,
+            authAuthority: 'present_user',
+        });
+        const reply = route.createReply();
+        await getRouteEntry(route.app, 'POST', '/v2/sessions/query').handler(request, reply);
+
+        expect(reply.statusCode).toBe(404);
+        expect(reply.send).toHaveBeenCalledWith({
+            error: 'not_found',
+            code: 'filtered_session_listing_unavailable',
+            reason,
+        });
+        expect(route.app.authenticate).not.toHaveBeenCalled();
+    });
+});

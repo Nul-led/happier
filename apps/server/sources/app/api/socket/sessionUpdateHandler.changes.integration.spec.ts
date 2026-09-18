@@ -3,10 +3,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDbMocks, installDbModuleMock, installPrismaModuleMock } from "../testkit/dbMocks";
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess: vi.fn(async () => ({ accessLevel: "edit" })),
-    requireAccessLevel: vi.fn(() => true),
-}));
 
 const emitUpdate = vi.fn();
 const buildNewMessageUpdate = vi.fn((_created: any, _sid: string, updSeq: number, updId: string) => ({
@@ -61,7 +57,7 @@ vi.mock("@/app/presence/sessionCache", () => ({
 }));
 
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
-    refreshSessionParticipantBadgePushes: vi.fn(async () => {}),
+    refreshTrackedSessionAccountBadgePushes: vi.fn(async () => {}),
 }));
 
 installPrismaModuleMock(() => ({

@@ -102,7 +102,10 @@ describe("eventRouter payloads (protocol container)", () => {
                 metadataVersion: 1,
                 agentState: null,
                 agentStateVersion: 1,
-                dataEncryptionKey: new Uint8Array([1, 2, 3]),
+                // Already Base64-projected from the canonical `(Session, Account)`
+                // tuple, which is what the builder and the wire schema require;
+                // raw column bytes are not a `new-session` payload.
+                dataEncryptionKey: "AQID",
                 encryptionMode: "e2ee",
                 active: true,
                 lastActiveAt: new Date(1),
@@ -164,6 +167,7 @@ describe("eventRouter payloads (protocol container)", () => {
                 archivedAt: 1234,
                 latestTurnStatus: "failed",
                 latestTurnStatusObservedAt: 2_222,
+                rollbackEligibleTurnStarts: [3, 7],
                 lastRuntimeIssue: {
                     v: 1,
                     scope: "primary_session",
@@ -197,6 +201,7 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).latestTurnId).toBe("turn-1");
         expect((payload.body as any).latestTurnStatus).toBe("failed");
         expect((payload.body as any).latestTurnStatusObservedAt).toBe(2_222);
+        expect((payload.body as any).rollbackEligibleTurnStarts).toEqual([3, 7]);
         expect((payload.body as any).lastRuntimeIssue).toMatchObject({
             source: "agent_process_exit",
             agentId: "pi",
@@ -297,6 +302,7 @@ describe("eventRouter payloads (protocol container)", () => {
             pendingVersion: 2,
             pendingCount: 1,
             changedByAccountId: "u1",
+            recipient: { kind: "execution_run" as const, runId: "run-1" },
             meaningfulActivityAt: new Date(1_234),
             pendingActivationRequestId: "pending-local-1",
             pendingActivationAuthorization: {
@@ -315,6 +321,7 @@ describe("eventRouter payloads (protocol container)", () => {
         expect((payload.body as any).sessionId).toBe("s1");
         expect((payload.body as any).sid).toBe("s1");
         expect((payload.body as any).meaningfulActivityAt).toBe(1_234);
+        expect((payload.body as any).recipient).toEqual({ kind: "execution_run", runId: "run-1" });
         expect((payload.body as any).pendingActivationRequestId).toBe("pending-local-1");
         expect((payload.body as any).pendingActivationAuthorization).toEqual({
             requestId: "pending-local-1",
@@ -392,7 +399,6 @@ describe("eventRouter payloads (protocol container)", () => {
                 sharedByUser: { id: "u1", firstName: null, lastName: null, username: "x", avatar: null },
                 accessLevel: "view",
                 canApprovePermissions: false,
-                encryptedDataKey: new Uint8Array([1, 2, 3]),
                 createdAt: new Date(1),
             },
             106,

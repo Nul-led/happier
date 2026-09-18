@@ -1,8 +1,8 @@
 import { stat } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
-import { IrohError } from '@happier-dev/iroh-native';
+import { IrohError } from '@happier-dev/iroh-native/node';
 import { parseIrohEndpointDescriptorV1, type IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
-import { resolvePersonalHomeRuntimeLayout } from '@happier-dev/cli-common/firstPartyRuntime';
+import { resolvePersonalHomeRuntimeLayout } from '@happier-dev/cli-common/firstPartyRuntime/server';
 import { resolveBoundServerListener } from '@/app/runtime/startupReceipt';
 import { resolveConfiguredCanonicalServerUrl } from '@/app/serverUrls/effectiveServerUrls';
 import { log } from '@/utils/logging/log';
@@ -178,8 +178,6 @@ export type EnsureHomeIrohEndpointParams = Readonly<{
 
 export type MaterializeHomeIrohEndpointDescriptorParams = Readonly<{
     env: NodeJS.ProcessEnv;
-    /** Public outer descriptor revision currently owned by the source Home. */
-    sourceDescriptorRevision: number;
     /** Canonical outer descriptor continuity selected by the maintenance lifecycle. */
     continuityStore?: HomeConnectionDescriptorContinuityStore;
     /** Test-only native lifecycle boundary; production resolves the packaged binding. */
@@ -189,8 +187,6 @@ export type MaterializeHomeIrohEndpointDescriptorParams = Readonly<{
 export type HomeIrohEndpointMaterializationResult =
     | Readonly<{
         status: 'ready';
-        /** The canonical outer publisher must assign a strictly greater revision. */
-        minimumOuterRevisionExclusive: number;
         endpoint: IrohEndpointDescriptorV1;
     }>
     | Readonly<{
@@ -231,18 +227,13 @@ export function markHomeIrohEndpointStartupUnavailable(): void {
 /**
  * Materializes the destination's fresh persistent endpoint identity and public
  * endpoint subdescriptor without starting a Home acceptor. Relocation calls
- * this only while the destination service is stopped and quarantined. The
- * source's public revision is retained solely as a lower bound; this owner
- * neither composes nor publishes the outer HomeConnectionDescriptorV1.
+ * this only while the destination service is stopped and quarantined. This
+ * owner neither consumes nor publishes an outer descriptor revision; the
+ * canonical descriptor publisher applies the source revision floor.
  */
 export async function materializeHomeIrohEndpointDescriptor(
     params: MaterializeHomeIrohEndpointDescriptorParams,
 ): Promise<HomeIrohEndpointMaterializationResult> {
-    if (!Number.isSafeInteger(params.sourceDescriptorRevision)
-        || params.sourceDescriptorRevision < 1
-        || params.sourceDescriptorRevision >= Number.MAX_SAFE_INTEGER) {
-        return { status: 'failed', failureReason: 'descriptor_invalid' };
-    }
     if (activeState) {
         return { status: 'failed', failureReason: 'endpoint_config_conflict' };
     }
@@ -289,7 +280,6 @@ export async function materializeHomeIrohEndpointDescriptor(
     }
     return {
         status: 'ready',
-        minimumOuterRevisionExclusive: params.sourceDescriptorRevision,
         endpoint: provisioned.endpoint,
     };
 }
@@ -421,6 +411,12 @@ async function refreshActiveHomeIrohEndpointState(): Promise<HomeIrohEndpointSta
         endpointStatus = await owned.native.getEndpointStatus({ endpointHandle: owned.endpointHandle });
     } catch (error) {
         return retainPublicationAfterRefreshTransient('endpoint status read', error);
+    }
+    // The native status read crosses an async lifecycle boundary. A stop or a
+    // newer composition may have replaced this exact published/native owner
+    // while it was pending; stale facts must never retire or revive that owner.
+    if (activeState !== active || ownedEndpoint !== owned || lifecycleState !== active.state) {
+        return lifecycleState;
     }
     if (!endpointStatus || !endpointStatus.active || endpointStatus.endpointId !== active.state.snapshot.endpoint.endpointId) {
         return failRefreshClosed('endpoint_not_active');

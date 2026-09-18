@@ -6,7 +6,8 @@ import {
     createLightSqliteHarness,
     type LightSqliteHarness,
 } from "@/testkit/lightSqliteHarness";
-import { acquireAccountEncryptionTransitionFenceInTx } from "./accountEncryptionTransition";
+import { acquireAccountEncryptionTransitionFenceInTx, applyAccountEncryptionTransitionInTx } from "./accountEncryptionTransition";
+import { acquireAccountEncryptionTransitionCoordinatorFenceInTx } from "./accountEncryptionTransitionCoordinator";
 import { acquireAccountSessionOwnerMetadataFenceInTx } from "./accountSessionOwnerMetadataFence";
 
 function deferred(): Readonly<{
@@ -81,6 +82,25 @@ describe("Account Session owner-metadata fence (SQLite integration)", () => {
             updatedAt: initialUpdatedAt,
         });
     }, 30_000);
+
+    it("denies a fresh or prepared encryption activation after Account suspension, retaining cleanup access", async () => {
+        const account = await db.account.create({ data: { encryptionMode: "plain" } });
+        const before = await inTx((tx) => acquireAccountEncryptionTransitionCoordinatorFenceInTx(tx, account.id));
+        expect(before.status).toBe("ready");
+        await db.account.update({ where: { id: account.id }, data: { status: "suspended" } });
+
+        await expect(inTx((tx) => acquireAccountEncryptionTransitionCoordinatorFenceInTx(tx, account.id)))
+            .rejects.toMatchObject({ code: "account-disabled" });
+        await expect(inTx((tx) => applyAccountEncryptionTransitionInTx(tx, {
+            accountId: account.id, expectedVersion: account.seq, toMode: "plain", contentKey: { kind: "preserve" },
+        }))).rejects.toThrow();
+        // Erasure and retained-state cleanup use the key-currentness fence and
+        // must still inspect an inactive Account without granting activation.
+        await expect(inTx((tx) => acquireAccountEncryptionTransitionFenceInTx(tx, account.id)))
+            .resolves.toMatchObject({ status: "ready" });
+        expect((await db.account.findUniqueOrThrow({ where: { id: account.id } })).encryptionModeUpdatedAt)
+            .toEqual(account.encryptionModeUpdatedAt);
+    });
 
     it("reports a missing Account through the transition fence without leaking the raw lock failure", async () => {
         await expect(inTx((tx) => (

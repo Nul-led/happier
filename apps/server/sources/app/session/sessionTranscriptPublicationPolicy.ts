@@ -1,10 +1,12 @@
 import type { Prisma } from "@prisma/client";
 import {
     PrimaryTurnStatusV1Schema,
+    SessionSurfacesChangeHintV1Schema,
     SessionInputAdmissionReceiptV1Schema,
     parseSessionMessageDeliveryResolutionV1,
     type PrimaryTurnStatusV1,
     type SessionRuntimeIssueV1,
+    type ParticipantExecutionRunRecipientRoutingIdentityV1,
 } from "@happier-dev/protocol";
 
 import {
@@ -31,7 +33,6 @@ export const SESSION_TRANSCRIPT_PUBLICATION_SELECT = {
 export const SESSION_TRANSCRIPT_PUBLICATION_RECIPIENT_PROJECTION_SELECT = {
     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
     seq: true,
-    lastViewedSessionSeq: true,
     latestReadyEventSeq: true,
     latestReadyEventAt: true,
     createdAt: true,
@@ -54,7 +55,6 @@ export type SessionTranscriptPublicationRecipientProjectionRow =
     SessionTranscriptPublicationFields & Readonly<{
         accountId: string;
         seq: number;
-        lastViewedSessionSeq: number | null;
         latestReadyEventSeq: number | null;
         latestReadyEventAt: Date | null;
         createdAt: Date;
@@ -140,7 +140,12 @@ function isPublishedSequence(value: unknown, ceiling: number): boolean {
     return sequence !== null && sequence <= ceiling;
 }
 
+function filterPublishedSequenceFacts(values: readonly number[], ceiling: number): number[] {
+    return values.filter((value) => Number.isSafeInteger(value) && value >= 0 && value <= ceiling);
+}
+
 function isPublishedSessionTranscriptChangeHint(hint: unknown, ceiling: number): boolean {
+    if (SessionSurfacesChangeHintV1Schema.safeParse(hint).success) return true;
     if (!isRecord(hint)) return false;
     if (
         hasOnlyKeys(hint, ["lastMessageSeq", "lastMessageId"], ["lastMessageSeq"])
@@ -746,6 +751,7 @@ export type SessionTranscriptPublicationRealtimeProjection = Readonly<{
     latestTurnStatus?: PrimaryTurnStatusV1 | null;
     latestTurnStatusObservedAt?: number | null;
     lastRuntimeIssue?: SessionRuntimeIssueV1 | null;
+    rollbackEligibleTurnStarts?: readonly number[];
     runtimeActivityState?: "active" | "idle" | "unknown";
     runtimeActivityActiveCount?: number;
     runtimeActivityObservedAt?: number | null;
@@ -759,6 +765,11 @@ function projectFiniteSessionTranscriptPublicationRealtimeProjection(
     ceiling: number,
 ): SessionTranscriptPublicationRealtimeProjection | null {
     const fields = projection as Readonly<Record<string, unknown>>;
+    if (Array.isArray(projection.rollbackEligibleTurnStarts)) {
+        return {
+            rollbackEligibleTurnStarts: filterPublishedSequenceFacts(projection.rollbackEligibleTurnStarts, ceiling),
+        };
+    }
     if (
         hasOnlyKeys(fields, ["lastViewedSessionSeq"], ["lastViewedSessionSeq"])
         && isPublishedSequence(fields.lastViewedSessionSeq, ceiling)
@@ -813,6 +824,7 @@ export type SessionTranscriptPublicationPendingProjection = Readonly<{
     pendingVersion: number;
     pendingCount: number;
     pendingBlockedCount?: number;
+    recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
     changedByAccountId?: string;
     meaningfulActivityAt?: Date | number;
     pendingActivationRequestId?: string;
@@ -867,10 +879,9 @@ export function filterSessionTranscriptPublicationSequenceFacts(
     publication: object,
 ): number[] {
     const ceiling = resolveSessionTranscriptPublicationCeiling(publication);
-    return values.filter((value) =>
-        Number.isSafeInteger(value)
-        && value >= 0
-        && (ceiling === null || value <= ceiling));
+    return ceiling === null
+        ? values.filter((value) => Number.isSafeInteger(value) && value >= 0)
+        : filterPublishedSequenceFacts(values, ceiling);
 }
 
 function intersectSequenceFilter(

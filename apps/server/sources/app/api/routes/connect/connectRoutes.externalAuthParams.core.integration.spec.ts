@@ -180,7 +180,10 @@ describe("connectRoutes (external auth params)", () => {
         await app.close();
     });
 
-    it("requires the current bearer and binds first-key step-up state to its Account and request digest", async () => {
+    it.each([
+        ["account_encryption_first_key", `aemrb1_${"A".repeat(43)}`],
+        ["account_password_enrollment", "A".repeat(43)],
+    ] as const)("requires the current bearer and binds %s state to its Account and request digest", async (purpose, requestDigest) => {
         applyGithubExternalAuthParamsEnv(harness, {
             HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_ENABLED: "1",
             HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_PROVIDERS: "github",
@@ -196,17 +199,16 @@ describe("connectRoutes (external auth params)", () => {
             data: {
                 accountId: account.id,
                 provider: "github",
-                providerUserId: "provider-user-1",
+                providerUserId: `provider-user-${purpose}`,
                 profile: {},
             },
         });
         const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
         const proofHash = "c".repeat(64);
-        const requestDigest = `aemrb1_${"A".repeat(43)}`;
         const url =
             `/v1/auth/external/github/params?mode=keyless`
             + `&proofHash=${proofHash}`
-            + `&purpose=account_encryption_first_key`
+            + `&purpose=${purpose}`
             + `&requestDigest=${encodeURIComponent(requestDigest)}`;
 
         const app = createTestApp();
@@ -231,7 +233,7 @@ describe("connectRoutes (external auth params)", () => {
             provider: "github",
             userId: account.id,
             proofHash,
-            purpose: "account_encryption_first_key",
+            purpose,
             requestDigest,
         });
 

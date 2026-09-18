@@ -68,6 +68,7 @@ export async function startOidcStubServer(options: StartOidcStubServerOptions = 
                     jwks_uri: `${issuer}/jwks`,
                     ...(options.includeUserInfoEndpoint ? { userinfo_endpoint: `${issuer}/userinfo` } : {}),
                     response_types_supported: ["code"],
+                    code_challenge_methods_supported: ["S256"],
                     subject_types_supported: ["public"],
                     id_token_signing_alg_values_supported: ["RS256"],
                 }),

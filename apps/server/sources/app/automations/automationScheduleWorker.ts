@@ -187,7 +187,9 @@ export function startAutomationScheduleWorker(params: Readonly<{
             : nextDueAt.getTime() <= now && !lastPass.progressed
                 ? idlePollMs
                 : Math.max(0, nextDueAt.getTime() - now);
-        const delay = Math.min(unboundedDelay, MAX_AUTOMATION_SCHEDULE_TIMER_DELAY_MS);
+        // Local wakes accelerate edits; durable polling still discovers an
+        // earlier cursor committed by another API while this worker sleeps.
+        const delay = Math.min(unboundedDelay, idlePollMs, MAX_AUTOMATION_SCHEDULE_TIMER_DELAY_MS);
         timer = setTimeout(() => {
             timer = null;
             void trigger();

@@ -1,0 +1,242 @@
+import {
+    TeamCredentialBrokerPlacementV1Schema,
+    type TeamCredentialBrokerPlacementV1,
+} from "@happier-dev/protocol/teams";
+import type { MachineIrohEndpointAuthorityV1 } from "@happier-dev/protocol";
+
+import type { Tx } from "@/storage/inTx";
+import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
+import {
+    getMachinePoolCandidateSnapshotInTx,
+    type MachinePoolCandidateSnapshot,
+} from "@/app/machines/pools/machinePoolService";
+import { selectMachinePoolCandidate } from "@/app/machines/pools/machinePoolPlacementService";
+import {
+    classifyTeamCredentialBrokerMachineEligibility,
+    resolveTeamCredentialBrokerMachineForOpenInTx,
+    resolveTeamCredentialBrokerMachineForSaveInTx,
+    type TeamCredentialBrokerMachineEligibilityError,
+} from "./brokerMachineEligibility";
+
+/** The two persisted placement columns exactly as the resource row carries them. */
+export interface TeamCredentialBrokerPlacementRow {
+    readonly brokerMachineId: string | null;
+    readonly brokerPoolId: string | null;
+}
+
+export interface TeamCredentialBrokerPlacementResource extends TeamCredentialBrokerPlacementRow {
+    readonly id: string;
+    readonly custodianAccountId: string;
+}
+
+export type TeamCredentialBrokerPlacementRead =
+    | Readonly<{ ok: true; placement: TeamCredentialBrokerPlacementV1 | null }>
+    | Readonly<{ ok: false; error: "resource_corrupt" }>;
+
+/**
+ * The one interpretation of the persisted placement columns. Exactly one of
+ * the two columns names the broker location; both set is corrupt and neither
+ * set is an unplaced resource. Every placement, eligibility and selection
+ * decision starts from this reader; callers never compare the raw columns.
+ */
+export function readTeamCredentialBrokerPlacement(row: TeamCredentialBrokerPlacementRow): TeamCredentialBrokerPlacementRead {
+    if (row.brokerMachineId !== null && row.brokerPoolId !== null) return { ok: false, error: "resource_corrupt" };
+    if (row.brokerMachineId === null && row.brokerPoolId === null) return { ok: true, placement: null };
+    const parsed = TeamCredentialBrokerPlacementV1Schema.safeParse(row.brokerMachineId !== null
+        ? { kind: "machine", machineId: row.brokerMachineId }
+        : { kind: "machine_pool", poolId: row.brokerPoolId });
+    return parsed.success ? { ok: true, placement: parsed.data } : { ok: false, error: "resource_corrupt" };
+}
+
+/** True only for an exact placement naming this Machine; Pool placements never pin. */
+export function teamCredentialBrokerPlacementPinsMachine(row: TeamCredentialBrokerPlacementRow, machineId: string): boolean {
+    const read = readTeamCredentialBrokerPlacement(row);
+    return read.ok && read.placement?.kind === "machine" && read.placement.machineId === machineId;
+}
+
+const BROKER_MACHINE_ELIGIBILITY_SELECT = {
+    kind: true,
+    revokedAt: true,
+    replacedByMachineId: true,
+    operationProtocolCapabilities: true,
+    operationProtocolCapabilitiesRevision: true,
+} as const;
+
+/**
+ * Saved Pool placement mirrors the saved exact-Machine rule: the Pool must be
+ * the custodian's and carry at least one enabled member that is a compatible
+ * persistent broker. Presence is not required to save; an offline Pool remains
+ * repairable, an empty or incompatible one is not a broker location.
+ */
+export async function resolveTeamCredentialBrokerPoolForSaveInTx(
+    tx: Tx,
+    input: Readonly<{ custodianAccountId: string; poolId: string }>,
+): Promise<Readonly<{ ok: true; poolId: string }> | TeamCredentialBrokerMachineEligibilityError> {
+    const pool = await tx.machinePool.findFirst({
+        where: { id: input.poolId, accountId: input.custodianAccountId },
+        select: { id: true, members: { where: { enabled: true }, select: { machine: { select: BROKER_MACHINE_ELIGIBILITY_SELECT } } } },
+    });
+    if (!pool) return { ok: false, error: "broker_unavailable" };
+    const eligibilities = pool.members.map((member) => classifyTeamCredentialBrokerMachineEligibility(member.machine));
+    if (eligibilities.includes("eligible")) return { ok: true, poolId: pool.id };
+    return { ok: false, error: eligibilities.includes("update_required") ? "update_required" : "broker_unavailable" };
+}
+
+async function isCurrentTeamCredentialBrokerPoolMemberInTx(
+    tx: Tx,
+    input: Readonly<{ custodianAccountId: string; poolId: string; machineId: string }>,
+): Promise<boolean> {
+    const member = await tx.machinePoolMember.findFirst({
+        where: {
+            poolId: input.poolId,
+            machineId: input.machineId,
+            enabled: true,
+            pool: { accountId: input.custodianAccountId },
+        },
+        select: { machineId: true },
+    });
+    return member !== null;
+}
+
+export type TeamCredentialBrokerMachineAdmission =
+    | Readonly<{ ok: true; machineId: string; endpointAuthority: MachineIrohEndpointAuthorityV1 | null }>
+    | TeamCredentialBrokerMachineEligibilityError
+    | Readonly<{ ok: false; error: "resource_unavailable" | "resource_changed" }>;
+
+/**
+ * Selection-time admission of one presented broker Machine against the
+ * resource's current placement: an exact placement must name that Machine and
+ * a Pool placement must currently list it as an enabled member. Eligibility
+ * is then rechecked by the one Machine owner, with the live endpoint when the
+ * caller holds a presence inventory. Established Session/Run opens do not
+ * pass here: they pin their exact Machine at selection and are revalidated
+ * for Machine eligibility only (`resolveTeamCredentialBrokerPlacementInTx`
+ * with `pinnedMachineId`).
+ */
+export async function admitTeamCredentialBrokerMachineForResourceInTx(
+    tx: Tx,
+    input: Readonly<{
+        resource: TeamCredentialBrokerPlacementResource;
+        brokerMachineId: string;
+        presence?: MachineDaemonPresenceInventory;
+    }>,
+): Promise<TeamCredentialBrokerMachineAdmission> {
+    const read = readTeamCredentialBrokerPlacement(input.resource);
+    if (!read.ok) return { ok: false, error: "resource_unavailable" };
+    if (read.placement === null) return { ok: false, error: "resource_changed" };
+    if (read.placement.kind === "machine") {
+        if (read.placement.machineId !== input.brokerMachineId) return { ok: false, error: "resource_changed" };
+    } else if (!await isCurrentTeamCredentialBrokerPoolMemberInTx(tx, {
+        custodianAccountId: input.resource.custodianAccountId,
+        poolId: read.placement.poolId,
+        machineId: input.brokerMachineId,
+    })) {
+        return { ok: false, error: "broker_unavailable" };
+    }
+    const target = { custodianAccountId: input.resource.custodianAccountId, brokerMachineId: input.brokerMachineId };
+    if (input.presence === undefined) {
+        const saved = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, target);
+        return saved.ok ? { ok: true, machineId: saved.machineId, endpointAuthority: null } : saved;
+    }
+    const open = await resolveTeamCredentialBrokerMachineForOpenInTx(tx, { ...target, presence: input.presence });
+    return open.ok ? { ok: true, machineId: open.machineId, endpointAuthority: open.endpointAuthority } : open;
+}
+
+export type TeamCredentialBrokerPlacementResolution =
+    | Readonly<{
+        ok: true;
+        broker: Readonly<{
+            machineId: string;
+            endpointAuthority: Readonly<{ endpointId: string; revision: number }>;
+        }> | null;
+        poolSnapshot: MachinePoolCandidateSnapshot | null;
+        candidateMachineIds: readonly string[];
+    }>
+    | TeamCredentialBrokerMachineEligibilityError
+    | Readonly<{ ok: false; error: "resource_unavailable" | "resource_changed" }>;
+
+/**
+ * Canonical exact-placement resolver for a new credential-broker open.
+ * Pool selection ends here: consumers receive one exact Machine, while the
+ * Pool snapshot and source-eligible set remain server-private.
+ *
+ * A pinned Machine belongs to an already-established open and deliberately
+ * bypasses current Pool membership ranking. Pool edits affect future opens;
+ * current resource, source and exact-Machine authority remain independently
+ * revalidated by the broker admission owner.
+ */
+export async function resolveTeamCredentialBrokerPlacementInTx(
+    tx: Tx,
+    input: Readonly<{
+        resource: TeamCredentialBrokerPlacementResource;
+        presence: MachineDaemonPresenceInventory;
+        requestKey: string;
+        pinnedMachineId?: string | null;
+        poolEligibleMachineIds?: ReadonlySet<string>;
+        expectedPoolMachineId?: string;
+    }>,
+): Promise<TeamCredentialBrokerPlacementResolution> {
+    const read = readTeamCredentialBrokerPlacement(input.resource);
+    if (!read.ok) return { ok: false, error: "resource_unavailable" };
+    const placement = read.placement;
+    if (placement === null) return { ok: false, error: "broker_unavailable" };
+
+    const pinnedMachineId = input.pinnedMachineId ?? null;
+    let selectedMachineId: string | null = pinnedMachineId;
+    let poolSnapshot: MachinePoolCandidateSnapshot | null = null;
+    let candidateMachineIds: readonly string[] = [];
+
+    if (placement.kind === "machine") {
+        if (pinnedMachineId !== null && placement.machineId !== pinnedMachineId) {
+            return { ok: false, error: "resource_changed" };
+        }
+        selectedMachineId = placement.machineId;
+    } else if (pinnedMachineId === null) {
+        const snapshot = await getMachinePoolCandidateSnapshotInTx(tx, {
+            accountId: input.resource.custodianAccountId,
+            poolId: placement.poolId,
+            presence: input.presence,
+        });
+        if (!snapshot.ok || snapshot.value.presenceState !== "known") {
+            return { ok: false, error: "broker_unavailable" };
+        }
+        poolSnapshot = snapshot.value;
+        candidateMachineIds = snapshot.value.members.flatMap((member) => (
+            member.enabled && snapshot.value.availableMachineIds.has(member.machineId)
+                ? [member.machineId]
+                : []
+        ));
+        if (input.poolEligibleMachineIds === undefined) {
+            return { ok: true, broker: null, poolSnapshot, candidateMachineIds };
+        }
+        const availableMachineIds = new Set(candidateMachineIds.filter((machineId) => (
+            input.poolEligibleMachineIds!.has(machineId)
+        )));
+        selectedMachineId = selectMachinePoolCandidate({
+            members: snapshot.value.members,
+            availableMachineIds,
+            requestKey: input.requestKey,
+        })?.machineId ?? null;
+        if (selectedMachineId === null) return { ok: false, error: "broker_unavailable" };
+        if (input.expectedPoolMachineId !== undefined && selectedMachineId !== input.expectedPoolMachineId) {
+            return { ok: false, error: "broker_unavailable" };
+        }
+    }
+
+    if (selectedMachineId === null) return { ok: false, error: "broker_unavailable" };
+    const broker = await resolveTeamCredentialBrokerMachineForOpenInTx(tx, {
+        custodianAccountId: input.resource.custodianAccountId,
+        brokerMachineId: selectedMachineId,
+        presence: input.presence,
+    });
+    if (!broker.ok) return broker;
+    return {
+        ok: true,
+        broker: {
+            machineId: broker.machineId,
+            endpointAuthority: broker.endpointAuthority,
+        },
+        poolSnapshot,
+        candidateMachineIds,
+    };
+}

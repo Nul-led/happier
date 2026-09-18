@@ -19,6 +19,7 @@ export function registerAccountErasureRoute(app: Fastify): void {
                     200: AccountErasureResponseV1Schema,
                     400: AccountErasureErrorV1Schema,
                     403: PresentUserRequiredResponseSchema,
+                    409: AccountErasureErrorV1Schema,
                 },
             },
         },
@@ -27,6 +28,16 @@ export function registerAccountErasureRoute(app: Fastify): void {
                 return await reply.code(400).send({ error: "invalid_request" });
             }
             const result = await deleteAccountForErasure({ accountId: request.userId });
+            if (result.status === "failed" && result.code === "home_owner_transfer_required") {
+                // Actionable, and refused before any external object was
+                // deleted: the Account still owns this Home.
+                return await reply.code(409).send({ error: "home_owner_transfer_required" });
+            }
+            if (result.status === "failed" && result.code === "team_owner_transfer_required") {
+                // The same shape of answer for a live, staffed Team this
+                // Account is the last owner of: transfer ownership, then retry.
+                return await reply.code(409).send({ error: "team_owner_transfer_required" });
+            }
             if (result.status === "failed") {
                 throw new Error(`Account erasure failed before Account deletion: ${result.code}`);
             }

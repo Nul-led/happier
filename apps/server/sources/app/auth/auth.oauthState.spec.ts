@@ -77,6 +77,45 @@ describe("auth (oauth state tokens)", () => {
         });
     });
 
+    it("round-trips a present-user GitHub App installation verification purpose", async () => {
+        const token = await auth.createOauthStateToken({
+            flow: "connect",
+            provider: "github",
+            sid: "sid_github_app_installation_1",
+            userId: "account_1",
+            purpose: "github_app_installation_verification",
+        });
+
+        await expect(auth.verifyOauthStateToken(token)).resolves.toEqual({
+            flow: "connect",
+            provider: "github",
+            sid: "sid_github_app_installation_1",
+            userId: "account_1",
+            publicKey: null,
+            proofHash: null,
+            purpose: "github_app_installation_verification",
+        });
+    });
+
+    it("round-trips a present-user GitHub App manifest setup purpose", async () => {
+        const token = await (auth as any).createOauthStateToken({
+            flow: "connect",
+            provider: "github",
+            sid: "manifest-attempt-1",
+            userId: "account_1",
+            publicKey: null,
+            proofHash: null,
+            purpose: "github_app_manifest_setup",
+        });
+        await expect((auth as any).verifyOauthStateToken(token)).resolves.toMatchObject({
+            flow: "connect",
+            provider: "github",
+            sid: "manifest-attempt-1",
+            userId: "account_1",
+            purpose: "github_app_manifest_setup",
+        });
+    });
+
     it("round-trips a first-key migration step-up binding through the existing auth state token", async () => {
         const token = await (auth as any).createOauthStateToken({
             flow: "auth",

@@ -314,7 +314,15 @@ export function startHomeSearchLifecycle(params: Readonly<{
             stopped = true;
             unregisterObserver?.();
             unregisterObserver = null;
+            // Signal the current indexer before joining readiness. The startup/rebuild
+            // projection is reconstructible canonical-derived state, so shutdown must not wait
+            // for its remaining pages; the signal makes that reconciliation stop at its current
+            // page. Once `stopped` is set, `openAndStart` can no longer attach a replacement
+            // indexer, so nothing restarts reconciliation behind this signal.
+            const stopRequest = indexer?.stop() ?? Promise.resolve();
             await readyPromise.catch(() => undefined);
+            // Join the in-flight page before closing SQLite.
+            await stopRequest;
             await indexer?.stop();
             indexer = null;
             db?.close();

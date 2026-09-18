@@ -3,13 +3,19 @@ import type { Redis } from "ioredis";
 import { getRedisClient } from "@/storage/redis/redis";
 import { log } from "@/utils/logging/log";
 
-import type { SocketRoomBroadcastOperator, SocketRoomEmitter, SocketRoomEventName } from "./socketRoomEmitter";
+import {
+    CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT,
+    type CredentialQualifiedSessionDeliveryV1,
+    type SocketRoomBroadcastOperator,
+    type SocketRoomEmitter,
+    type SocketRoomEventName,
+} from "./socketRoomEmitter";
 
 type RedisStreamsClient = Pick<Redis, "xadd">;
 
 type RedisStreamsEmitterOptions = Readonly<{
     maxLen: number;
-    streamName?: string;
+    streamName: string;
     namespace?: string;
 }>;
 
@@ -35,6 +41,7 @@ function writeToRedisStream(params: Readonly<{
 }
 
 export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
+    public readonly sessionDeliveryMode = "forward_only" as const;
     private readonly streamName: string;
     private readonly namespace: string;
     private readonly maxLen: number;
@@ -43,7 +50,7 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
         private readonly client: RedisStreamsClient,
         params: RedisStreamsEmitterOptions,
     ) {
-        this.streamName = params.streamName ?? "socket.io";
+        this.streamName = params.streamName;
         this.namespace = params.namespace ?? "/";
         this.maxLen = params.maxLen;
     }
@@ -53,8 +60,56 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
         return this.createBroadcastOperator(rooms, new Set());
     }
 
+    public async forwardCredentialQualifiedSessionDelivery(
+        delivery: CredentialQualifiedSessionDeliveryV1,
+    ): Promise<void> {
+        try {
+            await writeToRedisStream({
+                client: this.client,
+                streamName: this.streamName,
+                maxLen: this.maxLen,
+                payload: {
+                    uid: "emitter",
+                    nsp: this.namespace,
+                    // Socket.IO's existing server-side event packet. The receiving
+                    // API node resolves its own exact sockets and credential facts.
+                    type: "9",
+                    data: JSON.stringify({
+                        packet: [CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT, delivery],
+                    }),
+                },
+            });
+        } catch (error) {
+            log(
+                { module: "websocket", level: "warn", streamName: this.streamName },
+                `Failed to forward credential-qualified Session delivery: ${error instanceof Error ? error.message : String(error)}`,
+            );
+        }
+    }
+
     private createBroadcastOperator(rooms: Set<string>, exceptRooms: Set<string>): SocketRoomBroadcastOperator {
         return {
+            disconnectSockets: (close: boolean) => {
+                void writeToRedisStream({
+                    client: this.client,
+                    streamName: this.streamName,
+                    maxLen: this.maxLen,
+                    payload: {
+                        uid: "emitter",
+                        nsp: this.namespace,
+                        type: "6",
+                        data: JSON.stringify({
+                            opts: { rooms: [...rooms], except: [...exceptRooms], flags: {} },
+                            close,
+                        }),
+                    },
+                }).catch((error) => {
+                    log(
+                        { module: "websocket", level: "warn", streamName: this.streamName },
+                        `Failed to publish redis-streams room disconnect: ${error instanceof Error ? error.message : String(error)}`,
+                    );
+                });
+            },
             emit: (eventName: SocketRoomEventName, payload: unknown) => {
                 void writeToRedisStream({
                     client: this.client,
@@ -95,8 +150,10 @@ export class RedisStreamsRoomEmitter implements SocketRoomEmitter {
 
 export function createRedisStreamsRoomEmitter(params: Readonly<{
     maxLen: number;
+    streamName: string;
 }>): SocketRoomEmitter {
     return new RedisStreamsRoomEmitter(getRedisClient(), {
         maxLen: params.maxLen,
+        streamName: params.streamName,
     });
 }

@@ -4,6 +4,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { auth } from "@/app/auth/auth";
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { enableAuthentication } from "./enableAuthentication";
@@ -13,7 +15,7 @@ function createApp() {
     const app = Fastify({ logger: false }) as any;
     enableAuthentication(app);
     const requireDirectoryAuthority = async (request: any, reply: any) => {
-        if (request.authTokenKind === "account" || request.authTokenKind === "account_directory") return;
+        if (request.authTokenKind === "account_directory") return;
         return reply.code(403).send({ error: "account_directory_authority_required" });
     };
     app.get("/ordinary", { preHandler: app.authenticate }, async (request: any) => ({
@@ -56,7 +58,6 @@ describe("authentication token admission (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
                 AUTH_TOKEN_CACHE_MAX_ENTRIES: "32",
             },
         });
@@ -69,6 +70,38 @@ describe("authentication token admission (integration)", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it("keeps Disable between credential verification and eligibility opaque", async () => {
+        const account = await db.account.create({ data: {} });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const accountDelegate = db.account;
+        const originalFindUnique = accountDelegate.findUnique;
+        const findUnique = originalFindUnique.bind(accountDelegate);
+        let transitioned = false;
+        // Schedule the real lifecycle transaction at the Prisma read boundary;
+        // token verification and eligibility both retain their real logic.
+        accountDelegate.findUnique = (async (args) => {
+            const result = await findUnique(args);
+            if (!transitioned && args.where.id === account.id && args.select?.tokenEpoch) {
+                transitioned = true;
+                await inTx((tx) => setAccountStatusInTx(tx, {
+                    actorAccountId: account.id, targetAccountId: account.id,
+                    status: "disabled", authority: "account_erasure",
+                }));
+            }
+            return result;
+        }) as typeof db.account.findUnique;
+        const app = createApp();
+        try {
+            const response = await app.inject({ method: "GET", url: "/ordinary", headers: { authorization: `Bearer ${token}` } });
+            expect(transitioned).toBe(true);
+            expect(response.statusCode).toBe(401);
+            expect(response.json()).toEqual({ error: "invalid_token" });
+        } finally {
+            accountDelegate.findUnique = originalFindUnique;
+            await app.close();
+        }
     });
 
     it("keeps published pre-marker account and terminal tokens on ordinary routes but never admits either to Directory routes", async () => {
@@ -129,7 +162,7 @@ describe("authentication token admission (integration)", () => {
                 kind: "account_directory",
                 authority: "present_user",
             }),
-            auth.createApiToken({ accountId: account.id, label: "admission PAT" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "admission PAT" }),
         ]);
         const app = createApp();
         await app.ready();
@@ -153,7 +186,8 @@ describe("authentication token admission (integration)", () => {
             ]);
 
             expect(accountOrdinary.statusCode).toBe(200);
-            expect(accountDirectory.statusCode).toBe(200);
+            expect(accountDirectory.statusCode).toBe(403);
+            expect(accountDirectory.json()).toEqual({ error: "invalid_request" });
             expect(terminalOrdinary.statusCode).toBe(200);
             expect(directoryOrdinary.statusCode).toBe(403);
             expect(directoryDirectory.statusCode).toBe(200);

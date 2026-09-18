@@ -2,15 +2,53 @@ import {
     AutomationRunCauseSchema,
     type AutomationRunCause,
 } from "@happier-dev/protocol";
+import type { Prisma } from "@prisma/client";
 
-import { automationRunCauseSelect } from "./automationPersistenceSelect";
+import { automationRunCauseSelect, automationRunItemSelect } from "./automationPersistenceSelect";
 import type { AutomationRunItem } from "./automationTypes";
 
 /**
  * The decoder's row contract, derived from the canonical cause column set so a
  * read that omits one cause column cannot reach the decoder.
  */
-export type CauseRow = Pick<AutomationRunItem, keyof typeof automationRunCauseSelect>;
+export type CauseRow = Prisma.AutomationRunGetPayload<{
+    select: typeof automationRunCauseSelect;
+}>;
+
+export type AutomationCauseRow = CauseRow & Readonly<{
+    originKind: "automation";
+    causeKind: NonNullable<CauseRow["causeKind"]>;
+}>;
+
+type StoredAutomationRunRow = Prisma.AutomationRunGetPayload<{
+    select: typeof automationRunItemSelect;
+}>;
+
+/** The canonical physical-row origin correspondence guard. */
+export function isAutomationCauseRow<T extends Readonly<{
+    originKind: string;
+    automationId?: string | null;
+    causeKind: CauseRow["causeKind"];
+}>>(row: T): row is T & Readonly<{
+    originKind: "automation";
+    automationId: string;
+    causeKind: NonNullable<CauseRow["causeKind"]>;
+}> {
+    return row.originKind === "automation"
+        && row.automationId !== null
+        && row.automationId !== undefined
+        && row.causeKind !== null;
+}
+
+/**
+ * Projects a generalized physical Run row into the Automation-only domain.
+ * The database correspondence constraint is rechecked at this read boundary;
+ * direct Workflow rows remain owned by the Workflow service.
+ */
+export function projectAutomationOriginRun(row: StoredAutomationRunRow): AutomationRunItem | null {
+    if (!isAutomationCauseRow(row) || row.originSessionId !== null) return null;
+    return row as AutomationRunItem;
+}
 
 function required<T>(value: T | null, field: string): T {
     if (value === null) throw new Error(`Automation Run cause has no ${field}`);
@@ -18,7 +56,13 @@ function required<T>(value: T | null, field: string): T {
 }
 
 /** The sole physical-row to immutable cause decoder. */
-export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause {
+export function decodeAutomationRunCause(row: AutomationCauseRow): AutomationRunCause;
+export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause | null;
+export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause | null {
+    if (row.originKind === "direct") return null;
+    if (row.originKind !== "automation" || row.causeKind === null) {
+        throw new Error("Automation Run has invalid origin correspondence");
+    }
     if (row.causeKind === "manual") {
         return AutomationRunCauseSchema.parse({
             kind: "manual",
@@ -111,6 +155,7 @@ export function decodeAutomationRunCause(row: CauseRow): AutomationRunCause {
  */
 export function retainedV2OriginKindForRun(run: CauseRow): "scheduled" | "manual" | undefined {
     const cause = decodeAutomationRunCause(run);
+    if (cause === null) return undefined;
     if (cause.kind === "manual") return "manual";
     return cause.kind === "trigger" && cause.triggerKind === "schedule"
         ? "scheduled"

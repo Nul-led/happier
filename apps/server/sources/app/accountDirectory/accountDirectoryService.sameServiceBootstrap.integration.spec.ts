@@ -3,6 +3,7 @@ import tweetnacl from "tweetnacl";
 
 import { encodeBase64 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import {
     getOrCreateServerIdentityId,
@@ -21,7 +22,9 @@ import {
     verifyHomeLoginAssertionSignature,
 } from "./accountDirectorySigner";
 import {
-    ensureSameServiceHomeBootstrapForNewAccount,
+    type HomeConnectionDescriptorResolver,
+    ensureSameServiceHomeEntryInTx,
+    prepareSameServiceHomeEntry,
     listAccountHomeDirectory,
     mintAccountHomeLoginAssertion,
     upsertAccountHomeDirectoryEntry,
@@ -33,9 +36,23 @@ import {
  * composed from the public URL by the canonical descriptor-publication owner).
  */
 const DUAL_ROLE_ENV = {
+    HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self",
     HAPPIER_CANONICAL_SERVER_URL: "https://cloud.example.test",
     HAPPIER_PUBLIC_SERVER_URL: "https://cloud.example.test",
 };
+
+async function ensureSameServiceHomeEntry(params: {
+    accountId: string;
+    env?: NodeJS.ProcessEnv;
+    resolveHomeConnectionDescriptor?: HomeConnectionDescriptorResolver;
+}) {
+    const preparation = await prepareSameServiceHomeEntry(params);
+    return inTx((tx) => ensureSameServiceHomeEntryInTx(tx, {
+        accountId: params.accountId,
+        preparation,
+        env: params.env,
+    }));
+}
 
 async function readCurrentHomeDescriptor() {
     const continuityStore = createHomeConnectionDescriptorContinuityStoreForServer(process.env);
@@ -63,6 +80,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
         await db.accountDirectoryLink.deleteMany();
         await db.accountHomeDirectoryEntry.deleteMany();
         await db.account.deleteMany();
+        await db.homeGovernancePolicy.deleteMany();
         harness.resetEnv(DUAL_ROLE_ENV);
         resetHomeConnectionDescriptorRevisionOwnerForTests();
     });
@@ -79,7 +97,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             select: { id: true },
         });
 
-        const outcome = await ensureSameServiceHomeBootstrapForNewAccount({ accountId: account.id });
+        const outcome = await ensureSameServiceHomeEntry({ accountId: account.id });
 
         expect(outcome).toEqual({
             status: "ensured",
@@ -117,7 +135,24 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
         expect(verifyHomeLoginAssertionSignature(assertion, new Uint8Array(link.issuerSigningPublicKey))).toBe("ok");
     });
 
-    it("repeats idempotently and never retargets an existing preferred Home", async () => {
+    it.each([undefined, "disabled", "external"])("does not infer self policy from signing capability when mode is %s", async (mode) => {
+        const account = await db.account.create({
+            data: { publicKey: `same-service-policy-${mode ?? "absent"}` },
+            select: { id: true },
+        });
+        await ensureSameServiceHomeEntry({
+            accountId: account.id,
+            env: {
+                ...process.env,
+                HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: mode,
+                HAPPIER_AUTH_SIGN_IN_SERVICE_URL: mode === "external" ? "https://another-service.example.test" : undefined,
+            },
+        });
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
+    });
+
+    it("preserves an explicit self-Home label across repeated ensure and a newer descriptor", async () => {
         const serverIdentityId = await getOrCreateServerIdentityId(process.env);
         const account = await db.account.create({
             data: { publicKey: "same-service-bootstrap-repeat-account" },
@@ -136,15 +171,41 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             },
         });
 
-        const first = await ensureSameServiceHomeBootstrapForNewAccount({ accountId: account.id });
-        const second = await ensureSameServiceHomeBootstrapForNewAccount({ accountId: account.id });
+        const first = await ensureSameServiceHomeEntry({ accountId: account.id });
+        const afterFirstEnsure = await listAccountHomeDirectory(account.id);
+        const selfHome = afterFirstEnsure.homes.find((home) =>
+            home.homeServerIdentityId === serverIdentityId);
+        expect(selfHome).toBeDefined();
+        const renamedLabel = "My renamed Cloud Home";
+        await upsertAccountHomeDirectoryEntry({
+            accountId: account.id,
+            homeServerIdentityId: serverIdentityId,
+            label: renamedLabel,
+            connectionDescriptor: selfHome!.connectionDescriptor,
+        });
+
+        const second = await ensureSameServiceHomeEntry({ accountId: account.id });
+        const higherRevision = selfHome!.connectionDescriptor.revision + 1;
+        const third = await ensureSameServiceHomeEntry({
+            accountId: account.id,
+            resolveHomeConnectionDescriptor: async () => ({
+                ...selfHome!.connectionDescriptor,
+                revision: higherRevision,
+            }),
+        });
 
         expect(first).toEqual({ status: "ensured", homeServerIdentityId: serverIdentityId, preferred: false });
         expect(second).toEqual(first);
+        expect(third).toEqual(first);
 
         const directory = await listAccountHomeDirectory(account.id);
         expect(directory.preferredHomeServerIdentityId).toBe("srv_other_home_account");
         expect(directory.homes).toHaveLength(2);
+        expect(directory.homes.find((home) => home.homeServerIdentityId === serverIdentityId))
+            .toMatchObject({
+                label: renamedLabel,
+                connectionDescriptor: { revision: higherRevision },
+            });
         expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(1);
     });
 
@@ -158,7 +219,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             select: { id: true },
         });
 
-        const outcome = await ensureSameServiceHomeBootstrapForNewAccount({ accountId: account.id });
+        const outcome = await ensureSameServiceHomeEntry({ accountId: account.id });
 
         expect(outcome).toEqual({ status: "not_dual_role", reason: "home_descriptor_unavailable" });
         expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
@@ -171,7 +232,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             select: { id: true },
         });
 
-        await expect(ensureSameServiceHomeBootstrapForNewAccount({
+        await expect(ensureSameServiceHomeEntry({
             accountId: account.id,
             resolveHomeConnectionDescriptor: async () => {
                 throw new Error("temporary descriptor read failure");
@@ -182,24 +243,43 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
         expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
     });
 
-    it("revalidates the authoritative descriptor at the write boundary", async () => {
+    it("revalidates self policy before writing the prepared Home link", async () => {
         const account = await db.account.create({
             data: { publicKey: "same-service-bootstrap-write-boundary" },
             select: { id: true },
         });
-        const initial = await readCurrentHomeDescriptor();
-        expect(initial).toBeDefined();
-        let reads = 0;
-
-        await expect(ensureSameServiceHomeBootstrapForNewAccount({
+        const preparation = await prepareSameServiceHomeEntry({});
+        expect(preparation.status).toBe("ready");
+        harness.resetEnv({ HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "disabled" });
+        const outcome = await inTx((tx) => ensureSameServiceHomeEntryInTx(tx, {
             accountId: account.id,
-            resolveHomeConnectionDescriptor: async () => {
-                reads += 1;
-                return reads === 1 ? initial : undefined;
-            },
-        })).rejects.toThrow("became unavailable before persistence");
+            preparation,
+        }));
+        expect(outcome).toEqual({ status: "not_dual_role", reason: "sign_in_service_not_self" });
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
+    });
 
-        expect(reads).toBe(2);
+    it("honours a Home governance narrowing that disables the sign-in service on a dual-role deployment", async () => {
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                authenticationPolicy: { v: 1, signInService: { mode: "disabled" } },
+            },
+        });
+        const account = await db.account.create({
+            data: { publicKey: "same-service-bootstrap-governance-narrowed" },
+            select: { id: true },
+        });
+
+        // The preflight sees only the deployment, which is still `self`; the
+        // narrowing is applied where the write is authorized.
+        const preparation = await prepareSameServiceHomeEntry({});
+        expect(preparation.status).toBe("ready");
+
+        const outcome = await ensureSameServiceHomeEntry({ accountId: account.id });
+
+        expect(outcome).toEqual({ status: "not_dual_role", reason: "sign_in_service_not_self" });
         expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
         expect(await db.accountDirectoryLink.count({ where: { accountId: account.id } })).toBe(0);
     });
@@ -210,9 +290,9 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             select: { id: true },
         });
 
-        const outcome = await ensureSameServiceHomeBootstrapForNewAccount({
+        const outcome = await ensureSameServiceHomeEntry({
             accountId: account.id,
-            env: {},
+            env: { HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self" },
         });
 
         expect(outcome).toEqual({
@@ -229,7 +309,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             select: { id: true },
         });
 
-        const outcome = await ensureSameServiceHomeBootstrapForNewAccount({
+        const outcome = await ensureSameServiceHomeEntry({
             accountId: account.id,
             resolveHomeConnectionDescriptor: async () => ({
                 v: 1,
@@ -262,7 +342,7 @@ describe("Account Directory same-service Home bootstrap (integration)", () => {
             },
         });
 
-        await expect(ensureSameServiceHomeBootstrapForNewAccount({ accountId: account.id }))
+        await expect(ensureSameServiceHomeEntry({ accountId: account.id }))
             .rejects.toMatchObject({ name: "AccountDirectoryError", code: "directory_link_conflict" } satisfies Partial<AccountDirectoryError>);
 
         expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);

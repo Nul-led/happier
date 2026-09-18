@@ -1,6 +1,7 @@
 import { Counter, Histogram } from "prom-client";
 
 import { getOrCreateMetric, register } from "./registry";
+import type { SocketRoomEventName } from "@/app/events/socketRoomEmitter";
 
 export const eventFanoutEmitsCounter = getOrCreateMetric("event_fanout_emits_total", () => new Counter({
     name: "event_fanout_emits_total",
@@ -33,7 +34,7 @@ export const eventFanoutDropsCounter = getOrCreateMetric("event_fanout_drops_tot
 }));
 
 export function recordEventFanoutEmit(params: Readonly<{
-    eventName: "update" | "ephemeral";
+    eventName: SocketRoomEventName;
     filterType: string;
     dispatchMode: "room" | "local";
     targetKind: "room" | "connection";
@@ -69,7 +70,7 @@ export function recordEventFanoutEmit(params: Readonly<{
 }
 
 export function recordEventFanoutDrop(params: Readonly<{
-    eventName: "update" | "ephemeral";
+    eventName: SocketRoomEventName;
     reason: "io_unavailable" | "no_connections" | "no_matching_connections";
 }>): void {
     eventFanoutDropsCounter.inc({

@@ -3,7 +3,8 @@ import {
     type ClientConnection,
     eventRouter,
 } from "@/app/events/eventRouter";
-import { markSessionParticipantsChanged, type SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import { scheduleSessionActivityRemoteAlerts } from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
+import { markSessionProjectionRecipientsChanged, type SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import type { SessionReadyProjectionUpdate } from "@/app/session/sessionWriteService";
 import {
     loadSessionTranscriptPublicationRecipientProjection,
@@ -11,17 +12,22 @@ import {
 } from "@/app/session/sessionTranscriptPublicationPolicy";
 import { inTx } from "@/storage/inTx";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
+import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPublisherPresence";
 
 export async function publishSessionReadyProjectionUpdate(params: Readonly<{
     sessionId: string;
     readyProjection?: SessionReadyProjectionUpdate;
     skipSenderAccountId?: string;
     skipSenderConnection?: ClientConnection;
-}>): Promise<SessionParticipantCursor[]> {
+    runtimeComposition?: Readonly<{
+        publisherAuthority: CurrentSessionPublisherAuthority;
+        ownerActivityDelivery: "rich_sender" | "home_required";
+    }>;
+}>): Promise<SessionRecipientCursor[]> {
     const readyProjection = params.readyProjection;
     if (!readyProjection) return [];
 
-    const participantCursors = await inTx(async (tx) => await markSessionParticipantsChanged({
+    const recipientCursors = await inTx(async (tx) => await markSessionProjectionRecipientsChanged({
         tx,
         sessionId: params.sessionId,
         hint: {
@@ -32,7 +38,7 @@ export async function publishSessionReadyProjectionUpdate(params: Readonly<{
 
     const session = await loadSessionTranscriptPublicationRecipientProjection(params.sessionId);
     if (session) {
-        await Promise.all(participantCursors.map(async ({ accountId, cursor }) => {
+        await Promise.all(recipientCursors.map(async ({ accountId, cursor }) => {
             const projection = projectSessionTranscriptPublicationRealtimeProjection(
                 {
                     latestReadyEventSeq: readyProjection.latestReadyEventSeq,
@@ -50,7 +56,7 @@ export async function publishSessionReadyProjectionUpdate(params: Readonly<{
                 undefined,
                 projection.value,
             );
-            eventRouter.emitUpdate({
+            await eventRouter.emitUpdate({
                 userId: accountId,
                 payload,
                 recipientFilter: { type: "all-interested-in-session", sessionId: params.sessionId },
@@ -61,5 +67,16 @@ export async function publishSessionReadyProjectionUpdate(params: Readonly<{
         }));
     }
 
-    return participantCursors;
+    // The Activity owner derives owner responsibility from the authenticated
+    // exact current publisher authority and its actual sender composition. A
+    // Runner, superseded publisher, or runtime without the rich sender stays
+    // on this leg.
+    scheduleSessionActivityRemoteAlerts({
+        sessionId: params.sessionId,
+        event: "ready",
+        committedMessage: { domain: "session_transcript", seq: readyProjection.latestReadyEventSeq },
+        ...(params.runtimeComposition ? { runtimeComposition: params.runtimeComposition } : {}),
+    });
+
+    return recipientCursors;
 }

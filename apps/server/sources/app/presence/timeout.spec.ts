@@ -2,11 +2,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDbMocks, installDbModuleMock } from "../api/testkit/dbMocks";
 
-const { emitEphemeral, emitUpdate, expireSessionPublisherCandidates, refreshSessionParticipantBadgePushes, emitPendingActivationHint } = vi.hoisted(() => ({
+const { emitEphemeral, emitUpdate, expireSessionPublisherCandidates, refreshTrackedSessionAccountBadgePushes, emitPendingActivationHint } = vi.hoisted(() => ({
     emitEphemeral: vi.fn(),
     emitUpdate: vi.fn(),
     expireSessionPublisherCandidates: vi.fn(),
-    refreshSessionParticipantBadgePushes: vi.fn(),
+    refreshTrackedSessionAccountBadgePushes: vi.fn(),
     emitPendingActivationHint: vi.fn(),
 }));
 const dbMocks = createDbMocks({
@@ -45,7 +45,7 @@ vi.mock("@/app/events/eventRouter", async (importOriginal) => {
 });
 
 vi.mock("./sessionPublisherPresence", () => ({ expireSessionPublisherCandidates }));
-vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshSessionParticipantBadgePushes }));
+vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshTrackedSessionAccountBadgePushes }));
 vi.mock("@/app/session/pending/publishPendingMutation", () => ({ emitPendingActivationHint }));
 
 vi.mock("@/utils/logging/log", () => ({ warn: vi.fn(), log: vi.fn() }));
@@ -64,8 +64,8 @@ beforeEach(() => {
     dbMocks.db.machine.updateManyAndReturn.mockResolvedValue([]);
     expireSessionPublisherCandidates.mockReset();
     expireSessionPublisherCandidates.mockResolvedValue([]);
-    refreshSessionParticipantBadgePushes.mockReset();
-    refreshSessionParticipantBadgePushes.mockResolvedValue(undefined);
+    refreshTrackedSessionAccountBadgePushes.mockReset();
+    refreshTrackedSessionAccountBadgePushes.mockResolvedValue(undefined);
     emitPendingActivationHint.mockResolvedValue(undefined);
 });
 
@@ -132,7 +132,7 @@ describe("runPresenceTimeoutTick", () => {
                 status: "expired",
                 sessionId: "s1",
                 activeAt: oldActiveAt,
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 101 },
                     { accountId: "u3", cursor: 103 },
                 ],
@@ -155,13 +155,10 @@ describe("runPresenceTimeoutTick", () => {
             userId: "u3",
             recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
         }));
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledTimes(1);
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledWith({
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledTimes(1);
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledWith({
             badgeAttentionChanged: true,
-            participantCursors: [
-                { accountId: "u1", cursor: 101 },
-                { accountId: "u3", cursor: 103 },
-            ],
+            sessionId: "s1",
         });
         expect(emitEphemeral).toHaveBeenCalledTimes(1);
         expect(emitEphemeral).toHaveBeenNthCalledWith(
@@ -183,7 +180,7 @@ describe("runPresenceTimeoutTick", () => {
             status: "expired",
             sessionId: "s1",
             activeAt: oldActiveAt,
-            participantCursors: [{ accountId: "u1", cursor: 101 }],
+            recipientCursors: [{ accountId: "u1", cursor: 101 }],
             badgeAttentionChanged: false,
             activationHint: {
                 activationTarget: { accountId: "u1", requestId: "pending-1" },
@@ -201,7 +198,7 @@ describe("runPresenceTimeoutTick", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 8,
-            participantCursors: [{ accountId: "u1", cursor: 101 }],
+            recipientCursors: [{ accountId: "u1", cursor: 101 }],
             activationTarget: { accountId: "u1", requestId: "pending-1" },
         });
     });
@@ -210,8 +207,8 @@ describe("runPresenceTimeoutTick", () => {
         const { runPresenceTimeoutTick } = await importTimeoutModule();
         const oldActiveAt = new Date("2026-01-01T00:00:00.000Z");
         dbMocks.db.machine.findMany.mockResolvedValue([
-            { id: "m1", accountId: "u1", lastActiveAt: oldActiveAt },
-            { id: "m2", accountId: "u2", lastActiveAt: oldActiveAt },
+            { id: "m1", accountId: "u1", lastActiveAt: oldActiveAt, kind: "persistent" },
+            { id: "m2", accountId: "u2", lastActiveAt: oldActiveAt, kind: "persistent" },
         ]);
         dbMocks.db.machine.updateMany.mockResolvedValue({ count: 1 });
 
@@ -232,6 +229,25 @@ describe("runPresenceTimeoutTick", () => {
         );
     });
 
+    it("keeps a timed-out temporary Runner Machine out of broad Machine activity fanout", async () => {
+        const { runPresenceTimeoutTick } = await importTimeoutModule();
+        const oldActiveAt = new Date("2026-01-01T00:00:00.000Z");
+        dbMocks.db.machine.findMany.mockResolvedValue([
+            { id: "m1", accountId: "u1", lastActiveAt: oldActiveAt, kind: "persistent" },
+            { id: "runner-m2", accountId: "u1", lastActiveAt: oldActiveAt, kind: "ephemeral_session_runner" },
+        ]);
+        dbMocks.db.machine.updateMany.mockResolvedValue({ count: 1 });
+
+        await runPresenceTimeoutTick(config);
+
+        expect(dbMocks.db.machine.updateMany).toHaveBeenCalledTimes(2);
+        expect(emitEphemeral).toHaveBeenCalledTimes(1);
+        expect(emitEphemeral).toHaveBeenCalledWith(expect.objectContaining({
+            userId: "u1",
+            payload: expect.objectContaining({ type: "machine-activity", id: "m1", active: false }),
+        }));
+    });
+
     it("lets the next tick retry after a transient P2024 failure", async () => {
         const { runPresenceTimeoutTick } = await importTimeoutModule();
         const oldActiveAt = new Date("2026-01-01T00:00:00.000Z");
@@ -242,7 +258,7 @@ describe("runPresenceTimeoutTick", () => {
                 status: "expired",
                 sessionId: "s1",
                 activeAt: oldActiveAt,
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
                 badgeAttentionChanged: false,
             }]);
 
@@ -266,7 +282,7 @@ describe("runPresenceTimeoutTick", () => {
                 status: "expired",
                 sessionId: "s2",
                 activeAt: oldActiveAt,
-                participantCursors: [{ accountId: "u2", cursor: 202 }],
+                recipientCursors: [{ accountId: "u2", cursor: 202 }],
                 badgeAttentionChanged: false,
             },
         ]);

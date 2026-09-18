@@ -14,6 +14,7 @@ import { authRoutes } from "./authRoutes";
 import { enableAuthentication } from "../../utils/enableAuthentication";
 import { createAppCloseTracker } from "../../testkit/appLifecycle";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { authEnrollmentOutcomeCounter } from "@/app/monitoring/metrics/authMetrics";
 
 const { trackApp, closeTrackedApps } = createAppCloseTracker();
@@ -49,7 +50,6 @@ function decryptTokenEncrypted(params: { tokenEncryptedBase64: string; recipient
 }
 
 const HOME_SERVER_IDENTITY_ID = "srv_account_auth_home";
-const CONTENT_KEY_BINDING_PREFIX = new TextEncoder().encode("Happy content key v1\u0000");
 
 function createProvisioningResponse(params: Readonly<{
     kind: "tokenOnly" | "dataKey";
@@ -107,18 +107,10 @@ async function createDirectQrContext(params: Readonly<{
 }
 
 async function createCurrentE2eeAccount(): Promise<{ id: string }> {
-    const signing = tweetnacl.sign.keyPair();
-    const content = tweetnacl.box.keyPair();
-    const binding = new Uint8Array(CONTENT_KEY_BINDING_PREFIX.length + content.publicKey.length);
-    binding.set(CONTENT_KEY_BINDING_PREFIX, 0);
-    binding.set(content.publicKey, CONTENT_KEY_BINDING_PREFIX.length);
-    const contentPublicKeySig = new Uint8Array(tweetnacl.sign.detached(binding, signing.secretKey));
     return db.account.create({
         data: {
-            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            ...createSignedAccountContentBinding(),
             encryptionMode: "e2ee",
-            contentPublicKey: new Uint8Array(content.publicKey),
-            contentPublicKeySig,
         },
         select: { id: true },
     });
@@ -534,7 +526,11 @@ describe("authRoutes (account auth request) (integration)", () => {
             data: { publicKey: `pk-${Date.now()}`, encryptionMode: "plain" },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
 
         const app = createTestApp();
         authRoutes(app as any);
@@ -620,6 +616,7 @@ describe("authRoutes (account auth request) (integration)", () => {
 
         const decryptedToken = decryptTokenEncrypted({ tokenEncryptedBase64: json.tokenEncrypted, recipientSecretKey: secretKeyRaw });
         expect(decryptedToken).toBeTruthy();
+        expect((await auth.verifyToken(decryptedToken!))?.authenticationEvidence).toBeUndefined();
 
         const whoamiRes = await app.inject({
             method: "GET",
@@ -639,8 +636,15 @@ describe("authRoutes (account auth request) (integration)", () => {
             select: { id: true },
         });
         const [presentUserToken, terminalAutomationToken] = await Promise.all([
-            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createToken(account.id, { session: "terminal-automation" }, { kind: "terminal", authority: "account_automation" }),
+            auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            }),
+            auth.createToken(account.id, { session: "terminal-automation" }, {
+                kind: "terminal",
+                authority: "account_automation",
+            }),
         ]);
 
         const app = createTestApp();
@@ -922,8 +926,16 @@ describe("authRoutes (account auth request) (integration)", () => {
             data: { publicKey: null, encryptionMode: "plain" },
             select: { id: true },
         });
-        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
-        const otherToken = await auth.createToken(otherAccount.id, undefined, { kind: "account", authority: "present_user" });
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
+        const otherToken = await auth.createToken(otherAccount.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
         const completedPairId = await createDirectQrContext({
             accountId: account.id,
             publicKeyBase64: requester.publicKeyBase64,
@@ -962,6 +974,11 @@ describe("authRoutes (account auth request) (integration)", () => {
         // pending pairing for the same requester key inherits that completion.
         for (const attempt of [
             { pairId: "no-such-pairing-row" },
+            // The authenticated principal is part of the pairing lookup. A
+            // valid present-user token for the completed Account cannot
+            // authorize another Account's pairing even when the requester key
+            // is identical.
+            { pairId: foreignPairId },
             { pairId: foreignPairId, bearer: otherToken },
             { pairId: pendingPairId },
         ]) {
@@ -1141,6 +1158,75 @@ describe("authRoutes (account auth request) (integration)", () => {
         }
     });
 
+    it("rolls back direct-QR completion when the pairing expires during credential minting", async () => {
+        const startedAt = new Date("2031-04-05T06:07:08.000Z");
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(startedAt);
+        const requester = createAccountKeypair();
+        const requesterPublicKeyHex = privacyKit.encodeHex(requester.publicKeyRaw);
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const token = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        const pairId = await createDirectQrContext({
+            accountId: account.id,
+            publicKeyBase64: requester.publicKeyBase64,
+        });
+        const expiresAt = new Date(startedAt.getTime() + 1_000);
+        await db.accountAuthRequest.update({
+            where: { publicKey: requesterPublicKeyHex },
+            data: { createdAt: startedAt },
+        });
+        await db.authPairingSession.update({ where: { id: pairId }, data: { expiresAt } });
+
+        const originalCreateTokenInTx = auth.createTokenInTx.bind(auth);
+        auth.createTokenInTx = vi.fn(async (...args: Parameters<typeof auth.createTokenInTx>) => {
+            const minted = await originalCreateTokenInTx(...args);
+            // Model a slow mint/seal boundary without a wall-clock sleep: the
+            // transaction entered while valid, but irreversible finalization
+            // observes the exact expiry instant, which is already expired.
+            vi.setSystemTime(expiresAt);
+            return minted;
+        }) as typeof auth.createTokenInTx;
+
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/auth/account/response",
+                headers: { authorization: `Bearer ${token}` },
+                payload: {
+                    pairId,
+                    publicKey: requester.publicKeyBase64,
+                    response: createProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: requester.publicKeyRaw }),
+                    homeServerIdentityId: HOME_SERVER_IDENTITY_ID,
+                    responseKind: "tokenOnly",
+                },
+            });
+
+            expect(response.statusCode).toBe(404);
+            expect(response.json()).toEqual({ error: "Request not found" });
+            expect(await db.accountAuthRequest.findUnique({
+                where: { publicKey: requesterPublicKeyHex },
+                select: { response: true, responseAccountId: true, tokenEncrypted: true },
+            })).toEqual({ response: null, responseAccountId: null, tokenEncrypted: null });
+            expect(await db.authPairingSession.findUnique({
+                where: { id: pairId },
+                select: { approvalStatus: true, decidedAt: true },
+            })).toEqual({ approvalStatus: null, decidedAt: null });
+        } finally {
+            auth.createTokenInTx = originalCreateTokenInTx;
+            vi.useRealTimers();
+            await app.close();
+        }
+    });
+
     it("makes direct-QR approval and explicit rejection mutually exclusive under a race", async () => {
         const requester = createAccountKeypair();
         const account = await db.account.create({
@@ -1259,7 +1345,7 @@ describe("authRoutes (account auth request) (integration)", () => {
         expect(malformed.json()).toEqual({ error: "account_provisioning_inconsistent" });
     });
 
-    it("accepts only data-key terminal-v3 material for a current E2EE Home account", async () => {
+    it("accepts data-key terminal-v3 material for a current E2EE Home account and rejects mismatched kinds", async () => {
         const requester = createAccountKeypair();
         const account = await createCurrentE2eeAccount();
         const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
@@ -1284,7 +1370,7 @@ describe("authRoutes (account auth request) (integration)", () => {
             },
         });
         expect(unavailable.statusCode).toBe(409);
-        expect(unavailable.json()).toEqual({ error: "legacy_provisioning_unavailable" });
+        expect(unavailable.json()).toEqual({ error: "provisioning_kind_mismatch" });
 
         const response = createProvisioningResponse({ kind: "dataKey", recipientPublicKey: requester.publicKeyRaw });
         const accepted = await app.inject({

@@ -1,11 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { renderPrismaCompatibleSqliteDatabaseUrl } from "@happier-dev/cli-common/firstPartyRuntime";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { db, resolveSqliteRuntimePragmasFromEnv } from "@/storage/db";
+import { db, resolveSqliteRuntimePragmasFromEnv, resolveSqliteStartupDiagnosticsFromEnv } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 describe("storage/prisma sqlite pragmas", () => {
@@ -63,8 +63,33 @@ describe("storage/prisma sqlite pragmas", () => {
         }).journalSizeLimitBytes).toBe(0);
     });
 
-    it("observes consistent synchronous mode when sqlite connection_limit is explicit", async () => {
-        const baseDir = await mkdtemp(join(tmpdir(), "happier-sqlite-pragmas-single-connection-"));
+    it("reports sanitized sqlite startup diagnostics and unsupported pool timeout parameters", () => {
+        const diagnostics = resolveSqliteStartupDiagnosticsFromEnv({
+            DATABASE_URL: "file:/tmp/happier-secret-path/test.sqlite?socket_timeout=45&connection_limit=1&pool_timeout=60",
+            HAPPIER_SQLITE_BUSY_TIMEOUT_MS: "45000",
+            HAPPIER_SQLITE_JOURNAL_MODE: "DELETE",
+            HAPPIER_SQLITE_SYNCHRONOUS: "FULL",
+        });
+
+        expect(diagnostics).toEqual({
+            provider: "sqlite",
+            journalMode: "DELETE",
+            synchronous: "FULL",
+            busyTimeoutMs: 45000,
+            journalSizeLimitBytes: 64 * 1024 * 1024,
+            databaseUrlSocketTimeoutSeconds: 45,
+            databaseUrlConnectionLimit: 1,
+            databaseUrlConnectionLimitStatus: "configured",
+            databaseUrlPoolAcquisitionTimeoutStatus: "unbounded",
+            ignoredDatabaseUrlQueryParameters: ["pool_timeout"],
+        });
+        expect(JSON.stringify(diagnostics)).not.toContain("happier-secret-path");
+    });
+
+    it("opens sqlite databases whose filesystem path contains spaces", async () => {
+        const parentDir = await mkdtemp(join(tmpdir(), "happier-sqlite-pragmas-"));
+        const baseDir = join(parentDir, "single connection");
+        await mkdir(baseDir);
         const originalDatabaseUrl = process.env.DATABASE_URL;
         const databaseUrl = renderPrismaCompatibleSqliteDatabaseUrl({
             dbPath: join(baseDir, "test.sqlite"),
@@ -91,7 +116,7 @@ describe("storage/prisma sqlite pragmas", () => {
             } else {
                 delete process.env.DATABASE_URL;
             }
-            await rm(baseDir, { recursive: true, force: true });
+            await rm(parentDir, { recursive: true, force: true });
         }
     });
 });

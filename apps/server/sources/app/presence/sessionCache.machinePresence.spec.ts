@@ -12,14 +12,6 @@ vi.mock("@/app/monitoring/metrics/index", () => ({
     recordPresenceFlushRetry,
 }));
 
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess: vi.fn(async () => ({
-        userId: "u1",
-        sessionId: "s1",
-        level: "owner",
-        isOwner: true,
-    })),
-}));
 
 let machineLastActiveAtMs = 0;
 let machineRevokedAt: Date | null = null;

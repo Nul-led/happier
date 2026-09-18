@@ -1,6 +1,7 @@
 import { parseSessionMessageRole } from "@/app/session/messageRole/resolveSessionMessageRole";
 import {
     compareSessionMessageContentAndRole,
+    resolveSurvivingSessionMessageAuthorAccountIdInTx,
     validateSessionTranscriptStoredContent,
     validateSessionTranscriptWriteAuthorityInTx,
     writeSessionTranscriptMessageInTx,
@@ -10,7 +11,9 @@ import {
 import type { Tx } from "@/storage/inTx";
 import {
     PendingRequestedActionV1Schema,
+    deriveSessionMessageAuthorAccountIdV1,
     parseSessionMessageDeliveryResolutionV1,
+    readSessionInputAuthority,
     serializeSessionInputRequestEqualityIntentV1,
     SessionInputAdmissionReceiptV1Schema,
     SessionInputRequestEqualityEvidenceV1Schema,
@@ -29,12 +32,26 @@ export type PendingTranscriptMessage = {
     id: string;
     seq: number;
     localId: string;
+    sidechainId: string | null;
     messageRole: SessionMessageRole | null;
     content: PrismaJson.SessionMessageContent;
     deliveryResolution: SessionMessageDeliveryResolutionV1 | null;
     createdAt: Date;
     updatedAt: Date;
+    /**
+     * Server-internal committed admission evidence. The immediate realtime
+     * publisher derives the sanitized Account actor from it instead of rereading
+     * the row; it is never serialized onto the wire.
+     */
+    inputAdmissionReceipt: SessionInputAdmissionReceiptV1 | null;
+    authorAccountId: string | null;
 };
+
+/** Server-internal committed receipt read; a malformed stored value projects no actor. */
+function parseCommittedInputAdmissionReceipt(value: unknown): SessionInputAdmissionReceiptV1 | null {
+    const parsed = SessionInputAdmissionReceiptV1Schema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+}
 
 export function derivePlainRequestEqualityEvidence(params: Readonly<{
     content: PrismaJson.SessionMessageContent;
@@ -55,6 +72,9 @@ export function derivePlainRequestEqualityEvidence(params: Readonly<{
 export async function createSessionMessageFromPending(tx: Tx, params: {
     sessionId: string;
     sessionEncryptionMode: SessionEncryptionMode;
+    expectedSidechainId?: string | null;
+    /** Exact recipient copied only from the server-owned Pending row. */
+    targetExecutionRunId?: string | null;
     storagePolicy: SessionTranscriptStoragePolicy;
     localId: string;
     /** Original protected request bytes retained only for terminal equality derivation. */
@@ -73,13 +93,14 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
 } | {
     ok: false;
     error: "transcript-conflict";
-    conflict: "content" | "message-role" | "delivery-resolution" | "input-admission";
+    conflict: "content" | "message-role" | "delivery-resolution" | "input-admission" | "sidechain" | "execution-run-target";
 } | {
     ok: false;
     error: "storage-mode-conflict";
     code: SessionTranscriptWriteRejectionCode;
 }> {
     const { sessionId, localId, content, messageRole } = params;
+    const targetExecutionRunId = params.targetExecutionRunId ?? null;
     const inputAdmissionReceipt = params.inputAdmissionReceipt === undefined
         ? undefined
         : SessionInputAdmissionReceiptV1Schema.safeParse(params.inputAdmissionReceipt);
@@ -96,7 +117,18 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
     ) {
         return { ok: false, error: "transcript-conflict", conflict: "input-admission" };
     }
-    const derivedPlainRequestEqualityEvidence = pendingRequestedAction === undefined
+    const hasSettledInputAuthority = content.t === "plain"
+        && content.v !== null
+        && typeof content.v === "object"
+        && !Array.isArray(content.v)
+        && "meta" in content.v
+        && readSessionInputAuthority(content.v.meta) !== null;
+    // A settled Pending row retains the original request digest beside its final
+    // authority content. Rehashing that final envelope would change input identity.
+    const retainedSettledRequestEvidence = params.requestContentForEquality === undefined
+        && hasSettledInputAuthority
+        && requestEqualityEvidenceV1 !== undefined;
+    const derivedPlainRequestEqualityEvidence = pendingRequestedAction === undefined || retainedSettledRequestEvidence
         ? undefined
         : derivePlainRequestEqualityEvidence({
             content: params.requestContentForEquality ?? content,
@@ -123,16 +155,29 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
             id: true,
             seq: true,
             localId: true,
+            sidechainId: true,
+            targetExecutionRunId: true,
             messageRole: true,
             content: true,
             deliveryResolution: true,
             inputAdmissionReceipt: true,
+            authorAccountId: true,
             requestEqualityEvidenceV1: true,
             createdAt: true,
             updatedAt: true,
         },
     });
     if (existing && existing.localId) {
+        const existingTargetExecutionRunId = existing.targetExecutionRunId ?? null;
+        if (existing.sidechainId !== (params.expectedSidechainId ?? null)) {
+            return { ok: false, error: "transcript-conflict", conflict: "sidechain" };
+        }
+        if (
+            existingTargetExecutionRunId !== null
+            && existingTargetExecutionRunId !== targetExecutionRunId
+        ) {
+            return { ok: false, error: "transcript-conflict", conflict: "execution-run-target" };
+        }
         // This is the only Pending branch that does not continue into the
         // canonical insert writer. Reuse its admission before a role or
         // delivery-resolution settlement can mutate an existing row.
@@ -204,7 +249,31 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
         const needsAdmissionIdentityBackfill =
             inputAdmissionReceipt !== undefined && existing.inputAdmissionReceipt == null
             || effectiveRequestEqualityEvidenceV1 !== undefined && existing.requestEqualityEvidenceV1 == null;
-        const row = needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill
+        // A provider transcript anchor can precede Pending settlement. Pending
+        // custody is the sole authority allowed to attach its exact Run target.
+        const needsTargetExecutionRunIdBackfill =
+            targetExecutionRunId !== null && existingTargetExecutionRunId === null;
+
+        // A role or receipt backfill changes what the derived author projection
+        // must be, so it is recomputed from the settled row in this same
+        // transaction rather than by a second repair owner. The receipt stays
+        // authoritative: a non-null disagreement is refused, never rewritten.
+        const settledInputAdmissionReceipt = existing.inputAdmissionReceipt != null
+            ? existing.inputAdmissionReceipt
+            : inputAdmissionReceipt?.data;
+        const settledAuthorAccountId = deriveSessionMessageAuthorAccountIdV1({
+            messageRole: needsRoleUpdate ? messageRole : parseSessionMessageRole(existing.messageRole),
+            inputAdmissionReceipt: settledInputAdmissionReceipt,
+        });
+        if (existing.authorAccountId != null && existing.authorAccountId !== settledAuthorAccountId) {
+            return { ok: false, error: "transcript-conflict", conflict: "input-admission" };
+        }
+        const survivingAuthorAccountId = existing.authorAccountId
+            ?? await resolveSurvivingSessionMessageAuthorAccountIdInTx(tx, settledAuthorAccountId);
+        const needsAuthorProjectionBackfill =
+            existing.authorAccountId == null && survivingAuthorAccountId !== null;
+
+        const row = needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill || needsAuthorProjectionBackfill || needsTargetExecutionRunIdBackfill
             ? await tx.sessionMessage.update({
                 where: { id: existing.id },
                 data: {
@@ -216,13 +285,15 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
                     ...(effectiveRequestEqualityEvidenceV1 !== undefined && existing.requestEqualityEvidenceV1 == null
                         ? { requestEqualityEvidenceV1: effectiveRequestEqualityEvidenceV1 }
                         : {}),
+                    ...(needsAuthorProjectionBackfill ? { authorAccountId: survivingAuthorAccountId } : {}),
+                    ...(needsTargetExecutionRunIdBackfill ? { targetExecutionRunId } : {}),
                     rowRevision: { increment: BigInt(1) },
                 },
                 select: { id: true, seq: true, localId: true, messageRole: true, content: true, deliveryResolution: true, createdAt: true, updatedAt: true },
             })
             : existing;
 
-        if (needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill) {
+        if (needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill || needsAuthorProjectionBackfill || needsTargetExecutionRunIdBackfill) {
             notifySessionTranscriptMutationAfterCommit(tx, {
                 kind: 'upsert',
                 message: {
@@ -240,16 +311,19 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
         return {
             ok: true,
             didWrite: false,
-            didUpdate: needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill,
+            didUpdate: needsRoleUpdate || needsDeliveryResolutionUpdate || needsAdmissionIdentityBackfill || needsAuthorProjectionBackfill || needsTargetExecutionRunIdBackfill,
             message: {
                 id: row.id,
                 seq: row.seq,
                 localId: row.localId ?? localId,
+                sidechainId: existing.sidechainId,
                 messageRole: parseSessionMessageRole(row.messageRole),
                 content: row.content as PrismaJson.SessionMessageContent,
                 deliveryResolution: parseSessionMessageDeliveryResolutionV1(row.deliveryResolution),
                 createdAt: row.createdAt,
                 updatedAt: row.updatedAt,
+                inputAdmissionReceipt: parseCommittedInputAdmissionReceipt(settledInputAdmissionReceipt),
+                authorAccountId: survivingAuthorAccountId,
             },
         };
     }
@@ -262,7 +336,7 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
         storagePolicy: params.storagePolicy,
         content,
         localId,
-        sidechainId: null,
+        sidechainId: params.expectedSidechainId ?? null,
         messageRole,
         deliveryResolution: params.deliveryResolution,
         ...(inputAdmissionReceipt === undefined ? {} : { inputAdmissionReceipt: inputAdmissionReceipt.data }),
@@ -276,6 +350,16 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
         return persisted;
     }
     const created = persisted.message;
+    if (targetExecutionRunId !== null) {
+        // Keep this server-private binding inside the Pending commit owner. The
+        // canonical transcript writer intentionally has no public/general
+        // parameter for it, and this update shares the caller's transaction.
+        await tx.sessionMessage.update({
+            where: { id: created.id },
+            data: { targetExecutionRunId },
+            select: { id: true },
+        });
+    }
 
     return {
         ok: true,
@@ -285,11 +369,14 @@ export async function createSessionMessageFromPending(tx: Tx, params: {
             id: created.id,
             seq: created.seq,
             localId: created.localId!,
+            sidechainId: created.sidechainId,
             messageRole: parseSessionMessageRole(created.messageRole),
             content: created.content as PrismaJson.SessionMessageContent,
             deliveryResolution: parseSessionMessageDeliveryResolutionV1(created.deliveryResolution),
             createdAt: created.createdAt,
             updatedAt: created.updatedAt,
+            inputAdmissionReceipt: parseCommittedInputAdmissionReceipt(created.inputAdmissionReceipt),
+            authorAccountId: created.authorAccountId,
         },
     };
 }

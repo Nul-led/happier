@@ -85,7 +85,7 @@ function isAutomationRunEligibleForDeletion(
     // history. Custody safety remains owned by automationRunCustodyTerminalWhere;
     // once a Run is terminal, Account keep-forever history must not strand the
     // soft-deleted parent indefinitely.
-    if (run.automation.deletedAt !== null) return true;
+    if (run.automation?.deletedAt !== null && run.automation !== null) return true;
     if (run.finishedAt === null) return false;
     const operatorDays = readOperatorAutomationRunRetentionDays(policy);
     const retentionDays = run.account.automationRunRetention === 'thirtyDays'
@@ -128,14 +128,16 @@ async function deleteAutomationRunHistory(
         if (deleted.count !== 1) return false;
         const cursor = await markAccountChanged(tx, {
             accountId: current.accountId,
-            kind: 'automation',
-            entityId: current.automationId,
+            kind: current.automationId === null ? 'account' : 'automation',
+            entityId: current.automationId ?? `workflow-run:${current.id}`,
         });
-        afterTx(tx, () => emitAutomationUpsert({
-            accountId: current.accountId,
-            automation: current.automation,
-            cursor,
-        }));
+        if (current.automation !== null) {
+            afterTx(tx, () => emitAutomationUpsert({
+                accountId: current.accountId,
+                automation: current.automation!,
+                cursor,
+            }));
+        }
         return true;
     });
 }
@@ -203,7 +205,7 @@ export function createAutomationRunRetentionRule(): RetentionRule {
                     ...automationRunCustodyTerminalWhere(),
                     OR: [
                         ...automationRunAgeRetentionWhere(params.policy, params.now),
-                        { automation: { deletedAt: { not: null } } },
+                        { automationId: { not: null }, automation: { deletedAt: { not: null } } },
                     ],
                 },
                 select: automationRunRetentionCandidateSelect,

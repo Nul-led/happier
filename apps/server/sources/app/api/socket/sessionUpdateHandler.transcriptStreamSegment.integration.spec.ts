@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 
-type CheckSessionAccessFn = typeof import("@/app/share/accessControl").checkSessionAccess;
-type RequireAccessLevelFn = typeof import("@/app/share/accessControl").requireAccessLevel;
-type GetSessionParticipantUserIdsFn = typeof import("@/app/share/sessionParticipants").getSessionParticipantUserIds;
 
 const emitEphemeral = vi.fn();
 const websocketEventsCounterInc = vi.fn();
@@ -40,24 +37,14 @@ vi.mock("@/app/presence/presenceRecorder", () => ({
 }));
 
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
-    refreshSessionParticipantBadgePushes: vi.fn(async () => {}),
+    refreshTrackedSessionAccountBadgePushes: vi.fn(async () => {}),
 }));
 
 vi.mock("@/app/activity/accountActivityBadge", () => ({
-    didSessionActivityBadgeContributionChange: vi.fn(() => false),
+    didSessionActivityBadgeSignalChange: vi.fn(() => false),
 }));
 
-const checkSessionAccess = vi.fn<CheckSessionAccessFn>();
-const requireAccessLevel = vi.fn<RequireAccessLevelFn>();
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess,
-    requireAccessLevel,
-}));
 
-const getSessionParticipantUserIds = vi.fn<GetSessionParticipantUserIdsFn>();
-vi.mock("@/app/share/sessionParticipants", () => ({
-    getSessionParticipantUserIds,
-}));
 
 const activeAccessKey = vi.hoisted(() => ({
     machineId: "m1",
@@ -126,14 +113,12 @@ describe("sessionUpdateHandler (transcript-stream-segment relay)", () => {
     beforeEach(() => {
         emitEphemeral.mockReset();
         websocketEventsCounterInc.mockReset();
-        checkSessionAccess.mockReset();
-        requireAccessLevel.mockReset();
-        getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
         accessKeyFindUnique.mockResolvedValue(activeAccessKey);
         sessionFindUnique.mockReset();
         sessionFindUnique.mockResolvedValue({
             accountId: "u1",
+            shares: [],
             currentStorageState: "hosted",
             acceptedThroughServerSeq: null,
             materializationPublicationId: null,
@@ -148,14 +133,6 @@ describe("sessionUpdateHandler (transcript-stream-segment relay)", () => {
             meaningfulActivityAt: null,
             lastActiveAt: new Date(0),
         });
-        checkSessionAccess.mockImplementation(async (userId, sessionId) => ({
-            userId,
-            sessionId,
-            level: "edit",
-            isOwner: true,
-        } as any));
-        requireAccessLevel.mockReturnValue(true);
-        getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
     });
 
     it("relays transcript-stream-segment snapshots preserving the live-stream tick", async () => {
@@ -241,6 +218,7 @@ describe("sessionUpdateHandler (transcript-stream-segment relay)", () => {
     it("does not relay finite snapshot or delta stream observations to a collaborator", async () => {
         sessionFindUnique.mockResolvedValue({
             accountId: "u1",
+            shares: [],
             currentStorageState: "snapshot_complete",
             acceptedThroughServerSeq: 4,
             materializationPublicationId: "stream-publication-v1",
@@ -310,12 +288,7 @@ describe("sessionUpdateHandler (transcript-stream-segment relay)", () => {
     });
 
     it("does not relay transcript-stream-segment-delta from non-owner sessions", async () => {
-        checkSessionAccess.mockImplementation(async (userId, sessionId) => ({
-            userId,
-            sessionId,
-            level: "edit",
-            isOwner: false,
-        } as any));
+        sessionFindUnique.mockResolvedValue({ accountId: "another-owner", currentStorageState: "hosted", shares: [{ id: "share-1", accessLevel: "edit", canApprovePermissions: false }] });
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 

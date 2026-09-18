@@ -19,7 +19,7 @@ const reassertSessionLatestTurnStatus = vi.fn(async () => ({
     latestTurnStatus: "completed",
     latestTurnStatusObservedAt: 20,
     lastRuntimeIssue: null,
-    participantCursors: [],
+    recipientCursors: [],
     badgeAttentionChanged: false,
 }));
 vi.mock("@/app/session/sessionWriteService", () => ({ reassertSessionLatestTurnStatus }));

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type {
     UsageEventIngestRequest,
@@ -10,6 +10,7 @@ import { buildUsageEphemeral, eventRouter } from "@/app/events/eventRouter";
 import { usageReportWritesCounter } from "@/app/monitoring/metrics/index";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
 import { db } from "@/storage/db";
+import { requireDbProviderFromEnv } from "@/storage/prisma";
 import { AsyncLock } from "@/utils/runtime/lock";
 import {
     normalizeLegacyUsageCost,
@@ -89,9 +90,324 @@ export type RecordUsageEventResult =
         error: 'session-not-found';
       };
 
+/** Internal-only authority for Team credential usage. Public Account ingest never accepts this shape. */
+export type TeamCredentialUsageWriteAuthority =
+    | Readonly<{
+        kind: "teamCredentialAdmission";
+        requestingAccountId: string;
+        resourceId: string;
+        externalApiKeyId: string | null;
+        sourceCredentialId: string | null;
+        workerMachineId: string | null;
+        brokerMachineId: string | null;
+        deliveryMode: "brokered" | "direct" | "external_api";
+        executionRunId: string | null;
+        groupIds: readonly string[];
+    }>
+    | Readonly<{
+        kind: "teamCredentialExternalTerminal";
+        admissionUsageEventId: string;
+        requestingAccountId: string;
+        resourceId: string;
+        brokerMachineId: string;
+    }>;
+
+type SessionUsageAttribution = Readonly<{
+    resourceId: string | null;
+    actorAccountId: string | null;
+    deliveryMode: string | null;
+    sourceCredentialId: string | null;
+    brokerMachineId: string | null;
+    executionRunId: string | null;
+}>;
+
+const emptySessionUsageAttribution = (): SessionUsageAttribution => ({
+    resourceId: null,
+    actorAccountId: null,
+    deliveryMode: null,
+    sourceCredentialId: null,
+    brokerMachineId: null,
+    executionRunId: null,
+});
+
+// Lane 10 intentionally changes source schema/migration bytes without regenerating Prisma outputs.
+// Keep temporary generated-client field access confined to this one provider-aware persistence seam.
+async function accessUsageEventExecutionRunIdInTx(
+    tx: Tx,
+    operation: Readonly<
+        | { kind: "read"; eventId: string }
+        | { kind: "writeOnce"; eventId: string; executionRunId: string | null }
+    >,
+): Promise<string | null> {
+    if (operation.kind === "writeOnce" && operation.executionRunId === null) return null;
+    if (operation.kind === "writeOnce" && operation.executionRunId !== null) {
+        const provider = requireDbProviderFromEnv(process.env, "postgres");
+        const changed = provider === "mysql"
+            ? await tx.$executeRaw`UPDATE UsageEvent SET executionRunId = ${operation.executionRunId} WHERE id = ${operation.eventId} AND executionRunId IS NULL`
+            : await tx.$executeRaw`UPDATE "UsageEvent" SET "executionRunId" = ${operation.executionRunId} WHERE "id" = ${operation.eventId} AND "executionRunId" IS NULL`;
+        if (changed === 1) return operation.executionRunId;
+    }
+    const provider = requireDbProviderFromEnv(process.env, "postgres");
+    const rows = provider === "mysql"
+        ? await tx.$queryRaw<Array<{ executionRunId: string | null }>>`
+            SELECT executionRunId FROM UsageEvent WHERE id = ${operation.eventId}
+        `
+        : await tx.$queryRaw<Array<{ executionRunId: string | null }>>`
+            SELECT "executionRunId" FROM "UsageEvent" WHERE "id" = ${operation.eventId}
+        `;
+    const currentExecutionRunId = rows[0]?.executionRunId ?? null;
+    if (operation.kind === "writeOnce" && currentExecutionRunId !== operation.executionRunId) {
+        throw new Error("usage event execution run attribution changed during write");
+    }
+    return currentExecutionRunId;
+}
+
+async function resolveSessionUsageAttributionInTx(
+    tx: Tx,
+    params: Readonly<{ accountId: string; sessionId: string; turnId: string | null }>,
+): Promise<SessionUsageAttribution> {
+    if (!params.turnId) return emptySessionUsageAttribution();
+    const turn = await tx.sessionTurn.findUnique({
+        where: { sessionId_turnId: { sessionId: params.sessionId, turnId: params.turnId } },
+        select: {
+            id: true,
+            session: { select: { accountId: true } },
+            usageActorAccountId: true,
+            teamCredentialResourceId: true,
+            credentialDeliveryMode: true,
+        },
+    });
+    const turnAttribution = turn && turn.session.accountId === params.accountId
+        ? {
+            resourceId: turn.teamCredentialResourceId,
+            actorAccountId: turn.usageActorAccountId,
+            deliveryMode: turn.credentialDeliveryMode,
+            executionRunId: null,
+        }
+        : null;
+    const admissions = await tx.usageEvent.findMany({
+        where: {
+            accountId: params.accountId,
+            sessionId: params.sessionId,
+            turnId: params.turnId,
+            source: "team_credential_admission",
+            requestCount: { gt: 0 },
+            ...(turnAttribution?.resourceId
+                ? { teamCredentialResourceId: turnAttribution.resourceId }
+                : {}),
+        },
+        select: {
+            id: true,
+            teamCredentialResourceId: true,
+            teamCredentialActorAccountId: true,
+            credentialDeliveryMode: true,
+            teamCredentialSourceCredentialId: true,
+            brokerMachineId: true,
+        },
+    });
+    const first = admissions[0];
+    if (!first) {
+        return turnAttribution
+            ? { ...turnAttribution, sourceCredentialId: null, brokerMachineId: null }
+            : emptySessionUsageAttribution();
+    }
+    const admissionAttributionAgrees = admissions.every((candidate) => (
+        candidate.teamCredentialResourceId === first.teamCredentialResourceId
+        && candidate.teamCredentialActorAccountId === first.teamCredentialActorAccountId
+        && candidate.credentialDeliveryMode === first.credentialDeliveryMode
+    ));
+    const sourceCredentialAgrees = admissions.every((candidate) => (
+        candidate.teamCredentialSourceCredentialId === first.teamCredentialSourceCredentialId
+    ));
+    const brokerMachineAgrees = admissions.every((candidate) => (
+        candidate.brokerMachineId === first.brokerMachineId
+    ));
+    const executionRunIds = await Promise.all(admissions.map(({ id }) => accessUsageEventExecutionRunIdInTx(tx, {
+        kind: "read",
+        eventId: id,
+    })));
+    const executionRunId = executionRunIds.every((candidate) => candidate === executionRunIds[0])
+        ? executionRunIds[0] ?? null
+        : null;
+    if (!turnAttribution) {
+        return admissionAttributionAgrees
+            ? {
+                resourceId: first.teamCredentialResourceId,
+                actorAccountId: first.teamCredentialActorAccountId,
+                deliveryMode: first.credentialDeliveryMode,
+                sourceCredentialId: sourceCredentialAgrees ? first.teamCredentialSourceCredentialId : null,
+                brokerMachineId: brokerMachineAgrees ? first.brokerMachineId : null,
+                executionRunId,
+            }
+            : emptySessionUsageAttribution();
+    }
+    const matchingAdmissionsAgree = admissionAttributionAgrees
+        && first.teamCredentialActorAccountId === turnAttribution.actorAccountId
+        && first.credentialDeliveryMode === turnAttribution.deliveryMode;
+    return {
+        ...turnAttribution,
+        sourceCredentialId: matchingAdmissionsAgree && sourceCredentialAgrees
+            ? first.teamCredentialSourceCredentialId
+            : null,
+        brokerMachineId: matchingAdmissionsAgree && brokerMachineAgrees ? first.brokerMachineId : null,
+        executionRunId: matchingAdmissionsAgree ? executionRunId : null,
+    };
+}
+
+async function copyAdmissionGroupAttributionInTx(
+    tx: Tx,
+    params: Readonly<{ accountId: string; sessionId: string; turnId: string; resourceId: string; usageEventId: string }>,
+): Promise<void> {
+    const admissions = await tx.usageEvent.findMany({
+        where: {
+            accountId: params.accountId,
+            sessionId: params.sessionId,
+            turnId: params.turnId,
+            teamCredentialResourceId: params.resourceId,
+            source: "team_credential_admission",
+            requestCount: { gt: 0 },
+        },
+        select: { teamCredentialGroupAttributions: { select: { teamGroupId: true } } },
+    });
+    const admittedGroupIds = new Set(
+        admissions.flatMap((admission) =>
+            admission.teamCredentialGroupAttributions.map(({ teamGroupId }) => teamGroupId),
+        ),
+    );
+    for (const teamGroupId of admittedGroupIds) {
+        await tx.usageEventTeamCredentialGroupAttribution.upsert({
+            where: { usageEventId_teamGroupId: { usageEventId: params.usageEventId, teamGroupId } },
+            create: { usageEventId: params.usageEventId, teamGroupId },
+            update: {},
+        });
+    }
+}
+
+export function buildTeamCredentialAdmissionIdempotencyKey(params: Readonly<{
+    storageAccountId: string;
+    resourceId: string;
+    actorAccountId: string;
+    externalApiKeyId: string | null;
+    requestIdentity: string;
+    source: string;
+}>): string {
+    const rawKey = JSON.stringify([
+        params.storageAccountId,
+        params.resourceId,
+        params.actorAccountId,
+        params.externalApiKeyId,
+        params.requestIdentity,
+        params.source,
+    ]);
+    const digest = createHash("sha256").update(rawKey).digest("hex");
+    return `usage_event:v2:${digest}`;
+}
+
+type TeamCredentialAdmissionUsageIdentity = Readonly<{
+    accountId: string;
+    sessionId: string | null;
+    turnId: string | null;
+    externalKey: string;
+    modelId?: string | null;
+    authority: Omit<Extract<TeamCredentialUsageWriteAuthority, { kind: "teamCredentialAdmission" }>, "groupIds">;
+}>;
+
+type TeamCredentialAdmissionUsageEventRow = Readonly<{
+    id: string;
+    accountId: string;
+    sessionId: string | null;
+    turnId: string | null;
+    externalKey: string | null;
+    source: string;
+    requestCount: number;
+    modelId: string | null;
+    machineId: string | null;
+    brokerMachineId: string | null;
+    teamCredentialResourceId: string | null;
+    teamCredentialActorAccountId: string | null;
+    teamCredentialExternalApiKeyId: string | null;
+    teamCredentialSourceCredentialId: string | null;
+    credentialDeliveryMode: string | null;
+    executionRunId: string | null;
+}>;
+
+function isSameTeamCredentialAdmissionUsageIdentity(
+    event: TeamCredentialAdmissionUsageEventRow,
+    params: TeamCredentialAdmissionUsageIdentity,
+): boolean {
+    return event.accountId === params.accountId
+        && event.sessionId === params.sessionId
+        && event.turnId === params.turnId
+        && event.externalKey === params.externalKey
+        && event.source === "team_credential_admission"
+        && event.requestCount === 1
+        && event.modelId === (params.modelId ?? null)
+        && event.machineId === params.authority.workerMachineId
+        && event.brokerMachineId === params.authority.brokerMachineId
+        && event.teamCredentialResourceId === params.authority.resourceId
+        && event.teamCredentialActorAccountId === params.authority.requestingAccountId
+        && event.teamCredentialExternalApiKeyId === params.authority.externalApiKeyId
+        && event.teamCredentialSourceCredentialId === params.authority.sourceCredentialId
+        && event.credentialDeliveryMode === params.authority.deliveryMode
+        && event.executionRunId === params.authority.executionRunId;
+}
+
+/**
+ * Reads an already-recorded admission through the writer's exact idempotency
+ * identity. Admission calls this before evaluating today's limits so a retry
+ * cannot be reclassified as a new denied request after its first dispatch.
+ */
+export async function resolveExistingTeamCredentialAdmissionUsageEventInTx(
+    tx: Tx,
+    params: TeamCredentialAdmissionUsageIdentity,
+): Promise<Readonly<{ id: string; groupIds: readonly string[] }> | null> {
+    const idempotencyKey = buildTeamCredentialAdmissionIdempotencyKey({
+        storageAccountId: params.accountId,
+        resourceId: params.authority.resourceId,
+        actorAccountId: params.authority.requestingAccountId,
+        externalApiKeyId: params.authority.externalApiKeyId,
+        requestIdentity: params.externalKey,
+        source: "team_credential_admission",
+    });
+    const event = await tx.usageEvent.findUnique({
+        where: { idempotencyKey },
+        select: {
+            id: true,
+            accountId: true,
+            sessionId: true,
+            turnId: true,
+            externalKey: true,
+            source: true,
+            requestCount: true,
+            modelId: true,
+            machineId: true,
+            brokerMachineId: true,
+            teamCredentialResourceId: true,
+            teamCredentialActorAccountId: true,
+            teamCredentialExternalApiKeyId: true,
+            teamCredentialSourceCredentialId: true,
+            credentialDeliveryMode: true,
+            teamCredentialGroupAttributions: { select: { teamGroupId: true } },
+        },
+    });
+    if (!event) return null;
+    const eventWithExecutionRunId = {
+        ...event,
+        executionRunId: await accessUsageEventExecutionRunIdInTx(tx, { kind: "read", eventId: event.id }),
+    };
+    if (!isSameTeamCredentialAdmissionUsageIdentity(eventWithExecutionRunId, params)) {
+        throw new Error("conflicting team credential usage admission fact");
+    }
+    return {
+        id: event.id,
+        groupIds: event.teamCredentialGroupAttributions.map(({ teamGroupId }) => teamGroupId).sort(),
+    };
+}
+
 function toUsageEventCreateInput(
     accountId: string,
     request: UsageEventIngestRequest,
+    attribution: SessionUsageAttribution = emptySessionUsageAttribution(),
 ): Prisma.UsageEventUncheckedCreateInput {
     return {
         accountId,
@@ -108,6 +424,12 @@ function toUsageEventCreateInput(
         externalKey: request.externalKey ?? null,
         idempotencyKey: buildUsageEventIdempotencyKey(accountId, request),
         turnId: request.turnId ?? null,
+        teamCredentialResourceId: attribution.resourceId,
+        teamCredentialActorAccountId: attribution.actorAccountId,
+        credentialDeliveryMode: attribution.deliveryMode,
+        teamCredentialSourceCredentialId: attribution.sourceCredentialId,
+        brokerMachineId: attribution.brokerMachineId,
+        requestCount: 0,
         isCumulative: request.isCumulative,
         inputTokens: request.tokens.input,
         outputTokens: request.tokens.output,
@@ -130,7 +452,7 @@ function toUsageEventCreateInput(
 
 function buildUsageEventIdempotencyKey(
     accountId: string,
-    request: Pick<UsageEventIngestRequest, "sessionId" | "source" | "externalKey">,
+    request: Readonly<{ sessionId: string | null; source: string; externalKey?: string | null }>,
 ): string | null {
     if (!request.externalKey) {
         return null;
@@ -258,6 +580,11 @@ export async function recordUsageEvent(
         if (!(await ensureSessionOwnedByAccount(tx, { accountId, sessionId: request.sessionId }))) {
             return { ok: false, error: 'session-not-found' };
         }
+        const attribution = await resolveSessionUsageAttributionInTx(tx, {
+            accountId,
+            sessionId: request.sessionId,
+            turnId: request.turnId ?? null,
+        });
 
         if (request.externalKey) {
             const idempotencyKey = buildUsageEventIdempotencyKey(accountId, request);
@@ -280,21 +607,352 @@ export async function recordUsageEvent(
                     idempotencyKey: idempotencyKey ?? "",
                 },
                 update: {},
-                create: toUsageEventCreateInput(accountId, request),
+                create: toUsageEventCreateInput(accountId, request, attribution),
                 select: { id: true, createdAt: true },
             });
+            await accessUsageEventExecutionRunIdInTx(tx, {
+                kind: "writeOnce",
+                eventId: created.id,
+                executionRunId: attribution.executionRunId,
+            });
+            if (created && attribution.resourceId && attribution.actorAccountId && request.turnId) {
+                await copyAdmissionGroupAttributionInTx(tx, {
+                    accountId,
+                    sessionId: request.sessionId,
+                    turnId: request.turnId,
+                    resourceId: attribution.resourceId,
+                    usageEventId: created.id,
+                });
+            }
             emitUsageEventAfterTransaction(tx, accountId, request);
             return { ok: true, event: created };
         }
 
         const created = await tx.usageEvent.create({
-            data: toUsageEventCreateInput(accountId, request),
+            data: toUsageEventCreateInput(accountId, request, attribution),
             select: { id: true, createdAt: true },
         });
+        await accessUsageEventExecutionRunIdInTx(tx, {
+            kind: "writeOnce",
+            eventId: created.id,
+            executionRunId: attribution.executionRunId,
+        });
+        if (attribution.resourceId && attribution.actorAccountId && request.turnId) {
+            await copyAdmissionGroupAttributionInTx(tx, {
+                accountId,
+                sessionId: request.sessionId,
+                turnId: request.turnId,
+                resourceId: attribution.resourceId,
+                usageEventId: created.id,
+            });
+        }
         emitUsageEventAfterTransaction(tx, accountId, request);
 
         return { ok: true, event: created };
     });
+}
+
+/**
+ * Writes the immutable request-count fact used by Team credential admission.
+ * Entitlement and limit evaluation remain in the admission owner; this helper
+ * deliberately has no public route and accepts only a server-created authority.
+ */
+export async function recordTeamCredentialAdmissionUsageEventInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        sessionId: string | null;
+        turnId: string | null;
+        observedAt: Date;
+        externalKey: string;
+        modelId?: string | null;
+        authority: Extract<TeamCredentialUsageWriteAuthority, { kind: "teamCredentialAdmission" }>;
+    }>,
+): Promise<Readonly<{ id: string; created: boolean }>> {
+    if (params.sessionId && !(await ensureSessionOwnedByAccount(tx, { accountId: params.accountId, sessionId: params.sessionId }))) {
+        throw new Error("team credential usage session not found");
+    }
+    const source = "team_credential_admission";
+    if (params.authority.externalApiKeyId !== null) {
+        const externalApiKey = await tx.teamCredentialExternalApiKey.findFirst({
+            where: {
+                id: params.authority.externalApiKeyId,
+                resourceId: params.authority.resourceId,
+                membership: {
+                    accountId: params.authority.requestingAccountId,
+                    status: "active",
+                },
+            },
+            select: { id: true },
+        });
+        if (!externalApiKey) throw new Error("team credential usage external key authority mismatch");
+    }
+    const idempotencyKey = buildTeamCredentialAdmissionIdempotencyKey({
+        storageAccountId: params.accountId,
+        resourceId: params.authority.resourceId,
+        actorAccountId: params.authority.requestingAccountId,
+        externalApiKeyId: params.authority.externalApiKeyId,
+        requestIdentity: params.externalKey,
+        source,
+    });
+    const candidateId = randomUUID();
+    const event = await tx.usageEvent.upsert({
+        where: { idempotencyKey },
+        update: {},
+        create: {
+            id: candidateId,
+            accountId: params.accountId,
+            sessionId: params.sessionId,
+            observedAt: params.observedAt,
+            agentId: "team_credential_broker",
+            backendMode: null,
+            modelId: params.modelId ?? null,
+            projectKey: null,
+            workspaceId: null,
+            machineId: params.authority.workerMachineId,
+            source,
+            scope: "turn_delta",
+            externalKey: params.externalKey,
+            idempotencyKey,
+            turnId: params.turnId,
+            teamCredentialResourceId: params.authority.resourceId,
+            teamCredentialActorAccountId: params.authority.requestingAccountId,
+            teamCredentialExternalApiKeyId: params.authority.externalApiKeyId,
+            teamCredentialSourceCredentialId: params.authority.sourceCredentialId,
+            brokerMachineId: params.authority.brokerMachineId,
+            credentialDeliveryMode: params.authority.deliveryMode,
+            requestCount: 1,
+            isCumulative: false,
+            inputTokens: 0,
+            outputTokens: 0,
+            reasoningTokens: 0,
+            cacheReadTokens: 0,
+            cacheWriteTokens: 0,
+            totalTokens: 0,
+            reportedCostUsd: 0,
+            estimatedCostUsd: 0,
+            invoiceCostUsd: 0,
+            billingContext: null,
+            costSource: null,
+            currency: "USD",
+            costBreakdown: null,
+            contextUsedTokens: null,
+            contextWindowTokens: null,
+            metadata: null,
+        },
+        select: {
+            id: true,
+            accountId: true,
+            sessionId: true,
+            turnId: true,
+            externalKey: true,
+            source: true,
+            requestCount: true,
+            modelId: true,
+            machineId: true,
+            brokerMachineId: true,
+            teamCredentialResourceId: true,
+            teamCredentialActorAccountId: true,
+            teamCredentialExternalApiKeyId: true,
+            teamCredentialSourceCredentialId: true,
+            credentialDeliveryMode: true,
+        },
+    });
+    const created = event.id === candidateId;
+    if (created) {
+        await accessUsageEventExecutionRunIdInTx(tx, {
+            kind: "writeOnce",
+            eventId: event.id,
+            executionRunId: params.authority.executionRunId,
+        });
+    }
+    if (!created) {
+        const eventWithExecutionRunId = {
+            ...event,
+            executionRunId: await accessUsageEventExecutionRunIdInTx(tx, { kind: "read", eventId: event.id }),
+        };
+        if (!isSameTeamCredentialAdmissionUsageIdentity(eventWithExecutionRunId, params)) {
+            throw new Error("conflicting team credential usage admission fact");
+        }
+        return { id: event.id, created: false };
+    }
+    const groupIds = Array.from(new Set(params.authority.groupIds.filter((id) => id.trim().length > 0)));
+    if (groupIds.length > 0) {
+        for (const teamGroupId of groupIds) {
+            await tx.usageEventTeamCredentialGroupAttribution.upsert({
+                where: { usageEventId_teamGroupId: { usageEventId: event.id, teamGroupId } },
+                create: { usageEventId: event.id, teamGroupId },
+                update: {},
+            });
+        }
+    }
+    if (params.authority.externalApiKeyId !== null) {
+        const updatedKey = await tx.teamCredentialExternalApiKey.updateMany({
+            where: {
+                id: params.authority.externalApiKeyId,
+                resourceId: params.authority.resourceId,
+                membership: { accountId: params.authority.requestingAccountId, status: "active" },
+            },
+            data: { lastUsedAt: params.observedAt },
+        });
+        if (updatedKey.count !== 1) {
+            throw new Error("team credential external key changed during usage admission");
+        }
+    }
+    return { id: event.id, created: true };
+}
+
+/**
+ * Records the optional public-external terminal measurement. Normal Sessions
+ * never call this owner: their Agent observation remains the sole terminal
+ * token/cost fact. Correlation is re-derived from the immutable admission row.
+ */
+export async function recordTeamCredentialExternalTerminalUsageEventInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        requestId: string;
+        completedAt: Date;
+        outcome: "succeeded" | "failed" | "cancelled";
+        measurement: "reported" | "unavailable";
+        modelId: string | null;
+        tokens: UsageObservationTokens | null;
+        cost: UsageObservationCost | null;
+        authority: Extract<TeamCredentialUsageWriteAuthority, { kind: "teamCredentialExternalTerminal" }>;
+    }>,
+): Promise<Readonly<{ id: string; created: boolean }>> {
+    const admission = await tx.usageEvent.findFirst({
+        where: {
+            id: params.authority.admissionUsageEventId,
+            accountId: params.accountId,
+            teamCredentialResourceId: params.authority.resourceId,
+            teamCredentialActorAccountId: params.authority.requestingAccountId,
+            brokerMachineId: params.authority.brokerMachineId,
+            externalKey: params.requestId,
+            source: "team_credential_admission",
+            requestCount: 1,
+            teamCredentialExternalApiKeyId: { not: null },
+        },
+        select: {
+            id: true,
+            teamCredentialExternalApiKeyId: true,
+            teamCredentialSourceCredentialId: true,
+            machineId: true,
+            credentialDeliveryMode: true,
+            teamCredentialGroupAttributions: { select: { teamGroupId: true } },
+        },
+    });
+    if (!admission) throw new Error("team credential terminal usage admission mismatch");
+    if (params.measurement === "reported" && params.tokens === null) {
+        throw new Error("team credential reported terminal usage requires tokens");
+    }
+    const tokens = params.tokens ?? {
+        input: 0, output: 0, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 0,
+    };
+    const tokenValues = [tokens.input, tokens.output, tokens.reasoning, tokens.cacheRead, tokens.cacheWrite, tokens.total];
+    if (tokenValues.some((value) => !Number.isSafeInteger(value) || value < 0)) {
+        throw new Error("invalid team credential terminal token usage");
+    }
+    const cost = params.cost;
+    const costValues = cost ? [cost.reportedUsd, cost.estimatedUsd, cost.invoiceUsd ?? 0] : [];
+    if (costValues.some((value) => !Number.isFinite(value) || value < 0)) {
+        throw new Error("invalid team credential terminal cost usage");
+    }
+    const source = "team_credential_external_terminal";
+    const idempotencyKey = buildTeamCredentialAdmissionIdempotencyKey({
+        storageAccountId: params.accountId,
+        resourceId: params.authority.resourceId,
+        actorAccountId: params.authority.requestingAccountId,
+        externalApiKeyId: admission.teamCredentialExternalApiKeyId,
+        requestIdentity: params.requestId,
+        source,
+    });
+    const existing = await tx.usageEvent.findUnique({ where: { idempotencyKey } });
+    const expected = {
+        accountId: params.accountId,
+        observedAt: params.completedAt,
+        modelId: params.modelId,
+        machineId: admission.machineId,
+        externalKey: params.requestId,
+        teamCredentialResourceId: params.authority.resourceId,
+        teamCredentialActorAccountId: params.authority.requestingAccountId,
+        teamCredentialExternalApiKeyId: admission.teamCredentialExternalApiKeyId,
+        teamCredentialSourceCredentialId: admission.teamCredentialSourceCredentialId,
+        brokerMachineId: params.authority.brokerMachineId,
+        credentialDeliveryMode: admission.credentialDeliveryMode,
+        inputTokens: tokens.input,
+        outputTokens: tokens.output,
+        reasoningTokens: tokens.reasoning,
+        cacheReadTokens: tokens.cacheRead,
+        cacheWriteTokens: tokens.cacheWrite,
+        totalTokens: tokens.total,
+        reportedCostUsd: cost?.reportedUsd ?? 0,
+        estimatedCostUsd: cost?.estimatedUsd ?? 0,
+        invoiceCostUsd: cost?.invoiceUsd ?? 0,
+        billingContext: cost?.billingContext ?? null,
+        costSource: cost?.costSource ?? null,
+        currency: cost?.currency ?? "USD",
+        costBreakdown: cost?.breakdown ? JSON.stringify(cost.breakdown) : null,
+        metadata: { v: 1, admissionUsageEventId: admission.id, outcome: params.outcome, measurement: params.measurement },
+    };
+    if (existing) {
+        const comparable = {
+            accountId: existing.accountId,
+            observedAt: existing.observedAt,
+            modelId: existing.modelId,
+            machineId: existing.machineId,
+            externalKey: existing.externalKey,
+            teamCredentialResourceId: existing.teamCredentialResourceId,
+            teamCredentialActorAccountId: existing.teamCredentialActorAccountId,
+            teamCredentialExternalApiKeyId: existing.teamCredentialExternalApiKeyId,
+            teamCredentialSourceCredentialId: existing.teamCredentialSourceCredentialId,
+            brokerMachineId: existing.brokerMachineId,
+            credentialDeliveryMode: existing.credentialDeliveryMode,
+            inputTokens: existing.inputTokens,
+            outputTokens: existing.outputTokens,
+            reasoningTokens: existing.reasoningTokens,
+            cacheReadTokens: existing.cacheReadTokens,
+            cacheWriteTokens: existing.cacheWriteTokens,
+            totalTokens: existing.totalTokens,
+            reportedCostUsd: existing.reportedCostUsd,
+            estimatedCostUsd: existing.estimatedCostUsd,
+            invoiceCostUsd: existing.invoiceCostUsd,
+            billingContext: existing.billingContext,
+            costSource: existing.costSource,
+            currency: existing.currency,
+            costBreakdown: existing.costBreakdown,
+            metadata: existing.metadata,
+        };
+        if (!isDeepStrictEqual(comparable, expected)) {
+            throw new Error("conflicting team credential terminal usage fact");
+        }
+        return { id: existing.id, created: false };
+    }
+    const created = await tx.usageEvent.create({
+        data: {
+            ...expected,
+            sessionId: null,
+            agentId: "team_credential_broker",
+            backendMode: null,
+            projectKey: null,
+            workspaceId: null,
+            source,
+            scope: "turn_delta",
+            idempotencyKey,
+            turnId: null,
+            requestCount: 0,
+            isCumulative: false,
+            contextUsedTokens: null,
+            contextWindowTokens: null,
+        },
+        select: { id: true },
+    });
+    for (const { teamGroupId } of admission.teamCredentialGroupAttributions) {
+        await tx.usageEventTeamCredentialGroupAttribution.create({
+            data: { usageEventId: created.id, teamGroupId },
+        });
+    }
+    return { id: created.id, created: true };
 }
 
 export async function recordLegacyUsageReport(

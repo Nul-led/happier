@@ -1,3 +1,4 @@
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import { describe, expect, it } from "vitest";
 import nacl from "tweetnacl";
 
@@ -18,13 +19,10 @@ function buildBoundContentKeyAccountRow(encryptionMode: "plain" | "e2ee"): Reado
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         encryptionMode,
         contentPublicKey,
-        contentPublicKeySig: nacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(contentPublicKey),
-            ]),
-            signing.secretKey,
-        ) as Uint8Array<ArrayBuffer>,
+        contentPublicKeySig: signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentPublicKey,
+        }) as Uint8Array<ArrayBuffer>,
     };
 }
 

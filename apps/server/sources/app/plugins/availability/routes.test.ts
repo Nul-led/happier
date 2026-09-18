@@ -139,6 +139,7 @@ function createOperations(): BrowserArtifactRouteOperations {
             intent: null,
             release: null,
             uiArtifacts: [],
+            packageAssets: [],
         })),
         listIntentIds: vi.fn(async () => ({
             availabilityCursor: 0,
@@ -172,6 +173,7 @@ function createOperations(): BrowserArtifactRouteOperations {
                 seq: 0,
             },
         })),
+        removePackageAsset: vi.fn(async () => ({ removed: true as const, link: packageAssetLink })),
         publishPackageAsset: vi.fn(async () => ({
             outcome: "created" as const,
             link: packageAssetLink,
@@ -243,6 +245,7 @@ describe("plugin Availability routes", () => {
             "account.plugins.availability.uiArtifact.browserFrame.issue",
             "account.plugins.availability.packageAsset.publish",
             "account.plugins.availability.packageAsset.read",
+            "account.plugins.availability.packageAsset.remove",
         ] as const) {
             const entry = app.routes.get(
                 `POST ${PluginAvailabilityActionHttpPathsV1[action]}`,
@@ -549,6 +552,15 @@ describe("plugin Availability routes", () => {
             input: { release: releasePublishInput.facts.ref },
         });
         expect(packageAssetLegacyReadReply.code).toHaveBeenCalledWith(426);
+        const removal = await app.routes.get(`POST ${PluginAvailabilityActionHttpPathsV1[
+            "account.plugins.availability.packageAsset.remove"
+        ]}`)!.handler({
+            userId: publishRequest.userId,
+            method: "POST",
+            headers: {},
+            body: { release: releasePublishInput.facts.ref },
+        }, replyHarness());
+        expect(removal).toEqual({ removed: true, link: packageAssetLink });
         expect(publisherProofMock.verify).not.toHaveBeenCalled();
     });
 

@@ -566,6 +566,14 @@ export function registerAutomationV3Routes(
             if (!run) return reply.code(404).send({ error: "automation_not_found" });
             return reply.send(AutomationV3RunMutationResponseSchema.parse({
                 run: toAutomationRunV3ListApiDto(run),
+                ...(run.workflowCustodyState === "pending" || run.workflowCustodyState === "settled"
+                    ? {
+                        workflowRun: {
+                            recipeKind: "workflow-v2" as const,
+                            workflowRunId: run.id,
+                        },
+                    }
+                    : {}),
             }));
         } catch (error) {
             if (error instanceof AutomationDisabledError) {

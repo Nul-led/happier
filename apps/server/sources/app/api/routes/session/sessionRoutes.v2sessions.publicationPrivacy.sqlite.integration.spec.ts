@@ -180,6 +180,17 @@ describe("v2 session list publication privacy (SQLite integration)", () => {
             });
             expect(activeAfterPrivateActivity.statusCode, activeAfterPrivateActivity.body).toBe(200);
             expect(activeAfterPrivateActivity.json().sessions.map((session: { id: string }) => session.id)).toEqual([hosted.id]);
+
+            for (const viewerId of [owner.id, collaborator.id]) {
+                const viewerHeaders = { ...headers, "x-test-user-id": viewerId };
+                const list = await app.inject({ method: "GET", url: "/v2/sessions?limit=10", headers: viewerHeaders });
+                expect(list.statusCode, list.body).toBe(200);
+                for (const listed of list.json().sessions) {
+                    const detail = await app.inject({ method: "GET", url: `/v2/sessions/${listed.id}`, headers: viewerHeaders });
+                    expect(detail.statusCode, detail.body).toBe(200);
+                    expect(detail.json().session).toEqual(listed);
+                }
+            }
         });
     });
 

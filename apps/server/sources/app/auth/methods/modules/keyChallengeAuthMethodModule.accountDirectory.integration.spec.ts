@@ -7,6 +7,7 @@ import { createKeyChallengeV2SigningInput, type KeyChallengeV2IssueResponse } fr
 
 import { auth } from "@/app/auth/auth";
 import { type Fastify as TypedFastify } from "@/app/api/types";
+import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
 import { keyChallengeAuthMethodModule } from "./keyChallengeAuthMethodModule";
@@ -102,11 +103,13 @@ describe("keyChallengeAuthMethodModule Account Directory registration (integrati
             url: "/v1/auth",
             payload: createV1LoginPayload(signing),
         });
-        expect(ordinaryV1.statusCode).toBe(200);
+        expect(ordinaryV1.statusCode, ordinaryV1.body).toBe(200);
         await expect(auth.verifyToken(ordinaryV1.json().token)).resolves.toMatchObject({
             authTokenKind: "account",
             authority: "present_user",
         });
+        expect(await db.accountHomeDirectoryEntry.count()).toBe(0);
+        expect(await db.accountDirectoryLink.count()).toBe(0);
 
         const [ordinaryIssue, directoryIssue] = await Promise.all([
             app.inject({ method: "POST", url: "/v1/auth/challenge", payload: {} }),

@@ -4,6 +4,8 @@ import {
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_ACCOUNT_ENCRYPTION_TRANSITION_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION,
+    ACCOUNT_STORED_CONTENT_MACHINE_POOL_CHANGE_PROTOCOL_VERSION,
+    ACCOUNT_STORED_CONTENT_SAVED_SECRET_RESOURCE_CHANGE_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_PROFILE_PRESERVING_SETTINGS_WRITER_PROTOCOL_VERSION,
     ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     parseAccountStoredContentCompatibilityHttpHeadersV1,
@@ -41,6 +43,10 @@ export interface AccountStoredContentCompatibilityEvaluation {
     readonly supportsPluginDataProtocol: boolean;
     /** Whether this peer can receive the additive Session-access witness. */
     readonly supportsSessionAccessWitnessProtocol: boolean;
+    /** Whether this peer can receive the additive machinePool change kind. */
+    readonly supportsMachinePoolChangeProtocol: boolean;
+    /** Whether this peer can receive Saved Secret resource invalidations. */
+    readonly supportsSavedSecretResourceChangeProtocol: boolean;
     readonly outcome: AccountStoredContentCompatibilityOutcome;
     readonly declaration:
         AccountStoredContentCompatibilityDeclarationV1 | null;
@@ -127,6 +133,8 @@ export function evaluateAccountStoredContentCompatibility(
             supportsCurrentProtocol: false,
             supportsPluginDataProtocol: false,
             supportsSessionAccessWitnessProtocol: false,
+            supportsMachinePoolChangeProtocol: false,
+            supportsSavedSecretResourceChangeProtocol: false,
             outcome: `legacy-${parseResult.status}`,
             declaration: null,
             upgradeRequired: buildAccountStoredContentUpgradeRequired(),
@@ -142,6 +150,8 @@ export function evaluateAccountStoredContentCompatibility(
             supportsCurrentProtocol: false,
             supportsPluginDataProtocol: false,
             supportsSessionAccessWitnessProtocol: false,
+            supportsMachinePoolChangeProtocol: false,
+            supportsSavedSecretResourceChangeProtocol: false,
             outcome: 'legacy-protocol-too-old',
             declaration,
             upgradeRequired: buildAccountStoredContentUpgradeRequired(),
@@ -156,6 +166,12 @@ export function evaluateAccountStoredContentCompatibility(
         supportsSessionAccessWitnessProtocol:
             declaration.protocolVersion
             >= ACCOUNT_STORED_CONTENT_SESSION_ACCESS_WITNESS_PROTOCOL_VERSION,
+        supportsMachinePoolChangeProtocol:
+            declaration.protocolVersion
+            >= ACCOUNT_STORED_CONTENT_MACHINE_POOL_CHANGE_PROTOCOL_VERSION,
+        supportsSavedSecretResourceChangeProtocol:
+            declaration.protocolVersion
+            >= ACCOUNT_STORED_CONTENT_SAVED_SECRET_RESOURCE_CHANGE_PROTOCOL_VERSION,
         outcome: 'accepted',
         declaration,
         upgradeRequired: null,
@@ -179,6 +195,8 @@ export function readAccountStoredContentCompatibilityForHttpRequest(
         supportsCurrentProtocol: false,
         supportsPluginDataProtocol: false,
         supportsSessionAccessWitnessProtocol: false,
+        supportsMachinePoolChangeProtocol: false,
+        supportsSavedSecretResourceChangeProtocol: false,
         outcome: 'legacy-missing',
         declaration: null,
         upgradeRequired: buildAccountStoredContentUpgradeRequired(),
@@ -277,6 +295,8 @@ export function readAccountStoredContentCompatibilityForSocket(
         supportsCurrentProtocol: false,
         supportsPluginDataProtocol: false,
         supportsSessionAccessWitnessProtocol: false,
+        supportsMachinePoolChangeProtocol: false,
+        supportsSavedSecretResourceChangeProtocol: false,
         outcome: 'legacy-missing',
         declaration: null,
         upgradeRequired: buildAccountStoredContentUpgradeRequired(),

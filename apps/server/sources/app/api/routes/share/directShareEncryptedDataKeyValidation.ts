@@ -1,5 +1,5 @@
 import * as privacyKit from "privacy-kit";
-import { parseDirectShareEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
+import { parseEncryptedDataKeyEnvelopeV1 } from "@happier-dev/protocol";
 
 export type DirectShareEncryptedDataKeyParseResult =
     | Readonly<{ type: "ok"; encryptedDataKey: Uint8Array<ArrayBuffer> }>
@@ -10,7 +10,7 @@ export function tryParseDirectShareEncryptedDataKey(
 ): DirectShareEncryptedDataKeyParseResult {
     try {
         const bytes = privacyKit.decodeBase64(encryptedDataKeyB64);
-        const parsed = parseDirectShareEncryptedDataKeyEnvelopeV1(bytes);
+        const parsed = parseEncryptedDataKeyEnvelopeV1(bytes);
         if (!parsed) {
             throw new Error("Invalid direct-share encryptedDataKey envelope");
         }

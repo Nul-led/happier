@@ -8,9 +8,11 @@ import { registerAutomationRunRoutes } from "./registerAutomationRunRoutes";
 import { registerAutomationEventRoutes } from "./registerAutomationEventRoutes";
 import { registerAutomationV3Routes } from "./registerAutomationV3Routes";
 import { registerAutomationConversationRoutes } from "./registerAutomationConversationRoutes";
+import { registerWorkflowRunStorageRoutes } from "./registerWorkflowRunStorageRoutes";
 
 export function automationRoutes(app: Fastify): void {
     const gated = createServerFeatureGatedRouteApp(app, "automations", process.env);
+    const workflowGated = createServerFeatureGatedRouteApp(gated, "workflows", process.env);
 
     registerAutomationCrudRoutes(gated);
     registerAutomationAssignmentRoutes(gated);
@@ -19,4 +21,5 @@ export function automationRoutes(app: Fastify): void {
     registerAutomationEventRoutes(gated);
     registerAutomationConversationRoutes(gated);
     registerAutomationV3Routes(gated);
+    registerWorkflowRunStorageRoutes(workflowGated);
 }

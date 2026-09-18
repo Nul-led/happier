@@ -6,9 +6,7 @@ import type {
     UsageAnalyticsQueryResponse,
     UsageAnalyticsSeriesBucket,
     UsageAnalyticsTotals,
-    UsageObservationCost,
     UsageObservationContext,
-    UsageObservationTokens,
 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
 import {
@@ -24,75 +22,11 @@ import { loadUsageMessageStatsForQuery } from "./query/loadUsageMessageStatsForQ
 import {
     resolveScopedUsageContributions,
     type ScopedUsageContribution,
-    type ScopedUsageEventRow,
 } from "./query/resolveScopedUsageContributions";
+import { toScopedUsageEventRow } from "./query/scopedUsageEventRow";
 import { addUsageTokens, createEmptyUsageCost, createEmptyUsageTokens } from "./usageMetrics";
 import { addUsageCostForMode, resolveUsageCostMode, withEffectiveUsageCost, type UsageCostMode } from "./query/resolveUsageCostMode";
-
-type UsageEventRow = Awaited<ReturnType<typeof loadUsageEventsForQuery>>[number];
-
-function readCostBreakdown(value: unknown): Record<string, number> | undefined {
-    if (typeof value === "string") {
-        try {
-            return readCostBreakdown(JSON.parse(value));
-        } catch {
-            return undefined;
-        }
-    }
-    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-    const breakdown: Record<string, number> = {};
-    for (const [key, entry] of Object.entries(value)) {
-        if (typeof entry === "number" && Number.isFinite(entry) && entry >= 0) {
-            breakdown[key] = entry;
-        }
-    }
-    return Object.keys(breakdown).length > 0 ? breakdown : undefined;
-}
-
-function toEventTokens(row: UsageEventRow): UsageObservationTokens {
-    return {
-        input: row.inputTokens,
-        output: row.outputTokens,
-        reasoning: row.reasoningTokens,
-        cacheRead: row.cacheReadTokens,
-        cacheWrite: row.cacheWriteTokens,
-        total: row.totalTokens,
-    };
-}
-
-function toEventCost(row: UsageEventRow): UsageObservationCost {
-    return {
-        reportedUsd: row.reportedCostUsd,
-        estimatedUsd: row.estimatedCostUsd,
-        invoiceUsd: row.invoiceCostUsd,
-        billingContext: (row.billingContext ?? 'unknown') as UsageObservationCost['billingContext'],
-        costSource: (row.costSource ?? 'none') as UsageObservationCost['costSource'],
-        currency: row.currency,
-        breakdown: readCostBreakdown(row.costBreakdown),
-    };
-}
-
-function toScopedUsageEventRow(row: UsageEventRow): ScopedUsageEventRow {
-    return {
-        id: row.id,
-        sessionId: row.sessionId,
-        observedAt: row.observedAt,
-        createdAt: row.createdAt,
-        agentId: row.agentId,
-        backendMode: row.backendMode,
-        modelId: row.modelId,
-        projectKey: row.projectKey,
-        workspaceId: row.workspaceId,
-        source: row.source,
-        scope: row.scope,
-        isCumulative: row.isCumulative,
-        turnId: row.turnId,
-        contextUsedTokens: row.contextUsedTokens,
-        contextWindowTokens: row.contextWindowTokens,
-        tokens: toEventTokens(row),
-        cost: toEventCost(row),
-    };
-}
+import { TEAM_CREDENTIAL_ONLY_USAGE_SOURCES } from "./usageSourceClassifier";
 
 function toPremiumEventRow(row: ScopedUsageContribution) {
     return row;
@@ -235,7 +169,10 @@ async function loadUsageEventsForQuery(accountId: string, request: UsageAnalytic
             projectKey: request.filters?.projectKeys?.length ? { in: request.filters.projectKeys } : undefined,
             workspaceId: request.filters?.workspaceIds?.length ? { in: request.filters.workspaceIds } : undefined,
             backendMode: request.filters?.backendModes?.length ? { in: request.filters.backendModes } : undefined,
-            source: request.filters?.sources?.length ? { in: request.filters.sources } : undefined,
+            source: {
+                ...(request.filters?.sources?.length ? { in: request.filters.sources } : {}),
+                notIn: [...TEAM_CREDENTIAL_ONLY_USAGE_SOURCES],
+            },
         },
         orderBy: {
             observedAt: 'asc',
@@ -255,6 +192,13 @@ async function loadUsageEventsForQuery(accountId: string, request: UsageAnalytic
             scope: true,
             isCumulative: true,
             turnId: true,
+            requestCount: true,
+            teamCredentialResourceId: true,
+            teamCredentialActorAccountId: true,
+            teamCredentialExternalApiKeyId: true,
+            teamCredentialSourceCredentialId: true,
+            brokerMachineId: true,
+            credentialDeliveryMode: true,
             inputTokens: true,
             outputTokens: true,
             reasoningTokens: true,

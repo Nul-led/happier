@@ -4,8 +4,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 
 import { setSessionTagAssignments } from "./organizationMutations";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 describe("session organization mutations on SQLite", () => {
     let harness: LightSqliteHarness;
@@ -66,6 +69,7 @@ describe("session organization mutations on SQLite", () => {
             accountId: account.id,
             sessionId: session.id,
             request: { tagIds: [firstTag.id, secondTag.id] },
+            authentication,
         });
 
         expect(result).toEqual({

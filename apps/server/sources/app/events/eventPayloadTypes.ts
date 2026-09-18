@@ -1,19 +1,22 @@
 import { Socket } from "socket.io";
 import type { LinkedProvider } from "@/app/auth/providers/linkedProviders";
 import type {
+    MachineKind,
     AutomationRunStateV3,
     AutomationRunCause,
     AutomationRunStateChangedHostEventV1,
     ExternalSessionTranscriptInvalidationV1,
     ExecutionRunPublicState,
     PendingActivationAuthorizationV1,
+    ParticipantExecutionRunRecipientRoutingIdentityV1,
     PrimaryTurnStatusV1,
     SessionMessageDeliveryResolutionV1,
     SessionMessageAttentionImpact,
     SessionRuntimeIssueV1,
     SessionStoredMessageContent,
-    ActionOperationSnapshotEphemeralV1,
+    ActionOperationRevisionEphemeralV1,
     SessionDraftSocketUpdateV1,
+    SessionDraftSocketUpdateV2,
     SessionTranscriptObservationProvenanceV1,
 } from "@happier-dev/protocol";
 
@@ -24,6 +27,8 @@ export interface SessionScopedConnection {
     socket: Socket;
     userId: string;
     sessionId: string;
+    /** Present when this socket's admission is bound to one exact Machine AccessKey. */
+    machineId?: string;
 }
 
 export interface UserScopedConnection {
@@ -132,6 +137,7 @@ export type UpdateEvent = {
     latestTurnStatus?: PrimaryTurnStatusV1 | null | undefined;
     latestTurnStatusObservedAt?: number | null | undefined;
     lastRuntimeIssue?: SessionRuntimeIssueV1 | null | undefined;
+    rollbackEligibleTurnStarts?: readonly number[] | undefined;
     archivedAt?: number | null | undefined;
 } | {
     type: 'pending-changed';
@@ -139,6 +145,7 @@ export type UpdateEvent = {
     pendingVersion: number;
     pendingCount: number;
     pendingBlockedCount?: number;
+    recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
     changedByAccountId?: string;
     meaningfulActivityAt?: number;
     pendingActivationAuthorization?: PendingActivationAuthorizationV1 | null;
@@ -198,6 +205,7 @@ export type UpdateEvent = {
     settingsVersion: number;
 } | {
     type: 'new-machine';
+    kind?: MachineKind;
     machineId: string;
     seq: number;
     metadata: string;
@@ -296,7 +304,6 @@ export type UpdateEvent = {
     };
     accessLevel: 'view' | 'edit' | 'admin';
     canApprovePermissions: boolean;
-    encryptedDataKey: string;
     createdAt: number;
 } | {
     type: 'session-share-updated';
@@ -341,7 +348,11 @@ export type EphemeralEvent = {
     thinking?: boolean;
 } | ({
     type: 'session-draft-updated';
-} & SessionDraftSocketUpdateV1) | {
+} & SessionDraftSocketUpdateV1) | ({
+    // The V2 epoch carries its own strict hint shape, so a released V1 client
+    // subscribed to `session-draft-updated` never observes a V2-only address.
+    type: 'session-draft-v2-updated';
+} & SessionDraftSocketUpdateV2) | {
     type: 'execution-run-updated';
     sessionId: string;
     run: ExecutionRunPublicState;
@@ -383,7 +394,7 @@ export type EphemeralEvent = {
     tokens: Record<string, number>;
     cost: Record<string, number>;
     timestamp: number;
-} | ActionOperationSnapshotEphemeralV1 | {
+} | ActionOperationRevisionEphemeralV1 | {
     type: 'machine-status';
     machineId: string;
     online: boolean;

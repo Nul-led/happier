@@ -189,6 +189,7 @@ function validIngressDerivation(overrides?: Readonly<{
     sourceMachineId?: string;
 }>): Parameters<typeof deriveSessionServerStartDispatchFromIngress>[0] {
     const run = {
+        originKind: "automation" as const,
         automationId: "automation-1",
         state: "running",
         claimedByMachineId: "machine-1",
@@ -730,6 +731,19 @@ describe("Session server-start Automation ingress", () => {
         }))).toBeNull();
         expect(deriveSessionServerStartDispatchFromIngress(validIngressDerivation({
             targetMachine: { operationProtocolCapabilities: {} },
+        }))).toBeNull();
+    });
+
+    it("rejects direct and nullable-Automation origins before legacy Session stamping", () => {
+        expect(deriveSessionServerStartDispatchFromIngress(validIngressDerivation({
+            run: {
+                originKind: "direct",
+                automationId: null,
+                causeKind: null,
+            },
+        }))).toBeNull();
+        expect(deriveSessionServerStartDispatchFromIngress(validIngressDerivation({
+            run: { automationId: null },
         }))).toBeNull();
     });
 

@@ -146,7 +146,6 @@ describe("local service preview PMS tunnel opener", () => {
                     routeKind: "server_relay",
                     destination: { host: "127.0.0.1", port: 5173 },
                     selectedEncoding: PEER_TCP_TUNNEL_BINARY_FRAME_ENCODING_V2,
-                    allowV1Fallback: false,
                     relayAuthorization: {
                         payload: {
                             v: 2,

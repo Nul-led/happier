@@ -228,6 +228,8 @@ describe("plugin permission grant durable storage", () => {
         const grant = getRouteHandler(app, "POST", "/v1/plugins/permissions/grants/grant");
         const granted = await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: requested.pendingRequest.id },
         }, createReplyStub()) as any;
 
@@ -437,6 +439,8 @@ describe("plugin permission grant durable storage", () => {
         }), createReplyStub()) as any;
         const granted = await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: requested.pendingRequest.id },
         }, createReplyStub()) as any;
 
@@ -452,6 +456,8 @@ describe("plugin permission grant durable storage", () => {
 
         await revoke({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { grantId: granted.grant.id },
         }, createReplyStub());
 
@@ -612,6 +618,8 @@ describe("plugin permission grant durable storage", () => {
         expect(legacyPendingReplay.pendingRequest.id).toBe(firstRequest.pendingRequest.id);
         const firstGrant = await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: firstRequest.pendingRequest.id },
         }, createReplyStub()) as any;
         await db.$executeRaw`
@@ -622,6 +630,8 @@ describe("plugin permission grant durable storage", () => {
         const secondRequest = await requestGrant(publisherRequest, createReplyStub()) as any;
         const secondGrant = await grant({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { requestId: secondRequest.pendingRequest.id },
         }, createReplyStub()) as any;
 
@@ -638,6 +648,8 @@ describe("plugin permission grant durable storage", () => {
 
         await revoke({
             userId: account.id,
+            authAuthority: "present_user",
+            authTokenKind: "account",
             body: { grantId: firstGrant.grant.id },
         }, createReplyStub());
         const activeAfterRevoke = await list({

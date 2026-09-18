@@ -7,11 +7,11 @@ import {
 } from "@happier-dev/protocol";
 
 import {
-    didSessionActivityBadgeContributionChange,
+    didSessionActivityBadgeSignalChange,
     type SessionActivityBadgeInputs,
 } from "@/app/activity/accountActivityBadge";
 import { hasCurrentSessionScopedMachineAccessInTx } from "@/app/api/socket/sessionScopedBinding";
-import { markSessionParticipantsChanged, type SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import { markSessionProjectionRecipientsChanged, type SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import {
     updateSessionRuntimeActivityProjection,
     writeSessionRuntimeActivityObserverLossInTx,
@@ -33,6 +33,10 @@ import {
     mapPendingActivationAuthorization,
     type PendingActivationTarget,
 } from "@/app/session/pending/pendingActivationAuthorization";
+import {
+    readMaterializedEphemeralRunnerBindingStateInTx,
+    revokeMaterializedEphemeralRunnerBindingInTx,
+} from "@/app/ephemeralRunner/materializedTeardown";
 
 export interface SessionPublisherBinding {
     readonly accountId: string;
@@ -47,7 +51,7 @@ export type RegisterSessionPublisherResult =
         publisherGeneration: bigint;
         activeAt: Date;
         activity: Extract<SessionRuntimeActivityProjectionInTxResult, { status: "applied" | "unchanged" }>;
-        participantCursors: readonly SessionParticipantCursor[];
+        recipientCursors: readonly SessionRecipientCursor[];
         badgeAttentionChanged: boolean;
         pendingState?: Readonly<{
             pendingCount: number;
@@ -58,7 +62,7 @@ export type RegisterSessionPublisherResult =
     | { status: "rejected"; reason: "invalid-params" | "invalid_storage" | "not_found" | "unauthorized" | "archived" | "revision_overflow" | "contention" };
 
 export type TouchSessionPublisherResult =
-    | { status: "touched"; committedFence: Date; activeAt: Date; participantCursors: readonly SessionParticipantCursor[]; badgeAttentionChanged: boolean }
+    | { status: "touched"; committedFence: Date; activeAt: Date; recipientCursors: readonly SessionRecipientCursor[]; badgeAttentionChanged: boolean }
     | { status: "unregistered" | "superseded" }
     | { status: "rejected"; reason: "not_found" | "unauthorized" | "archived" };
 
@@ -66,7 +70,7 @@ export type CloseSessionPublisherResult =
     | {
         status: "closed";
         activeAt: Date;
-        participantCursors: readonly SessionParticipantCursor[];
+        recipientCursors: readonly SessionRecipientCursor[];
         badgeAttentionChanged: boolean;
         projection?: SessionRuntimeActivityProjectionUpdate;
         turnProjection?: Readonly<{
@@ -189,7 +193,6 @@ const sessionActivityBadgeSelect = {
     pendingCount: true,
     pendingBlockedCount: true,
     pendingVersion: true,
-    lastViewedSessionSeq: true,
     pendingPermissionRequestCount: true,
     pendingUserActionRequestCount: true,
     latestTurnStatus: true,
@@ -212,7 +215,7 @@ export type ExpireSessionPublisherResult =
         status: "expired";
         sessionId: string;
         activeAt: Date;
-        participantCursors: readonly SessionParticipantCursor[];
+        recipientCursors: readonly SessionRecipientCursor[];
         badgeAttentionChanged: boolean;
         activationHint?: Readonly<{
             activationTarget: PendingActivationTarget;
@@ -262,14 +265,14 @@ export async function expireSessionPublisherCandidates(params: Readonly<{
                 continue;
             }
 
-            const participantCursors = await markSessionParticipantsChanged({ tx, sessionId: candidate.sessionId });
+            const recipientCursors = await markSessionProjectionRecipientsChanged({ tx, sessionId: candidate.sessionId });
             const authorization = mapPendingActivationAuthorization(session);
             results.push({
                 status: "expired",
                 sessionId: candidate.sessionId,
                 activeAt: candidate.observedFence,
-                participantCursors,
-                badgeAttentionChanged: didSessionActivityBadgeContributionChange(
+                recipientCursors,
+                badgeAttentionChanged: didSessionActivityBadgeSignalChange(
                     session satisfies SessionActivityBadgeInputs,
                     { ...session, active: false },
                 ),
@@ -334,6 +337,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             where: { id: binding.sessionId },
             select: {
                 ...sessionActivityBadgeSelect,
+                accountId: true,
                 lastActiveAt: true,
                 publisherGeneration: true,
             },
@@ -365,9 +369,9 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         }> | undefined;
         if (inherited.count > 0) {
             const [pendingCount, pendingBlockedCount] = await Promise.all([
-                tx.sessionPendingMessage.count({ where: { sessionId: binding.sessionId, status: "queued" } }),
+                tx.sessionPendingMessage.count({ where: { sessionId: binding.sessionId, targetExecutionRunId: null, status: "queued" } }),
                 tx.sessionPendingMessage.count({
-                    where: { sessionId: binding.sessionId, status: "queued", deliveryState: "blocked" },
+                    where: { sessionId: binding.sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
                 }),
             ]);
             pendingState = await tx.session.update({
@@ -403,15 +407,15 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             },
         });
         if (updated.count !== 1) throw new RegistrationContentionError();
-        const participantCursors = await markSessionParticipantsChanged({ tx, sessionId: binding.sessionId });
+        const recipientCursors = await markSessionProjectionRecipientsChanged({ tx, sessionId: binding.sessionId });
         return {
             status: "registered",
             committedFence,
             publisherGeneration,
             activeAt: committedFence,
             activity,
-            participantCursors,
-            badgeAttentionChanged: didSessionActivityBadgeContributionChange(
+            recipientCursors,
+            badgeAttentionChanged: didSessionActivityBadgeSignalChange(
                 session satisfies SessionActivityBadgeInputs,
                 {
                     ...session,
@@ -499,7 +503,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                     },
                 });
                 if (updated.count !== 1) return { status: "superseded" };
-                const participantCursors = await markSessionParticipantsChanged({
+                const recipientCursors = await markSessionProjectionRecipientsChanged({
                     tx,
                     sessionId: registration.binding.sessionId,
                 });
@@ -507,8 +511,8 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                     status: "touched",
                     committedFence,
                     activeAt: committedFence,
-                    participantCursors,
-                    badgeAttentionChanged: didSessionActivityBadgeContributionChange(
+                    recipientCursors,
+                    badgeAttentionChanged: didSessionActivityBadgeSignalChange(
                         session satisfies SessionActivityBadgeInputs,
                         { ...session, active: true },
                     ),
@@ -546,7 +550,16 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             },
         });
         if (!session) return { status: "rejected", reason: "not_found" };
-        if (!await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding })) {
+        if (session.accountId !== params.binding.accountId) {
+            return { status: "rejected", reason: "unauthorized" };
+        }
+        const hasCurrentBinding = await hasCurrentSessionScopedMachineAccessInTx({ tx, ...params.binding });
+        const runnerBindingState = hasCurrentBinding
+            ? await readMaterializedEphemeralRunnerBindingStateInTx(tx, params.binding)
+            : session.active
+                ? "not_runner"
+                : await readMaterializedEphemeralRunnerBindingStateInTx(tx, params.binding);
+        if (!hasCurrentBinding && runnerBindingState !== "revoked") {
             return { status: "rejected", reason: "unauthorized" };
         }
         if (session.archivedAt !== null) return { status: "rejected", reason: "archived" };
@@ -587,6 +600,9 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                 });
                 if (terminalized.count !== 1) return { status: "superseded" };
             }
+            if (runnerBindingState === "current") {
+                await revokeMaterializedEphemeralRunnerBindingInTx(tx, params.binding);
+            }
             return { status: "already_inactive" };
         }
         const updated = await tx.session.updateMany({
@@ -612,6 +628,9 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             },
         });
         if (updated.count !== 1) return { status: "superseded" };
+        if (runnerBindingState === "current") {
+            await revokeMaterializedEphemeralRunnerBindingInTx(tx, params.binding);
+        }
         const turnResult = params.settleLatestTurn === false
             ? null
             : await applyLatestSessionTurnEndInTx({
@@ -631,15 +650,15 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
         if (activity.status === "rejected") {
             throw new Error(`Failed to record Runtime Activity observer loss: ${activity.reason}`);
         }
-        const participantCursors = await markSessionParticipantsChanged({
+        const recipientCursors = await markSessionProjectionRecipientsChanged({
             tx,
             sessionId: params.binding.sessionId,
         });
         return {
             status: "closed",
             activeAt: session.lastActiveAt,
-            participantCursors,
-            badgeAttentionChanged: didSessionActivityBadgeContributionChange(
+            recipientCursors,
+            badgeAttentionChanged: didSessionActivityBadgeSignalChange(
                 session satisfies SessionActivityBadgeInputs,
                 { ...session, active: false },
             ),
@@ -675,7 +694,12 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             return { status: "rejected", reason: "machine_control_unavailable" };
         }
         if (session.archivedAt !== null) return { status: "rejected", reason: "archived" };
-        if (!session.active) return { status: "already_inactive" };
+        if (
+            !session.active
+            && await readMaterializedEphemeralRunnerBindingStateInTx(tx, params.binding) !== "current"
+        ) {
+            return { status: "already_inactive" };
+        }
         const authority = session.publisherGeneration > 0n
             && session.publisherGenerationLastActiveAt?.getTime() === session.lastActiveAt.getTime()
             ? {
@@ -768,7 +792,7 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
             return {
                 ...result.activity,
                 activeAt: result.activeAt,
-                participantCursors: result.participantCursors,
+                recipientCursors: result.recipientCursors,
                 badgeAttentionChanged: result.badgeAttentionChanged,
             };
         }
@@ -938,10 +962,10 @@ export function createSessionPublisherPresence(options: Readonly<{ now?: () => D
                         activeCount: 0,
                     });
                     if (activity.status === "rejected") return activity;
-                    const participantCursors = activity.status === "applied"
-                        ? await markSessionParticipantsChanged({ tx, sessionId: registration.binding.sessionId })
+                    const recipientCursors = activity.status === "applied"
+                        ? await markSessionProjectionRecipientsChanged({ tx, sessionId: registration.binding.sessionId })
                         : [];
-                    return { ...activity, participantCursors };
+                    return { ...activity, recipientCursors };
                 });
             } finally {
                 registrations.delete(params.socket);

@@ -5,8 +5,11 @@ import {
     buildTrustedHostSessionInputAdmissionV1,
     SESSION_MESSAGE_PROVENANCE_META_KEY,
     settleSessionInputRequestV1,
+    settleSessionInputRequestV2,
     settleSessionMessageProvenanceV1,
+    settleSessionMessageProvenanceV2,
     withSessionInputAuthorityV1,
+    withSessionInputAuthority,
     type SessionInputAdmissionReceiptV1,
     type SessionMessageDeliveryResolutionV1,
     type SessionMessageProvenanceV1,
@@ -14,37 +17,75 @@ import {
 
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import {
     blockPendingDelivery,
-    deletePendingMessage,
-    dismissPendingDelivery,
-    discardPendingMessage,
+    deletePendingMessage as deletePendingMessageWithAuthentication,
+    dismissPendingDelivery as dismissPendingDeliveryWithAuthentication,
+    discardPendingMessage as discardPendingMessageWithAuthentication,
     enqueuePendingMessageByAuthenticatedMachine,
     enqueuePendingMessage as enqueuePendingMessageWithAction,
-    listPendingMessages,
-    markPendingDeliveryHandled,
+    listQueuedExecutionRunPendingTargetsForSessions,
+    listPendingMessages as listPendingMessagesWithAuthentication,
+    markPendingDeliveryHandled as markPendingDeliveryHandledWithAuthentication,
     materializeNextPendingMessage as materializeNextPendingMessageWithAuthority,
-    reorderPendingMessages,
+    reorderPendingMessages as reorderPendingMessagesWithAuthentication,
     resolveAcceptedPendingDelivery as resolveAcceptedPendingDeliveryWithAuthority,
-    sendPendingDeliveryAsNew,
+    sendPendingDeliveryAsNew as sendPendingDeliveryAsNewWithAuthentication,
     settlePendingInputAdmission,
-    restorePendingMessage,
-    updatePendingMessage,
-    updatePendingRequestedAction,
+    restorePendingMessage as restorePendingMessageWithAuthentication,
+    updatePendingMessage as updatePendingMessageWithAuthentication,
+    updatePendingRequestedAction as updatePendingRequestedActionWithAuthentication,
 } from "./pendingMessageService";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { createFakeSocket, getSocketHandler } from "@/app/api/testkit/socketHarness";
 import { sessionUpdateHandler } from "@/app/api/socket/sessionUpdateHandler";
 import { activityCache } from "@/app/presence/sessionCache";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { reconcileSessionPendingQueueStateInTx } from "./reconcileSessionPendingQueueState";
+import { inTx } from "@/storage/inTx";
+import { withAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { sessionPendingRoutes } from "@/app/api/routes/session/pendingRoutes";
+import { changesRoutes } from "@/app/api/routes/changes/changesRoutes";
+import { registerSessionListingRoutes } from "@/app/api/routes/session/registerSessionListingRoutes";
 
 type EnqueuePendingMessageParams = Parameters<typeof enqueuePendingMessageWithAction>[0];
+const authentication = createPresentUserSessionAccessAuthentication();
 const enqueuePendingMessage = (
-    params: Omit<EnqueuePendingMessageParams, "requestedAction"> & Partial<Pick<EnqueuePendingMessageParams, "requestedAction">>,
+    params: Omit<EnqueuePendingMessageParams, "authentication" | "requestedAction"> & Partial<Pick<EnqueuePendingMessageParams, "requestedAction">>,
 ) => enqueuePendingMessageWithAction({
     ...params,
+    authentication,
     requestedAction: params.requestedAction ?? { v: 1, kind: "enqueue" },
 } as EnqueuePendingMessageParams);
+
+type WithoutAuthentication<T> = T extends unknown ? Omit<T, "authentication"> : never;
+
+const withPresentUserAuthentication = <TParams extends object>(
+    params: TParams,
+): TParams & Readonly<{ authentication: SessionAccessAuthentication }> => ({ ...params, authentication });
+
+const deletePendingMessage = (params: WithoutAuthentication<Parameters<typeof deletePendingMessageWithAuthentication>[0]>) =>
+    deletePendingMessageWithAuthentication(withPresentUserAuthentication(params));
+const dismissPendingDelivery = (params: WithoutAuthentication<Parameters<typeof dismissPendingDeliveryWithAuthentication>[0]>) =>
+    dismissPendingDeliveryWithAuthentication(withPresentUserAuthentication(params));
+const discardPendingMessage = (params: WithoutAuthentication<Parameters<typeof discardPendingMessageWithAuthentication>[0]>) =>
+    discardPendingMessageWithAuthentication(withPresentUserAuthentication(params));
+const listPendingMessages = (params: WithoutAuthentication<Parameters<typeof listPendingMessagesWithAuthentication>[0]>) =>
+    listPendingMessagesWithAuthentication(withPresentUserAuthentication(params));
+const markPendingDeliveryHandled = (params: WithoutAuthentication<Parameters<typeof markPendingDeliveryHandledWithAuthentication>[0]>) =>
+    markPendingDeliveryHandledWithAuthentication(withPresentUserAuthentication(params));
+const reorderPendingMessages = (params: WithoutAuthentication<Parameters<typeof reorderPendingMessagesWithAuthentication>[0]>) =>
+    reorderPendingMessagesWithAuthentication(withPresentUserAuthentication(params));
+const sendPendingDeliveryAsNew = (params: WithoutAuthentication<Parameters<typeof sendPendingDeliveryAsNewWithAuthentication>[0]>) =>
+    sendPendingDeliveryAsNewWithAuthentication(withPresentUserAuthentication(params));
+const restorePendingMessage = (params: WithoutAuthentication<Parameters<typeof restorePendingMessageWithAuthentication>[0]>) =>
+    restorePendingMessageWithAuthentication(withPresentUserAuthentication(params));
+const updatePendingMessage = (params: WithoutAuthentication<Parameters<typeof updatePendingMessageWithAuthentication>[0]>) =>
+    updatePendingMessageWithAuthentication(withPresentUserAuthentication(params));
+const updatePendingRequestedAction = (params: WithoutAuthentication<Parameters<typeof updatePendingRequestedActionWithAuthentication>[0]>) =>
+    updatePendingRequestedActionWithAuthentication(withPresentUserAuthentication(params));
 
 describe("pendingMessageService (shared sessions)", () => {
     let harness: LightSqliteHarness;
@@ -137,7 +178,6 @@ describe("pendingMessageService (shared sessions)", () => {
                 sharedWithUserId: params.participantId,
                 accessLevel: params.accessLevel,
                 canApprovePermissions: false,
-                encryptedDataKey: Buffer.from([0, ...new Array(80).fill(1)]),
             },
             select: { id: true },
         });
@@ -236,7 +276,571 @@ describe("pendingMessageService (shared sessions)", () => {
         });
     };
 
-    it("commits the exact inactive send-now activation into the existing account-change cursor", async () => {
+    it("projects Pending authors from immutable receipts after access loss and Account deletion", async () => {
+        const owner = await createAccount("actor-owner");
+        const editor = await createAccount("actor-editor");
+        const session = await createSession(owner.id);
+        const share = await shareSession({ sessionId: session.id, ownerId: owner.id, participantId: editor.id, accessLevel: "edit" });
+        await db.account.update({ where: { id: editor.id }, data: { firstName: "Alice" } });
+        expect(await enqueuePendingMessage({ actorUserId: editor.id, sessionId: session.id, localId: "actor-input", ciphertext: "cipher", messageRole: "user" })).toMatchObject({
+            ok: true, pending: { accountActor: { accountId: editor.id, profile: { firstName: "Alice" } } },
+        });
+        await db.sessionShare.delete({ where: { id: share.id } });
+        expect(await listPendingMessages({ actorUserId: owner.id, sessionId: session.id })).toMatchObject({
+            ok: true, pending: [{ accountActor: { accountId: editor.id, profile: { firstName: "Alice" } } }],
+        });
+        expect(await listPendingMessages({ actorUserId: editor.id, sessionId: session.id })).toMatchObject({ ok: false });
+        await db.account.delete({ where: { id: editor.id } });
+        expect(await listPendingMessages({ actorUserId: owner.id, sessionId: session.id })).toMatchObject({
+            ok: true, pending: [{ authorAccountId: null, accountActor: { accountId: editor.id, profile: null } }],
+        });
+        await withAuthenticatedTestApp(sessionPendingRoutes, async (app) => {
+            const response = await app.inject({ method: "GET", url: `/v2/sessions/${session.id}/pending`, headers: { "x-test-user-id": owner.id } });
+            expect(response.statusCode).toBe(200);
+            expect(response.json().pending[0]).toMatchObject({ accountActor: { accountId: editor.id, profile: null } });
+            expect(response.json().pending[0]).not.toHaveProperty("inputAdmissionReceipt");
+        });
+    });
+
+    it("keeps main readers isolated from mixed main and execution-run pending rows", async () => {
+        const owner = await createAccount("target-isolation-owner");
+        const session = await createSession(owner.id);
+        for (const [localId, target] of [["run-a-first", "run-a"], ["main", null], ["run-b", "run-b"]] as const) {
+            await enqueuePendingMessage({
+                actorUserId: owner.id,
+                sessionId: session.id,
+                localId,
+                ciphertext: `cipher-${localId}`,
+                messageRole: "user",
+            });
+            await db.$executeRaw`UPDATE "SessionPendingMessage" SET "targetExecutionRunId" = ${target} WHERE "sessionId" = ${session.id} AND "localId" = ${localId}`;
+        }
+
+        const listed = await listPendingMessages({ actorUserId: owner.id, sessionId: session.id });
+        expect.soft(listed).toMatchObject({ ok: true, pending: [{ localId: "main" }] });
+        const materialized = await materializeNextPendingMessage({ actorUserId: owner.id, sessionId: session.id });
+        expect(materialized).toMatchObject({ ok: true, didMaterialize: true, message: { localId: "main" } });
+        expect(materialized).toMatchObject({ pendingCount: 1, pendingBlockedCount: 0 });
+    });
+
+    it("lists every distinct current queued Execution Run target only for the owning Account and requested Sessions", async () => {
+        const owner = await createAccount("pending-target-replay-owner");
+        const otherOwner = await createAccount("pending-target-replay-other-owner");
+        const session = await createSession(owner.id);
+        const otherSession = await createSession(otherOwner.id);
+        for (const [localId, targetExecutionRunId] of [
+            ["run-b-first", "run-b"],
+            ["main", null],
+            ["run-a", "run-a"],
+            ["run-b-second", "run-b"],
+            ["discarded-run", "run-discarded"],
+        ] as const) {
+            await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: localId });
+            await db.sessionPendingMessage.update({
+                where: { sessionId_localId: { sessionId: session.id, localId } },
+                data: { targetExecutionRunId },
+            });
+        }
+        await db.sessionPendingMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId: "discarded-run" } },
+            data: { status: "discarded" },
+        });
+        await enqueuePendingMessage({ actorUserId: otherOwner.id, sessionId: otherSession.id, localId: "other-run", ciphertext: "other" });
+        await db.sessionPendingMessage.update({
+            where: { sessionId_localId: { sessionId: otherSession.id, localId: "other-run" } },
+            data: { targetExecutionRunId: "run-other-account" },
+        });
+
+        await expect(listQueuedExecutionRunPendingTargetsForSessions({
+            accountId: owner.id,
+            sessionIds: [session.id, otherSession.id],
+        })).resolves.toEqual([
+            { sessionId: session.id, runId: "run-b" },
+            { sessionId: session.id, runId: "run-a" },
+        ]);
+
+        await db.accountChange.update({
+            where: {
+                accountId_kind_entityId: {
+                    accountId: owner.id,
+                    kind: "session",
+                    entityId: session.id,
+                },
+            },
+            data: { hint: { lastMessageSeq: 42 } },
+        });
+
+        await withAuthenticatedTestApp(changesRoutes, async (app) => {
+            const response = await app.inject({
+                method: "GET",
+                url: "/v2/changes?after=0",
+                headers: { "x-test-user-id": owner.id },
+            });
+            expect(response.statusCode).toBe(200);
+            const sessionChange = response.json().changes.find((change: { kind: string; entityId: string }) =>
+                change.kind === "session" && change.entityId === session.id,
+            );
+            expect(sessionChange).toMatchObject({
+                hint: {
+                    lastMessageSeq: 42,
+                    pendingExecutionRunIds: ["run-b", "run-a"],
+                },
+            });
+            expect(response.json().changes).not.toContainEqual(expect.objectContaining({ entityId: otherSession.id }));
+        });
+
+        await withAuthenticatedTestApp(registerSessionListingRoutes, async (app) => {
+            const response = await app.inject({
+                method: "GET",
+                url: `/v2/sessions/${session.id}?accessProjectionVersion=1`,
+                headers: { "x-test-user-id": owner.id },
+            });
+            expect(response.statusCode).toBe(200);
+            expect(response.json()).toMatchObject({
+                session: { pendingExecutionRunIds: ["run-b", "run-a"] },
+            });
+        });
+    });
+
+    it("refuses main materialization rejoin against an existing run-sidechain user anchor", async () => {
+        const owner = await createAccount("main-sidechain-rejoin-owner");
+        const session = await createSession(owner.id);
+        const localId = "main-sidechain-rejoin";
+        await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: "same-cipher", messageRole: "user" });
+        await createCommittedTranscriptMessage({ sessionId: session.id, localId, seq: 1, ciphertext: "same-cipher", messageRole: "user" });
+        await db.sessionMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            data: { sidechainId: "run-sidechain" },
+        });
+
+        expect(await materializeNextPendingMessage({ actorUserId: owner.id, sessionId: session.id })).toMatchObject({
+            ok: false,
+            error: "transcript-conflict",
+        });
+        expect(await db.sessionMessage.findUniqueOrThrow({ where: { sessionId_localId: { sessionId: session.id, localId } } })).toMatchObject({ sidechainId: "run-sidechain" });
+    });
+
+    it("keeps main mutation and settlement requests out of run rows while publisher loss covers every target", async () => {
+        const owner = await createAccount("target-mutations-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        for (const [localId, target] of [["main-a", null], ["run-a", "run-a"], ["main-b", null], ["run-b", "run-b"]] as const) {
+            await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: `cipher-${localId}`, messageRole: "user" });
+            await db.$executeRaw`UPDATE "SessionPendingMessage" SET "targetExecutionRunId" = ${target} WHERE "sessionId" = ${session.id} AND "localId" = ${localId}`;
+        }
+        expect.soft(await reorderPendingMessages({ actorUserId: owner.id, sessionId: session.id, orderedLocalIds: ["main-b", "main-a"] })).toMatchObject({ ok: true });
+        const mainOrder = await db.sessionPendingMessage.findMany({ where: { sessionId: session.id }, orderBy: { position: "asc" }, select: { localId: true, position: true } });
+        expect.soft(mainOrder).toEqual([{ localId: "main-b", position: 1 }, { localId: "run-a", position: 2 }, { localId: "main-a", position: 3 }, { localId: "run-b", position: 4 }]);
+        const targetRequest = { actorUserId: owner.id, sessionId: session.id, localId: "run-a" };
+        const original = await db.sessionPendingMessage.findUniqueOrThrow({ where: { sessionId_localId: { sessionId: session.id, localId: "run-a" } } });
+        await updatePendingMessage({ ...targetRequest, ciphertext: "wrong-main-edit" });
+        await updatePendingRequestedAction({ ...targetRequest, requestedAction: { v: 1, kind: "send_now" } });
+        await discardPendingMessage(targetRequest);
+        await restorePendingMessage(targetRequest);
+        await deletePendingMessage(targetRequest);
+        expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "run-a" } } })).toEqual(original);
+
+        await markPendingProviderDeliveryClaimed({ sessionId: session.id, localId: "run-b" });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...targetRequest, localId: "run-b", publisherAuthority })).toMatchObject({ ok: false });
+        expect.soft(await db.sessionMessage.count({ where: { sessionId: session.id } })).toBe(0);
+        await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "run-b" } } })).toMatchObject({ deliveryState: "blocked", deliveryBlockedReason: "delivery_outcome_uncertain" });
+        expect(await inTx((tx) => reconcileSessionPendingQueueStateInTx(tx, session.id))).toMatchObject({ pendingCount: 2, pendingBlockedCount: 0 });
+    });
+
+    it("refuses accepted main settlement against an existing sidechain anchor", async () => {
+        const owner = await createAccount("main-settlement-sidechain");
+        const session = await createSession(owner.id);
+        const localId = "main-settlement-sidechain";
+        await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: "same-cipher", messageRole: "user" });
+        await markPendingProviderDeliveryClaimed({ sessionId: session.id, localId });
+        await createCommittedTranscriptMessage({ sessionId: session.id, localId, seq: 1, ciphertext: "same-cipher", messageRole: "user" });
+        await db.sessionMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { sidechainId: "run-sidechain" } });
+        expect(await resolveAcceptedPendingDelivery({ actorUserId: owner.id, sessionId: session.id, localId })).toMatchObject({ ok: false, error: "transcript-conflict" });
+        expect(await db.sessionPendingMessage.count({ where: { sessionId: session.id, localId } })).toBe(1);
+    });
+
+    it("admits exact run input from a collaborator through the custodian Machine without main activation", async () => {
+        const owner = await createAccount("target-admission-owner");
+        const collaborator = await createAccount("target-admission-collaborator");
+        const session = await createSession(owner.id);
+        await shareSession({ sessionId: session.id, ownerId: owner.id, participantId: collaborator.id, accessLevel: "edit" });
+        const machineId = `target-machine-${randomUUID()}`;
+        await db.machine.create({ data: {
+            id: machineId, accountId: owner.id, metadata: "{}",
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await db.accessKey.create({ data: { accountId: owner.id, machineId, sessionId: session.id, data: "encrypted" } });
+        const request = {
+            actorUserId: collaborator.id, sessionId: session.id, localId: "target-admission",
+            ciphertext: "cipher-run-a", messageRole: "user", requestedAction: { v: 1, kind: "send_now" } as const,
+            targetExecutionRunId: "run-a", targetMachineId: machineId,
+        };
+        expect.soft(await enqueuePendingMessage(request)).toMatchObject({
+            ok: true, didWrite: true, pendingCount: 0, pendingBlockedCount: 0,
+            pending: { recipient: { kind: "execution_run", runId: "run-a" }, authorAccountId: collaborator.id },
+        });
+        expect.soft(await listPendingMessages(request)).toMatchObject({
+            ok: true,
+            pending: [{ localId: request.localId, recipient: { kind: "execution_run", runId: "run-a" } }],
+        });
+        expect.soft(await listPendingMessages({ actorUserId: collaborator.id, sessionId: session.id })).toMatchObject({
+            ok: true, pending: [],
+        });
+        expect.soft(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({ pendingCount: 0, pendingActivationRequestId: null });
+        expect.soft(await enqueuePendingMessage(request)).toMatchObject({ ok: true, didWrite: false });
+        expect.soft(await enqueuePendingMessage({ ...request, targetExecutionRunId: "run-b" })).toMatchObject({ ok: false, admissionRejectionCode: "session_input_idempotency_conflict" });
+        expect.soft(await enqueuePendingMessage({ ...request, targetExecutionRunId: undefined })).toMatchObject({ ok: false, admissionRejectionCode: "session_input_idempotency_conflict" });
+        await db.machine.update({ where: { accountId_id: { accountId: owner.id, id: machineId } }, data: { operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1] } } } });
+        expect.soft(await enqueuePendingMessage({ ...request, localId: "unsupported-target" })).toMatchObject({ ok: false, admissionRejectionCode: "session_input_target_update_required" });
+        expect(await db.sessionPendingMessage.count({ where: { sessionId: session.id } })).toBe(1);
+    });
+
+    it("keeps exact target mutations and materialization isolated while settling into the target sidechain", async () => {
+        const owner = await createAccount("target-drain-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        for (const [localId, target] of [["main", null], ["run-a-first", "run-a"], ["run-b", "run-b"], ["run-a-next", "run-a"]] as const) {
+            expect(await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: `cipher-${localId}`, messageRole: "user", targetExecutionRunId: target, targetMachineId: publisherAuthority.machineId })).toMatchObject({ ok: true });
+        }
+        const runA = { actorUserId: owner.id, sessionId: session.id, targetExecutionRunId: "run-a" };
+        expect.soft(await reorderPendingMessages({ ...runA, orderedLocalIds: ["run-a-next", "run-a-first"] })).toMatchObject({ ok: true });
+        expect.soft(await reorderPendingMessages({ ...runA, orderedLocalIds: ["run-b", "run-a-next"] })).toMatchObject({ ok: false });
+        expect.soft(await updatePendingMessage({ ...runA, localId: "run-a-next", ciphertext: "updated-a" })).toMatchObject({ ok: true });
+        expect.soft(await updatePendingRequestedAction({ ...runA, localId: "run-a-next", requestedAction: { v: 1, kind: "send_now" } })).toMatchObject({ ok: true });
+        expect.soft(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({ pendingActivationRequestId: null });
+        const targetMaterialization = { ...runA, publisherAuthority, expectedSidechainId: "sidechain-a" };
+        const claimed = await materializeNextPendingMessage(targetMaterialization);
+        expect.soft(claimed).toMatchObject({ ok: true, didMaterialize: true, message: { localId: "run-a-next", content: { t: "encrypted", c: "updated-a" } } });
+        expect.soft(await materializeNextPendingMessage({ actorUserId: owner.id, sessionId: session.id, publisherAuthority })).toMatchObject({ ok: true, didMaterialize: true, message: { localId: "main" } });
+        expect.soft(await materializeNextPendingMessage({ ...targetMaterialization, targetExecutionRunId: "run-b", expectedSidechainId: "sidechain-b" })).toMatchObject({ ok: true, didMaterialize: true, message: { localId: "run-b" } });
+        // Ciphertext and its tag are opaque network-boundary fixtures; only the authenticated publisher supplies this evidence.
+        expect.soft(await settlePendingInputAdmission({ ...targetMaterialization, localId: "run-a-next", decision: {
+            kind: "admit", finalContent: { t: "encrypted", c: "admitted-a" }, requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "A".repeat(43) },
+        } })).toMatchObject({ ok: true, result: { status: "accepted" } });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...targetMaterialization, localId: "run-a-next" })).toMatchObject({ ok: true, didResolve: true });
+        expect.soft(await db.sessionMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "run-a-next" } } })).toMatchObject({ sidechainId: "sidechain-a" });
+        expect(await listPendingMessages(runA)).toMatchObject({
+            ok: true,
+            pending: [{ localId: "run-a-first", recipient: { kind: "execution_run", runId: "run-a" } }],
+            targetPendingState: { pendingCount: 1, pendingBlockedCount: 0, pendingVersion: expect.any(Number) },
+        });
+    });
+
+    it("blocks a fresh target claim whose localId is already anchored to another sidechain without touching other queues", async () => {
+        const owner = await createAccount("target-sidechain-collision-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        for (const [localId, targetExecutionRunId] of [["main", null], ["run-a-collision", "run-a"], ["run-b", "run-b"]] as const) {
+            expect(await enqueuePendingMessage({
+                actorUserId: owner.id,
+                sessionId: session.id,
+                localId,
+                ciphertext: `cipher-${localId}`,
+                messageRole: "user",
+                targetExecutionRunId,
+                targetMachineId: publisherAuthority.machineId,
+            })).toMatchObject({ ok: true });
+        }
+        await createCommittedTranscriptMessage({
+            sessionId: session.id,
+            localId: "run-a-collision",
+            seq: 1,
+            ciphertext: "cipher-run-a-collision",
+            messageRole: "user",
+        });
+        await db.sessionMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId: "run-a-collision" } },
+            data: { sidechainId: "sidechain-b" },
+        });
+        const sessionBefore = await db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { pendingVersion: true, pendingCount: true, pendingBlockedCount: true },
+        });
+        const unrelatedBefore = await db.sessionPendingMessage.findMany({
+            where: { sessionId: session.id, localId: { in: ["main", "run-b"] } },
+            orderBy: { localId: "asc" },
+        });
+
+        const result = await materializeNextPendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            expectedSidechainId: "sidechain-a",
+            publisherAuthority,
+        });
+
+        expect(result).toMatchObject({
+            ok: true,
+            didMaterialize: false,
+            localId: "run-a-collision",
+            pendingStateChanged: true,
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+            pendingVersion: sessionBefore.pendingVersion + 1,
+            sessionPendingStateForPublication: {
+                pendingCount: sessionBefore.pendingCount,
+                pendingBlockedCount: sessionBefore.pendingBlockedCount,
+                pendingVersion: sessionBefore.pendingVersion + 1,
+            },
+            recipientCursorsPending: [expect.objectContaining({ accountId: owner.id, cursor: expect.any(Number) })],
+        });
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId: "run-a-collision" } },
+            select: { status: true, deliveryState: true, deliveryBlockedReason: true, providerAction: true },
+        })).resolves.toEqual({
+            status: "queued",
+            deliveryState: "blocked",
+            deliveryBlockedReason: "session_input_target_unavailable",
+            providerAction: null,
+        });
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { pendingVersion: true, pendingCount: true, pendingBlockedCount: true },
+        })).resolves.toEqual({
+            pendingVersion: sessionBefore.pendingVersion + 1,
+            pendingCount: sessionBefore.pendingCount,
+            pendingBlockedCount: sessionBefore.pendingBlockedCount,
+        });
+        await expect(db.sessionMessage.findMany({
+            where: { sessionId: session.id },
+            select: { localId: true, sidechainId: true, content: true },
+        })).resolves.toEqual([{
+            localId: "run-a-collision",
+            sidechainId: "sidechain-b",
+            content: { t: "encrypted", c: "cipher-run-a-collision" },
+        }]);
+        await expect(db.sessionPendingMessage.findMany({
+            where: { sessionId: session.id, localId: { in: ["main", "run-b"] } },
+            orderBy: { localId: "asc" },
+        })).resolves.toEqual(unrelatedBefore);
+    });
+
+    it("blocks a delivering target rejoin whose frozen localId is anchored to another sidechain", async () => {
+        const owner = await createAccount("target-sidechain-rejoin-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "run-a-rejoin-collision";
+        expect(await enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            ciphertext: "cipher-run-a-rejoin",
+            messageRole: "user",
+            requestedAction: { v: 1, kind: "send_now" },
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+        })).toMatchObject({ ok: true });
+        const targetClaim = {
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            expectedSidechainId: "sidechain-a",
+            publisherAuthority,
+        } as const;
+        const claimed = await materializeNextPendingMessage({
+            ...targetClaim,
+            foregroundState: "active_unsteerable",
+        });
+        expect(claimed).toMatchObject({
+            ok: true,
+            didMaterialize: true,
+            message: { localId, providerAction: "interrupt_and_send" },
+        });
+        if (!claimed.ok || !claimed.didMaterialize) throw new Error("expected target provider claim");
+        await createCommittedTranscriptMessage({
+            sessionId: session.id,
+            localId,
+            seq: 1,
+            ciphertext: "cipher-run-a-rejoin",
+            messageRole: "user",
+        });
+        await db.sessionMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            data: { sidechainId: "sidechain-b" },
+        });
+
+        const result = await materializeNextPendingMessage(targetClaim);
+
+        expect(result).toMatchObject({
+            ok: true,
+            didMaterialize: false,
+            localId,
+            pendingStateChanged: true,
+            pendingCount: 1,
+            pendingBlockedCount: 1,
+            pendingVersion: claimed.pendingVersion + 1,
+            recipientCursorsPending: [expect.objectContaining({ accountId: owner.id, cursor: expect.any(Number) })],
+        });
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: { status: true, deliveryState: true, deliveryBlockedReason: true, providerAction: true },
+        })).resolves.toEqual({
+            status: "queued",
+            deliveryState: "blocked",
+            deliveryBlockedReason: "session_input_target_unavailable",
+            providerAction: "interrupt_and_send",
+        });
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { pendingVersion: true },
+        })).resolves.toEqual({ pendingVersion: claimed.pendingVersion + 1 });
+        await expect(db.sessionMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: { sidechainId: true, content: true },
+        })).resolves.toEqual({
+            sidechainId: "sidechain-b",
+            content: { t: "encrypted", c: "cipher-run-a-rejoin" },
+        });
+    });
+
+    it("keeps a same-sidechain target with divergent transcript content queued as a transcript conflict", async () => {
+        const owner = await createAccount("target-content-conflict-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "run-a-content-conflict";
+        expect(await enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            ciphertext: "cipher-pending-authoritative",
+            messageRole: "user",
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+        })).toMatchObject({ ok: true });
+        await createCommittedTranscriptMessage({
+            sessionId: session.id,
+            localId,
+            seq: 1,
+            ciphertext: "cipher-stale-transcript",
+            messageRole: "user",
+        });
+        await db.sessionMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            data: { sidechainId: "sidechain-a" },
+        });
+        const before = await db.session.findUniqueOrThrow({ where: { id: session.id }, select: { pendingVersion: true } });
+
+        const result = await materializeNextPendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            expectedSidechainId: "sidechain-a",
+            publisherAuthority,
+        });
+
+        expect(result).toMatchObject({ ok: false, error: "transcript-conflict" });
+        await expect(db.session.findUniqueOrThrow({ where: { id: session.id }, select: { pendingVersion: true } }))
+            .resolves.toEqual(before);
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: { status: true, deliveryState: true, deliveryBlockedReason: true, providerAction: true, content: true },
+        })).resolves.toEqual({
+            status: "queued",
+            deliveryState: null,
+            deliveryBlockedReason: null,
+            providerAction: null,
+            content: { t: "encrypted", c: "cipher-pending-authoritative" },
+        });
+    });
+
+    it("preserves exact targets through discard restore send-as-new and deletion without changing main counts", async () => {
+        const owner = await createAccount("target-mutation-owner");
+        const session = await createSession(owner.id);
+        for (const [localId, target] of [["main", null], ["run-a", "run-a"], ["run-b", "run-b"]] as const) {
+            await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: localId });
+            await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { targetExecutionRunId: target } });
+        }
+        await inTx((tx) => reconcileSessionPendingQueueStateInTx(tx, session.id));
+        const runA = { actorUserId: owner.id, sessionId: session.id, localId: "run-a", targetExecutionRunId: "run-a" };
+        expect.soft(await discardPendingMessage({ ...runA, targetExecutionRunId: "run-b" })).toMatchObject({ ok: false });
+        expect.soft(await discardPendingMessage(runA)).toMatchObject({ ok: true, pendingCount: 1 });
+        expect.soft(await restorePendingMessage(runA)).toMatchObject({ ok: true, pendingCount: 1 });
+        await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId: "run-a" } }, data: { deliveryState: "blocked", deliveryBlockedReason: "delivery_outcome_uncertain" } });
+        const replacement = await sendPendingDeliveryAsNew(runA);
+        expect.soft(replacement).toMatchObject({ ok: true, didWrite: true, pendingCount: 1, pendingBlockedCount: 0 });
+        if (replacement.ok) {
+            expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: replacement.newLocalId } } })).toMatchObject({ targetExecutionRunId: "run-a", status: "queued" });
+            expect.soft(await deletePendingMessage({ ...runA, localId: replacement.newLocalId })).toMatchObject({ ok: true, pendingCount: 1 });
+            expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: replacement.newLocalId } } })).toBeNull();
+        }
+        expect(await db.sessionPendingMessage.findMany({ where: { sessionId: session.id, localId: { in: ["main", "run-b"] } }, orderBy: { position: "asc" }, select: { localId: true, status: true, deliveryState: true } })).toEqual([
+            { localId: "main", status: "queued", deliveryState: null },
+            { localId: "run-b", status: "queued", deliveryState: null },
+        ]);
+    });
+
+    it.each(["enqueue", "edit", "action", "reorder", "discard", "restore", "delete", "handled", "dismiss", "sendAsNew"] as const)(
+        "rechecks a collaborator revoked before the %s transaction without mutating pending",
+        async (operation) => {
+            const owner = await createAccount("revocation-owner");
+            const collaborator = await createAccount("revocation-editor");
+            const session = await createSession(owner.id);
+            const share = await shareSession({ sessionId: session.id, ownerId: owner.id, participantId: collaborator.id, accessLevel: "edit" });
+            const request = { actorUserId: collaborator.id, sessionId: session.id, localId: "existing" };
+            await enqueuePendingMessage({ ...request, ciphertext: "cipher-existing", messageRole: "user" });
+            const before = await db.sessionPendingMessage.findMany({ where: { sessionId: session.id } });
+            const originalTransaction = db.$transaction;
+            // Interpose only at real database acquisition; the callback still runs in a real transaction.
+            db.$transaction = (async (...args: Parameters<typeof db.$transaction>) => {
+                await db.sessionShare.delete({ where: { id: share.id } });
+                return originalTransaction.apply(db, args);
+            }) as typeof db.$transaction;
+            try {
+                const operations = {
+                    enqueue: () => enqueuePendingMessage({ ...request, localId: "new", ciphertext: "new-cipher" }),
+                    edit: () => updatePendingMessage({ ...request, ciphertext: "changed" }),
+                    action: () => updatePendingRequestedAction({ ...request, requestedAction: { v: 1, kind: "send_now" } }),
+                    reorder: () => reorderPendingMessages({ ...request, orderedLocalIds: [request.localId] }),
+                    discard: () => discardPendingMessage(request),
+                    restore: () => restorePendingMessage(request),
+                    delete: () => deletePendingMessage(request),
+                    handled: () => markPendingDeliveryHandled(request),
+                    dismiss: () => dismissPendingDelivery(request),
+                    sendAsNew: () => sendPendingDeliveryAsNew(request),
+                };
+                expect(await operations[operation]()).toMatchObject({ ok: false, error: "session-not-found" });
+            } finally {
+                db.$transaction = originalTransaction;
+            }
+            expect(await db.sessionPendingMessage.findMany({ where: { sessionId: session.id } })).toEqual(before);
+        },
+    );
+
+    it("never settles, repairs, or activates a run row through a main operation", async () => {
+        const owner = await createAccount("main-operation-isolation");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        const request = { actorUserId: owner.id, sessionId: session.id, localId: "run-only" };
+        await enqueuePendingMessage({ ...request, ciphertext: "cipher-run-only", messageRole: "user" });
+        await db.sessionPendingMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId: request.localId } },
+            data: { targetExecutionRunId: "run-a", deliveryState: "delivering" },
+        });
+        const original = await db.sessionPendingMessage.findUniqueOrThrow({ where: { sessionId_localId: { sessionId: session.id, localId: request.localId } } });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...request, publisherAuthority })).toMatchObject({ ok: false });
+        await blockPendingDelivery({ ...request, reason: "delivery_outcome_uncertain" });
+        await markPendingDeliveryHandled(request);
+        await dismissPendingDelivery(request);
+        await sendPendingDeliveryAsNew(request);
+        expect.soft(await db.sessionPendingMessage.findMany({ where: { sessionId: session.id } })).toEqual([original]);
+        expect(await db.sessionMessage.count({ where: { sessionId: session.id } })).toBe(0);
+    });
+
+    it("commits resume authorization for an ordinary queued row without changing its delivery priority", async () => {
         const owner = await createAccount("inactive-ui-death-owner");
         const collaborator = await createAccount("inactive-ui-death-collaborator");
         const session = await createSession(owner.id);
@@ -254,7 +858,8 @@ describe("pendingMessageService (shared sessions)", () => {
             localId,
             ciphertext: "cipher-inactive-ui-death",
             messageRole: "user",
-            requestedAction: { v: 1, kind: "send_now" },
+            requestedAction: { v: 1, kind: "enqueue" },
+            resumeWhenAvailable: true,
         })).resolves.toMatchObject({
             ok: true,
             didWrite: true,
@@ -263,6 +868,11 @@ describe("pendingMessageService (shared sessions)", () => {
                 requestId: localId,
             },
         });
+
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: { requestedAction: true },
+        })).resolves.toEqual({ requestedAction: { v: 1, kind: "enqueue" } });
 
         await expect(db.accountChange.findUniqueOrThrow({
             where: {
@@ -293,6 +903,30 @@ describe("pendingMessageService (shared sessions)", () => {
             hint: expect.not.objectContaining({
                 pendingActivationRequestId: expect.anything(),
             }),
+        });
+
+        await expect(updatePendingRequestedAction({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            requestedAction: { v: 1, kind: "enqueue" },
+            resumeWhenAvailable: false,
+        })).resolves.toMatchObject({ ok: true, didUpdate: true });
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { pendingActivationRequestId: true },
+        })).resolves.toEqual({ pendingActivationRequestId: null });
+
+        await expect(updatePendingRequestedAction({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            requestedAction: { v: 1, kind: "enqueue" },
+            resumeWhenAvailable: true,
+        })).resolves.toMatchObject({
+            ok: true,
+            didUpdate: true,
+            activationTarget: { accountId: owner.id, requestId: localId },
         });
     });
 
@@ -396,6 +1030,576 @@ describe("pendingMessageService (shared sessions)", () => {
         await expect(db.sessionPendingMessage.count({
             where: { sessionId: session.id, localId },
         })).resolves.toBe(0);
+    });
+
+    it("classifies replaced, revoked, malformed, withdrawn, and missing-access exact targets as update-required before enqueue", async () => {
+        const owner = await createAccount("target-capability-preflight-owner");
+        const session = await createSession(owner.id);
+        const targetMachineId = `target-capability-${randomUUID()}`;
+        await db.machine.create({ data: {
+            id: targetMachineId,
+            accountId: owner.id,
+            metadata: "{}",
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await db.accessKey.create({
+            data: { accountId: owner.id, machineId: targetMachineId, sessionId: session.id, data: "encrypted" },
+        });
+        const enqueue = async (localId: string) => await enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            targetMachineId,
+            localId,
+            content: { t: "encrypted" as const, c: "ciphertext" },
+            requestedAction: { v: 1 as const, kind: "enqueue" as const },
+        });
+        const expectUpdateRequired = async (localId: string) => {
+            await expect(enqueue(localId)).resolves.toMatchObject({
+                ok: false,
+                error: "invalid-params",
+                admissionRejectionCode: "session_input_target_update_required",
+            });
+            await expect(db.sessionPendingMessage.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        };
+
+        await db.machine.update({ where: { id: targetMachineId }, data: { replacedByMachineId: "replacement-machine" } });
+        await expectUpdateRequired("replaced-target");
+        await db.machine.update({ where: { id: targetMachineId }, data: { replacedByMachineId: null, revokedAt: new Date() } });
+        await expectUpdateRequired("revoked-target");
+        await db.machine.update({
+            where: { id: targetMachineId },
+            data: { revokedAt: null, operationProtocolCapabilities: "malformed", operationProtocolCapabilitiesRevision: 2 },
+        });
+        await expectUpdateRequired("malformed-target");
+        await db.machine.update({
+            where: { id: targetMachineId },
+            data: {
+                operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1] } },
+                operationProtocolCapabilitiesRevision: 3,
+            },
+        });
+        await expectUpdateRequired("withdrawn-target");
+        await db.accessKey.delete({
+            where: { accountId_machineId_sessionId: { accountId: owner.id, machineId: targetMachineId, sessionId: session.id } },
+        });
+        await expectUpdateRequired("missing-access-target");
+    });
+
+    it("returns update-required without mutation when the strict target Machine is unavailable", async () => {
+        const owner = await createAccount("target-route-rejection-owner");
+        const session = await createSession(owner.id);
+        const localId = `target-route-rejection-${randomUUID()}`;
+
+        await withAuthenticatedTestApp(sessionPendingRoutes, async (app) => {
+            const response = await app.inject({
+                method: "POST",
+                url: `/v2/sessions/${session.id}/execution-runs/run-a/pending`,
+                headers: { "x-test-user-id": owner.id },
+                payload: {
+                    v: 1,
+                    targetMachineId: `missing-machine-${randomUUID()}`,
+                    localId,
+                    content: { t: "encrypted", c: "ciphertext" },
+                    requestedAction: { v: 1, kind: "enqueue" },
+                },
+            });
+            expect(response.statusCode).toBe(400);
+            expect(response.json()).toEqual({
+                error: "invalid-params",
+                code: "session_input_target_update_required",
+            });
+        });
+
+        await expect(db.sessionPendingMessage.count({
+            where: { sessionId: session.id, localId },
+        })).resolves.toBe(0);
+    });
+
+    it("blocks only the exact target from authoritative current-publisher evidence before claim", async () => {
+        const owner = await createAccount("target-block-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        for (const [localId, target] of [["main", null], ["run-a", "run-a"], ["run-b", "run-b"]] as const) {
+            await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId, ciphertext: localId });
+            await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { targetExecutionRunId: target } });
+        }
+        const request = { actorUserId: owner.id, sessionId: session.id, localId: "run-a", targetExecutionRunId: "run-a", reason: "session_input_target_unavailable" as const };
+        expect.soft(await blockPendingDelivery(request)).toMatchObject({ ok: false });
+        expect.soft(await blockPendingDelivery({ ...request, publisherAuthority, targetExecutionRunId: "run-b" })).toMatchObject({ ok: false });
+        expect.soft(await blockPendingDelivery({ ...request, publisherAuthority })).toMatchObject({ ok: true, didUpdate: true, pendingBlockedCount: 0, targetPendingState: { pendingCount: 1, pendingBlockedCount: 1 } });
+        expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "run-a" } } })).toMatchObject({ deliveryState: "blocked", deliveryBlockedReason: "session_input_target_unavailable", providerAction: null });
+        expect.soft(await db.sessionPendingMessage.count({ where: { sessionId: session.id, deliveryState: null } })).toBe(2);
+        expect(await db.sessionMessage.count({ where: { sessionId: session.id } })).toBe(0);
+    });
+
+    it("settles target input authority without publishing its user anchor before runtime acceptance", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount("target-authority-owner");
+        const session = await createSession(owner.id);
+        await db.session.update({ where: { id: session.id }, data: { encryptionMode: "plain" } });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "target-authority";
+        const recipientMeta = { happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId: "run-a" } } } };
+        const content = { t: "plain", v: { role: "user", content: { type: "text", text: "continue" }, meta: {
+            ...recipientMeta, sentFrom: "cli",
+            happierInputRequestV1: { v: 1, producer: "cli", caller: { kind: "host" }, permission: {} },
+        } } } as const;
+        expect(await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id, sourceMachineId: publisherAuthority.machineId, targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id, targetExecutionRunId: "run-a", localId, content, requestedAction: { v: 1, kind: "enqueue" },
+        })).toMatchObject({ status: "accepted" });
+        await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { deliveryState: "delivering" } });
+        const finalContent = { t: "plain", v: { role: "user", content: { type: "text", text: "continue" }, meta: {
+            ...recipientMeta, sentFrom: "cli",
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: { v: 1, kind: "host", producer: "cli" },
+            happierInputAuthorityV1: { v: 1, producer: "cli", caller: { kind: "host" }, permission: { admittedPermissionCeiling: "default" } },
+        } } } as const;
+        const settlement = { actorUserId: owner.id, sessionId: session.id, localId, publisherAuthority, decision: { kind: "admit", finalContent } } as const;
+        expect.soft(await settlePendingInputAdmission(settlement)).toMatchObject({ ok: true, result: { status: "accepted", localId } });
+        expect.soft(await db.sessionMessage.count({ where: { sessionId: session.id } })).toBe(0);
+        expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId } } })).toMatchObject({
+            targetExecutionRunId: "run-a", deliveryState: "delivering", content: finalContent,
+            requestEqualityEvidenceV1: { kind: "plainDigest" },
+        });
+        expect.soft(await settlePendingInputAdmission(settlement)).toMatchObject({ ok: true, result: { status: "alreadyAccepted", localId } });
+        expect(await enqueuePendingMessage({ actorUserId: owner.id, sessionId: session.id, localId: "main-waits", content: {
+            t: "plain", v: { role: "user", content: { type: "text", text: "main input" } },
+        } })).toMatchObject({ ok: true });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...settlement, targetExecutionRunId: "run-a", expectedSidechainId: "sidechain-a" })).toMatchObject({ ok: true, didResolve: true, pendingCount: 1, targetPendingState: { pendingCount: 0, pendingBlockedCount: 0 } });
+        expect(await db.sessionMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId } } })).toMatchObject({ sidechainId: "sidechain-a" });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...settlement, targetExecutionRunId: "run-a", expectedSidechainId: "sidechain-a" })).toMatchObject({ ok: true, didResolve: false });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...settlement, targetExecutionRunId: "run-b", expectedSidechainId: "sidechain-a" })).toMatchObject({ ok: false });
+        expect.soft(await resolveAcceptedPendingDelivery({ ...settlement, targetExecutionRunId: "run-a", expectedSidechainId: "sidechain-b" })).toMatchObject({ ok: false });
+        const replay = {
+            accountId: owner.id, sourceMachineId: publisherAuthority.machineId, targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id, localId, requestedAction: { v: 1, kind: "enqueue" },
+        } as const;
+        expect.soft(await enqueuePendingMessageByAuthenticatedMachine({ ...replay, targetExecutionRunId: "run-a", content })).toMatchObject({ status: "alreadyAccepted" });
+        expect.soft(await enqueuePendingMessageByAuthenticatedMachine({ ...replay, targetExecutionRunId: "run-b", content: {
+            ...content, v: { ...content.v, meta: { ...content.v.meta, happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId: "run-b" } } } } },
+        } })).toMatchObject({ status: "rejected", code: "session_input_idempotency_conflict" });
+        const { happier: _recipient, ...mainMeta } = content.v.meta;
+        expect(await enqueuePendingMessageByAuthenticatedMachine({ ...replay, content: { ...content, v: { ...content.v, meta: mainMeta } } })).toMatchObject({ status: "rejected", code: "session_input_idempotency_conflict" });
+    });
+
+    it("settles and rejoins plain Workflow V2 target input through the shared pending owner", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount("workflow-v2-authority-owner");
+        const session = await createSession(owner.id);
+        await db.session.update({ where: { id: session.id }, data: { encryptionMode: "plain" } });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = `workflow-v2-authority-${randomUUID()}`;
+        const targetExecutionRunId = "execution-run-a";
+        const workflow = { purpose: "invocation", runId: "workflow-run-a", invocationRecordId: "invocation-a" } as const;
+        const request = { v: 2, producer: "workflow", caller: { kind: "host" }, workflow, permission: {} } as const;
+        const requestedProvenance = { v: 2, kind: "workflow_invocation", runId: workflow.runId, invocationRecordId: workflow.invocationRecordId } as const;
+        const recipientMeta = { happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId: targetExecutionRunId } } } };
+        const requestContent = { t: "plain", v: { role: "user", content: { type: "text", text: "continue workflow" }, meta: {
+            ...recipientMeta,
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: requestedProvenance,
+            happierInputRequestV1: request,
+        } } } as const;
+        expect(await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id,
+            sourceMachineId: publisherAuthority.machineId,
+            targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id,
+            targetExecutionRunId,
+            localId,
+            content: requestContent,
+            requestedAction: { v: 1, kind: "enqueue" },
+        })).toMatchObject({ status: "accepted" });
+        await db.sessionPendingMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            data: { deliveryState: "delivering" },
+        });
+        const inputAdmissionReceipt = { v: 1, issuer: "authenticatedMachine" } as const;
+        const authority = settleSessionInputRequestV2({
+            request,
+            currentSessionPermissionCeiling: "default",
+            inputAdmissionReceipt,
+        });
+        const provenance = settleSessionMessageProvenanceV2({
+            request,
+            requestedProvenance,
+            inputAdmissionReceipt,
+        });
+        const finalContent = { ...requestContent, v: { ...requestContent.v, meta: {
+            ...withSessionInputAuthority(requestContent.v.meta, authority),
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: provenance,
+        } } } as const;
+        const settlement = {
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            publisherAuthority,
+            decision: { kind: "admit", finalContent },
+        } as const;
+
+        expect.soft(await settlePendingInputAdmission(settlement)).toMatchObject({
+            ok: true,
+            result: { status: "accepted", localId },
+        });
+        expect.soft(await settlePendingInputAdmission(settlement)).toMatchObject({
+            ok: true,
+            result: { status: "alreadyAccepted", localId },
+        });
+        expect.soft(await resolveAcceptedPendingDelivery({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId,
+            expectedSidechainId: "workflow-sidechain-a",
+            localId,
+            publisherAuthority,
+        })).toMatchObject({ ok: true, didResolve: true });
+        expect(await db.sessionMessage.findUnique({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+        })).toMatchObject({ content: finalContent, requestEqualityEvidenceV1: { kind: "plainDigest" } });
+    });
+
+    it("refuses to resolve an unsettled plain Workflow V2 protected request", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount("workflow-v2-unsettled-owner");
+        const session = await createSession(owner.id);
+        await db.session.update({ where: { id: session.id }, data: { encryptionMode: "plain" } });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = `workflow-v2-unsettled-${randomUUID()}`;
+        const targetExecutionRunId = "execution-run-unsettled";
+        const content = { t: "plain", v: { role: "user", content: { type: "text", text: "do not resolve yet" }, meta: {
+            happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId: targetExecutionRunId } } },
+            [SESSION_MESSAGE_PROVENANCE_META_KEY]: { v: 2, kind: "workflow_invocation", runId: "workflow-run-unsettled", invocationRecordId: "invocation-unsettled" },
+            happierInputRequestV1: {
+                v: 2,
+                producer: "workflow",
+                caller: { kind: "host" },
+                workflow: { purpose: "invocation", runId: "workflow-run-unsettled", invocationRecordId: "invocation-unsettled" },
+                permission: {},
+            },
+        } } } as const;
+        expect(await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id,
+            sourceMachineId: publisherAuthority.machineId,
+            targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id,
+            targetExecutionRunId,
+            localId,
+            content,
+            requestedAction: { v: 1, kind: "enqueue" },
+        })).toMatchObject({ status: "accepted" });
+        await db.sessionPendingMessage.update({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            data: { deliveryState: "delivering" },
+        });
+
+        await expect(resolveAcceptedPendingDelivery({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId,
+            expectedSidechainId: "workflow-sidechain-unsettled",
+            localId,
+            publisherAuthority,
+        })).resolves.toMatchObject({ ok: false, error: "transcript-conflict" });
+        await expect(db.sessionMessage.count({ where: { sessionId: session.id, localId } })).resolves.toBe(0);
+    });
+
+    it("accepts plain Account target input without a protected request while retaining its exact author", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount("target-plain-owner");
+        const collaborator = await createAccount("target-plain-author");
+        const session = await createSession(owner.id);
+        await db.session.update({ where: { id: session.id }, data: { encryptionMode: "plain" } });
+        await shareSession({ sessionId: session.id, ownerId: owner.id, participantId: collaborator.id, accessLevel: "edit" });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "target-plain-no-request";
+        const content = { t: "plain", v: { role: "user", content: { type: "text", text: "continue" }, meta: {
+            happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId: "run-a" } } },
+        } } } as const;
+        expect(await enqueuePendingMessage({ actorUserId: collaborator.id, sessionId: session.id, localId, targetExecutionRunId: "run-a", targetMachineId: publisherAuthority.machineId, content })).toMatchObject({ ok: true });
+        const target = { actorUserId: owner.id, sessionId: session.id, targetExecutionRunId: "run-a", expectedSidechainId: "sidechain-a", publisherAuthority };
+        expect(await materializeNextPendingMessage(target)).toMatchObject({ ok: true, didMaterialize: true, authorAccountId: collaborator.id });
+        expect(await resolveAcceptedPendingDelivery({ ...target, localId })).toMatchObject({ ok: true, didResolve: true, message: { sidechainId: "sidechain-a" } });
+        expect(await db.sessionMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId } } })).toMatchObject({
+            sidechainId: "sidechain-a", authorAccountId: collaborator.id,
+            inputAdmissionReceipt: { issuer: "authenticatedAccount", actorAccountId: collaborator.id },
+            requestEqualityEvidenceV1: { kind: "plainDigest" }, content,
+        });
+    });
+
+    it("binds Account E2EE terminal replay to its exact execution-run target", async () => {
+        const owner = await createAccount("target-e2ee-terminal-owner");
+        const collaborator = await createAccount("target-e2ee-terminal-collaborator");
+        const session = await createSession(owner.id);
+        await shareSession({
+            sessionId: session.id,
+            ownerId: owner.id,
+            participantId: collaborator.id,
+            accessLevel: "edit",
+        });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({
+            where: { id: publisherAuthority.machineId },
+            data: {
+                operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const localId = `target-e2ee-terminal-${randomUUID()}`;
+        const content = { t: "encrypted", c: "opaque-targeted-input" } as const;
+
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toMatchObject({ ok: true, didWrite: true });
+        const immediateRetry = await enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        });
+        expect(immediateRetry, JSON.stringify(immediateRetry)).toMatchObject({ ok: true, didWrite: false });
+        await expect(materializeNextPendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            expectedSidechainId: "sidechain-a",
+            publisherAuthority,
+        })).resolves.toMatchObject({ ok: true, didMaterialize: true });
+        await expect(settlePendingInputAdmission({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            publisherAuthority,
+            decision: {
+                kind: "admit",
+                finalContent: content,
+                requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "A".repeat(43) },
+            },
+        })).resolves.toMatchObject({ ok: true, result: { status: "accepted", localId } });
+        await expect(db.sessionPendingMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: {
+                authorAccountId: true,
+                inputAdmissionReceipt: true,
+                requestEqualityEvidenceV1: true,
+                content: true,
+            },
+        })).resolves.toMatchObject({
+            // Opaque E2EE content has no server-visible role, so authorship is
+            // carried by the immutable authenticated-Account receipt.
+            authorAccountId: null,
+            inputAdmissionReceipt: { issuer: "authenticatedAccount", actorAccountId: owner.id },
+            requestEqualityEvidenceV1: { kind: "e2eeTag" },
+            content,
+        });
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toMatchObject({ ok: true, didWrite: false });
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content: { t: "encrypted", c: "changed-targeted-input" },
+        })).resolves.toMatchObject({
+            ok: false,
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+            requestedAction: { v: 1, kind: "send_now" },
+        })).resolves.toMatchObject({
+            ok: false,
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+        await expect(enqueuePendingMessage({
+            actorUserId: collaborator.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toMatchObject({
+            ok: false,
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+        await expect(resolveAcceptedPendingDelivery({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            targetExecutionRunId: "run-a",
+            expectedSidechainId: "sidechain-a",
+            localId,
+            publisherAuthority,
+        })).resolves.toMatchObject({ ok: true, didResolve: true });
+        await expect(db.sessionPendingMessage.count({ where: { sessionId: session.id, localId } })).resolves.toBe(0);
+        await expect(db.sessionMessage.findUniqueOrThrow({
+            where: { sessionId_localId: { sessionId: session.id, localId } },
+            select: { targetExecutionRunId: true },
+        })).resolves.toEqual({ targetExecutionRunId: "run-a" });
+
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toMatchObject({ ok: true, terminal: true, didWrite: false });
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content: { t: "encrypted", c: "changed-after-terminal" },
+        })).resolves.toMatchObject({
+            ok: false,
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            targetExecutionRunId: "run-b",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toEqual({
+            ok: false,
+            error: "invalid-params",
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId,
+            content,
+        })).resolves.toEqual({
+            ok: false,
+            error: "invalid-params",
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+
+        const mainLocalId = `main-e2ee-terminal-${randomUUID()}`;
+        await createCommittedTranscriptMessage({
+            sessionId: session.id,
+            localId: mainLocalId,
+            seq: 2,
+            messageRole: "user",
+            ciphertext: content.c,
+        });
+        await expect(enqueuePendingMessage({
+            actorUserId: owner.id,
+            sessionId: session.id,
+            localId: mainLocalId,
+            targetExecutionRunId: "run-a",
+            targetMachineId: publisherAuthority.machineId,
+            content,
+        })).resolves.toEqual({
+            ok: false,
+            error: "invalid-params",
+            admissionRejectionCode: "session_input_idempotency_conflict",
+        });
+    });
+
+    it("preserves Machine input provenance when a target delivery is sent as new", async () => {
+        const owner = await createAccount("target-resent-machine-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "target-resent-machine";
+        expect(await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id, sourceMachineId: publisherAuthority.machineId, targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id, targetExecutionRunId: "run-a", localId, content: { t: "encrypted", c: "cipher" }, requestedAction: { v: 1, kind: "enqueue" },
+            requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "A".repeat(43) },
+        })).toMatchObject({ status: "accepted" });
+        await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { deliveryState: "blocked", deliveryBlockedReason: "delivery_outcome_uncertain" } });
+        const resent = await sendPendingDeliveryAsNew({ actorUserId: owner.id, sessionId: session.id, localId, targetExecutionRunId: "run-a" });
+        expect(resent).toMatchObject({ ok: true, didWrite: true });
+        if (!resent.ok) throw new Error("Target send-as-new failed");
+        expect(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: resent.newLocalId } } })).toMatchObject({
+            authorAccountId: null, inputAdmissionReceipt: { issuer: "authenticatedMachine" }, targetExecutionRunId: "run-a",
+        });
+    });
+
+    it("rejects an edit that changes the authored recipient of an exact target row", async () => {
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
+        const owner = await createAccount("target-edit-recipient-owner");
+        const session = await createSession(owner.id);
+        await db.session.update({ where: { id: session.id }, data: { encryptionMode: "plain" } });
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const contentForRun = (runId: string) => ({ t: "plain", v: {
+            role: "user", content: { type: "text", text: "continue" },
+            meta: { happier: { kind: "participant_message.v1", payload: { recipient: { kind: "execution_run", runId } } } },
+        } } as const);
+        const mutation = { actorUserId: owner.id, sessionId: session.id, targetExecutionRunId: "run-a", localId: "target-edit-recipient" };
+        expect(await enqueuePendingMessage({ ...mutation, targetMachineId: publisherAuthority.machineId, content: contentForRun("run-a") })).toMatchObject({ ok: true });
+        expect.soft(await updatePendingMessage({ ...mutation, content: contentForRun("run-b") })).toMatchObject({ ok: false });
+        expect(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: mutation.localId } } })).toMatchObject({ content: contentForRun("run-a"), targetExecutionRunId: "run-a" });
+    });
+
+    it.each(["action", "content"] as const)("rebuilds target equality after an admitted machine draft %s is edited", async (operation) => {
+        const owner = await createAccount("target-edit-equality-owner");
+        const session = await createSession(owner.id);
+        const publisherAuthority = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisherAuthority.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const localId = "target-edit-equality";
+        expect.soft(await enqueuePendingMessageByAuthenticatedMachine({
+            accountId: owner.id, sourceMachineId: publisherAuthority.machineId, targetMachineId: publisherAuthority.machineId,
+            sessionId: session.id, targetExecutionRunId: "run-a", localId, content: { t: "encrypted", c: "original" },
+            requestedAction: { v: 1, kind: "enqueue" }, requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "A".repeat(43) },
+        })).toMatchObject({ status: "accepted" });
+        const mutation = { actorUserId: owner.id, sessionId: session.id, targetExecutionRunId: "run-a", localId };
+        const edited = operation === "action"
+            ? await updatePendingRequestedAction({ ...mutation, requestedAction: { v: 1, kind: "send_now" } })
+            : await updatePendingMessage({ ...mutation, ciphertext: "edited" });
+        expect.soft(edited).toMatchObject({ ok: true });
+        expect.soft(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId } } })).toMatchObject({ requestEqualityEvidenceV1: null, targetExecutionRunId: "run-a" });
+        await db.sessionPendingMessage.update({ where: { sessionId_localId: { sessionId: session.id, localId } }, data: { deliveryState: "delivering", providerAction: "send" } });
+        expect(await settlePendingInputAdmission({ ...mutation, publisherAuthority, decision: {
+            kind: "admit", finalContent: { t: "encrypted", c: "admitted-edited" }, requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "B".repeat(43) },
+        } })).toMatchObject({ ok: true, result: { status: "accepted" } });
     });
 
     it("settles protected machine input exactly once before transcript visibility", async () => {
@@ -1472,7 +2676,7 @@ describe("pendingMessageService (shared sessions)", () => {
                 admissionMode: "continuation_if_no_queued_user_input";
             }>,
         ) => ReturnType<typeof enqueuePendingMessageWithAction>;
-        await expect(enqueueConditionalContinuation({
+        await expect(enqueueConditionalContinuation(withPresentUserAuthentication({
             actorUserId: owner.id,
             sessionId: session.id,
             localId: continuationLocalId,
@@ -1480,7 +2684,7 @@ describe("pendingMessageService (shared sessions)", () => {
             messageRole: "user",
             requestedAction: { v: 1, kind: "send_now" },
             admissionMode: "continuation_if_no_queued_user_input",
-        })).resolves.toMatchObject({
+        }))).resolves.toMatchObject({
             ok: true,
             didWrite: false,
             suppressed: true,
@@ -1500,11 +2704,11 @@ describe("pendingMessageService (shared sessions)", () => {
         const session = await createSession(owner.id);
         const continuationLocalId = `connected-service-continuation:${randomUUID()}`;
         const explicitLocalId = `explicit-input-${randomUUID()}`;
-        const enqueueConditionalContinuation = enqueuePendingMessage as unknown as (
+        const enqueueConditionalContinuation = enqueuePendingMessageWithAction as unknown as (
             params: EnqueuePendingMessageParams & Readonly<{
                 admissionMode: "continuation_if_no_queued_user_input";
             }>,
-        ) => ReturnType<typeof enqueuePendingMessage>;
+        ) => ReturnType<typeof enqueuePendingMessageWithAction>;
         const continuation = {
             actorUserId: owner.id,
             sessionId: session.id,
@@ -1515,7 +2719,7 @@ describe("pendingMessageService (shared sessions)", () => {
             admissionMode: "continuation_if_no_queued_user_input" as const,
         };
 
-        await expect(enqueueConditionalContinuation(continuation)).resolves.toMatchObject({
+        await expect(enqueueConditionalContinuation(withPresentUserAuthentication(continuation))).resolves.toMatchObject({
             ok: true,
             didWrite: true,
         });
@@ -1527,7 +2731,7 @@ describe("pendingMessageService (shared sessions)", () => {
             messageRole: "user",
             requestedAction: { v: 1, kind: "send_now" },
         })).resolves.toMatchObject({ ok: true, didWrite: true });
-        await expect(enqueueConditionalContinuation(continuation)).resolves.toMatchObject({
+        await expect(enqueueConditionalContinuation(withPresentUserAuthentication(continuation))).resolves.toMatchObject({
             ok: true,
             didWrite: false,
             pending: { localId: continuationLocalId },
@@ -2507,7 +3711,7 @@ describe("pendingMessageService (shared sessions)", () => {
         expect(accepted.pendingCount).toBe(1);
         expect(accepted.pendingBlockedCount).toBe(1);
         expect(accepted.pendingVersion).toBeGreaterThan(0);
-        expect(accepted.participantCursors).toEqual([
+        expect(accepted.recipientCursors).toEqual([
             expect.objectContaining({ accountId: owner.id, cursor: expect.any(Number) }),
         ]);
         expect(accepted).toHaveProperty("badgeAttentionChanged", false);
@@ -4267,7 +5471,7 @@ describe("pendingMessageService (shared sessions)", () => {
         if (!res.ok) throw new Error("expected ok");
         expect(res.pendingVersion).toBe(session.pendingVersion);
         expect(res.pendingCount).toBe(session.pendingCount);
-        expect(res.participantCursors).toEqual([]);
+        expect(res.recipientCursors).toEqual([]);
 
         const after = await db.session.findUnique({
             where: { id: session.id },
@@ -4305,7 +5509,7 @@ describe("pendingMessageService (shared sessions)", () => {
         if (!secondDiscard.ok) throw new Error("expected second discard to succeed");
         expect(secondDiscard.pendingVersion).toBe(beforeSecondDiscard.pendingVersion);
         expect(secondDiscard.pendingCount).toBe(beforeSecondDiscard.pendingCount);
-        expect(secondDiscard.participantCursors).toEqual([]);
+        expect(secondDiscard.recipientCursors).toEqual([]);
 
         const afterSecondDiscard = await db.session.findUniqueOrThrow({
             where: { id: session.id },
@@ -4313,6 +5517,108 @@ describe("pendingMessageService (shared sessions)", () => {
         });
         expect(afterSecondDiscard.pendingVersion).toBe(beforeSecondDiscard.pendingVersion);
         expect(afterSecondDiscard.pendingCount).toBe(beforeSecondDiscard.pendingCount);
+    });
+
+    it("admits exact target machine events through authenticated durable custody", async () => {
+        const { machineUpdateHandler } = await import("@/app/api/socket/machineUpdateHandler");
+        const protocol = await import("@happier-dev/protocol");
+        const owner = await createAccount("target-machine-transport");
+        const session = await createSession(owner.id);
+        const publisher = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisher.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const socket = createFakeSocket({ data: { clientType: "machine-scoped", machineId: publisher.machineId } });
+        machineUpdateHandler(owner.id, socket as unknown as Parameters<typeof machineUpdateHandler>[1], {
+            operationSocketBatchLimits: { ok: true, limits: { maxItems: 200, maxSerializedBytes: 524_288 } },
+        });
+        let response: unknown;
+        const request = { v: 2, sessionId: session.id, targetMachineId: publisher.machineId, recipient: { kind: "execution_run", runId: "run-a" }, localId: "target-machine", content: { t: "encrypted", c: "cipher-target" }, requestedAction: { v: 1, kind: "enqueue" } };
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2)({ ...request, recipient: { ...request.recipient, label: "untrusted" } }, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ v: 2, result: { status: "rejected", code: "session_input_invalid" } });
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_ENQUEUE_BY_MACHINE_EVENT_V2)(request, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ v: 2, result: { status: "accepted", localId: request.localId } });
+        expect(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: request.localId } } })).toMatchObject({ targetExecutionRunId: "run-a" });
+        expect(await listPendingMessages({ actorUserId: owner.id, sessionId: session.id })).toMatchObject({ ok: true, pending: [] });
+    });
+
+    it("serves exact target HTTP custody and strict publisher socket claim without main fallback", async () => {
+        const { createRouteTestBuilder } = await import("@/app/api/testkit/routeTestBuilder");
+        const { sessionPendingRoutes } = await import("@/app/api/routes/session/pendingRoutes");
+        const protocol = await import("@happier-dev/protocol");
+        const owner = await createAccount("target-transport-owner");
+        const collaborator = await createAccount("target-transport-collaborator");
+        const session = await createSession(owner.id);
+        await db.session.update({
+            where: { id: session.id },
+            data: { currentStorageState: "hosted" },
+        });
+        await shareSession({ sessionId: session.id, ownerId: owner.id, participantId: collaborator.id, accessLevel: "edit" });
+        const publisher = await createCurrentPendingPublisher({ accountId: owner.id, sessionId: session.id });
+        await db.machine.update({ where: { id: publisher.machineId }, data: {
+            operationProtocolCapabilities: { sessionInputAdmission: { protocolVersions: [1, 2] } }, operationProtocolCapabilitiesRevision: 1,
+        } });
+        const route = (method: "POST" | "GET" | "PATCH" | "DELETE", suffix = "") => createRouteTestBuilder({
+            method, path: `/v2/sessions/:sessionId/execution-runs/:runId/pending${suffix}`,
+            defaultRequest: { authAuthority: "present_user" },
+            // The HTTP boundary fixture supplies Fastify registration and request/reply adapters.
+            registerRoutes: (app) => sessionPendingRoutes(app as unknown as Parameters<typeof sessionPendingRoutes>[0]),
+        });
+        const params = { sessionId: session.id, runId: "run-a" };
+        const body = { v: 1, localId: "target-http", targetMachineId: publisher.machineId, messageRole: "user", content: { t: "encrypted", c: "cipher-target-http" } };
+        const invalid = await route("POST").invoke({ userId: collaborator.id, params, body: { ...body, requestEqualityEvidenceV1: { kind: "e2eeTag", tag: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" } } });
+        expect(invalid.reply.statusCode).toBe(400);
+        expect(await db.sessionPendingMessage.count({ where: { sessionId: session.id } })).toBe(0);
+        expect((await route("POST").invoke({ userId: collaborator.id, params, body })).response).toMatchObject({ didWrite: true, pending: { recipient: { kind: "execution_run", runId: "run-a" }, authorAccountId: collaborator.id } });
+        expect((await route("GET").invoke({ userId: collaborator.id, params })).response).toMatchObject({
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 1,
+            pending: [{ localId: "target-http", recipient: { kind: "execution_run", runId: "run-a" } }],
+        });
+        expect(await listPendingMessages({ actorUserId: owner.id, sessionId: session.id })).toMatchObject({ ok: true, pending: [] });
+        expect((await route("PATCH", "/:localId").invoke({ userId: collaborator.id, params: { ...params, localId: body.localId }, body: { ciphertext: "edited-target-http", messageRole: "user" } })).response).toMatchObject({ ok: true, recipient: { kind: "execution_run", runId: "run-a" } });
+        await route("DELETE", "/:localId").invoke({ userId: collaborator.id, params: { ...params, runId: "run-b", localId: body.localId } });
+        expect(await db.sessionPendingMessage.findUniqueOrThrow({ where: { sessionId_localId: { sessionId: session.id, localId: body.localId } } })).toMatchObject({ targetExecutionRunId: "run-a", content: { t: "encrypted", c: "edited-target-http" } });
+
+        const socket = createFakeSocket({
+            data: { authAuthority: "present_user", clientType: "session-scoped", userId: owner.id },
+        });
+        const binding = { accountId: owner.id, machineId: publisher.machineId, sessionId: session.id };
+        await publisher.presence.registerPublisher({ socket, binding, completeActivitySnapshot: { state: "active", activeCount: 1 } });
+        sessionUpdateHandler(owner.id, socket as unknown as Parameters<typeof sessionUpdateHandler>[1], {
+            connectionType: "session-scoped", socket, userId: owner.id, sessionId: session.id,
+        } as unknown as Parameters<typeof sessionUpdateHandler>[2], { presence: publisher.presence, binding });
+        const claim = { v: 2, sessionId: session.id, recipient: { kind: "execution_run", runId: "run-a" }, sidechainId: "sidechain-a", foregroundState: "ready", deliveryTiming: "after_runtime_idle" };
+        let response: unknown;
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2)({ ...claim, authorAccountId: owner.id }, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ v: 2, ok: false, error: "invalid-params" });
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2)(claim, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ v: 2, ok: true, didMaterialize: true, recipient: claim.recipient, sidechainId: "sidechain-a", authorAccountId: collaborator.id, pendingCount: 1, message: { localId: "target-http" } });
+        expect(protocol.SessionPendingExecutionRunMaterializeNextResponseV2Schema.safeParse(response).success).toBe(true);
+        expect(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({ pendingCount: 0 });
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_MATERIALIZE_NEXT_EVENT_V2)(claim, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ ok: true, didMaterialize: true, message: { localId: "target-http" } });
+        expect(await db.sessionMessage.count({ where: { sessionId: session.id } })).toBe(0);
+        const { eventRouter } = await import("@/app/events/eventRouter");
+        const subscriberSocket = createFakeSocket({
+            data: { authAuthority: "present_user", clientType: "user-scoped", userId: collaborator.id },
+        });
+        const subscriber = { connectionType: "user-scoped", socket: subscriberSocket, userId: collaborator.id } as unknown as Parameters<typeof eventRouter.addConnection>[1];
+        eventRouter.addConnection(collaborator.id, subscriber);
+        try {
+            await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_ACCEPTED_EVENT_V2)({ v: 2, sessionId: session.id, localId: "target-http", recipient: claim.recipient, sidechainId: "sidechain-a" }, (value: unknown) => { response = value; });
+            expect.soft(subscriberSocket.emit).toHaveBeenCalledWith("update", expect.objectContaining({ body: expect.objectContaining({ t: "new-message", message: expect.objectContaining({ sidechainId: "sidechain-a", localId: "target-http" }) }) }));
+        } finally {
+            eventRouter.removeConnection(collaborator.id, subscriber);
+        }
+        expect(response).toMatchObject({ v: 2, recipient: claim.recipient, sidechainId: "sidechain-a", result: { ok: true, didResolve: true } });
+        expect(await db.sessionMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "target-http" } } })).toMatchObject({ sidechainId: "sidechain-a", authorAccountId: collaborator.id });
+        await route("POST").invoke({ userId: collaborator.id, params, body: { ...body, localId: "target-unavailable" } });
+        await getSocketHandler(socket, protocol.SESSION_PENDING_EXECUTION_RUN_BLOCK_EVENT_V2)({ v: 2, sessionId: session.id, recipient: claim.recipient, localId: "target-unavailable", reason: "session_input_target_unavailable" }, (value: unknown) => { response = value; });
+        expect(response).toMatchObject({ v: 2, recipient: claim.recipient, localId: "target-unavailable", result: { ok: true, didUpdate: true, pendingCount: 1, pendingBlockedCount: 1 } });
+        expect(await db.sessionPendingMessage.findUnique({ where: { sessionId_localId: { sessionId: session.id, localId: "target-unavailable" } } })).toMatchObject({ targetExecutionRunId: "run-a", deliveryState: "blocked", providerAction: null });
+        expect(await db.session.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({ pendingCount: 0, pendingBlockedCount: 0 });
     });
 
     it("treats non-participants as session-not-found", async () => {
@@ -4324,5 +5630,114 @@ describe("pendingMessageService (shared sessions)", () => {
         expect(list.ok).toBe(false);
         if (list.ok) throw new Error("expected session-not-found");
         expect(list.error).toBe("session-not-found");
+    });
+
+    it("preserves restricted-Team authentication continuation across Pending list, state, and enqueue", async () => {
+        const owner = await createAccount("pending-auth-owner");
+        const collaborator = await createAccount("pending-auth-collaborator");
+        const team = await db.team.create({ data: { name: `Pending auth ${randomUUID()}` } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: collaborator.id, role: "member" } });
+        const session = await createSession(owner.id);
+        await db.team.update({
+            where: { id: team.id },
+            data: {
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            },
+        });
+        await db.sessionTeamGrant.create({
+            data: {
+                sessionId: session.id,
+                teamId: team.id,
+                accessLevel: "edit",
+                canApprovePermissions: false,
+                effectiveAt: new Date(),
+            },
+        });
+
+        const previousCollaborationFeature = process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
+        const previousKeyChallengeFeature = process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
+        process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = "1";
+        const requiredAuthentication = createPresentUserSessionAccessAuthentication({
+            env: { HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "1" },
+            authenticationEvidence: [],
+        });
+        expect(await listPendingMessagesWithAuthentication({
+            actorUserId: collaborator.id,
+            sessionId: session.id,
+            authentication: requiredAuthentication,
+        })).toEqual({ ok: false, error: "session_access_authentication_required" });
+        expect(await enqueuePendingMessageWithAction({
+            actorUserId: collaborator.id,
+            sessionId: session.id,
+            localId: "pending-auth-required",
+            ciphertext: "cipher",
+            requestedAction: { v: 1, kind: "enqueue" },
+            authentication: requiredAuthentication,
+        })).toEqual({ ok: false, error: "session_access_authentication_required" });
+
+        const unavailableAuthentication = createPresentUserSessionAccessAuthentication({
+            env: { HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" },
+            authenticationEvidence: [],
+        });
+        const state = await (await import("./pendingMessageService")).readSessionPendingState({
+            actorUserId: collaborator.id,
+            sessionId: session.id,
+            authentication: unavailableAuthentication,
+        });
+        expect(state).toEqual({ ok: false, error: "session_access_authentication_unavailable" });
+        expect(await db.sessionPendingMessage.count({ where: { sessionId: session.id } })).toBe(0);
+
+        const { createRouteTestBuilder } = await import("@/app/api/testkit/routeTestBuilder");
+        const route = (method: "GET" | "POST") => createRouteTestBuilder({
+            method,
+            path: "/v2/sessions/:sessionId/pending",
+            defaultRequest: { authAuthority: "present_user" },
+            registerRoutes: (app) => sessionPendingRoutes(app as unknown as Parameters<typeof sessionPendingRoutes>[0]),
+        });
+        const deleteRoute = createRouteTestBuilder({
+            method: "DELETE",
+            path: "/v2/sessions/:sessionId/pending/:localId",
+            defaultRequest: { authAuthority: "present_user" },
+            registerRoutes: (app) => sessionPendingRoutes(app as unknown as Parameters<typeof sessionPendingRoutes>[0]),
+        });
+        try {
+            process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "1";
+            const requiredList = await route("GET").invoke({ userId: collaborator.id, params: { sessionId: session.id } });
+            expect(requiredList.reply.statusCode).toBe(403);
+            expect(requiredList.response).toEqual({ error: "session_access_authentication_required" });
+            const requiredEnqueue = await route("POST").invoke({
+                userId: collaborator.id,
+                params: { sessionId: session.id },
+                body: { localId: "pending-auth-route", ciphertext: "cipher" },
+            });
+            expect(requiredEnqueue.reply.statusCode).toBe(403);
+            expect(requiredEnqueue.response).toEqual({ error: "session_access_authentication_required" });
+            const requiredDelete = await deleteRoute.invoke({
+                userId: collaborator.id,
+                params: { sessionId: session.id, localId: "missing-but-auth-gated" },
+            });
+            expect(requiredDelete.reply.statusCode).toBe(403);
+            expect(requiredDelete.response).toEqual({ error: "session_access_authentication_required" });
+
+            process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "0";
+            const unavailableList = await route("GET").invoke({ userId: collaborator.id, params: { sessionId: session.id } });
+            expect(unavailableList.reply.statusCode).toBe(503);
+            expect(unavailableList.response).toEqual({ error: "session_access_authentication_unavailable" });
+        } finally {
+            if (previousKeyChallengeFeature === undefined) {
+                delete process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
+            } else {
+                process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = previousKeyChallengeFeature;
+            }
+            if (previousCollaborationFeature === undefined) {
+                delete process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED;
+            } else {
+                process.env.HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED = previousCollaborationFeature;
+            }
+        }
     });
 });

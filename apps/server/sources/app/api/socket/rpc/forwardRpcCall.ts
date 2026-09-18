@@ -34,7 +34,10 @@ import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 
 import { waitForRpcTargetAvailability } from "./rpcAvailabilityWait";
-import { resolveRpcForwardTimeoutMs } from "./rpcForwardTimeout";
+import {
+    isRpcForwardCallerLifecycleOwned,
+    resolveRpcForwardTimeoutMs,
+} from "./rpcForwardTimeout";
 import {
     resolveRpcClusterFetchTimeoutMs,
     resolveRpcMethodAvailabilityGraceMs,
@@ -263,7 +266,13 @@ export async function forwardRpcCall(params: Readonly<{
                 request,
             );
             const cancellationSignal = params.cancellation?.signal;
-            if (!cancellationSignal) return await response;
+            // Caller-lifecycle operations forward cancellation to their exact
+            // target and let that owner return the correlated terminal result.
+            // Ending the relay locally after submission would discard a V2
+            // Action's authenticated cancellation/outcome-unknown response.
+            if (!cancellationSignal || isRpcForwardCallerLifecycleOwned(params.method)) {
+                return await response;
+            }
 
             let removeAbortListener: (() => void) | undefined;
             const aborted = new Promise<never>((_resolve, reject) => {

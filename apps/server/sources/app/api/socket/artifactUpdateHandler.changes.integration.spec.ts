@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION_V2,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     encodePlainArtifactStoredContent,
@@ -43,13 +44,10 @@ vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
 
 const testAccountSigningKeyPair = tweetnacl.sign.keyPair();
 const testAccountContentKeyPair = tweetnacl.box.keyPair();
-const testAccountContentKeySignature = tweetnacl.sign.detached(
-    Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(testAccountContentKeyPair.publicKey),
-    ]),
-    testAccountSigningKeyPair.secretKey,
-);
+const testAccountContentKeySignature = signAccountContentKeyBindingV1({
+    accountSigningSecretKey: testAccountSigningKeyPair.secretKey,
+    contentPublicKey: testAccountContentKeyPair.publicKey,
+});
 const readyE2eeAccount = {
     encryptionMode: "e2ee",
     publicKey: Buffer.from(testAccountSigningKeyPair.publicKey).toString("hex"),
@@ -78,8 +76,10 @@ vi.mock("@/storage/inTx", () => {
 });
 
 const dbMocks = createDbMocks({
+    account: ["findUnique"],
     artifact: ["findFirst", "findUnique"],
 } as const);
+const dbAccountFindUnique = dbMocks.db.account.findUnique;
 const dbArtifactFindUnique = dbMocks.db.artifact.findUnique;
 const dbArtifactFindFirst = dbMocks.db.artifact.findFirst;
 installDbModuleMock(() => ({
@@ -94,6 +94,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         txDbMocks.reset();
 
         dbArtifactFindUnique.mockResolvedValue(null);
+        dbAccountFindUnique.mockResolvedValue(readyE2eeAccount);
         txDbMocks.db.account.findUnique.mockResolvedValue(readyE2eeAccount);
     });
 
@@ -119,6 +120,7 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
     };
 
     it("requires current stored-content support before reading a marked artifact", async () => {
+        dbAccountFindUnique.mockResolvedValue({ encryptionMode: "plain" });
         dbArtifactFindFirst.mockResolvedValue({
             id: "plain-read",
             accountId: "u1",
@@ -162,6 +164,44 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
                 body: encodePlainArtifactStoredContent({ body: "plain" }),
             }),
         });
+    });
+
+    it("fails closed when persisted plain Artifact content disagrees with the Account mode", async () => {
+        const header = encodePlainArtifactStoredContent({ title: "must-not-leak" });
+        const body = encodePlainArtifactStoredContent({ body: "must-not-leak" });
+        dbArtifactFindFirst.mockResolvedValue({
+            id: "mode-mismatch",
+            accountId: "u1",
+            header: Buffer.from(header, "base64"),
+            headerVersion: 1,
+            body: Buffer.from(body, "base64"),
+            bodyVersion: 1,
+            dataEncryptionKey: Buffer.from(ARTIFACT_PLAIN_DATA_KEY_MARKER, "base64"),
+            seq: 4,
+            createdAt: new Date(1),
+            updatedAt: new Date(1),
+        });
+
+        const { artifactUpdateHandler } = await import("./artifactUpdateHandler");
+        const socket = currentSocket();
+        artifactUpdateHandler("u1", socket as any);
+        const callback = vi.fn();
+
+        await getSocketHandler(socket, "artifact-read")(
+            { artifactId: "mode-mismatch" },
+            callback,
+        );
+
+        expect(callback).toHaveBeenCalledWith({
+            result: "error",
+            message: "Internal error",
+        });
+        expect(callback).not.toHaveBeenCalledWith(
+            expect.objectContaining({ result: "success" }),
+        );
+        expect(JSON.stringify(callback.mock.calls)).not.toContain(header);
+        expect(JSON.stringify(callback.mock.calls)).not.toContain(body);
+        expect(JSON.stringify(callback.mock.calls)).not.toContain("must-not-leak");
     });
 
     it("marks artifact update and emits update using returned cursor", async () => {
@@ -217,6 +257,12 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
     });
 
     it("requires current stored-content support for a marked update, then updates once for a current socket", async () => {
+        txDbMocks.db.account.findUnique.mockResolvedValue({
+            encryptionMode: "plain",
+            publicKey: null,
+            contentPublicKey: null,
+            contentPublicKeySig: null,
+        });
         const currentHeader = Buffer.from(
             encodePlainArtifactStoredContent({ title: "old" }),
             "base64",
@@ -395,6 +441,32 @@ describe("artifactUpdateHandler (AccountChange integration)", () => {
         expect(buildDeleteArtifactUpdate).toHaveBeenCalledWith("a3", 555, expect.any(String));
         expect(emitUpdate).toHaveBeenCalledTimes(1);
         expect(callback).toHaveBeenCalledWith({ result: "success" });
+    });
+
+    it("preserves a plaintext-marked Artifact when socket delete finds an E2EE Account", async () => {
+        txDbMocks.db.artifact.findFirst.mockResolvedValue({
+            id: "mode-mismatch-delete",
+            dataEncryptionKey: privacyKit.decodeBase64(
+                ARTIFACT_PLAIN_DATA_KEY_MARKER,
+            ),
+        });
+
+        const { artifactUpdateHandler } = await import("./artifactUpdateHandler");
+        const socket = currentSocket();
+        artifactUpdateHandler("u1", socket as any);
+        const callback = vi.fn();
+        await getSocketHandler(socket, "artifact-delete")(
+            { artifactId: "mode-mismatch-delete" },
+            callback,
+        );
+
+        expect(callback).toHaveBeenCalledWith({
+            result: "error",
+            message: "Internal error",
+        });
+        expect(txDbMocks.db.artifact.delete).not.toHaveBeenCalled();
+        expect(markAccountChanged).not.toHaveBeenCalled();
+        expect(emitUpdate).not.toHaveBeenCalled();
     });
 
     it("preserves a marked artifact for a legacy delete and deletes once for a current socket", async () => {

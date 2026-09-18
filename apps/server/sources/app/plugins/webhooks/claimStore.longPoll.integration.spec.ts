@@ -1,12 +1,19 @@
+import { request as httpRequest } from "node:http";
+import { performance } from "node:perf_hooks";
+import tweetnacl from "tweetnacl";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
     normalizePluginReleaseFactsV1,
+    PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
     type StoredPluginWebhookDeliveryContentV1,
 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createSignedPluginInstallationPublisherHeader } from "@/testkit/pluginInstallationPublisherTestkit";
+import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { registerPluginWebhookDaemonRoutes } from "@/app/api/routes/plugins/webhooks/registerPluginWebhookDaemonRoutes";
 
 import { claimPluginWebhookDeliveryWithBoundedWaitV1 } from "./claimStore";
 import { markPluginWebhookAccountChangedInTxV1 } from "./accountChange";
@@ -94,8 +101,8 @@ function timeoutCount(): number {
 const FIXED_PARK_MS_V1 = 30_000;
 
 async function waitForParkedClaimTimers(expected: number): Promise<void> {
-    const deadlineMs = Date.now() + 5_000;
-    while (Date.now() < deadlineMs) {
+    const deadlineMs = performance.now() + 5_000;
+    while (performance.now() < deadlineMs) {
         if (vi.getTimerCount() === expected) return;
         await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -392,6 +399,71 @@ describe("plugin webhook bounded claim", () => {
         expect(result).not.toHaveProperty("envelope");
         expect(elapsedMs).toBeLessThan(5_000);
         expect(timeoutCount()).toBeLessThanOrEqual(timeoutsBefore);
+    });
+
+    it("a fully uploaded HTTP claim cannot lease later work after its client disconnects", async () => {
+        await seedClaimableTarget();
+        const keyPair = tweetnacl.sign.keyPair();
+        await db.machine.update({
+            where: { id: TARGET.materialization.machineId },
+            data: { installationPublicKey: new Uint8Array(keyPair.publicKey) },
+        });
+        const app = createAuthenticatedTestApp();
+        const disconnected = new Promise<void>((resolve) => {
+            app.addHook("onRequest", async (_request: unknown, reply: { raw: import("node:http").ServerResponse }) => {
+                reply.raw.once("close", resolve);
+            });
+        });
+        registerPluginWebhookDaemonRoutes(app, undefined, { HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED: "1" });
+        const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+        const path = "/v1/daemon/plugins/webhooks/claim";
+        const body = { v: 1, policyVersion: 1, machine: MACHINE_CLAIM };
+        const bodyText = JSON.stringify(body);
+        vi.useFakeTimers({ now: NOW, toFake: ["setTimeout", "clearTimeout", "Date"] });
+        const headers = {
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(bodyText),
+            "x-test-user-id": "account-claim",
+            [PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1]: createSignedPluginInstallationPublisherHeader({
+                keyPair,
+                machineId: TARGET.materialization.machineId,
+                installationId: TARGET.machineInstallationId,
+                path,
+                body,
+            }),
+        };
+        const client = httpRequest(new URL(path, origin), { method: "POST", headers });
+        client.on("error", () => {}); // A canceled HTTP request reports ECONNRESET.
+        try {
+            client.end(bodyText);
+            await waitForParkedClaimTimers(1);
+            client.destroy();
+            await disconnected;
+            // The actual response-side close must cancel the owner's parked
+            // timeout before later work can arrive for this dead client.
+            expect(vi.getTimerCount()).toBe(0);
+            await commitDueDeliveryWithWake();
+            await vi.advanceTimersByTimeAsync(FIXED_PARK_MS_V1);
+
+            await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-longpoll" } }))
+                .resolves.toMatchObject({ state: "queued", attemptCount: 0, leaseId: null });
+            const liveResponse = await new Promise<{ status: number | undefined; body: string }>((resolve, reject) => {
+                const liveClient = httpRequest(new URL(path, origin), { method: "POST", headers }, (response) => {
+                    const chunks: Buffer[] = [];
+                    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+                    response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+                });
+                liveClient.on("error", reject);
+                liveClient.end(bodyText);
+            });
+            expect(liveResponse.status).toBe(200);
+            expect(JSON.parse(liveResponse.body)).toMatchObject({ kind: "delivery", deliveryId: "delivery-longpoll", attempt: 1 });
+        } finally {
+            client.destroy();
+            await vi.runOnlyPendingTimersAsync();
+            vi.useRealTimers();
+            await app.close();
+        }
     });
 
     it("an already-aborted signal skips the park entirely", async () => {

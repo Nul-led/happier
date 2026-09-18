@@ -1,6 +1,7 @@
 import { onShutdown } from "@/utils/process/shutdown";
 import { Fastify } from "./types";
 import { buildMachineActivityEphemeral, buildSessionActivityEphemeral, buildUpdateSessionUpdate, ClientConnection, eventRouter } from "@/app/events/eventRouter";
+import { CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT } from "@/app/events/socketRoomEmitter";
 import {
     buildMachineOwnerConflictSocketPayload,
     readMachineDaemonOwnershipMetadataFromSocketAuth,
@@ -29,6 +30,8 @@ import { rpcHandler } from "./socket/rpcHandler";
 import { pingHandler } from "./socket/pingHandler";
 import { sessionUpdateHandler } from "./socket/sessionUpdateHandler";
 import { registerReleasedUiV021SessionEndSocketEvent } from "@/app/session/compatibility/registerReleasedUiV021SessionEndSocketEvent";
+import { createSessionHumanPresenceService } from "@/app/session/humanPresence/sessionHumanPresenceService";
+import { registerSessionHumanPresenceSocketHandlers, releaseSessionHumanPresenceHoldAfterFinalCurrentness } from "@/app/session/humanPresence/registerSessionHumanPresenceSocketHandlers";
 import { machineUpdateHandler } from "./socket/machineUpdateHandler";
 import { machineTransferHandler } from "./socket/machineTransferHandler";
 import { machineLiveStreamRelayHandler } from "./socket/machineLiveStreamRelayHandler";
@@ -37,6 +40,10 @@ import { transferRelayV2Handler } from "./socket/transferRelayV2Handler";
 import { registerPeerTcpTunnelRelaySocketHandler } from "./socket/peer/mediation/tunnel/registerRelay";
 import { createPeerTcpTunnelRelayBridge } from "./socket/peer/mediation/tunnel/relayBridge";
 import { createPeerTcpTunnelRelayCoordinator } from "./socket/peer/mediation/tunnel/relayCoordinator";
+import {
+    createExternalProviderBrokerDispatcher,
+    createTeamCredentialResourceTestBrokerDispatcher,
+} from "./routes/providers/externalProviderBrokerDispatcher";
 import { createPeerMediationObservabilityStore } from "./socket/peer/mediation/observability/store";
 import {
     registerPeerMediationObservabilitySocketRoutes,
@@ -52,11 +59,16 @@ import {
     createSessionServerStartDaemonDispatcher,
 } from "./socket/sessionServerStartDispatcher";
 import { resolveVerifiedMachineSocketInstallationId } from "./socket/machineSocketInstallationProof";
-import { getSocketRooms, type SocketClientType } from "./socketRooms";
+import {
+    getAccountRevocationSocketRoom,
+    getProtectedSocketRooms,
+    type SocketClientType,
+} from "./socketRooms";
 import { createAdapter } from "@socket.io/redis-streams-adapter";
 import {
     closeRedisSocketClusterClient,
-    getRedisSocketClusterClient,
+    createRedisSocketClusterRelayAdmissionClient,
+    getRedisSocketClusterAdapterClient,
 } from "@/storage/redis/redis";
 import { randomUUID } from "node:crypto";
 import { readSocketAdapterRuntimeConfigFromEnv } from "@/config/socketAdapter";
@@ -65,12 +77,16 @@ import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverF
 import { readMachineLiveStreamFeatureEnv, readMachineTransferFeatureEnv, readMachineTunnelFeatureEnv, readPeerMediationFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolveFeaturesFromEnv } from "@/app/features/registry";
 import { readSessionScopedSocketBinding, resolveSessionScopedSocketBinding } from "./socket/sessionScopedBinding";
+import {
+    resolveEphemeralRunnerSocketAdmission,
+    type EphemeralRunnerSocketAdmission,
+} from "./socket/ephemeralRunnerSocketAdmission";
 import { createMachineSocketOwnershipRegistry } from "./socket/machineSocketOwnershipRegistry";
 import { createPeerMediationViewerSocketOwnershipVerifier } from "./socket/viewerSocketOwnership";
 import { activityCache } from "@/app/presence/sessionCache";
 import {
-    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES,
-    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES,
+    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2,
+    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2,
     PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
     EXTERNAL_SESSION_OPERATION_SOCKET_MAX_BATCH_ITEMS_V1,
     resolvePeerRouteFeatureId,
@@ -80,6 +96,8 @@ import {
     type PeerTcpTunnelRelayEnvelope,
 } from "@happier-dev/protocol";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { createExecutionRunBrokerCurrentnessResolver } from "@/app/teams/credentials/executionRunBrokerAuthorityResolver";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import {
     loadSessionTranscriptPublicationRecipientProjection,
@@ -92,8 +110,8 @@ import {
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 
 export const DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE = Math.max(
-    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES,
-    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES,
+    EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2,
+    EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2,
 );
 // Socket.IO adds its event name, acknowledgement id, and packet framing around the
 // serialized command. Keep that reserve beside the one live transport ceiling.
@@ -106,14 +124,14 @@ export function resolveSocketMaxHttpBufferSizeFromEnv(env: Record<string, string
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_SOCKET_MAX_HTTP_BUFFER_SIZE;
     if (
-        parsed < EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES
-        || parsed < EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES
+        parsed < EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2
+        || parsed < EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2
     ) {
         throw new Error(
             "Socket.IO maxHttpBufferSize must be at least "
-            + EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES
+            + EXTERNAL_ACTION_RELAY_REQUEST_SOCKET_MIN_BUFFER_BYTES_V2
             + " bytes for external Action relay requests and "
-            + EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES
+            + EXTERNAL_ACTION_RELAY_RESPONSE_SOCKET_MIN_BUFFER_BYTES_V2
             + " bytes for responses",
         );
     }
@@ -229,6 +247,10 @@ export function startSocket(app: Fastify) {
             resolvePeerRouteFeatureId({ flowKind: 'voice_media', routeKind: 'server_relay' }),
             process.env,
         ),
+        provider_broker: isServerFeatureEnabledForRequest(
+            resolvePeerRouteFeatureId({ flowKind: 'provider_broker', routeKind: 'server_relay' }),
+            process.env,
+        ),
     } as const;
     const machineTransferFeatureEnv = readMachineTransferFeatureEnv(process.env);
     const machineLiveStreamFeatureEnv = readMachineLiveStreamFeatureEnv(process.env);
@@ -253,7 +275,11 @@ export function startSocket(app: Fastify) {
             allowedHeaders: ["authorization", "content-type"]
         },
         ...(shouldEnableRedisAdapter ? {
-            adapter: createAdapter(getRedisSocketClusterClient(), socketAdapterConfig.redisStreamsOptions),
+            // Adapter 0.3.1 duplicates the supplied client for its blocking
+            // stream reader and its Pub/Sub subscriber. The adapter-facing
+            // wrapper makes each of those a fresh, independently instrumented
+            // connection while the adapter keeps owning their lifecycle.
+            adapter: createAdapter(getRedisSocketClusterAdapterClient(), socketAdapterConfig.redisStreamsOptions),
         } : {}),
         transports: ['websocket', 'polling'],
         pingTimeout: 45000,
@@ -266,11 +292,17 @@ export function startSocket(app: Fastify) {
         serveClient: false // Don't serve the client files
     });
 
+    app.machineDaemonPresence = io;
+    const humanPresence = createSessionHumanPresenceService({
+        io,
+        clusterAccessChangePublicationEnabled: shouldEnableRedisAdapter,
+    });
+    if (typeof app.addHook === "function") {
+        app.addHook("onClose", async () => { humanPresence.close(); });
+    }
+
     app.disconnectAccountSockets = (accountId: string): void => {
-        // `user:` contains user- and session-scoped sockets; machine daemons
-        // deliberately live in the separate account machine room.
-        io.in(`user:${accountId}`).disconnectSockets(true);
-        io.in(`user-machines:${accountId}`).disconnectSockets(true);
+        eventRouter.disconnectAccountSockets(accountId);
     };
 
     setSocketAdapterModeInfo({
@@ -281,7 +313,10 @@ export function startSocket(app: Fastify) {
     const tunnelRelayCoordinator = createPeerTcpTunnelRelayCoordinator({
         io,
         config: shouldEnableRedisAdapter
-            ? { mode: "redis", redis: getRedisSocketClusterClient() }
+            ? {
+                mode: "redis",
+                createRelayAdmissionRedis: createRedisSocketClusterRelayAdmissionClient,
+            }
             : { mode: "memory" },
     });
 
@@ -303,6 +338,11 @@ export function startSocket(app: Fastify) {
     app.forwardRpcForUser = createServerRpcForwarder({
         io,
     });
+    const resolveExecutionRunCurrentness = createExecutionRunBrokerCurrentnessResolver({
+        app,
+        resolveServerIdentityId: () => getOrCreateServerIdentityId(process.env),
+        createNonce: randomUUID,
+    });
     app.forwardAutomationReplyHandoffToMachine =
         createAutomationReplyHandoffDaemonDispatcher({ io });
     app.forwardExternalActionToMachine = createExternalActionDaemonDispatcher({
@@ -317,6 +357,9 @@ export function startSocket(app: Fastify) {
     const verifyPeerMediationViewerSocketOwnership = createPeerMediationViewerSocketOwnershipVerifier(io);
     app.verifyPeerMediationViewerSocketOwnership = verifyPeerMediationViewerSocketOwnership;
     eventRouter.setIo(io);
+    io.on(CREDENTIAL_QUALIFIED_SESSION_DELIVERY_EVENT, (delivery: unknown) => {
+        void eventRouter.receiveCredentialQualifiedSessionDelivery(io.local, delivery);
+    });
     const tunnelRelayBridge = createPeerTcpTunnelRelayBridge(io);
     const peerMediationObservabilityStore = createPeerMediationObservabilityStore();
     const peerMediationObservabilityEmitter = {
@@ -339,7 +382,6 @@ export function startSocket(app: Fastify) {
         maxFrameBytes: machineTunnelFeatureEnv.serverRoutedMaxFrameBytes,
         supportedEncodings: machineTunnelFeatureEnv.serverRoutedSupportedEncodings,
         preferredEncoding: machineTunnelFeatureEnv.serverRoutedPreferredEncoding,
-        allowV1Fallback: machineTunnelFeatureEnv.serverRoutedAllowV1Fallback,
         maxBinaryHeaderBytes: machineTunnelFeatureEnv.serverRoutedMaxBinaryHeaderBytes,
         maxRawPayloadBytes: machineTunnelFeatureEnv.serverRoutedMaxRawPayloadBytes,
         maxFramedMessageBytes: machineTunnelFeatureEnv.serverRoutedMaxFramedMessageBytes,
@@ -383,6 +425,16 @@ export function startSocket(app: Fastify) {
             },
         };
     };
+    app.forwardExternalProviderBrokerRequest = createExternalProviderBrokerDispatcher({
+        env: process.env,
+        createRelayTransport: app.createPeerTcpTunnelRelayTransport,
+        enabled: serverRoutedTunnelRelayEnabledByFlowKind.provider_broker,
+    });
+    app.forwardTeamCredentialBrokerResourceTest = createTeamCredentialResourceTestBrokerDispatcher({
+        env: process.env,
+        createRelayTransport: app.createPeerTcpTunnelRelayTransport,
+        enabled: serverRoutedTunnelRelayEnabledByFlowKind.provider_broker,
+    });
 
     io.use(async (socket, next) => {
         const handshakeStartedAt = Date.now();
@@ -436,6 +488,7 @@ export function startSocket(app: Fastify) {
             return rejectHandshake({ statusCode: 400, error: 'missing-machine-id' });
         }
         let releaseMachineOwnershipIfClaimed: (() => Promise<void>) | null = null;
+        let ephemeralRunnerAdmission: EphemeralRunnerSocketAdmission | null = null;
         try {
             setHandshakeStage("verify-token");
             const verified = await auth.verifyTokenForRoute(token);
@@ -443,7 +496,15 @@ export function startSocket(app: Fastify) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
             }
-            if (isRestrictedAuthTokenKind(verified.authTokenKind)) {
+            ephemeralRunnerAdmission = verified.authTokenKind === "ephemeral_session_runner"
+                ? resolveEphemeralRunnerSocketAdmission({
+                    principal: verified.ephemeralSessionRunnerPrincipal,
+                    clientType,
+                    ...(sessionId ? { sessionId } : {}),
+                    ...(machineId ? { machineId } : {}),
+                })
+                : null;
+            if (isRestrictedAuthTokenKind(verified.authTokenKind) && !ephemeralRunnerAdmission) {
                 observeHandshakeStage("error");
                 return rejectHandshake({ statusCode: 401, error: 'invalid-token' });
             }
@@ -490,6 +551,7 @@ export function startSocket(app: Fastify) {
                         lastActiveAt: true,
                         revokedAt: true,
                         replacedByMachineId: true,
+                        kind: true,
                         installationId: true,
                         installationPublicKey: true,
                     },
@@ -502,12 +564,26 @@ export function startSocket(app: Fastify) {
                     observeHandshakeStage("error");
                     return rejectHandshake({ statusCode: 403, error: 'invalid-machine' });
                 }
+                if (
+                    machine.kind === "ephemeral_session_runner"
+                    && ephemeralRunnerAdmission?.kind !== "machine-runtime"
+                ) {
+                    observeHandshakeStage("error");
+                    return rejectHandshake({ statusCode: 403, error: "invalid-machine" });
+                }
                 verifiedMachineInstallationId = resolveVerifiedMachineSocketInstallationId({
                     accountId: verified.userId,
                     machineId: machine.id,
                     machine,
                     socketAuth: socket.handshake.auth,
                 });
+                if (
+                    ephemeralRunnerAdmission?.kind === "machine-runtime"
+                    && verifiedMachineInstallationId !== ephemeralRunnerAdmission.principal.installationId
+                ) {
+                    observeHandshakeStage("error");
+                    return rejectHandshake({ statusCode: 403, error: 'invalid-machine' });
+                }
                 observeHandshakeStage("ok");
 
                 setHandshakeStage("machine-ownership");
@@ -571,12 +647,29 @@ export function startSocket(app: Fastify) {
             }
 
             socket.data.userId = verified.userId;
+            socket.data.authAuthority = verified.authority;
+            socket.data.authTokenAuthenticationEvidence = verified.authenticationEvidence;
             socket.data.clientType = clientType;
             socket.data.clientPurpose = clientPurpose;
             socket.data.sessionId = sessionId;
             socket.data.machineId = machineId;
+            if (ephemeralRunnerAdmission) {
+                socket.data.ephemeralRunnerAdmission = ephemeralRunnerAdmission;
+            }
             if (verifiedMachineInstallationId) {
                 socket.data.verifiedMachineInstallationId = verifiedMachineInstallationId;
+            }
+
+            // Install user presence before `next()` completes the Socket.IO
+            // handshake. The client can emit its first replacement as soon as
+            // it receives `connect`; registering later in the async connection
+            // callback races that packet and can silently lose the declaration.
+            if (clientType === "user-scoped") {
+                registerSessionHumanPresenceSocketHandlers({
+                    presence: humanPresence,
+                    socket,
+                    accountId: verified.userId,
+                });
             }
 
             recordSocketAuthHandshake({
@@ -675,17 +768,27 @@ export function startSocket(app: Fastify) {
             return;
         }
 
-        // Join the canonical fanout rooms before the final currentness read.
-        // Socket.IO adds this socket to the namespace before this callback, so
-        // account-wide revocation can reach it while that read is in flight.
-        const canonicalRoomJoin = socket.join(getSocketRooms({
+        // Socket.IO adds this socket to the namespace before this callback. Join
+        // only the content-free revocation room until final token currentness is
+        // established; protected fanout rooms remain unavailable in that window.
+        const handshakeEphemeralRunnerAdmission = (
+            socket.data as { ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission }
+        ).ephemeralRunnerAdmission ?? null;
+        const protectedRooms = getProtectedSocketRooms({
             userId,
             clientType,
             sessionId,
             machineId,
+            ...(handshakeEphemeralRunnerAdmission?.kind === "session-runtime"
+                ? { includeUserRoomForSessionScoped: false }
+                : {}),
+            ...(handshakeEphemeralRunnerAdmission?.kind === "machine-runtime"
+                ? { includeUserMachinesRoom: false }
+                : {}),
             includeAccountStoredContentV3Room:
-                readAccountStoredContentCompatibilityForSocket(socket).supportsPluginDataProtocol,
-        }));
+                !handshakeEphemeralRunnerAdmission
+                && readAccountStoredContentCompatibilityForSocket(socket).supportsPluginDataProtocol,
+        });
 
         log(
             {
@@ -719,17 +822,37 @@ export function startSocket(app: Fastify) {
         };
 
         try {
-            await canonicalRoomJoin;
+            await socket.join(getAccountRevocationSocketRoom(userId));
             const currentVerified = await auth.verifyTokenForRoute(token);
+            const currentEphemeralRunnerAdmission = currentVerified?.authTokenKind === "ephemeral_session_runner"
+                ? resolveEphemeralRunnerSocketAdmission({
+                    principal: currentVerified.ephemeralSessionRunnerPrincipal,
+                    clientType,
+                    ...(sessionId ? { sessionId } : {}),
+                    ...(machineId ? { machineId } : {}),
+                })
+                : null;
             if (
                 !socket.connected
                 || !currentVerified
-                || isRestrictedAuthTokenKind(currentVerified.authTokenKind)
+                || (isRestrictedAuthTokenKind(currentVerified.authTokenKind) && !currentEphemeralRunnerAdmission)
                 || currentVerified.userId !== userId
             ) {
                 await rejectPostConnectAdmission();
                 return;
             }
+            socket.data.authAuthority = currentVerified.authority;
+            socket.data.authTokenAuthenticationEvidence = currentVerified.authenticationEvidence;
+            await socket.join(protectedRooms);
+            if (!socket.connected) {
+                await rejectPostConnectAdmission();
+                return;
+            }
+            // The final socket-currentness check succeeded: release the presence
+            // hold so an early replacement declaration is admitted through the
+            // ordinary path. Until this point it could not acknowledge, authorize,
+            // join a presence room, or emit a snapshot.
+            releaseSessionHumanPresenceHoldAfterFinalCurrentness(socket);
         } catch (error) {
             await rejectPostConnectAdmission();
             log(
@@ -748,13 +871,17 @@ export function startSocket(app: Fastify) {
 
         // Store connection based on type
         const metadata = { clientType, clientPurpose: clientPurpose || 'unknown', sessionId, machineId };
+        const ephemeralRunnerAdmission = (
+            socket.data as { ephemeralRunnerAdmission?: EphemeralRunnerSocketAdmission }
+        ).ephemeralRunnerAdmission ?? null;
         let connection: ClientConnection;
         if (metadata.clientType === 'session-scoped' && sessionId) {
             connection = {
                 connectionType: 'session-scoped',
                 socket,
                 userId,
-                sessionId
+                sessionId,
+                ...(machineId ? { machineId } : {}),
             };
         } else if (metadata.clientType === 'machine-scoped' && machineId) {
             connection = {
@@ -807,7 +934,7 @@ export function startSocket(app: Fastify) {
                     if (disconnected.status !== "applied") return;
                     const session = await loadSessionTranscriptPublicationRecipientProjection(connection.sessionId);
                     if (session) {
-                        await Promise.all(disconnected.participantCursors.map(async ({ accountId, cursor }) => {
+                        await Promise.all(disconnected.recipientCursors.map(async ({ accountId, cursor }) => {
                             const projection = projectSessionTranscriptPublicationRealtimeProjection(
                                 disconnected.projection,
                                 session,
@@ -854,8 +981,9 @@ export function startSocket(app: Fastify) {
                     : `User disconnected: ${userId} (reason=${String(reason)}, durationMs=${durationMs}, socketId=${socket.id}, clientType=${metadata.clientType}, purpose=${metadata.clientPurpose})`,
             );
 
-            // Broadcast daemon offline status
-            if (connection.connectionType === 'machine-scoped') {
+            // Broadcast daemon offline status. A temporary Runner Machine stays out
+            // of this Account-wide inventory fanout; its Session owns its presence.
+            if (connection.connectionType === 'machine-scoped' && ephemeralRunnerAdmission?.kind !== "machine-runtime") {
                 const machineActivity = buildMachineActivityEphemeral(connection.machineId, false, Date.now());
                 eventRouter.emitEphemeral({
                     userId,
@@ -887,10 +1015,11 @@ export function startSocket(app: Fastify) {
         rpcHandler(userId, socket, {
             io,
             sessionPublisherPresence,
+            ephemeralRunnerAdmission,
         });
 
         // Broadcast daemon online status
-        if (connection.connectionType === 'machine-scoped') {
+        if (connection.connectionType === 'machine-scoped' && ephemeralRunnerAdmission?.kind !== "machine-runtime") {
             // Broadcast daemon online
             const machineActivity = buildMachineActivityEphemeral(machineId!, true, Date.now());
             eventRouter.emitEphemeral({
@@ -901,7 +1030,14 @@ export function startSocket(app: Fastify) {
         }
 
         // Handlers
-        usageHandler(userId, socket, connection);
+        if (ephemeralRunnerAdmission?.kind !== "machine-runtime") {
+            usageHandler(
+                userId,
+                socket,
+                connection,
+                ephemeralRunnerAdmission?.kind === "session-runtime",
+            );
+        }
         const sessionBinding = connection.connectionType === "session-scoped"
             ? readSessionScopedSocketBinding(socket)
             : null;
@@ -912,63 +1048,79 @@ export function startSocket(app: Fastify) {
                 connection,
             });
         }
-        sessionUpdateHandler(
-            userId,
-            socket,
-            connection,
-            sessionBinding?.proof === "machine-access-key" && sessionBinding.machineId
-                ? {
-                    presence: sessionPublisherPresence,
-                    binding: {
-                        accountId: userId,
-                        machineId: sessionBinding.machineId,
-                        sessionId: sessionBinding.sessionId,
-                    },
-                }
-                : undefined,
-        );
-        pingHandler(socket);
-        machineUpdateHandler(userId, socket, {
-            operationSocketBatchLimits: externalSessionOperationSocketBatchLimits,
-            sessionPublisherPresence,
-            sessionServerStartIngress: sessionServerStartAutomationIngress,
-        });
-        externalSessionStatusDemandHandler(userId, socket, { io });
-        machineTransferHandler(userId, socket, {
-            io,
-            serverRoutedTransferEnabled,
-            serverRoutedTransferMaxBytes: machineTransferFeatureEnv.serverRoutedMaxBytes,
-            serverRoutedTransferMaxActiveTransfersPerSocket: machineTransferFeatureEnv.serverRoutedMaxActiveTransfersPerSocket,
-        });
-        machineLiveStreamRelayHandler(userId, socket, {
-            io,
-            serverRoutedLiveStreamEnabled,
-            relayCaps: machineLiveStreamFeatureEnv.serverRoutedCaps,
-            relayAuthorizationTrustRoots: tunnelRelayAuthorizationTrustRoots,
-            verifyViewerSocketOwnership: verifyPeerMediationViewerSocketOwnership,
-            observability: peerMediationObservabilityEmitter,
-        });
-        transferRelayV2Handler(userId, socket, {
-            io,
-            serverRelayTransferEnabled: serverRoutedTransferEnabled,
-            serverRelayTransferMaxBytes: machineTransferFeatureEnv.serverRoutedMaxBytes,
-            serverRelayTransferMaxActiveTransfersPerSocket: machineTransferFeatureEnv.serverRoutedMaxActiveTransfersPerSocket,
-        });
-        registerPeerTcpTunnelRelaySocketHandler(userId, socket, {
-            ...tunnelRelayHandlerOptions,
-        });
-        registerPeerMediationObservabilitySocketRoutes(socket, {
-            store: peerMediationObservabilityStore,
-            featurePayload: () => resolveFeaturesFromEnv(process.env),
-            principal: resolvePeerMediationObservabilityPrincipal({
+        if (ephemeralRunnerAdmission?.kind !== "machine-runtime") {
+            sessionUpdateHandler(
                 userId,
-                clientType,
-                ...(sessionId ? { sessionId } : {}),
-                ...(machineId ? { machineId } : {}),
-            }),
-        });
-        artifactUpdateHandler(userId, socket);
-        accessKeyHandler(userId, socket, connection);
+                socket,
+                connection,
+                sessionBinding?.proof === "machine-access-key" && sessionBinding.machineId
+                    ? {
+                        presence: sessionPublisherPresence,
+                        binding: {
+                            accountId: userId,
+                            machineId: sessionBinding.machineId,
+                            sessionId: sessionBinding.sessionId,
+                        },
+                    }
+                    : undefined,
+                ephemeralRunnerAdmission?.kind === "session-runtime"
+                    ? {
+                        principalKind: "ephemeral-session-runner",
+                        principal: ephemeralRunnerAdmission.principal,
+                    }
+                    : undefined,
+                { resolveExecutionRunCurrentness },
+            );
+        }
+        pingHandler(socket);
+        if (!ephemeralRunnerAdmission) {
+            machineUpdateHandler(userId, socket, {
+                operationSocketBatchLimits: externalSessionOperationSocketBatchLimits,
+                sessionPublisherPresence,
+                sessionServerStartIngress: sessionServerStartAutomationIngress,
+            });
+            externalSessionStatusDemandHandler(userId, socket, { io });
+            machineTransferHandler(userId, socket, {
+                io,
+                serverRoutedTransferEnabled,
+                serverRoutedTransferMaxBytes: machineTransferFeatureEnv.serverRoutedMaxBytes,
+                serverRoutedTransferMaxActiveTransfersPerSocket: machineTransferFeatureEnv.serverRoutedMaxActiveTransfersPerSocket,
+            });
+            machineLiveStreamRelayHandler(userId, socket, {
+                io,
+                serverRoutedLiveStreamEnabled,
+                relayCaps: machineLiveStreamFeatureEnv.serverRoutedCaps,
+                relayAuthorizationTrustRoots: tunnelRelayAuthorizationTrustRoots,
+                verifyViewerSocketOwnership: verifyPeerMediationViewerSocketOwnership,
+                observability: peerMediationObservabilityEmitter,
+            });
+            transferRelayV2Handler(userId, socket, {
+                io,
+                serverRelayTransferEnabled: serverRoutedTransferEnabled,
+                serverRelayTransferMaxBytes: machineTransferFeatureEnv.serverRoutedMaxBytes,
+                serverRelayTransferMaxActiveTransfersPerSocket: machineTransferFeatureEnv.serverRoutedMaxActiveTransfersPerSocket,
+            });
+            registerPeerMediationObservabilitySocketRoutes(socket, {
+                store: peerMediationObservabilityStore,
+                featurePayload: () => resolveFeaturesFromEnv(process.env),
+                principal: resolvePeerMediationObservabilityPrincipal({
+                    userId,
+                    clientType,
+                    ...(sessionId ? { sessionId } : {}),
+                    ...(machineId ? { machineId } : {}),
+                }),
+            });
+            artifactUpdateHandler(userId, socket);
+            accessKeyHandler(userId, socket, connection);
+        }
+        if (
+            !ephemeralRunnerAdmission
+            || ephemeralRunnerAdmission.kind === "machine-runtime"
+        ) {
+            registerPeerTcpTunnelRelaySocketHandler(userId, socket, {
+                ...tunnelRelayHandlerOptions,
+            });
+        }
 
         // Ready
         connectReady = true;
@@ -999,6 +1151,7 @@ export function startSocket(app: Fastify) {
                 'Failed to broadcast planned socket restart before shutdown',
             );
         }
+        humanPresence.close();
         await io.close();
         await tunnelRelayCoordinator.close();
         if (shouldEnableRedisAdapter) {

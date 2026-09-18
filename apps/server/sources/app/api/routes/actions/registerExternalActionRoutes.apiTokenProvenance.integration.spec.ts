@@ -45,7 +45,6 @@ describe("registerExternalActionRoutes (API-token provenance) (integration)", ()
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -67,6 +66,7 @@ describe("registerExternalActionRoutes (API-token provenance) (integration)", ()
         });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "External Action request-local provenance",
             expiresAt: new Date("2030-08-22T12:01:00.000Z"),
         });
@@ -125,6 +125,7 @@ describe("registerExternalActionRoutes (API-token provenance) (integration)", ()
         });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "External Action global rate limiter",
         });
         const dispatch = vi.fn(async (request) => dispatchedResponse({
@@ -155,7 +156,9 @@ describe("registerExternalActionRoutes (API-token provenance) (integration)", ()
             });
 
             expect(response.statusCode).toBe(200);
-            expect(response.headers["x-ratelimit-limit"]).toBe("100");
+            // The Action route deliberately owns its IP-keyed limiter so the
+            // global user-key strategy cannot trigger a second PAT verification.
+            expect(response.headers["x-ratelimit-limit"]).toBe("600");
             expect(verifyToken).toHaveBeenCalledTimes(1);
             expect(dispatch).toHaveBeenCalledOnce();
         } finally {

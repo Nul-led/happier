@@ -6,6 +6,7 @@ import { requirePresentUser } from '@/app/api/utils/requirePresentUser';
 import { createServerFeatureGatedRouteApp } from '@/app/features/catalog/serverFeatureGate';
 import type { HomeSearchCapability } from './homeSearchCapability';
 import type { HomeSearchRequestContext } from './homeSearchService';
+import { readSessionAccessAuthenticationFromRequest, type SessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication';
 
 const HomeSearchRebuildResponseSchema = z.object({ ok: z.literal(true) }).strict();
 
@@ -16,7 +17,7 @@ export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
         search(query: MemorySearchQueryV1, context?: HomeSearchRequestContext): MemorySearchResultV1;
         invalidateAndRebuild(reason: 'explicit-repair'): Promise<void>;
     }>;
-    resolveVisibleSessions: (userId: string) => Promise<NonNullable<HomeSearchRequestContext['visibleSessions']>>;
+    resolveVisibleSessions: (userId: string, authentication: SessionAccessAuthentication) => Promise<NonNullable<HomeSearchRequestContext['visibleSessions']>>;
     env?: NodeJS.ProcessEnv;
 }>): void {
     const env = params.env ?? process.env;
@@ -29,7 +30,10 @@ export function registerHomeSearchRoutes(app: Fastify, params: Readonly<{
         preHandler: [app.authenticate, requirePresentUser],
         config: { rateLimit: resolveApiHotEndpointRateLimit(process.env, 'session.messages') },
     }, async (request, reply) => reply.send(params.service.search(request.body, {
-        visibleSessions: await params.resolveVisibleSessions(request.userId),
+        visibleSessions: await params.resolveVisibleSessions(
+            request.userId,
+            readSessionAccessAuthenticationFromRequest(request),
+        ),
     })));
     // This is a local Personal Home maintenance operation. Hosted deployments
     // have no present-user authority to rebuild the shared derived index.

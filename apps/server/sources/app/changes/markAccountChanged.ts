@@ -84,6 +84,80 @@ function scheduleAccountChangeWake(tx: Tx, accountId: string, cursor: number): v
     });
 }
 
+export type AccountChangeCursor = Readonly<{ accountId: string; cursor: number }>;
+
+/**
+ * Marks one shared Account projection changed for an explicit recipient set.
+ *
+ * Team and Home-governance mutations resolve their audiences transactionally.
+ * Publishing those audiences one Account at a time makes the transaction grow
+ * by two database round trips per viewer. This set-oriented owner performs a
+ * fixed number of provider-portable Prisma operations instead: increment every
+ * recipient cursor, read the resulting cursors, then replace the one coalesced
+ * projection row for each Account. The Account update is still the writer fence
+ * and all rows plus their content-free wakes retain the surrounding transaction's
+ * commit boundary.
+ *
+ * This deliberately owns only hint-free projection invalidation. The
+ * single-recipient writer below remains authoritative for entity foreign keys
+ * and merge-sensitive hints such as Collection full rereads.
+ */
+export async function markAccountsChanged(
+    tx: Tx,
+    params: Readonly<{
+        accountIds: readonly string[];
+        entityId: string;
+        kind?: "account" | "savedSecretResource";
+    }>,
+): Promise<AccountChangeCursor[]> {
+    const accountIds = [...new Set(params.accountIds
+        .map((accountId) => (typeof accountId === "string" ? accountId.trim() : ""))
+        .filter(Boolean))].sort();
+    const entityId = typeof params.entityId === "string" ? params.entityId.trim() : "";
+    const kind = params.kind ?? "account";
+    if (!entityId) throw new Error("markAccountsChanged: entityId is required");
+    if (accountIds.length === 0) return [];
+
+    const updated = await tx.account.updateMany({
+        where: { id: { in: accountIds } },
+        data: { seq: { increment: 1 } },
+    });
+    if (updated.count !== accountIds.length) {
+        throw new Error("markAccountsChanged: every Account recipient must exist");
+    }
+
+    const cursorRows = await tx.account.findMany({
+        where: { id: { in: accountIds } },
+        orderBy: { id: "asc" },
+        select: { id: true, seq: true },
+    });
+    if (cursorRows.length !== accountIds.length) {
+        throw new Error("markAccountsChanged: failed to read every Account cursor");
+    }
+
+    const changedAt = new Date();
+    await tx.accountChange.deleteMany({
+        where: {
+            accountId: { in: accountIds },
+            kind,
+            entityId,
+        },
+    });
+    await tx.accountChange.createMany({
+        data: cursorRows.map((row) => ({
+            accountId: row.id,
+            kind,
+            entityId,
+            cursor: row.seq,
+            changedAt,
+        })),
+    });
+
+    const cursors = cursorRows.map((row) => ({ accountId: row.id, cursor: row.seq }));
+    for (const row of cursors) scheduleAccountChangeWake(tx, row.accountId, row.cursor);
+    return cursors;
+}
+
 export async function markAccountChanged(
     tx: Tx,
     params: {

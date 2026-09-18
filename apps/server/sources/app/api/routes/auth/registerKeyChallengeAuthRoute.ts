@@ -1,5 +1,5 @@
 import * as privacyKit from "privacy-kit";
-import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
@@ -12,7 +12,6 @@ import { type Fastify } from "../../types";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
     AUTH_KEY_CHALLENGE_V2_ERROR_CODES,
-    canonicalizeKeyChallengeV2AudienceOrigin,
     createKeyChallengeV2SigningInput,
     KeyChallengeAuthRequestSchema,
     KeyChallengeV2IssueRequestSchema,
@@ -30,16 +29,36 @@ import {
     type VerifiedAccountContentKeyBinding,
 } from "@/app/encryption/accountContentKeyAdmission";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
-import { resolveConfiguredCanonicalServerUrl } from "@/app/serverUrls/effectiveServerUrls";
-import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 import {
-    ensureSameServiceHomeBootstrapForNewAccountInTx,
-    prepareSameServiceHomeBootstrapForNewAccount,
+    ensureSameServiceHomeEntryInTx,
+    prepareSameServiceHomeEntry,
 } from "@/app/accountDirectory/accountDirectoryService";
+import { accountDirectoryAuthErrorHandler } from "@/app/accountDirectory/accountDirectoryErrors";
 import { inTx } from "@/storage/inTx";
+import { provisionFreshAccountInTx } from "@/app/auth/provisionFreshAccountInTx";
+import {
+    isEffectiveHomeAuthMethodActionEnabled,
+    isEffectiveHomeAuthMethodActionEnabledInTx,
+} from "@/app/auth/methods/effectiveHomeAuthMethods";
+import {
+    TeamInvitationAcceptanceAbort,
+} from "@/app/teams/invitations/accept";
+import {
+    requireTeamInvitationFreshAccountAdmissionInTx,
+    TeamInvitationFreshAccountAdmissionAbort,
+} from "@/app/teams/invitations/freshAccountAdmission";
+import { isTeamMembershipAdmissionEnabled } from "@/app/teams/memberships/membershipService";
 
-const KEY_CHALLENGE_V2_TTL_MS = 5 * 60_000;
-const ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX = "account_directory:";
+import {
+    issueKeyChallengeV2,
+    readKeyChallengeV2ForLogin,
+    consumeLoginKeyChallengeV2,
+    decodeVerifiedNativePasswordEvidenceV1,
+    verifyKeyChallengeSignature,
+} from "@/app/auth/keyChallengeV2";
+import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
+export { resolveStableKeyChallengeV2AudienceOrigin } from "@/app/auth/keyChallengeV2";
+
 const KeyChallengeV2UnavailableResponseSchema = z.object({
     error: z.literal(AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable),
 });
@@ -49,19 +68,6 @@ const KeyChallengeV2RequiredResponseSchema = z.object({
 const KeyChallengeAuthResponseSchemas: Record<number, z.ZodTypeAny> = {
     426: KeyChallengeV2RequiredResponseSchema,
 };
-
-/**
- * The challenge audience is derived exclusively from the configured stable
- * server URL. Request Host, optional public-ingress metadata, and ephemeral
- * runtime/Iroh origins are deliberately not inputs to this function.
- */
-export function resolveStableKeyChallengeV2AudienceOrigin(
-    env: NodeJS.ProcessEnv,
-): string | null {
-    return canonicalizeKeyChallengeV2AudienceOrigin(
-        resolveConfiguredCanonicalServerUrl(env),
-    );
-}
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
     return left.byteLength === right.byteLength
@@ -103,18 +109,6 @@ type KeyChallengeRoutePurpose = Readonly<{
     requireKeyChallengeV2: boolean;
 }>;
 
-function isChallengeIdForPurpose(
-    challengeId: string,
-    tokenKind: KeyChallengeRoutePurpose["tokenKind"],
-): boolean {
-    const isAccountDirectoryChallenge = challengeId.startsWith(
-        ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX,
-    );
-    return tokenKind === "account_directory"
-        ? isAccountDirectoryChallenge
-        : !isAccountDirectoryChallenge;
-}
-
 function registerKeyChallengeAuthRoutesForPurpose(
     app: Fastify,
     purpose: KeyChallengeRoutePurpose,
@@ -131,55 +125,15 @@ function registerKeyChallengeAuthRoutesForPurpose(
             },
         },
     }, async (request, reply) => {
-        const audienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(process.env);
-        if (!audienceOrigin) {
+        const challenge = await issueKeyChallengeV2({
+            purpose: purpose.tokenKind,
+            expectedAccountId: request.body.expectedAccountId,
+            env: process.env,
+        });
+        if (!challenge) {
             return reply.code(503).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable });
         }
-
-        const issuedAt = new Date();
-        await db.keyChallengeV2.deleteMany({
-            where: { expiresAt: { lte: issuedAt } },
-        }).catch(() => {
-            // Expiry reclamation is opportunistic; issuance remains available when it loses a cleanup race.
-        });
-        const expiresAt = new Date(issuedAt.getTime() + KEY_CHALLENGE_V2_TTL_MS);
-        const audienceServerIdentityId = await getOrCreateServerIdentityId(process.env);
-        const challenge = await db.keyChallengeV2.create({
-            data: {
-                ...(purpose.tokenKind === "account_directory"
-                    ? { id: `${ACCOUNT_DIRECTORY_CHALLENGE_ID_PREFIX}${randomUUID()}` }
-                    : {}),
-                nonce: privacyKit.encodeBase64(new Uint8Array(randomBytes(32))),
-                issuedAt,
-                expiresAt,
-                audienceOrigin,
-                audienceServerIdentityId,
-                ...(request.body.expectedAccountId
-                    ? { expectedAccountId: request.body.expectedAccountId }
-                    : {}),
-            },
-            select: {
-                id: true,
-                nonce: true,
-                issuedAt: true,
-                expiresAt: true,
-                audienceOrigin: true,
-                audienceServerIdentityId: true,
-            },
-        });
-        if (!challenge.audienceServerIdentityId) {
-            return reply.code(503).send({ error: AUTH_KEY_CHALLENGE_V2_ERROR_CODES.unavailable });
-        }
-        return reply.send({
-            challengeId: challenge.id,
-            nonce: challenge.nonce,
-            issuedAt: challenge.issuedAt.toISOString(),
-            expiresAt: challenge.expiresAt.toISOString(),
-            audience: {
-                origin: challenge.audienceOrigin,
-                serverIdentityId: challenge.audienceServerIdentityId,
-            },
-        });
+        return reply.send(challenge);
     });
 
     app.post(purpose.redeemPath, {
@@ -189,7 +143,8 @@ function registerKeyChallengeAuthRoutesForPurpose(
         schema: {
             body: KeyChallengeAuthRequestSchema,
             response: KeyChallengeAuthResponseSchemas,
-        }
+        },
+        errorHandler: accountDirectoryAuthErrorHandler,
     }, async (request, reply) => {
         const authRequest = request.body;
         const isV2AuthRequest = isKeyChallengeV2AuthRequest(authRequest);
@@ -224,40 +179,19 @@ function registerKeyChallengeAuthRoutesForPurpose(
 
         let signingInput: Uint8Array;
         let v2ChallengeId: string | null = null;
+        // Server-owned evidence written by a native verifier when it issued this
+        // exact Account-bound challenge. It is not request input, so a caller
+        // holding only the recovery secret cannot mint password provenance.
+        let verifiedNativePasswordCredentialRevision: number | null = null;
+        let challengeExpectedAccountId: string | null = null;
         if (isV2AuthRequest) {
-            if (!isChallengeIdForPurpose(authRequest.challengeId, purpose.tokenKind)) {
-                return reply.code(401).send({ error: 'Invalid signature' });
-            }
-            const challenge = await db.keyChallengeV2.findUnique({
-                where: { id: authRequest.challengeId },
-                select: {
-                    id: true,
-                    nonce: true,
-                    issuedAt: true,
-                    expiresAt: true,
-                    audienceOrigin: true,
-                    audienceServerIdentityId: true,
-                    expectedAccountId: true,
-                    consumedAt: true,
-                },
+            const challenge = await readKeyChallengeV2ForLogin({
+                challengeId: authRequest.challengeId,
+                expectedAccountId: authRequest.expectedAccountId,
+                purpose: purpose.tokenKind,
+                env: process.env,
             });
-            const now = new Date();
-            const configuredAudienceOrigin = resolveStableKeyChallengeV2AudienceOrigin(process.env);
-            const currentServerIdentityId = configuredAudienceOrigin
-                ? await getOrCreateServerIdentityId(process.env)
-                : null;
-            if (
-                !challenge
-                || challenge.consumedAt
-                || challenge.expiresAt.getTime() <= now.getTime()
-                || !configuredAudienceOrigin
-                || challenge.audienceOrigin !== configuredAudienceOrigin
-                || !currentServerIdentityId
-                || !challenge.audienceServerIdentityId
-                || challenge.audienceServerIdentityId !== currentServerIdentityId
-                || (challenge.expectedAccountId ?? undefined)
-                    !== (authRequest.expectedAccountId ?? undefined)
-            ) {
+            if (!challenge) {
                 return reply.code(401).send({ error: 'Invalid signature' });
             }
             signingInput = createKeyChallengeV2SigningInput({
@@ -272,8 +206,14 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 ...(challenge.expectedAccountId
                     ? { expectedAccountId: challenge.expectedAccountId }
                     : {}),
+                ...(authRequest.requireExistingAccount
+                    ? { requireExistingAccount: true }
+                    : {}),
             });
             v2ChallengeId = challenge.id;
+            verifiedNativePasswordCredentialRevision =
+                decodeVerifiedNativePasswordEvidenceV1(challenge.verifiedNativeMethodId);
+            challengeExpectedAccountId = challenge.expectedAccountId;
         } else {
             // COMPAT(key-challenge-v1): retain the raw assertion while an immutable supported
             // stable/preview client artifact or the current remote-dev predecessor can emit it.
@@ -298,7 +238,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 })
                 : challenge;
         }
-        const isValid = tweetnacl.sign.detached.verify(
+        const isValid = await verifyKeyChallengeSignature(
             signingInput,
             signature,
             publicKey,
@@ -307,17 +247,34 @@ function registerKeyChallengeAuthRoutesForPurpose(
             return reply.code(401).send({ error: 'Invalid signature' });
         }
         if (v2ChallengeId) {
-            const consumed = await db.keyChallengeV2.updateMany({
-                where: {
-                    id: v2ChallengeId,
-                    consumedAt: null,
-                    expiresAt: { gt: new Date() },
-                },
-                data: { consumedAt: new Date() },
-            });
-            if (consumed.count !== 1) {
+            if (!await consumeLoginKeyChallengeV2(db, v2ChallengeId)) {
                 return reply.code(401).send({ error: 'Invalid signature' });
             }
+        }
+
+        const publicKeyHex = privacyKit.encodeHex(publicKey);
+        const requiredExistingAccount =
+            isV2AuthRequest
+            && authRequest.requireExistingAccount
+            && !authRequest.expectedAccountId
+                ? await db.account.findUnique({
+                    where: { publicKey: publicKeyHex },
+                    select: {
+                        id: true,
+                        publicKey: true,
+                        encryptionMode: true,
+                        contentPublicKey: true,
+                        contentPublicKeySig: true,
+                    },
+                })
+                : null;
+        if (
+            isV2AuthRequest
+            && authRequest.requireExistingAccount
+            && !authRequest.expectedAccountId
+            && !requiredExistingAccount
+        ) {
+            return reply.code(401).send({ error: "Invalid token" });
         }
 
         // Defensive: /v1/auth is often the first route hit on a fresh server, and some
@@ -359,7 +316,6 @@ function registerKeyChallengeAuthRoutesForPurpose(
             }
         }
 
-        const publicKeyHex = privacyKit.encodeHex(publicKey);
         if (request.body.expectedAccountId) {
             const expectedAccount = await db.account.findUnique({
                 where: { publicKey: publicKeyHex },
@@ -410,20 +366,54 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 env: process.env,
             });
             if (!eligibility.ok) {
+                if (eligibility.error === "account-disabled") {
+                    return reply.code(403).send({ error: "account-disabled" });
+                }
                 return reply.code(401).send({
                     error: "Invalid token",
                 });
             }
-            return reply.send({
-                success: true,
-                token: await auth.createToken(
-                    expectedAccount.id,
-                    undefined,
-                    {
+            // The challenge carried password evidence only if a native verifier
+            // issued it for this exact Account after proving the factor. Every
+            // ordinary check above — signature, currentness, one-time
+            // consumption, expected Account, content-key binding — has already
+            // passed, so the stamp records what was actually verified.
+            const token = purpose.tokenKind === "account"
+                ? await inTx(async (tx) => {
+                    await acquireAccountSessionOwnerMetadataFenceInTx(tx, expectedAccount.id);
+                    const passwordCredential = verifiedNativePasswordCredentialRevision !== null
+                        ? await tx.accountPasswordCredential.findUnique({
+                            where: { accountId: expectedAccount.id },
+                            select: { revision: true },
+                        })
+                        : null;
+                    const verifiedMethodId =
+                        verifiedNativePasswordCredentialRevision !== null
+                        && passwordCredential?.revision === verifiedNativePasswordCredentialRevision
+                        && challengeExpectedAccountId === expectedAccount.id
+                            ? "email_password"
+                            : "key_challenge";
+                    if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: verifiedMethodId,
+                        actionId: "login",
+                        mode: "keyed",
+                    })) return null;
+                    return await auth.createTokenInTx(tx, expectedAccount.id, undefined, {
                         kind: purpose.tokenKind,
                         authority: "present_user",
-                    },
-                ),
+                        authenticationEvidence: [{ kind: "home_method", methodId: verifiedMethodId }],
+                    });
+                })
+                : await auth.createToken(expectedAccount.id, undefined, {
+                    kind: purpose.tokenKind,
+                    authority: "present_user",
+                    authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+                });
+            if (!token) return reply.code(403).send({ error: "method_not_available" });
+            return reply.send({
+                success: true,
+                token,
             });
         }
 
@@ -433,7 +423,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
             encryptionFeatureEnv.defaultAccountMode,
         );
 
-        const existingAccount = await db.account.findUnique({
+        const existingAccount = requiredExistingAccount ?? await db.account.findUnique({
             where: { publicKey: publicKeyHex },
             select: {
                 id: true,
@@ -443,6 +433,25 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 contentPublicKeySig: true,
             },
         });
+        const teamInvitationAdmission = purpose.tokenKind === "account"
+            && !existingAccount
+            && request.body.admission?.kind === "team_invitation"
+                ? request.body.admission
+                : null;
+        if (teamInvitationAdmission && !isTeamMembershipAdmissionEnabled()) {
+            return reply.code(403).send({ error: "signup-disabled" });
+        }
+        if (purpose.tokenKind === "account" && !await isEffectiveHomeAuthMethodActionEnabled({
+            env: process.env,
+            methodId: "key_challenge",
+            actionId: existingAccount ? "login" : "provision",
+            mode: "keyed",
+            ...(teamInvitationAdmission ? { admission: { kind: "team_invitation" as const } } : {}),
+        })) {
+            return reply.code(403).send({
+                error: existingAccount ? "method_not_available" : "signup-disabled",
+            });
+        }
         if (!existingAccount) {
             const blocked = shouldDenyPublicSignupProvisioningAction({
                 env: process.env,
@@ -450,7 +459,7 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 methodId: "key_challenge",
                 mode: "keyed",
             });
-            if (blocked || !authPolicy.anonymousSignupEnabled) {
+            if (!teamInvitationAdmission && (blocked || !authPolicy.anonymousSignupEnabled)) {
                 return reply.code(403).send({ error: "signup-disabled" });
             }
         }
@@ -488,8 +497,8 @@ function registerKeyChallengeAuthRoutesForPurpose(
         }
 
         const sameServiceBootstrapPreparation =
-            !existingAccount && purpose.tokenKind === "account_directory"
-                ? await prepareSameServiceHomeBootstrapForNewAccount({})
+            purpose.tokenKind === "account_directory"
+                ? await prepareSameServiceHomeEntry({})
                 : null;
         if (
             sameServiceBootstrapPreparation?.status === "not_dual_role"
@@ -498,65 +507,60 @@ function registerKeyChallengeAuthRoutesForPurpose(
             throw new Error("Same-service Home descriptor identity mismatch");
         }
 
-        // Existing-account authentication remains read-mostly. Fresh Account
-        // creation, same-service composition, and token issuance share one
-        // transaction, so the exact write winner exclusively owns the
-        // fresh-only bootstrap authorization.
-        const freshAccountWrite = existingAccount
-            ? null
-            : await inTx(async (tx) => {
-                const proposedAccountId = randomUUID();
-                const user = await tx.account.upsert({
-                    where: { publicKey: publicKeyHex },
-                    update: {},
-                    create: {
-                        id: proposedAccountId,
-                        publicKey: publicKeyHex,
+        let freshAccount = null;
+        if (!existingAccount) {
+            try {
+                freshAccount = await inTx(async (tx) => {
+                    if (purpose.tokenKind === "account" && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: "key_challenge",
+                        actionId: "provision",
+                        mode: "keyed",
+                        ...(teamInvitationAdmission ? { admission: { kind: "team_invitation" as const } } : {}),
+                    })) throw new Error("signup-disabled");
+                    if (!teamInvitationAdmission && (shouldDenyPublicSignupProvisioningAction({
+                        env: process.env,
+                        requestIp: request.ip,
+                        methodId: "key_challenge",
+                        mode: "keyed",
+                    }) || !resolveAuthPolicyFromEnv(process.env).anonymousSignupEnabled)) {
+                        throw new Error("signup-disabled");
+                    }
+                    const account = await provisionFreshAccountInTx(tx, {
+                        insertSemantics: {
+                            kind: "idempotent_verified_signing_identity",
+                            publicKey: publicKeyHex,
+                        },
                         encryptionMode: effectiveDefaultEncryptionMode,
-                        ...(contentKeyBinding ? {
-                            contentPublicKey: contentKeyBinding.contentPublicKey,
-                            contentPublicKeySig: contentKeyBinding.contentPublicKeySignature,
-                        } : {}),
-                    },
+                        contentKeyBinding,
+                        directoryPreparation: sameServiceBootstrapPreparation,
+                    });
+                    if (teamInvitationAdmission) {
+                        await requireTeamInvitationFreshAccountAdmissionInTx(tx, {
+                            token: teamInvitationAdmission.token,
+                            accountId: account.id,
+                        });
+                    }
+                    return account;
                 });
-                const createdByThisRequest = user.id === proposedAccountId;
-                if (contentKeyBinding) {
-                    const admission = await admitAccountContentKey(tx, {
-                        accountId: user.id,
-                        contentPublicKey: contentKeyBinding.contentPublicKey,
-                        contentPublicKeySignature: contentKeyBinding.contentPublicKeySignature,
-                    });
-                    if (admission.status === "key_mismatch") {
-                        return { status: "key_mismatch" as const };
-                    }
-                    if (
-                        admission.status === "account_not_found"
-                        || admission.status === "invalid_binding"
-                    ) {
-                        return { status: "invalid_binding" as const };
-                    }
+            } catch (error) {
+                if (error instanceof Error && error.message === "signup-disabled") {
+                    return reply.code(403).send({ error: "signup-disabled" });
                 }
-                if (createdByThisRequest && sameServiceBootstrapPreparation) {
-                    await ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
-                        accountId: user.id,
-                        preparation: sameServiceBootstrapPreparation,
-                    });
+                if (error instanceof Error && error.message === "content_public_key_mismatch") {
+                    return reply.code(409).send({ error: "content_public_key_mismatch" });
                 }
-                const token = await auth.createTokenInTx(
-                    tx,
-                    user.id,
-                    undefined,
-                    { kind: purpose.tokenKind, authority: "present_user" },
-                );
-                return { status: "written" as const, user, token };
-            });
-        if (freshAccountWrite?.status === "key_mismatch") {
-            return reply.code(409).send({ error: "content_public_key_mismatch" });
+                if (error instanceof Error && error.message === "invalid_content_public_key_binding") {
+                    return reply.code(400).send({ error: "Invalid contentPublicKeySig" });
+                }
+                if (error instanceof TeamInvitationAcceptanceAbort
+                    || error instanceof TeamInvitationFreshAccountAdmissionAbort) {
+                    return reply.code(403).send({ error: "signup-disabled" });
+                }
+                throw error;
+            }
         }
-        if (freshAccountWrite?.status === "invalid_binding") {
-            return reply.code(400).send({ error: "Invalid contentPublicKeySig" });
-        }
-        const user = existingAccount ?? freshAccountWrite!.user;
+        const user = existingAccount ?? freshAccount!;
         if (contentKeyBinding && existingAccount) {
             const admission = await admitAccountContentKey(db, {
                 accountId: user.id,
@@ -617,18 +621,52 @@ function registerKeyChallengeAuthRoutesForPurpose(
                 });
             }
         }
-        return reply.send({
-            success: true,
-            token: freshAccountWrite?.status === "written"
-                ? freshAccountWrite.token
+        const token = purpose.tokenKind === "account"
+            ? await inTx(async (tx) => {
+                if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                    env: process.env,
+                    methodId: "key_challenge",
+                    actionId: freshAccount ? "provision" : "login",
+                    mode: "keyed",
+                    ...(freshAccount && teamInvitationAdmission
+                        ? { admission: { kind: "team_invitation" as const } }
+                        : {}),
+                })) return null;
+                return await auth.createTokenInTx(tx, user.id, undefined, {
+                    kind: purpose.tokenKind,
+                    authority: "present_user",
+                    authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+                });
+            })
+            : !freshAccount && sameServiceBootstrapPreparation?.status === "ready"
+                    ? await inTx(async (tx) => {
+                        await ensureSameServiceHomeEntryInTx(tx, {
+                            accountId: user.id,
+                            preparation: sameServiceBootstrapPreparation,
+                        });
+                        return auth.createTokenInTx(tx, user.id, undefined, {
+                            kind: purpose.tokenKind,
+                            authority: "present_user",
+                            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+                        });
+                    })
                 : await auth.createToken(
                     user.id,
                     undefined,
                     {
                         kind: purpose.tokenKind,
                         authority: "present_user",
+                        authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
                     },
-                ),
+                );
+        if (!token) {
+            return reply.code(403).send({
+                error: freshAccount ? "signup-disabled" : "method_not_available",
+            });
+        }
+        return reply.send({
+            success: true,
+            token,
         });
     });
 }

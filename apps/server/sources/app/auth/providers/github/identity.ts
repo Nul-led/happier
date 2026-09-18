@@ -7,6 +7,7 @@ export async function prepareGitHubIdentityConnection(params: {
     profile: unknown;
     accessToken: string;
     preferredUsername?: string | null;
+    transferFromAccountId?: string;
 }): Promise<PreparedIdentityConnection> {
     // Lazy import to avoid provider-registry import cycles during server startup/tests.
     const { prepareGithubConnect } = await import("./githubConnect");
@@ -14,7 +15,7 @@ export async function prepareGitHubIdentityConnection(params: {
         params.ctx,
         params.profile as GitHubProfile,
         params.accessToken,
-        params.preferredUsername ? { preferredUsername: params.preferredUsername } : undefined,
+        { preferredUsername: params.preferredUsername, transferFromAccountId: params.transferFromAccountId },
     );
 }
 
@@ -23,6 +24,7 @@ export async function connectGitHubIdentity(params: {
     profile: unknown;
     accessToken: string;
     preferredUsername?: string | null;
+    transferFromAccountId?: string;
 }): Promise<void> {
     const prepared = await prepareGitHubIdentityConnection(params);
     const { inTx } = await import("@/storage/inTx");

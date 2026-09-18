@@ -8,6 +8,7 @@ import type {
 } from "@happier-dev/protocol";
 import { buildPluginDomainAccountChangeEntityId } from "@happier-dev/protocol/changes";
 import {
+    artifactDataKeyMatchesAccountMode,
     artifactStoredContentMatchesAccountMode,
     artifactUpdateMatchesStoredMode,
     isPlainArtifactDataKeyBytes,
@@ -158,6 +159,7 @@ export async function matchArtifactAccountEncryptionMigrationPostStateInTx(
         const opened = openArtifactStoredContentPair({
             accountId: params.accountId,
             artifactId: row.id,
+            mode: params.toMode,
             dataEncryptionKey: row.dataEncryptionKey,
             header: row.header,
             body: row.body,
@@ -419,6 +421,21 @@ export async function createArtifactTx(
         markChanged?: (artifactId: string) => Promise<Cursor>;
     }
 ): Promise<CreateArtifactResult> {
+    const account = await tx.account.findUnique({
+        where: { id: params.actorUserId },
+        select: {
+            encryptionMode: true,
+            publicKey: true,
+            contentPublicKey: true,
+            contentPublicKeySig: true,
+        },
+    });
+    const currentness = account
+        ? deriveAccountEncryptionCurrentnessFromRow(account)
+        : null;
+    if (currentness?.status !== "ready") {
+        return { ok: false, error: "invalid-params" };
+    }
     const existing = await tx.artifact.findUnique({
         where: { id: params.artifactId },
         select: {
@@ -473,6 +490,7 @@ export async function createArtifactTx(
         const opened = openArtifactStoredContentPair({
             accountId: existing.accountId,
             artifactId: existing.id,
+            mode: currentness.currentness.encryptionMode,
             dataEncryptionKey: existing.dataEncryptionKey,
             header: existing.header,
             body: existing.body,
@@ -507,21 +525,8 @@ export async function createArtifactTx(
         };
     }
 
-    const account = await tx.account.findUnique({
-        where: { id: params.actorUserId },
-        select: {
-            encryptionMode: true,
-            publicKey: true,
-            contentPublicKey: true,
-            contentPublicKeySig: true,
-        },
-    });
-    const currentness = account
-        ? deriveAccountEncryptionCurrentnessFromRow(account)
-        : null;
     if (
-        currentness?.status !== "ready"
-        || !artifactStoredContentMatchesAccountMode({
+        !artifactStoredContentMatchesAccountMode({
         mode: currentness.currentness.encryptionMode,
         header: params.header,
         body: params.body,
@@ -669,6 +674,21 @@ export async function updateArtifactTx(
         supportsCurrentStoredContentProtocol?: boolean;
     },
 ): Promise<UpdateArtifactResult> {
+    const account = await tx.account.findUnique({
+        where: { id: params.actorUserId },
+        select: {
+            encryptionMode: true,
+            publicKey: true,
+            contentPublicKey: true,
+            contentPublicKeySig: true,
+        },
+    });
+    const currentness = account
+        ? deriveAccountEncryptionCurrentnessFromRow(account)
+        : null;
+    if (currentness?.status !== "ready") {
+        return { ok: false, error: "invalid-params" };
+    }
     const current = await tx.artifact.findFirst({
         where: {
             id: params.artifactId,
@@ -708,6 +728,7 @@ export async function updateArtifactTx(
     const openedCurrent = openArtifactStoredContentPair({
         accountId: params.actorUserId,
         artifactId: current.id,
+        mode: currentness.currentness.encryptionMode,
         dataEncryptionKey: current.dataEncryptionKey,
         header: current.header,
         body: current.body,
@@ -810,6 +831,7 @@ export async function updateArtifactTx(
         const openedFresh = openArtifactStoredContentPair({
             accountId: params.actorUserId,
             artifactId: fresh.id,
+            mode: currentness.currentness.encryptionMode,
             dataEncryptionKey: fresh.dataEncryptionKey,
             header: fresh.header,
             body: fresh.body,
@@ -873,6 +895,27 @@ export async function deleteArtifact(params: {
             });
             if (!artifact) {
                 return { ok: false, error: "not-found" };
+            }
+            const account = await tx.account.findUnique({
+                where: { id: actorUserId },
+                select: {
+                    encryptionMode: true,
+                    publicKey: true,
+                    contentPublicKey: true,
+                    contentPublicKeySig: true,
+                },
+            });
+            const currentness = account
+                ? deriveAccountEncryptionCurrentnessFromRow(account)
+                : null;
+            if (
+                currentness?.status !== "ready"
+                || !artifactDataKeyMatchesAccountMode({
+                    mode: currentness.currentness.encryptionMode,
+                    dataEncryptionKey: artifact.dataEncryptionKey,
+                })
+            ) {
+                return { ok: false, error: "internal" };
             }
             if (
                 isPlainArtifactDataKeyBytes(artifact.dataEncryptionKey)

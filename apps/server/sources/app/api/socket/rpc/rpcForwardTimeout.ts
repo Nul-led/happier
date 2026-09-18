@@ -1,4 +1,5 @@
 import { SESSION_RPC_METHODS } from "@happier-dev/protocol/rpc";
+import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from "@happier-dev/protocol/actions";
 
 function parsePositiveIntOrDefault(value: string | undefined, fallback: number): number {
     if (typeof value !== "string") return fallback;
@@ -29,14 +30,30 @@ const RPC_FORWARD_MAX_TIMEOUT_MS = parsePositiveIntOrDefault(
 // lifecycle rather than the generic RPC request lifetime.
 const RPC_FORWARD_CALLER_LIFECYCLE_TIMEOUT_MS = 2_147_483_647;
 const RPC_FORWARD_CALLER_LIFECYCLE_METHODS = new Set<string>([
+    EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
     SESSION_RPC_METHODS.SESSION_AGENT_REALTIME_WATCH,
     SESSION_RPC_METHODS.SESSION_MANAGED_SERVICE_ENDPOINT_READ_NEXT_V1,
+    SESSION_RPC_METHODS.EXECUTION_RUN_START,
+    SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE,
+    SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START,
+    SESSION_RPC_METHODS.EXECUTION_RUN_ENSURE_OR_START_PROVIDER_SAFE_V1,
+    SESSION_RPC_METHODS.EXECUTION_RUN_SEND,
+    SESSION_RPC_METHODS.EXECUTION_RUN_ACTION,
+    SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START,
+    SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_START_V2,
+    SESSION_RPC_METHODS.EXECUTION_RUN_STREAM_CANCEL,
+    SESSION_RPC_METHODS.EXECUTION_RUN_STOP,
+    SESSION_RPC_METHODS.EXECUTION_RUN_WAIT,
 ]);
 
-function resolveRpcDefaultForwardTimeoutMs(method: string): number {
+export function isRpcForwardCallerLifecycleOwned(method: string): boolean {
     const scopeSeparatorIndex = method.indexOf(":");
     const normalizedMethod = scopeSeparatorIndex >= 0 ? method.slice(scopeSeparatorIndex + 1) : method;
-    if (RPC_FORWARD_CALLER_LIFECYCLE_METHODS.has(normalizedMethod)) {
+    return RPC_FORWARD_CALLER_LIFECYCLE_METHODS.has(normalizedMethod);
+}
+
+function resolveRpcDefaultForwardTimeoutMs(method: string): number {
+    if (isRpcForwardCallerLifecycleOwned(method)) {
         return RPC_FORWARD_CALLER_LIFECYCLE_TIMEOUT_MS;
     }
     return method.endsWith(":capabilities.invoke") || method.endsWith(":capabilities.detect") || method.endsWith(":capabilities.describe")

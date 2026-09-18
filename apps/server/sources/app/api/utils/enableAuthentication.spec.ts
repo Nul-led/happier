@@ -2,11 +2,17 @@ import Fastify from "fastify";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const verifyToken = vi.fn();
+const verifyTokenDisposition = vi.fn(async (token: string) => {
+    const credential = await verifyToken(token);
+    return credential
+        ? { status: "verified" as const, credential }
+        : { status: "invalid" as const };
+});
 const enforceLoginEligibility = vi.fn();
 const log = vi.fn();
 
 vi.mock("@/app/auth/auth", () => ({
-    auth: { verifyToken },
+    auth: { verifyToken, verifyTokenDisposition },
 }));
 
 vi.mock("@/app/auth/enforceLoginEligibility", () => ({
@@ -22,10 +28,11 @@ let enableAuthentication: typeof import("./enableAuthentication").enableAuthenti
 describe("enableAuthentication (defensive error handling)", () => {
     beforeAll(async () => {
         ({ enableAuthentication } = await import("./enableAuthentication"));
-    });
+    }, 120_000);
 
     beforeEach(() => {
         verifyToken.mockReset();
+        verifyTokenDisposition.mockClear();
         enforceLoginEligibility.mockReset();
         log.mockReset();
     });
@@ -87,7 +94,7 @@ describe("enableAuthentication (defensive error handling)", () => {
         }
     });
 
-    it("returns 403 account-disabled when eligibility blocks a disabled account", async () => {
+    it("keeps a disabled Account opaque when an already-issued credential is presented", async () => {
         verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: false, statusCode: 403, error: "account-disabled" } as any);
 
@@ -102,8 +109,8 @@ describe("enableAuthentication (defensive error handling)", () => {
             headers: { authorization: "Bearer t" },
         });
 
-        expect(res.statusCode).toBe(403);
-        expect(res.json()).toEqual({ error: "account-disabled" });
+        expect(res.statusCode).toBe(401);
+        expect(res.json()).toEqual({ error: "invalid_token" });
 
         await app.close();
     });
@@ -249,6 +256,122 @@ describe("enableAuthentication (defensive error handling)", () => {
         await app.close();
     });
 
+    it("stamps a current restricted Runner as account automation for canonical Session authorization", async () => {
+        const sessionRuntimePrincipal = {
+            kind: "ephemeral_session_runner" as const,
+            authority: "session_runtime" as const,
+            accountId: "u1",
+            activationId: "activation_1",
+            sessionId: "session_1",
+            machineId: "machine_1",
+            installationId: "installation_1",
+            installationPublicKey: "installation_public_key_1",
+            creatorTokenEpoch: 1,
+        };
+        verifyToken.mockResolvedValueOnce({
+            userId: "u1",
+            authTokenKind: "ephemeral_session_runner",
+            authority: "session_runtime",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            ephemeralSessionRunnerPrincipal: sessionRuntimePrincipal,
+        });
+        enforceLoginEligibility.mockResolvedValueOnce({ ok: true });
+
+        const app = Fastify({ logger: false }) as any;
+        enableAuthentication(app);
+        app.get(
+            "/runner/:sessionId",
+            {
+                config: { ephemeralSessionRunnerOperation: "session_detail" },
+                preHandler: app.authenticate,
+            },
+            async (request: any) => ({
+                authAuthority: request.authAuthority,
+                authenticationEvidence: request.authTokenAuthenticationEvidence,
+                sessionRuntimePrincipal: request.sessionRuntimePrincipal,
+            }),
+        );
+        await app.ready();
+
+        const res = await app.inject({
+            method: "GET",
+            url: "/runner/session_1",
+            headers: { authorization: "Bearer runner-token" },
+        });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.json()).toEqual({
+            authAuthority: "account_automation",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            sessionRuntimePrincipal,
+        });
+
+        await app.close();
+    });
+
+    it.each([
+        {
+            label: "missing typed principal",
+            verified: {
+                userId: "u1",
+                authTokenKind: "ephemeral_session_runner" as const,
+                authority: "session_runtime" as const,
+            },
+            expectedStatus: 401,
+            expectedBody: { error: "invalid_token" },
+        },
+        {
+            label: "principal for a different Account",
+            verified: {
+                userId: "u1",
+                authTokenKind: "ephemeral_session_runner" as const,
+                authority: "session_runtime" as const,
+                ephemeralSessionRunnerPrincipal: {
+                    kind: "ephemeral_session_runner" as const,
+                    authority: "session_runtime" as const,
+                    accountId: "u2",
+                    activationId: "activation_1",
+                    sessionId: "session_1",
+                    machineId: "machine_1",
+                    installationId: "installation_1",
+                    installationPublicKey: "installation_public_key_1",
+                    creatorTokenEpoch: 1,
+                },
+            },
+            expectedStatus: 401,
+            expectedBody: { error: "invalid_token" },
+        },
+    ])("does not downgrade a presented Runner credential with $label", async ({ verified, expectedStatus, expectedBody }) => {
+        verifyToken.mockResolvedValueOnce(verified);
+        enforceLoginEligibility.mockResolvedValueOnce({ ok: true });
+
+        const handler = vi.fn(async () => ({ ok: true }));
+        const app = Fastify({ logger: false }) as any;
+        enableAuthentication(app);
+        app.get(
+            "/runner/:sessionId",
+            {
+                config: { ephemeralSessionRunnerOperation: "session_detail" },
+                preHandler: app.authenticate,
+            },
+            handler,
+        );
+        await app.ready();
+
+        const res = await app.inject({
+            method: "GET",
+            url: "/runner/session_1",
+            headers: { authorization: "Bearer runner-token" },
+        });
+
+        expect(res.statusCode).toBe(expectedStatus);
+        expect(res.json()).toEqual(expectedBody);
+        expect(handler).not.toHaveBeenCalled();
+        expect(enforceLoginEligibility).not.toHaveBeenCalled();
+
+        await app.close();
+    });
+
     it("captures the account stored-content HTTP declaration once on the authenticated request", async () => {
         verifyToken.mockResolvedValueOnce({ userId: "u1", authTokenKind: "account", authority: "present_user" });
         enforceLoginEligibility.mockResolvedValueOnce({ ok: true });
@@ -276,6 +399,8 @@ describe("enableAuthentication (defensive error handling)", () => {
             supportsCurrentProtocol: true,
             supportsPluginDataProtocol: false,
             supportsSessionAccessWitnessProtocol: false,
+            supportsMachinePoolChangeProtocol: false,
+            supportsSavedSecretResourceChangeProtocol: false,
             outcome: "accepted",
             declaration: { v: 1, protocolVersion: 2 },
             upgradeRequired: null,

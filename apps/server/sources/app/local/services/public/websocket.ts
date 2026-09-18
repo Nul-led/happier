@@ -1,5 +1,4 @@
-import { auth } from "@/app/auth/auth";
-import { isRestrictedAuthTokenKind } from "@/app/api/utils/apiTokenRouteAdmission";
+import { readOptionalPublicAuthDisposition } from "@/app/api/utils/optionalPublicAuth";
 import type { OpenLocalServicePreviewTunnel } from "@/app/local/services/preview/httpAdapter";
 import {
     proxyLocalServicePreviewWebSocketUpgrade,
@@ -21,6 +20,7 @@ import {
     readLocalServicePublicClientKey,
     resolveLocalServicePublicAccessIdentity,
     type LocalServicePublicAccessPurpose,
+    type LocalServicePublicAuthenticatedUser,
 } from "@/app/local/services/public/accessAuthorization";
 import type { LocalServicePublicExposureV1 } from "@happier-dev/protocol";
 
@@ -53,8 +53,9 @@ export type LocalServicePublicWebSocketUpgradeOptions = Readonly<{
         userId: string;
         sessionId: string;
         purpose: LocalServicePublicAccessPurpose;
+        authentication: import("@/app/session/access/sessionAccessAuthentication").SessionAccessAuthentication;
     }>) => boolean | Promise<boolean>;
-    readOptionalUserId?: (request: unknown) => Promise<string | null>;
+    readOptionalAuthenticatedUser?: (request: unknown) => Promise<LocalServicePublicAuthenticatedUser | null>;
     openTunnel?: OpenLocalServicePreviewTunnel;
     featureEnabled?: () => boolean;
     observability?: PeerMediationObservabilityEmitter;
@@ -125,21 +126,6 @@ async function sendUpgradeError(socket: UpgradeSocket, statusCode: number, statu
     await writeLocalServicePreviewUpgradeError(socket, statusCode, statusMessage);
 }
 
-async function readOptionalBearerUserId(headers: Record<string, unknown>): Promise<string | null> {
-    const authorization = headers.authorization;
-    if (typeof authorization !== "string" || !authorization.startsWith("Bearer ")) {
-        return null;
-    }
-    try {
-        const verified = await auth.verifyTokenForRoute(authorization.slice("Bearer ".length));
-        return verified && !isRestrictedAuthTokenKind(verified.authTokenKind)
-            ? verified.userId
-            : null;
-    } catch {
-        return null;
-    }
-}
-
 export function createPublicExposureObservabilityEmitter(
     base: PeerMediationObservabilityEmitter | undefined,
     exposureId: string,
@@ -192,14 +178,28 @@ export async function handleLocalServicePublicWebSocketUpgrade(
     }
 
     const headers = requestHeadersToRecord(request.headers);
-    const userId = options.readOptionalUserId
-        ? await options.readOptionalUserId({ headers })
-        : await readOptionalBearerUserId(headers);
+    const bearerAuth = await readOptionalPublicAuthDisposition(headers.authorization);
+    if (bearerAuth.status === "session_runtime_forbidden") {
+        await sendUpgradeError(socket, 403, "Forbidden");
+        return;
+    }
+    const principal = bearerAuth.status === "authenticated"
+        ? {
+            userId: bearerAuth.principal.userId,
+            authentication: {
+                env: process.env,
+                authority: bearerAuth.principal.authority,
+                authenticationEvidence: bearerAuth.principal.authenticationEvidence,
+            },
+        }
+        : options.readOptionalAuthenticatedUser
+            ? await options.readOptionalAuthenticatedUser({ headers })
+            : null;
     // S-2/S-5: the WebSocket data plane resolves the same access identity and client bucket as
     // the HTTP data plane; a co-tenant must not reach an authenticated exposure over either.
     const identity = await resolveLocalServicePublicAccessIdentity({
         exposureId: route.exposureId,
-        userId,
+        principal,
         resolveExposure: options.resolveExposure,
         authorizeSessionAccess: options.authorizeSessionAccess,
     });

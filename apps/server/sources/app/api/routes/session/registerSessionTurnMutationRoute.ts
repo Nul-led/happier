@@ -1,3 +1,4 @@
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import {
     SessionTurnMutationReceiptV1Schema,
     SessionTurnMutationV1Schema,
@@ -5,7 +6,7 @@ import {
 } from "@happier-dev/protocol";
 import { z } from "zod";
 
-import { buildCurrentSessionParticipantWhere, checkSessionAccess } from "@/app/share/accessControl";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import {
     isExternalShareableSessionTurnVisible,
     isSessionTranscriptShareable,
@@ -20,10 +21,12 @@ import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
 import { publishSessionTurnMutationUpdate } from "@/app/session/turns/publishSessionTurnMutationUpdate";
 import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
+import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 
 export function registerSessionTurnMutationRoute(app: Fastify) {
     app.post("/v1/sessions/:sessionId/turns/mutations", {
         preHandler: app.authenticate,
+        config: { ephemeralSessionRunnerOperation: "session_runtime" },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: SessionTurnMutationV1Schema,
@@ -38,7 +41,10 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
                     error: z.literal("Invalid parameters"),
                     code: z.string().optional(),
                 }),
-                403: z.object({ error: z.literal("Forbidden") }),
+                403: z.union([
+                    z.object({ error: z.literal("Forbidden") }),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }),
+                ]),
                 404: z.object({ error: z.literal("Session not found") }),
                 500: z.object({ error: z.literal("Failed to update session") }),
             },
@@ -54,6 +60,7 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
         const result = await applySessionTurnMutation({
             actorUserId: userId,
             mutation: parsed.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         if (!result.ok) {
@@ -84,6 +91,7 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
 
     app.get("/v1/sessions/:sessionId/turns", {
         preHandler: app.authenticate,
+        config: { ephemeralSessionRunnerOperation: "session_runtime" },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.object({}).strict(),
@@ -95,8 +103,9 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
         const { session, rows, publication, currentlyAccessible } = await inTx(async (tx) => {
-            const currentParticipantWhere = buildCurrentSessionParticipantWhere({ userId, sessionId });
+            const currentParticipantWhere = { AND: [{ id: sessionId }, await buildSessionAccessWhere({ tx, accountId: userId, capability: 'readTranscript', mode: 'effective_access_v1', authentication })] };
             const rows = await tx.sessionTurn.findMany({
                 where: {
                     sessionId,
@@ -116,7 +125,7 @@ export function registerSessionTurnMutationRoute(app: Fastify) {
                 session,
                 rows,
                 publication,
-                currentlyAccessible: (await checkSessionAccess(userId, sessionId, tx)) !== null,
+                currentlyAccessible: session !== null,
             };
         });
         if (!session || !currentlyAccessible) {

@@ -120,12 +120,12 @@ describe("eventRouter session room isolation (integration)", () => {
         eventRouter.clearIo();
     });
 
-    it("does not leak recipient-specific updates across users who share a sessionId", async () => {
+    it("does not leak recipient-specific updates across Account-scoped rooms", async () => {
         const server = await startTestIoServer();
         eventRouter.setIo(server.io as any);
 
-        const u1 = connectClient({ url: server.url, userId: "u1", clientType: "session-scoped", sessionId: "s1" });
-        const u2 = connectClient({ url: server.url, userId: "u2", clientType: "session-scoped", sessionId: "s1" });
+        const u1 = connectClient({ url: server.url, userId: "u1", clientType: "user-scoped" });
+        const u2 = connectClient({ url: server.url, userId: "u2", clientType: "user-scoped" });
 
         try {
             try {
@@ -142,7 +142,7 @@ describe("eventRouter session room isolation (integration)", () => {
             u1.on("update", (data) => receivedByU1.push(data));
             u2.on("update", (data) => receivedByU2.push(data));
 
-            eventRouter.emitUpdate({
+            await eventRouter.emitUpdate({
                 userId: "u1",
                 payload: {
                     id: "upd-1",
@@ -160,7 +160,7 @@ describe("eventRouter session room isolation (integration)", () => {
                         updatedAt: Date.now(),
                     },
                 } as any,
-                recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
+                recipientFilter: { type: "user-scoped-only" },
             });
 
             await vi.waitFor(() => {
@@ -169,10 +169,10 @@ describe("eventRouter session room isolation (integration)", () => {
             expect(receivedByU2.some((payload) => payload?.id === "upd-1")).toBe(false);
 
             // Prove that two recipients can legitimately have different cursors, and they must not receive each other's containers.
-            eventRouter.emitUpdate({
+            await eventRouter.emitUpdate({
                 userId: "u2",
                 payload: { id: "upd-2", seq: 20, createdAt: Date.now(), body: { t: "new-message", sid: "s1", msg: {} } } as any,
-                recipientFilter: { type: "all-interested-in-session", sessionId: "s1" },
+                recipientFilter: { type: "user-scoped-only" },
             });
 
             await vi.waitFor(() => {

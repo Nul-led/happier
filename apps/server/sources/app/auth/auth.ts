@@ -1,22 +1,56 @@
 import * as privacyKit from "privacy-kit";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
     AccountEncryptionMigrateExternalAuthBindingDigestV1Schema,
+    AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS,
+    PasswordCredentialMutationDigestV1Schema,
     AuthTokenProvenanceSchema,
+    AuthTokenProvenanceV2Schema,
+    AuthTokenProvenanceAnySchema,
     parseAccountApiTokenBearerV1,
+    AccountApiTokenCreateEncryptionV1Schema,
+    AccountApiTokenEncryptionAccessV1Schema,
+    AuthTokenAuthenticationEvidenceSnapshotV1Schema,
+    type AccountApiTokenCreateEncryptionV1,
+    type AccountApiTokenEncryptionAccessV1,
+    type AccountApiTokenEncryptionAccessResponseV1,
+    type AccountStatusV1,
     type AuthTokenAuthority,
     type AuthTokenKind,
     type AuthTokenProvenance,
+    type AuthTokenProvenanceAny,
+    type AuthTokenAuthenticationEvidenceV1,
     type ParsedAccountApiTokenBearerV1,
 } from "@happier-dev/protocol";
-import { db } from "@/storage/db";
+import {
+    ExternalActionExecutionAuthorizationBindingV1Schema,
+    ExternalActionExecutionAuthorizationV1Schema,
+    type ExternalActionExecutionAuthorizationBindingV1,
+    type ExternalActionExecutionAuthorizationV1,
+} from "@happier-dev/protocol/actions";
+import {
+    VerifiedEphemeralSessionRunnerPrincipalSchema,
+    type VerifiedEphemeralSessionRunnerPrincipal,
+} from "@happier-dev/protocol/ephemeralRunner/principal";
+import { db, isPrismaErrorCode } from "@/storage/db";
+import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
+import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { assertAccountActive } from "./accountStatus";
+import { isActiveHomeAccountStatus } from "@happier-dev/protocol";
 import { inTx, type Tx } from "@/storage/inTx";
 import { log } from "@/utils/logging/log";
 import { LRUTtlMap } from "@/utils/collections/lru";
+import { createSha256SecretDigest, sha256SecretDigestMatches } from "./secretDigest";
 import {
     isOAuthStateUnavailableError,
     OAuthStateUnavailableError,
 } from "./oauthStateErrors";
+import {
+    parseAuthenticationEvidenceSnapshot,
+    resolveCurrentAuthenticationEvidenceInTx,
+} from "./authenticationEvidence";
+import { verifyCurrentMaterializedRunnerPrincipal } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
 
 interface TokenGeneratorLike {
     new: (payload: Readonly<{
@@ -51,7 +85,7 @@ type OAuthStatePayload = Readonly<{
     userId?: string | null;
     publicKey?: string | null;
     proofHash?: string | null;
-    purpose?: "account_encryption_first_key" | "account_directory" | null;
+    purpose?: "account_encryption_first_key" | "account_password_enrollment" | "account_directory" | "team_admission" | "github_app_installation_verification" | "github_app_manifest_setup" | null;
     requestDigest?: string | null;
     endpointUrl?: string | null;
     endpointServerIdentityId?: string | null;
@@ -62,7 +96,7 @@ type DecodedAuthToken = Readonly<{
     userId: string;
     extras?: unknown;
     tokenEpoch: number;
-    provenance: AuthTokenProvenance;
+    provenance: AuthTokenProvenanceAny;
     legacy: boolean;
 }>;
 
@@ -81,6 +115,7 @@ export type AuthAuthority = AuthTokenAuthority;
 export type CreateTokenOptions = Readonly<{
     kind: AuthTokenKind;
     authority: AuthTokenAuthority;
+    authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
 }>;
 
 /**
@@ -94,6 +129,7 @@ export type VerifiedApiTokenPrincipal = Readonly<{
     credentialId: string;
     authority: "account_automation";
     expiresAt: Date | null;
+    authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
 }>;
 
 export type VerifiedAuthToken = Readonly<{
@@ -103,13 +139,54 @@ export type VerifiedAuthToken = Readonly<{
     authTokenKind: AuthTokenKind;
     /** Canonical server-verified authority from the signed marker. */
     authority: AuthTokenAuthority;
+    /** Current credentials may carry bounded server-produced authentication facts. */
+    authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     /** True only when the credential was accepted through the named
      * pre-marker ordinary-Home reader. Central admission consumes this fact
      * to deny a legacy credential on Directory-opt-in routes; a current
      * signed or database-minted credential is never legacy. */
     legacy: boolean;
     apiTokenPrincipal?: VerifiedApiTokenPrincipal;
+    ephemeralSessionRunnerPrincipal?: VerifiedEphemeralSessionRunnerPrincipal;
 }>;
+
+export type AuthTokenVerificationDisposition =
+    | Readonly<{ status: "verified"; credential: VerifiedAuthToken }>
+    | Readonly<{ status: "invalid" }>
+    | Readonly<{
+        status: "rejected_restricted";
+        authTokenKind: "ephemeral_session_runner";
+    }>;
+
+const REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL = {
+    status: "rejected_restricted",
+    authTokenKind: "ephemeral_session_runner",
+} as const;
+
+type AuthTokenInternalVerification =
+    | VerifiedAuthToken
+    | typeof REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL
+    | null;
+
+function isRejectedRestrictedCredential(
+    value: AuthTokenInternalVerification,
+): value is typeof REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL {
+    return value !== null
+        && "status" in value
+        && value.status === "rejected_restricted";
+}
+
+async function verifyCurrentEphemeralSessionRunnerPrincipal(
+    accountId: string,
+    extras: unknown,
+): Promise<VerifiedEphemeralSessionRunnerPrincipal | null> {
+    if (typeof extras !== "object" || extras === null || Array.isArray(extras)) return null;
+    const parsed = VerifiedEphemeralSessionRunnerPrincipalSchema.safeParse(
+        (extras as Readonly<Record<string, unknown>>).ephemeralSessionRunnerPrincipal,
+    );
+    if (!parsed.success || parsed.data.accountId !== accountId) return null;
+    return await verifyCurrentMaterializedRunnerPrincipal(parsed.data);
+}
 
 export type CreatedApiToken = Readonly<{
     tokenId: string;
@@ -119,6 +196,8 @@ export type CreatedApiToken = Readonly<{
     displayPrefix: string;
     createdAt: Date;
     expiresAt: Date | null;
+    hasEncryptionAccess: boolean;
+    hasUnattendedTeamAccess: boolean;
 }>;
 
 export type ApiTokenSummary = Readonly<{
@@ -128,7 +207,29 @@ export type ApiTokenSummary = Readonly<{
     createdAt: Date;
     lastUsedAt: Date | null;
     expiresAt: Date | null;
+    hasEncryptionAccess: boolean;
+    hasUnattendedTeamAccess: boolean;
 }>;
+
+export class ApiTokenOperationError extends Error {
+    constructor(readonly code: "account-disabled" | "invalid_token" | "api_token_id_conflict" | "api_token_encryption_not_ready" | "api_token_encryption_stale" | "api_token_encryption_unavailable" | "credential_authentication_evidence_limit" | "credential_authentication_evidence_unavailable") {
+        super(code);
+        this.name = "ApiTokenOperationError";
+    }
+}
+
+function matchesApiTokenEncryptionBinding(
+    account: Parameters<typeof deriveAccountEncryptionCurrentnessFromRow>[0],
+    access: AccountApiTokenEncryptionAccessV1,
+    serverIdentityId: string,
+): boolean {
+    const result = deriveAccountEncryptionCurrentnessFromRow(account);
+    return result.status === "ready"
+        && result.currentness.encryptionMode === "e2ee"
+        && result.currentness.contentPublicKey !== null
+        && privacyKit.encodeBase64(result.currentness.contentPublicKey) === access.contentPublicKey
+        && access.serverIdentityId === serverIdentityId;
+}
 
 /**
  * PAT-only verification seam for server-owned introspection consumers. It
@@ -142,6 +243,7 @@ export type VerifyPatResult =
         credentialId: string;
         expiresAt: Date | null;
         authority: "account_automation";
+        authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     }>
     | Readonly<{
         ok: false;
@@ -152,6 +254,16 @@ type VerifiedApiToken = Readonly<{
     accountId: string;
     credentialId: string;
     expiresAt: Date | null;
+    authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
+}>;
+
+type CurrentApiTokenRow = Readonly<{
+    id: string;
+    accountId: string;
+    expiresAt: Date | null;
+    lastUsedAt: Date | null;
+    authenticationEvidence: unknown;
+    Account: Readonly<{ status: AccountStatusV1 }>;
 }>;
 
 /** The API adapter maps this canonical creation rejection to `invalid_request`. */
@@ -173,13 +285,11 @@ function isApiTokenCandidate(token: string): boolean {
 }
 
 function createApiTokenSecretDigest(secret: string): Buffer {
-    return createHash("sha256").update(secret, "utf8").digest();
+    return createSha256SecretDigest(secret);
 }
 
 function apiTokenSecretDigestMatches(storedDigest: string, suppliedSecret: string): boolean {
-    const stored = Buffer.from(storedDigest, "base64url");
-    const supplied = createApiTokenSecretDigest(suppliedSecret);
-    return stored.byteLength === supplied.byteLength && timingSafeEqual(stored, supplied);
+    return sha256SecretDigestMatches(storedDigest, suppliedSecret);
 }
 
 function createApiTokenDisplayPrefix(tokenId: string): string {
@@ -193,6 +303,7 @@ function createApiTokenBearer(tokenId: string, secret: string): string {
 class AuthModule {
     private tokenCache: LRUTtlMap<string, DecodedAuthToken> | null = null;
     private tokens: AuthTokens | null = null;
+    private externalActionExecutionAuthorizationTokens: AuthTokens | null = null;
     private oauthStateTokens: OAuthStateTokens | null = null;
     private oauthStateTokensInitPromise: Promise<OAuthStateTokens> | null = null;
 
@@ -278,6 +389,18 @@ class AuthModule {
         };
     }
 
+    private async createPersistentExternalActionExecutionAuthorizationTokens(
+        masterSecret: string,
+    ): Promise<AuthTokens> {
+        const service = "happier-external-action-execution-authorization-v1";
+        const generator = await privacyKit.createPersistentTokenGenerator({ service, seed: masterSecret });
+        const verifier = await privacyKit.createPersistentTokenVerifier({
+            service,
+            publicKey: Uint8Array.from(generator.publicKey),
+        });
+        return { generator, verifier };
+    }
+
     private async getOauthStateTokens(): Promise<OAuthStateTokens> {
         if (this.oauthStateTokens) {
             return this.oauthStateTokens;
@@ -329,7 +452,12 @@ class AuthModule {
         
         const masterSecret = this.requireMasterSecret(process.env);
 
-        this.tokens = await this.createPersistentAuthTokens(masterSecret);
+        const [tokens, externalActionExecutionAuthorizationTokens] = await Promise.all([
+            this.createPersistentAuthTokens(masterSecret),
+            this.createPersistentExternalActionExecutionAuthorizationTokens(masterSecret),
+        ]);
+        this.tokens = tokens;
+        this.externalActionExecutionAuthorizationTokens = externalActionExecutionAuthorizationTokens;
 
         const tokenCacheMaxEntries = this.resolveAuthTokenCacheMaxEntriesFromEnv(process.env);
         if (tokenCacheMaxEntries > 0) {
@@ -352,13 +480,50 @@ class AuthModule {
     ): Promise<string> {
         const account = await db.account.findUnique({
             where: { id: userId },
-            select: { tokenEpoch: true },
+            select: { tokenEpoch: true, status: true },
         });
         if (!account) {
             throw new Error("Cannot create auth token for an unknown account");
         }
 
+        assertAccountActive(account.status);
         return this.createTokenWithEpoch(userId, account.tokenEpoch, extras, options);
+    }
+
+    async mintExternalActionExecutionAuthorization(
+        input: ExternalActionExecutionAuthorizationBindingV1,
+    ): Promise<ExternalActionExecutionAuthorizationV1> {
+        if (!this.externalActionExecutionAuthorizationTokens) {
+            throw new Error("Auth module not initialized");
+        }
+        const binding = ExternalActionExecutionAuthorizationBindingV1Schema.parse(input);
+        const token = await this.externalActionExecutionAuthorizationTokens.generator.new({
+            user: binding.accountId,
+            extras: { externalActionExecutionAuthorizationV1: binding },
+        });
+        return ExternalActionExecutionAuthorizationV1Schema.parse({ v: 1, token, binding });
+    }
+
+    async verifyExternalActionExecutionAuthorization(
+        token: string,
+    ): Promise<ExternalActionExecutionAuthorizationBindingV1 | null> {
+        if (!this.externalActionExecutionAuthorizationTokens) {
+            throw new Error("Auth module not initialized");
+        }
+        try {
+            const verified = await this.externalActionExecutionAuthorizationTokens.verifier.verify(token);
+            if (typeof verified !== "object" || verified === null || Array.isArray(verified)) return null;
+            const payload = verified as Readonly<Record<string, unknown>>;
+            const userCandidate = payload.user ?? payload.userId;
+            const extras = this.asTokenExtras(payload.extras);
+            const binding = ExternalActionExecutionAuthorizationBindingV1Schema.safeParse(
+                extras?.externalActionExecutionAuthorizationV1,
+            );
+            if (!binding.success || userCandidate !== binding.data.accountId) return null;
+            return binding.data;
+        } catch {
+            return null;
+        }
     }
 
     /**
@@ -370,11 +535,12 @@ class AuthModule {
         authenticated: true;
     }>> {
         const account = await db.account.findFirst({
+            where: { status: "active" },
             orderBy: { id: "asc" },
             select: { id: true },
         });
         if (!account) {
-            throw new Error("Personal Home readiness requires an initialized Account");
+            throw new Error("Personal Home readiness requires an active Account");
         }
         const token = await this.createToken(account.id, undefined, {
             kind: "account",
@@ -403,12 +569,13 @@ class AuthModule {
     ): Promise<string> {
         const account = await tx.account.findUnique({
             where: { id: userId },
-            select: { tokenEpoch: true },
+            select: { tokenEpoch: true, status: true },
         });
         if (!account) {
             throw new Error("Cannot create auth token for an unknown account");
         }
 
+        assertAccountActive(account.status);
         return this.createTokenWithEpoch(userId, account.tokenEpoch, extras, options);
     }
 
@@ -429,11 +596,18 @@ class AuthModule {
         if (options?.kind === "api_token") {
             throw new Error("API tokens must be minted through createApiToken");
         }
-        const provenance = AuthTokenProvenanceSchema.parse({
-            v: 1,
-            kind: options?.kind,
-            authority: options?.authority,
-        });
+        const provenance = options.authenticationEvidence === undefined
+            ? AuthTokenProvenanceSchema.parse({
+                v: 1,
+                kind: options.kind,
+                authority: options.authority,
+            })
+            : AuthTokenProvenanceV2Schema.parse({
+                v: 2,
+                kind: options.kind,
+                authority: options.authority,
+                evidence: options.authenticationEvidence,
+            });
 
         return await this.tokens.generator.new({
             user: userId,
@@ -453,8 +627,11 @@ class AuthModule {
      */
     async createApiToken(params: Readonly<{
         accountId: string;
+        tokenId: string;
         label: string;
         expiresAt?: Date | null;
+        encryption?: AccountApiTokenCreateEncryptionV1;
+        authenticationEvidence?: readonly AuthTokenAuthenticationEvidenceV1[];
     }>, nowInput: Date = new Date()): Promise<CreatedApiToken> {
         const accountId = params.accountId.trim();
         const label = params.label.trim();
@@ -463,6 +640,9 @@ class AuthModule {
         }
         if (!label) {
             throw new Error("Cannot create an API token without a label");
+        }
+        if ((params.authenticationEvidence?.length ?? 0) > AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS) {
+            throw new ApiTokenOperationError("credential_authentication_evidence_limit");
         }
 
         const now = new Date(nowInput.getTime());
@@ -473,35 +653,61 @@ class AuthModule {
             throw new InvalidApiTokenExpiryError();
         }
 
-        const account = await db.account.findUnique({
-            where: { id: accountId },
-            select: { id: true },
-        });
-        if (!account) {
-            throw new Error("Cannot create an API token for an unknown account");
-        }
-
-        const tokenId = randomUUID();
+        const encryption = params.encryption
+            ? AccountApiTokenCreateEncryptionV1Schema.parse(params.encryption)
+            : null;
+        const serverIdentityId = encryption ? await getOrCreateServerIdentityId() : null;
+        const tokenId = params.tokenId;
         const secret = randomBytes(API_TOKEN_SECRET_BYTES).toString("base64url");
         const displayPrefix = createApiTokenDisplayPrefix(tokenId);
         const secretDigest = createApiTokenSecretDigest(secret).toString("base64url");
-        const row = await db.accountApiToken.create({
-            data: {
-                id: tokenId,
+        const row = await inTx(async (tx) => {
+            await acquireAccountSessionOwnerMetadataFenceInTx(tx, accountId);
+            const admission = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } });
+            assertAccountActive(admission.status);
+            if (encryption) {
+                const account = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: {
+                    publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true,
+                } });
+                if (!serverIdentityId || !matchesApiTokenEncryptionBinding(account, encryption.access, serverIdentityId)) {
+                    throw new ApiTokenOperationError("api_token_encryption_not_ready");
+                }
+            }
+            const authenticationEvidence = await resolveCurrentAuthenticationEvidenceInTx(tx, {
+                env: process.env,
                 accountId,
-                displayPrefix,
-                secretDigest,
-                label,
-                createdAt: now,
-                expiresAt,
-            },
-            select: {
-                id: true,
-                label: true,
-                displayPrefix: true,
-                createdAt: true,
-                expiresAt: true,
-            },
+                evidence: params.authenticationEvidence,
+            });
+            if (params.authenticationEvidence !== undefined && authenticationEvidence.length === 0) {
+                throw new ApiTokenOperationError("credential_authentication_evidence_unavailable");
+            }
+            const authenticationEvidenceSnapshot = authenticationEvidence.length > 0
+                ? AuthTokenAuthenticationEvidenceSnapshotV1Schema.parse({ v: 1, evidence: authenticationEvidence })
+                : null;
+            return await tx.accountApiToken.create({
+                data: {
+                    id: tokenId,
+                    accountId,
+                    displayPrefix,
+                    secretDigest,
+                    label,
+                    createdAt: now,
+                    expiresAt,
+                    ...(encryption ? { encryptionAccess: encryption.access } : {}),
+                    ...(authenticationEvidenceSnapshot ? { authenticationEvidence: authenticationEvidenceSnapshot } : {}),
+                },
+                select: {
+                    id: true,
+                    label: true,
+                    displayPrefix: true,
+                    createdAt: true,
+                    expiresAt: true,
+                    authenticationEvidence: true,
+                },
+            });
+        }).catch((error: unknown) => {
+            if (isPrismaErrorCode(error, "P2002")) throw new ApiTokenOperationError("api_token_id_conflict");
+            throw error;
         });
 
         return {
@@ -511,6 +717,8 @@ class AuthModule {
             displayPrefix: row.displayPrefix,
             createdAt: row.createdAt,
             expiresAt: row.expiresAt,
+            hasEncryptionAccess: encryption !== null,
+            hasUnattendedTeamAccess: parseAuthenticationEvidenceSnapshot(row.authenticationEvidence) !== null,
         };
     }
 
@@ -526,6 +734,8 @@ class AuthModule {
                 createdAt: true,
                 lastUsedAt: true,
                 expiresAt: true,
+                encryptionAccess: true,
+                authenticationEvidence: true,
             },
         });
         return rows.map((row) => ({
@@ -535,7 +745,29 @@ class AuthModule {
             createdAt: row.createdAt,
             lastUsedAt: row.lastUsedAt,
             expiresAt: row.expiresAt,
+            hasEncryptionAccess: row.encryptionAccess != null,
+            hasUnattendedTeamAccess: parseAuthenticationEvidenceSnapshot(row.authenticationEvidence) !== null,
         }));
+    }
+
+    /** Selects only the credential authenticated by the request; never admits or repairs keys. */
+    async getApiTokenEncryptionAccess(principal: VerifiedApiTokenPrincipal): Promise<AccountApiTokenEncryptionAccessResponseV1> {
+        const serverIdentityId = await getOrCreateServerIdentityId();
+        return await inTx(async (tx) => {
+            const row = await tx.accountApiToken.findFirst({
+                where: { id: principal.credentialId, accountId: principal.accountId },
+                select: { encryptionAccess: true, expiresAt: true, Account: { select: {
+                    status: true, publicKey: true, encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true,
+                } } },
+            });
+            if (!row || !isActiveHomeAccountStatus(row.Account.status) || (row.expiresAt && row.expiresAt <= new Date())) throw new ApiTokenOperationError("invalid_token");
+            if (row.encryptionAccess == null) throw new ApiTokenOperationError("api_token_encryption_unavailable");
+            const parsed = AccountApiTokenEncryptionAccessV1Schema.safeParse(row.encryptionAccess);
+            if (!parsed.success || !matchesApiTokenEncryptionBinding(row.Account, parsed.data, serverIdentityId)) {
+                throw new ApiTokenOperationError("api_token_encryption_stale");
+            }
+            return { v: 1 as const, accountId: principal.accountId, tokenId: principal.credentialId, encryptionAccess: parsed.data };
+        });
     }
 
     /** Revocation is deletion: the next verification cannot find this selector. */
@@ -551,7 +783,12 @@ class AuthModule {
 
     /** Used by the present-user Action after its caller policy is registered. */
     async revokeAllApiTokens(accountId: string): Promise<number> {
-        const result = await db.accountApiToken.deleteMany({
+        return inTx((tx) => this.revokeAllApiTokensInTx(tx, accountId));
+    }
+
+    /** Deletes complete PAT rows in the caller's Account transition. */
+    async revokeAllApiTokensInTx(tx: Tx, accountId: string): Promise<number> {
+        const result = await tx.accountApiToken.deleteMany({
             where: { accountId: accountId.trim() },
         });
         return result.count;
@@ -559,11 +796,13 @@ class AuthModule {
 
     /**
      * Verifies a current signed credential (or a PAT). Signed credentials must
-     * carry the v1 provenance marker; pre-marker credentials are intentionally
-     * not accepted on this canonical route-auth path.
+     * carry a supported closed provenance version (evidence-free V1 or
+     * evidence-bearing V2); pre-marker credentials are intentionally not
+     * accepted on this canonical route-auth path.
      */
     async verifyToken(token: string): Promise<VerifiedAuthToken | null> {
-        return this.verifyTokenInternal(token, { allowLegacyHome: false });
+        const result = await this.verifyTokenInternal(token, { allowLegacyHome: false });
+        return isRejectedRestrictedCredential(result) ? null : result;
     }
 
     /**
@@ -575,7 +814,8 @@ class AuthModule {
     async verifyLegacyHomeToken(token: string): Promise<VerifiedAuthToken | null> {
         const verified = await this.verifyTokenInternal(token, { allowLegacyHome: true });
         if (
-            !verified
+            isRejectedRestrictedCredential(verified)
+            || !verified
             || !verified.legacy
             || (verified.authTokenKind !== "account" && verified.authTokenKind !== "terminal")
         ) {
@@ -587,13 +827,41 @@ class AuthModule {
     /** Route/socket compatibility boundary: strict current tokens first, then
      * the explicitly named pre-marker ordinary-Home reader. */
     async verifyTokenForRoute(token: string): Promise<VerifiedAuthToken | null> {
-        return (await this.verifyToken(token)) ?? (await this.verifyLegacyHomeToken(token));
+        const disposition = await this.verifyTokenDisposition(token, { allowLegacyHome: true });
+        return disposition.status === "verified" ? disposition.credential : null;
+    }
+
+    /**
+     * Canonical request-boundary disposition. A cryptographically verified
+     * restricted Runner credential remains distinguishable after its database
+     * currentness is revoked, while malformed and arbitrary bearers stay
+     * indistinguishable from other invalid credentials.
+     */
+    async verifyTokenDisposition(
+        token: string,
+        options: Readonly<{ allowLegacyHome: boolean }>,
+    ): Promise<AuthTokenVerificationDisposition> {
+        const strict = await this.verifyTokenInternal(token, { allowLegacyHome: false });
+        if (isRejectedRestrictedCredential(strict)) return strict;
+        if (strict) return { status: "verified", credential: strict };
+        if (!options.allowLegacyHome) return { status: "invalid" };
+
+        const legacy = await this.verifyTokenInternal(token, { allowLegacyHome: true });
+        if (isRejectedRestrictedCredential(legacy)) return legacy;
+        if (
+            legacy
+            && legacy.legacy
+            && (legacy.authTokenKind === "account" || legacy.authTokenKind === "terminal")
+        ) {
+            return { status: "verified", credential: legacy };
+        }
+        return { status: "invalid" };
     }
 
     private async verifyTokenInternal(
         token: string,
         options: Readonly<{ allowLegacyHome: boolean }>,
-    ): Promise<VerifiedAuthToken | null> {
+    ): Promise<AuthTokenInternalVerification> {
         if (!this.tokens) {
             throw new Error('Auth module not initialized');
         }
@@ -617,7 +885,9 @@ class AuthModule {
                     credentialId: verifiedPat.credentialId,
                     authority: verifiedPat.authority,
                     expiresAt: verifiedPat.expiresAt,
+                    ...(verifiedPat.authenticationEvidence ? { authenticationEvidence: verifiedPat.authenticationEvidence } : {}),
                 },
+                ...(verifiedPat.authenticationEvidence ? { authenticationEvidence: verifiedPat.authenticationEvidence } : {}),
             };
         }
 
@@ -643,10 +913,19 @@ class AuthModule {
         // The account row is authoritative for revocation, including cache hits.
         const account = await db.account.findUnique({
             where: { id: decoded.userId },
-            select: { tokenEpoch: true },
+            select: { tokenEpoch: true, status: true },
         });
-        if (!account || decoded.tokenEpoch !== account.tokenEpoch) {
-            return null;
+        if (!account || !isActiveHomeAccountStatus(account.status) || decoded.tokenEpoch !== account.tokenEpoch) {
+            return decoded.provenance.kind === "ephemeral_session_runner"
+                ? REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL
+                : null;
+        }
+
+        const ephemeralSessionRunnerPrincipal = decoded.provenance.kind === "ephemeral_session_runner"
+            ? await verifyCurrentEphemeralSessionRunnerPrincipal(decoded.userId, decoded.extras)
+            : undefined;
+        if (decoded.provenance.kind === "ephemeral_session_runner" && !ephemeralSessionRunnerPrincipal) {
+            return REJECTED_EPHEMERAL_SESSION_RUNNER_CREDENTIAL;
         }
 
         return {
@@ -654,6 +933,8 @@ class AuthModule {
             extras: decoded.extras,
             authTokenKind: decoded.provenance.kind,
             authority: decoded.provenance.authority,
+            ...(decoded.provenance.v === 2 ? { authenticationEvidence: decoded.provenance.evidence } : {}),
+            ...(ephemeralSessionRunnerPrincipal ? { ephemeralSessionRunnerPrincipal } : {}),
             legacy: decoded.legacy,
         };
     }
@@ -685,19 +966,67 @@ class AuthModule {
             credentialId: verified.credentialId,
             expiresAt: verified.expiresAt,
             authority: "account_automation",
+            ...(verified.authenticationEvidence ? { authenticationEvidence: verified.authenticationEvidence } : {}),
         };
     }
 
+    /**
+     * The signed external-Action capability selects one already-authenticated
+     * PAT by immutable ids. This reader re-checks currentness from the same database row
+     * owner as bearer verification without accepting or reconstructing its secret.
+     */
+    async verifyCurrentApiTokenPrincipal(
+        principal: Readonly<{ accountId: string; principalId: string; credentialId: string }>,
+        signal?: AbortSignal,
+    ): Promise<VerifiedApiTokenPrincipal | null> {
+        signal?.throwIfAborted();
+        if (principal.accountId !== principal.principalId) return null;
+        const row = await db.accountApiToken.findFirst({
+            where: { id: principal.credentialId, accountId: principal.accountId },
+            select: {
+                id: true,
+                accountId: true,
+                expiresAt: true,
+                lastUsedAt: true,
+                authenticationEvidence: true,
+                Account: { select: { status: true } },
+            },
+        });
+        const verified = await this.verifyCurrentApiTokenRow(row, signal);
+        return verified
+            ? {
+                accountId: verified.accountId,
+                principalId: verified.accountId,
+                credentialId: verified.credentialId,
+                authority: "account_automation",
+                expiresAt: verified.expiresAt,
+                ...(verified.authenticationEvidence
+                    ? { authenticationEvidence: verified.authenticationEvidence }
+                    : {}),
+            }
+            : null;
+    }
+
     async signOutEverywhere(userId: string): Promise<number> {
+        return inTx((tx) => this.signOutEverywhereInTx(tx, userId));
+    }
+
+    async signOutEverywhereInTx(tx: Tx, userId: string): Promise<number> {
         // This owner invalidates signed sessions only. API tokens are explicit
         // long-lived automation credentials and retain their separate
         // revoke-one/revoke-all lifecycle.
-        const account = await db.account.update({
+        const account = await tx.account.update({
             where: { id: userId },
             data: { tokenEpoch: { increment: 1 } },
             select: { tokenEpoch: true },
         });
         return account.tokenEpoch;
+    }
+
+    /** Lifecycle retirement composes both credential owners without opening a nested transaction. */
+    async revokeAllAccountCredentialsInTx(tx: Tx, accountId: string): Promise<void> {
+        await this.signOutEverywhereInTx(tx, accountId);
+        await this.revokeAllApiTokensInTx(tx, accountId);
     }
 
     private async verifyParsedApiToken(
@@ -713,6 +1042,8 @@ class AuthModule {
                 secretDigest: true,
                 expiresAt: true,
                 lastUsedAt: true,
+                authenticationEvidence: true,
+                Account: { select: { status: true } },
             },
         });
         signal?.throwIfAborted();
@@ -720,19 +1051,17 @@ class AuthModule {
             return null;
         }
 
+        return this.verifyCurrentApiTokenRow(row, signal);
+    }
+
+    private async verifyCurrentApiTokenRow(
+        row: CurrentApiTokenRow | null,
+        signal?: AbortSignal,
+    ): Promise<VerifiedApiToken | null> {
+        signal?.throwIfAborted();
+        if (!row || !isActiveHomeAccountStatus(row.Account.status)) return null;
         const now = new Date();
         if (row.expiresAt && row.expiresAt <= now) {
-            return null;
-        }
-
-        // The persistent Account row is the ownership and deletion check for
-        // callers outside the Fastify eligibility gate.
-        const account = await db.account.findUnique({
-            where: { id: row.accountId },
-            select: { id: true },
-        });
-        signal?.throwIfAborted();
-        if (!account) {
             return null;
         }
 
@@ -742,10 +1071,12 @@ class AuthModule {
             now,
         });
         signal?.throwIfAborted();
+        const authenticationEvidence = parseAuthenticationEvidenceSnapshot(row.authenticationEvidence)?.evidence;
         return {
             accountId: row.accountId,
             credentialId: row.id,
             expiresAt: row.expiresAt,
+            ...(authenticationEvidence ? { authenticationEvidence } : {}),
         };
     }
 
@@ -800,14 +1131,20 @@ class AuthModule {
             ? payload.provenance
             : tokenExtras.provenance;
 
-        let provenance: AuthTokenProvenance;
+        let provenance: AuthTokenProvenanceAny;
         let legacy = false;
-        if (!hasTopLevelProvenance && !hasNestedProvenance) {
+        if (
+            (!hasTopLevelProvenance && !hasNestedProvenance)
+            || typeof rawProvenance === "string"
+        ) {
             if (!options.allowLegacyHome) return null;
+            // Released privacy-kit tokens used this name for opaque library
+            // metadata. A string carries no current provenance or evidence;
+            // only the strict structured V1/V2 union below has that meaning.
             provenance = this.legacyAuthTokenProvenance(tokenExtras);
             legacy = true;
         } else {
-            const parsedProvenance = AuthTokenProvenanceSchema.safeParse(rawProvenance);
+            const parsedProvenance = AuthTokenProvenanceAnySchema.safeParse(rawProvenance);
             if (!parsedProvenance.success) {
                 return null;
             }
@@ -915,7 +1252,11 @@ class AuthModule {
         if (
             purposeRaw !== null
             && purposeRaw !== "account_encryption_first_key"
+            && purposeRaw !== "account_password_enrollment"
             && purposeRaw !== "account_directory"
+            && purposeRaw !== "team_admission"
+            && purposeRaw !== "github_app_installation_verification"
+            && purposeRaw !== "github_app_manifest_setup"
         ) {
             // The purpose union is closed and server-controlled. An unknown
             // purpose must never silently downgrade to an ordinary full-auth
@@ -929,7 +1270,9 @@ class AuthModule {
         const canonicalServerUrl =
             payload.canonicalServerUrl?.toString().trim() || null;
         const requestDigestCandidate =
-            AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
+            (purpose === "account_password_enrollment"
+                ? PasswordCredentialMutationDigestV1Schema
+                : AccountEncryptionMigrateExternalAuthBindingDigestV1Schema)
                 .safeParse(
                     payload.requestDigest
                         ?.toString()
@@ -940,7 +1283,7 @@ class AuthModule {
                 ? requestDigestCandidate.data
                 : null;
         if (
-            purpose === "account_encryption_first_key"
+            (purpose === "account_encryption_first_key" || purpose === "account_password_enrollment")
             && (
                 flow !== "auth"
                 || !userId
@@ -967,6 +1310,35 @@ class AuthModule {
             )
         ) {
             throw new Error("Invalid OAuth account-directory binding");
+        }
+        if (
+            purpose === "team_admission"
+            && (
+                flow !== "auth"
+                || userId !== null
+                || requestDigest !== null
+                || endpointUrl !== null
+                || endpointServerIdentityId !== null
+                || canonicalServerUrl !== null
+                || ((publicKey === null) === (proofHash === null))
+            )
+        ) {
+            throw new Error("Invalid OAuth Team-admission binding");
+        }
+        if (
+            (purpose === "github_app_installation_verification" || purpose === "github_app_manifest_setup")
+            && (
+                flow !== "connect"
+                || !userId
+                || publicKey !== null
+                || proofHash !== null
+                || requestDigest !== null
+                || endpointUrl !== null
+                || endpointServerIdentityId !== null
+                || canonicalServerUrl !== null
+            )
+        ) {
+            throw new Error("Invalid GitHub App setup binding");
         }
         if (
             purpose === null
@@ -1001,7 +1373,7 @@ class AuthModule {
         userId: string | null;
         publicKey: string | null;
         proofHash: string | null;
-        purpose?: "account_encryption_first_key" | "account_directory";
+        purpose?: "account_encryption_first_key" | "account_password_enrollment" | "account_directory" | "team_admission" | "github_app_installation_verification" | "github_app_manifest_setup";
         requestDigest?: string;
         endpointUrl?: string;
         endpointServerIdentityId?: string;
@@ -1030,7 +1402,11 @@ class AuthModule {
             if (
                 purposeRaw !== null
                 && purposeRaw !== "account_encryption_first_key"
+                && purposeRaw !== "account_password_enrollment"
                 && purposeRaw !== "account_directory"
+                && purposeRaw !== "team_admission"
+                && purposeRaw !== "github_app_installation_verification"
+                && purposeRaw !== "github_app_manifest_setup"
             ) {
                 // Unknown/future purpose markers fail closed instead of
                 // degrading the continuation into an ordinary full-auth state.
@@ -1062,7 +1438,9 @@ class AuthModule {
                     ? extras.proofHash.trim()
                     : null;
             const requestDigestCandidate =
-                AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
+                (purpose === "account_password_enrollment"
+                    ? PasswordCredentialMutationDigestV1Schema
+                    : AccountEncryptionMigrateExternalAuthBindingDigestV1Schema)
                     .safeParse(
                         typeof extras.requestDigest
                             === "string"
@@ -1074,7 +1452,7 @@ class AuthModule {
                     ? requestDigestCandidate.data
                     : null;
             if (
-                purpose === "account_encryption_first_key"
+                (purpose === "account_encryption_first_key" || purpose === "account_password_enrollment")
                 && (
                     flow !== "auth"
                     || !userId
@@ -1098,6 +1476,35 @@ class AuthModule {
                     || !canonicalServerUrl
                     || requestDigest !== null
                     || ((publicKey === null) === (proofHash === null))
+                )
+            ) {
+                return null;
+            }
+            if (
+                purpose === "team_admission"
+                && (
+                    flow !== "auth"
+                    || userId !== null
+                    || requestDigest !== null
+                    || endpointUrl !== null
+                    || endpointServerIdentityId !== null
+                    || canonicalServerUrl !== null
+                    || ((publicKey === null) === (proofHash === null))
+                )
+            ) {
+                return null;
+            }
+            if (
+                (purpose === "github_app_installation_verification" || purpose === "github_app_manifest_setup")
+                && (
+                    flow !== "connect"
+                    || !userId
+                    || publicKey !== null
+                    || proofHash !== null
+                    || requestDigest !== null
+                    || endpointUrl !== null
+                    || endpointServerIdentityId !== null
+                    || canonicalServerUrl !== null
                 )
             ) {
                 return null;

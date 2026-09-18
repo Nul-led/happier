@@ -149,6 +149,8 @@ describe("browser server feature resolver", () => {
                 "focus",
                 "select",
                 "setValue",
+                "upload",
+                "drag",
             ],
             supportedFidelities: ["cdp", "nativeWebView", "injectedPage", "previewProxy", "streamedSurface", "webIframe"],
             supportedAdapterKinds: [

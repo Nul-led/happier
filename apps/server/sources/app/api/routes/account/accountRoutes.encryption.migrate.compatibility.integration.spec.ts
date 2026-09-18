@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { randomUUID } from "node:crypto";
 import {
     afterAll,
     afterEach,
@@ -42,6 +43,10 @@ import {
 } from "@/testkit/lightSqliteHarness";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { registerAccountEncryptionMigrateRoutes } from "./registerAccountEncryptionMigrateRoutes";
+import { mutateSessionDraft, readSessionDraft } from "@/app/account/sessionDrafts/sessionDraftService";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 // Exact wire from cli-v0.2.1, the 0.2.2 preview, and the current
 // ../remote-dev@41f22ebf7dbd3af41d944c941f31267197f08fa5 predecessor.
@@ -246,6 +251,8 @@ function createTestApp() {
             request: {
                 headers: Record<string, unknown>;
                 userId?: string;
+                authAuthority?: "present_user";
+                authTokenKind?: "account";
             },
             reply: {
                 code: (status: number) => {
@@ -264,6 +271,8 @@ function createTestApp() {
                     .send({ error: "Unauthorized" });
             }
             request.userId = accountId;
+            request.authAuthority = "present_user";
+            request.authTokenKind = "account";
             captureAccountStoredContentCompatibilityForHttpRequest(
                 request as any,
             );
@@ -316,7 +325,7 @@ describe("Account encryption migration predecessor compatibility", () => {
         await harness.close();
     });
 
-    it("admits the exact immutable request when the complete layout-1 inventory is empty", async () => {
+    it.each([false, true])("admits the exact immutable request with V1 draft coverage %s when layout-1 inventory is empty", async (withDraft) => {
         harness.resetEnv({
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY:
                 "optional",
@@ -344,10 +353,47 @@ describe("Account encryption migration predecessor compatibility", () => {
                 agentStateVersion: 4,
             },
         });
+        // server-v0.2.11@98ea8fb76733b1dd785d38c31360179cafa84824 adds this
+        // optional directive to the earlier predecessor request above.
+        const address = { kind: "newSession" as const, draftId: randomUUID() };
+        const mutationId = randomUUID();
+        const content = { t: "plain" as const, v: { v: 1 as const, address, document: {
+            v: 1 as const,
+            composer: {
+                text: { mutationId, value: "Predecessor draft" },
+                mentions: { mutationId, value: [] },
+                attachments: { mutationId, value: [] },
+            },
+            target: { kind: "newSession" as const, authoring: {} }, extensions: {},
+        } } };
+        if (withDraft) {
+            expect(await mutateSessionDraft({
+                accountId: account.id, address, expectedRevision: "absent", content: { t: "encrypted", c: "predecessor-draft" },
+                authentication,
+            })).toMatchObject({ status: "updated" });
+        }
         const app = createTestApp();
         await app.ready();
 
         try {
+            if (withDraft) {
+                for (const [directive, status, body] of [
+                    [undefined, 400, { error: "session_drafts_require_upgrade" }],
+                    [{ items: [] }, 400, { error: "session_drafts_migration_incomplete" }],
+                    [{ items: [{ address, expectedRevision: 1, content }] }, 409,
+                        { error: "session_drafts_version_mismatch", address, currentRevision: 0 }],
+                ] as const) {
+                    const rejected = await app.inject({
+                        method: "POST", url: "/v1/account/encryption/migrate",
+                        headers: { "content-type": "application/json", "x-test-user-id": account.id },
+                        payload: { ...PREDECESSOR_REQUEST, ...(directive ? { sessionDrafts: directive } : {}) },
+                    });
+                    expect(rejected.statusCode, rejected.body).toBe(status);
+                    expect(rejected.json()).toEqual(body);
+                    expect(await readSessionDraft({ accountId: account.id, address, epoch: "v1", authentication }))
+                        .toMatchObject({ status: "present", record: { revision: 0 } });
+                }
+            }
             const response = await app.inject({
                 method: "POST",
                 url: "/v1/account/encryption/migrate",
@@ -355,7 +401,10 @@ describe("Account encryption migration predecessor compatibility", () => {
                     "content-type": "application/json",
                     "x-test-user-id": account.id,
                 },
-                payload: PREDECESSOR_REQUEST,
+                payload: {
+                    ...PREDECESSOR_REQUEST,
+                    ...(withDraft ? { sessionDrafts: { items: [{ address, expectedRevision: 0, content }] } } : {}),
+                },
             });
 
             expect(response.statusCode, response.body)
@@ -363,11 +412,16 @@ describe("Account encryption migration predecessor compatibility", () => {
             expect(
                 AccountEncryptionMigratePredecessorSuccessResponseSchema
                     .parse(response.json()),
-            ).toEqual({
+            ).toMatchObject({
                 success: true,
                 mode: "plain",
                 settingsVersion: 1,
+                ...(withDraft ? { sessionDrafts: { records: [{ address, revision: 1, content }] } } : {}),
             });
+            if (withDraft) {
+                expect(await readSessionDraft({ accountId: account.id, address, epoch: "v1", authentication }))
+                    .toMatchObject({ status: "present", record: { revision: 1, content } });
+            }
             await expect(db.account.findUniqueOrThrow({
                 where: { id: account.id },
                 select: {

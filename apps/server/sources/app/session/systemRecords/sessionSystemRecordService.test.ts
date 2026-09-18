@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -5,7 +6,9 @@ import {
     SESSION_WORKFLOW_RUN_SNAPSHOT_PROJECTION_VERSION,
     type SessionPermissionMediationRecordIdentityV1,
 } from "@happier-dev/protocol";
+import type { SessionAccessProjectionRow } from "@/app/session/access/sessionAccess";
 import { createEnvPatcher } from "@/testkit/env";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import {
     deleteSessionSystemRecordV1,
     getLatestSessionSystemRecord,
@@ -20,6 +23,8 @@ import {
     upsertSessionSystemRecord,
     writePermissionMediationRecord,
 } from "./sessionSystemRecordService";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 import { deriveSessionSystemRecordAddressKeys } from "./sessionSystemRecordAddressKeys";
 import {
     initializeSessionSystemRecordsProtocolV1Activation,
@@ -28,10 +33,12 @@ import {
 } from "./sessionSystemRecordProtocolContract";
 import { encodeSessionSystemRecordRevision } from "./sessionSystemRecordRevision";
 
+
 // Prisma is the system boundary; protocol-activation fixtures expose only its audited findMany operation.
 type ProtocolActivationDatabase = Parameters<typeof initializeSessionSystemRecordsProtocolV1Activation>[0];
 
 type TxMock = {
+    teamMembership: { findMany: ReturnType<typeof vi.fn> };
     session: {
         findUnique: ReturnType<typeof vi.fn>;
         findFirst: ReturnType<typeof vi.fn>;
@@ -48,18 +55,55 @@ type TxMock = {
 };
 
 const testState = vi.hoisted(() => ({
-    checkSessionAccess: vi.fn(),
+    readAccessSession: vi.fn(),
     currentTx: null as TxMock | null,
 }));
 
-vi.mock("@/app/share/accessControl", async (importOriginal) => ({
-    ...await importOriginal<typeof import("@/app/share/accessControl")>(),
-    checkSessionAccess: testState.checkSessionAccess,
-}));
+// Prisma reads are the external boundary; the canonical access projector remains real.
+vi.mock("@/storage/db", async () => {
+    const { PrismaClient } = await import("@prisma/client");
+    // Real field references are query descriptors; reading them opens no database connection.
+    const client = new PrismaClient();
+    return {
+        db: { session: { findUnique: testState.readAccessSession, fields: client.session.fields } },
+    };
+});
+
+function accessSessionRow(level: "view" | "edit" | "admin" | "owner", sharedWithUserId = "shared-editor"): SessionAccessProjectionRow {
+    return {
+        id: "s1",
+        primaryTeamId: null,
+        accountId: "owner-account",
+        account: { status: "active" },
+        currentStorageState: "hosted",
+        seq: 0,
+        acceptedThroughServerSeq: null,
+        materializationPublicationId: null,
+        materializedThroughSourceAt: null,
+        publishedThroughServerSeq: null,
+        shares: level === "owner" ? [] : [{ id: "share-1", sharedWithUserId, accessLevel: level, canApprovePermissions: false }],
+        teamGrants: [],
+        groupGrants: [],
+    };
+}
 
 vi.mock("@/storage/inTx", () => ({
     inTx: async <T>(fn: (tx: TxMock) => Promise<T>) => await fn(testState.currentTx as TxMock),
 }));
+
+// The database boundary fixture recognizes editor constraints regardless of Boolean grouping.
+function hasCurrentEditPredicate(where: Prisma.SessionSystemRecordWhereInput): boolean {
+    const session = where.session;
+    if (!session || !("is" in session) || !session.is) return false;
+    function containsEditorConstraint(condition: Prisma.SessionWhereInput): boolean {
+        const level = condition.shares?.some?.accessLevel;
+        if (typeof level === "object" && Array.isArray(level.in)
+            && level.in.includes("edit") && !level.in.includes("view")) return true;
+        const and = condition.AND ? (Array.isArray(condition.AND) ? condition.AND : [condition.AND]) : [];
+        return [...and, ...(condition.OR ?? [])].some(containsEditorConstraint);
+    }
+    return containsEditorConstraint(session.is);
+}
 
 function workflowRunPayload(overrides: Record<string, unknown> = {}) {
     return {
@@ -150,11 +194,15 @@ function permissionMediationRecord(overrides: Record<string, unknown> = {}) {
 }
 
 describe("sessionSystemRecordService account scoping", () => {
-    const storagePolicyEnv = createEnvPatcher(["HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY"]);
+    const storagePolicyEnv = createEnvPatcher([
+        "HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY",
+        "HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED",
+    ]);
 
     beforeEach(async () => {
         storagePolicyEnv.restore();
         storagePolicyEnv.set("HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY", "optional");
+        storagePolicyEnv.set("HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED", "1");
         vi.clearAllMocks();
         resetSessionSystemRecordsProtocolV1ActivationForTests();
         await initializeSessionSystemRecordsProtocolV1Activation({
@@ -165,8 +213,11 @@ describe("sessionSystemRecordService account scoping", () => {
                 findMany: async () => [],
             },
         } as unknown as ProtocolActivationDatabase);
-        testState.checkSessionAccess.mockResolvedValue({ level: "edit", isOwner: false });
+        testState.readAccessSession.mockImplementation(async (query: { select: { shares: { where: { sharedWithUserId: { in: string[] } } } } }) =>
+            accessSessionRow("edit", query.select.shares.where.sharedWithUserId.in[0]),
+        );
         testState.currentTx = {
+            teamMembership: { findMany: vi.fn().mockResolvedValue([]) },
             session: {
                 findUnique: vi.fn(),
                 findFirst: vi.fn().mockResolvedValue({ id: "s1" }),
@@ -192,16 +243,43 @@ describe("sessionSystemRecordService account scoping", () => {
         } as unknown as ProtocolActivationDatabase);
         const currentTx = testState.currentTx as TxMock;
 
-        await expect(listSessionSystemRecordsV1({
+        await expect(listSessionSystemRecordsV1({ authentication,
             actorUserId: "viewer-account",
             sessionId: "s1",
             pluginId: "acme.notes",
             query: { owner: "plugin", namespace: "notes", limit: 10 },
         })).resolves.toEqual({ ok: false, code: "plugin_session_records_unavailable" });
 
-        expect(testState.checkSessionAccess).not.toHaveBeenCalled();
+        expect(testState.readAccessSession).not.toHaveBeenCalled();
         expect(currentTx.session.findUnique).not.toHaveBeenCalled();
         expect(currentTx.sessionSystemRecord.findMany).not.toHaveBeenCalled();
+    });
+
+    it("returns the Board-scoped feature refusal from the service owner without disabling workflow records", async () => {
+        const currentTx = testState.currentTx as TxMock;
+        storagePolicyEnv.set("HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED", "0");
+        currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
+        currentTx.sessionSystemRecord.findMany.mockResolvedValue([activityRecord()]);
+
+        await expect(readSessionSystemRecordV1({ authentication,
+            actorUserId: "shared-editor",
+            sessionId: "s1",
+            address: { owner: "host", namespace: "surface", kind: "layout.v1", localId: "layout" },
+        })).resolves.toEqual({ ok: false, code: "plugin_session_record_feature_disabled" });
+        await expect(listSessionSystemRecordsV1({ authentication,
+            actorUserId: "shared-editor",
+            sessionId: "s1",
+            query: { owner: "host", namespace: "surface", limit: 20 },
+        })).resolves.toEqual({ ok: false, code: "plugin_session_record_feature_disabled" });
+
+        await expect(listSessionSystemRecordsV1({ authentication,
+            actorUserId: "shared-editor",
+            sessionId: "s1",
+            query: { owner: "host", namespace: "activity", limit: 20 },
+        })).resolves.toMatchObject({
+            ok: true,
+            page: { records: [{ id: "rec-wf" }], hasNext: false },
+        });
     });
 
     it("keeps typed permission mediation records fail-closed until CONTRACT activation", async () => {
@@ -213,17 +291,17 @@ describe("sessionSystemRecordService account scoping", () => {
         } as unknown as ProtocolActivationDatabase);
         const currentTx = testState.currentTx as TxMock;
 
-        await expect(readPermissionMediationRecord({
+        await expect(readPermissionMediationRecord({ authentication,
             actorUserId: "viewer-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
         })).resolves.toEqual({ ok: false, code: "permission_mediation_records_unavailable" });
-        await expect(listPermissionMediationRecords({
+        await expect(listPermissionMediationRecords({ authentication,
             actorUserId: "viewer-account",
             sessionId: "s1",
             query: { limit: 10 },
         })).resolves.toEqual({ ok: false, code: "permission_mediation_records_unavailable" });
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "viewer-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -233,32 +311,32 @@ describe("sessionSystemRecordService account scoping", () => {
                 expectedRevision: null,
             },
         })).resolves.toEqual({ ok: false, code: "permission_mediation_records_unavailable" });
-        expect(testState.checkSessionAccess).not.toHaveBeenCalled();
+        expect(testState.readAccessSession).not.toHaveBeenCalled();
         expect(currentTx.session.findUnique).not.toHaveBeenCalled();
         expect(currentTx.sessionSystemRecord.create).not.toHaveBeenCalled();
     });
 
     it("keeps the owner-private typed permission ledger closed to shared editors", async () => {
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "admin", isOwner: false });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("admin", "shared-admin"));
 
-        await expect(readPermissionMediationRecord({
+        await expect(readPermissionMediationRecord({ authentication,
             actorUserId: "shared-admin",
             sessionId: "s1",
             identity: permissionMediationIdentity,
         })).resolves.toEqual({ ok: false, code: "permission_mediation_record_forbidden" });
-        await expect(prunePermissionMediationRecord({
+        await expect(prunePermissionMediationRecord({ authentication,
             actorUserId: "shared-admin",
             sessionId: "s1",
             identity: permissionMediationIdentity,
             request: { expectedRevision: "ssr1.AAAACnJlY29yZC1vbmUAAAAB" },
         })).resolves.toEqual({ ok: false, code: "permission_mediation_record_forbidden" });
-        await expect(listPermissionMediationRecords({
+        await expect(listPermissionMediationRecords({ authentication,
             actorUserId: "shared-admin",
             sessionId: "s1",
             query: { limit: 10 },
         })).resolves.toEqual({ ok: false, code: "permission_mediation_record_forbidden" });
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "shared-admin",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -277,20 +355,20 @@ describe("sessionSystemRecordService account scoping", () => {
 
     it("prunes only a fixed permission row at the exact opened revision", async () => {
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         const row = permissionMediationRecord();
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(row);
         currentTx.sessionSystemRecord.deleteMany.mockResolvedValue({ count: 1 });
 
-        const opened = await readPermissionMediationRecord({
+        const opened = await readPermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
         });
         if (!opened.ok || !opened.record) throw new Error("expected opened permission mediation row");
 
-        await expect(prunePermissionMediationRecord({
+        await expect(prunePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -308,7 +386,7 @@ describe("sessionSystemRecordService account scoping", () => {
 
     it("uses a fixed host permission address for create and CAS updates", async () => {
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         const first = permissionMediationRecord();
         const second = permissionMediationRecord({
             content: { t: "plain", v: { opaque: "revoked" } },
@@ -323,7 +401,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.create.mockResolvedValue(first);
         currentTx.sessionSystemRecord.updateMany.mockResolvedValue({ count: 1 });
 
-        const created = await writePermissionMediationRecord({
+        const created = await writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -353,7 +431,7 @@ describe("sessionSystemRecordService account scoping", () => {
             }),
         }));
 
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -382,7 +460,7 @@ describe("sessionSystemRecordService account scoping", () => {
             turnId: nextIdentity.turnId,
             id: "permission-record-2",
         });
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(null);
         currentTx.sessionSystemRecord.create.mockImplementation(async ({ data }) => (
@@ -394,13 +472,13 @@ describe("sessionSystemRecordService account scoping", () => {
             content: { t: "plain" as const, v: { opaque: "mediation" } },
             expectedRevision: null,
         };
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
             request,
         })).resolves.toMatchObject({ ok: true, record: permissionMediationIdentity });
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: nextIdentity,
@@ -427,12 +505,12 @@ describe("sessionSystemRecordService account scoping", () => {
             requestId: identity.requestId,
             content: { t: "encrypted", c: "opaque-ciphertext" },
         });
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "e2ee", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(null);
         currentTx.sessionSystemRecord.create.mockResolvedValue(row);
 
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: identity.sessionId,
             identity,
@@ -461,11 +539,11 @@ describe("sessionSystemRecordService account scoping", () => {
     it("projects the exact persisted mediation identity without opening E2EE content", async () => {
         const currentTx = testState.currentTx as TxMock;
         const row = permissionMediationRecord({ content: { t: "encrypted", c: "opaque-ciphertext" } });
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "e2ee", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findMany.mockResolvedValue([row]);
 
-        await expect(listPermissionMediationRecords({
+        await expect(listPermissionMediationRecords({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             query: { limit: 10 },
@@ -493,17 +571,17 @@ describe("sessionSystemRecordService account scoping", () => {
             sessionId: "s2",
             content: { t: "encrypted", c: "opaque-ciphertext" },
         });
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "e2ee", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(crossSessionRow);
         currentTx.sessionSystemRecord.findMany.mockResolvedValue([crossSessionRow]);
 
-        await expect(readPermissionMediationRecord({
+        await expect(readPermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: permissionMediationIdentity.sessionId,
             identity: permissionMediationIdentity,
         })).resolves.toEqual({ ok: false, code: "permission_mediation_record_internal" });
-        await expect(listPermissionMediationRecords({
+        await expect(listPermissionMediationRecords({ authentication,
             actorUserId: "owner-account",
             sessionId: permissionMediationIdentity.sessionId,
             query: { limit: 10 },
@@ -512,7 +590,7 @@ describe("sessionSystemRecordService account scoping", () => {
 
     it("refetches the actual permission revision after a lost conditional write", async () => {
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         const beforeRace = permissionMediationRecord();
         const raced = permissionMediationRecord({
             content: { t: "plain", v: { opaque: "winner" } },
@@ -525,7 +603,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(raced);
         currentTx.sessionSystemRecord.updateMany.mockResolvedValue({ count: 0 });
 
-        await expect(writePermissionMediationRecord({
+        await expect(writePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -543,7 +621,7 @@ describe("sessionSystemRecordService account scoping", () => {
 
     it("refetches the actual permission revision after a lost prune", async () => {
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "owner", isOwner: true });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("owner"));
         const beforeRace = permissionMediationRecord();
         const raced = permissionMediationRecord({
             content: { t: "plain", v: { opaque: "winner" } },
@@ -556,7 +634,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(raced);
         currentTx.sessionSystemRecord.deleteMany.mockResolvedValue({ count: 0 });
 
-        await expect(prunePermissionMediationRecord({
+        await expect(prunePermissionMediationRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             identity: permissionMediationIdentity,
@@ -573,7 +651,7 @@ describe("sessionSystemRecordService account scoping", () => {
     it("creates an account-private host-stamped plugin record and returns its opaque revision", async () => {
         const createdAt = new Date("2026-08-03T10:00:00.000Z");
         const currentTx = testState.currentTx as TxMock;
-        testState.checkSessionAccess.mockResolvedValue({ level: "view", isOwner: false });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("view", "viewer-account"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(null);
         currentTx.sessionSystemRecord.create.mockResolvedValue({
@@ -593,7 +671,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: createdAt,
         });
 
-        const result = await upsertSessionSystemRecordV1({
+        const result = await upsertSessionSystemRecordV1({ authentication,
             actorUserId: "viewer-account",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -639,28 +717,28 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "activity:workflow_run:v1:wf_demo",
         };
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
         })).resolves.toMatchObject({ ok: true, record: { address, revision: expect.stringMatching(/^ssr1\./) } });
-        await expect(listSessionSystemRecordsV1({
+        await expect(listSessionSystemRecordsV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             query: { owner: "host", namespace: "activity", limit: 20 },
         })).resolves.toMatchObject({ ok: true, page: { records: [{ address }], hasNext: false } });
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
             content: row.content,
         })).resolves.toMatchObject({ ok: true, record: { address } });
-        const revision = (await readSessionSystemRecordV1({
+        const revision = (await readSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
         }) as { ok: true; record: { revision: string } }).record.revision;
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
@@ -678,7 +756,7 @@ describe("sessionSystemRecordService account scoping", () => {
     it("allows visible host activity reads but rejects writes and deletes without edit access", async () => {
         const currentTx = testState.currentTx as TxMock;
         const row = activityRecord();
-        testState.checkSessionAccess.mockResolvedValue({ level: "view", isOwner: false });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("view", "shared-viewer"));
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(row);
         const address = {
@@ -688,18 +766,18 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "activity:workflow_run:v1:wf_demo",
         };
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "shared-viewer",
             sessionId: "s1",
             address,
         })).resolves.toMatchObject({ ok: true, record: { address } });
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "shared-viewer",
             sessionId: "s1",
             address,
             content: row.content,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "shared-viewer",
             sessionId: "s1",
             address,
@@ -712,9 +790,9 @@ describe("sessionSystemRecordService account scoping", () => {
         const currentTx = testState.currentTx as TxMock;
         const row = activityRecord();
         let shareIsCurrent = true;
-        testState.checkSessionAccess.mockImplementation(async () => {
+        testState.readAccessSession.mockImplementation(async () => {
             shareIsCurrent = false;
-            return { level: "edit", isOwner: false };
+            return accessSessionRow("edit");
         });
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.session.findFirst.mockImplementation(async () => (
@@ -733,17 +811,17 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "activity:workflow_run:v1:wf_demo",
         };
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(listSessionSystemRecordsV1({
+        await expect(listSessionSystemRecordsV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             query: { owner: "host", namespace: "activity", limit: 20 },
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
@@ -769,7 +847,7 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "activity:workflow_run:v1:wf_demo",
         };
 
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
@@ -780,9 +858,9 @@ describe("sessionSystemRecordService account scoping", () => {
     it("rejects legacy host read, list, and latest requests after their participant share is revoked", async () => {
         const currentTx = testState.currentTx as TxMock;
         let shareIsCurrent = true;
-        testState.checkSessionAccess.mockImplementation(async () => {
+        testState.readAccessSession.mockImplementation(async () => {
             shareIsCurrent = false;
-            return { level: "edit", isOwner: false };
+            return accessSessionRow("edit");
         });
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.session.findFirst.mockImplementation(async () => (
@@ -791,19 +869,19 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(null);
         currentTx.sessionSystemRecord.findMany.mockResolvedValue([]);
 
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             localId: "activity:workflow_run:v1:wf_demo",
         })).resolves.toEqual({ ok: false, error: "forbidden" });
-        await expect(listSessionSystemRecords({
+        await expect(listSessionSystemRecords({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             kind: "workflow_run.v1",
         })).resolves.toEqual({ ok: false, error: "forbidden" });
-        await expect(getLatestSessionSystemRecord({
+        await expect(getLatestSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -815,27 +893,20 @@ describe("sessionSystemRecordService account scoping", () => {
         const currentTx = testState.currentTx as TxMock;
         const row = activityRecord();
         let shareHasEditAccess = true;
-        testState.checkSessionAccess.mockImplementation(async () => {
+        testState.readAccessSession.mockImplementation(async () => {
             shareHasEditAccess = false;
-            return { level: "edit", isOwner: false };
+            return accessSessionRow("edit");
         });
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.session.findFirst.mockImplementation(async () => (
             shareHasEditAccess ? { id: "s1" } : null
         ));
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(row);
-        const hasCurrentEditPredicate = (where: Record<string, unknown>) => (
-            (where.session as { is?: { OR?: Array<{ AND?: Array<{ shares?: { some?: { accessLevel?: { in?: string[] } } } }> }> } } | undefined)
-                ?.is
-                ?.OR
-                ?.some((branch) => branch.AND?.some((condition) => (
-                    condition.shares?.some?.accessLevel?.in?.includes("edit") === true
-                ))) === true
-        );
-        currentTx.sessionSystemRecord.updateMany.mockImplementation(async (args: { where: Record<string, unknown> }) => ({
+
+        currentTx.sessionSystemRecord.updateMany.mockImplementation(async (args: { where: Prisma.SessionSystemRecordWhereInput }) => ({
             count: !shareHasEditAccess && hasCurrentEditPredicate(args.where) ? 0 : 1,
         }));
-        currentTx.sessionSystemRecord.deleteMany.mockImplementation(async (args: { where: Record<string, unknown> }) => ({
+        currentTx.sessionSystemRecord.deleteMany.mockImplementation(async (args: { where: Prisma.SessionSystemRecordWhereInput }) => ({
             count: !shareHasEditAccess && hasCurrentEditPredicate(args.where) ? 0 : 1,
         }));
         const address = {
@@ -846,61 +917,34 @@ describe("sessionSystemRecordService account scoping", () => {
         };
         const nextContent = { t: "plain" as const, v: workflowRunPayload({ updatedAt: 1001 }) };
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
             content: nextContent,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        expect(currentTx.sessionSystemRecord.updateMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                session: {
-                    is: expect.objectContaining({
-                        OR: expect.arrayContaining([
-                            expect.objectContaining({
-                                AND: expect.arrayContaining([
-                                    expect.objectContaining({
-                                        shares: {
-                                            some: expect.objectContaining({
-                                                accessLevel: { in: ["edit", "admin"] },
-                                            }),
-                                        },
-                                    }),
-                                ]),
-                            }),
-                        ]),
-                    }),
-                },
-            }),
-        }));
+
     });
 
     it("rejects same-envelope V1 and legacy activity upserts after an editor is downgraded to visible", async () => {
         const currentTx = testState.currentTx as TxMock;
         const row = activityRecord();
         let shareHasEditAccess = true;
-        testState.checkSessionAccess.mockImplementation(async () => {
+        testState.readAccessSession.mockImplementation(async () => {
             shareHasEditAccess = false;
-            return { level: "edit", isOwner: false };
+            return accessSessionRow("edit");
         });
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.session.findFirst.mockImplementation(async () => (
             shareHasEditAccess ? { id: "s1" } : null
         ));
-        const hasCurrentEditPredicate = (where: Record<string, unknown>) => (
-            (where.session as { is?: { OR?: Array<{ AND?: Array<{ shares?: { some?: { accessLevel?: { in?: string[] } } } }> }> } } | undefined)
-                ?.is
-                ?.OR
-                ?.some((branch) => branch.AND?.some((condition) => (
-                    condition.shares?.some?.accessLevel?.in?.includes("edit") === true
-                ))) === true
-        );
-        currentTx.sessionSystemRecord.findFirst.mockImplementation(async (args: { where: Record<string, unknown> }) => (
+
+        currentTx.sessionSystemRecord.findFirst.mockImplementation(async (args: { where: Prisma.SessionSystemRecordWhereInput }) => (
             hasCurrentEditPredicate(args.where) ? null : row
         ));
         const address = {
@@ -910,13 +954,13 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "activity:workflow_run:v1:wf_demo",
         };
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address,
             content: row.content,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(upsertSessionSystemRecord({
+        await expect(upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -924,33 +968,13 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: address.localId,
             content: row.content,
         })).resolves.toEqual({ ok: false, error: "forbidden" });
-        expect(currentTx.sessionSystemRecord.findFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                session: {
-                    is: expect.objectContaining({
-                        OR: expect.arrayContaining([
-                            expect.objectContaining({
-                                AND: expect.arrayContaining([
-                                    expect.objectContaining({
-                                        shares: {
-                                            some: expect.objectContaining({
-                                                accessLevel: { in: ["edit", "admin"] },
-                                            }),
-                                        },
-                                    }),
-                                ]),
-                            }),
-                        ]),
-                    }),
-                },
-            }),
-        }));
+
     });
 
     it("rejects malformed plaintext host workflow content before a V1 upsert can persist it", async () => {
         const currentTx = testState.currentTx as TxMock;
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             address: {
@@ -991,7 +1015,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(winningRow);
         currentTx.sessionSystemRecord.create.mockRejectedValue({ code: "P2002" });
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1044,7 +1068,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.create.mockRejectedValueOnce({ code: "P2002" });
         currentTx.sessionSystemRecord.updateMany.mockResolvedValueOnce({ count: 1 });
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1060,7 +1084,7 @@ describe("sessionSystemRecordService account scoping", () => {
 
         currentTx.sessionSystemRecord.findFirst.mockReset();
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(winner);
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1116,7 +1140,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockRejectedValueOnce({ code: "P2002" });
         currentTx.sessionSystemRecord.updateMany.mockResolvedValueOnce({ count: 1 });
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1170,7 +1194,7 @@ describe("sessionSystemRecordService account scoping", () => {
             count: "version" in where ? 0 : 1,
         }));
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1225,7 +1249,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(raced);
         currentTx.sessionSystemRecord.updateMany.mockResolvedValue({ count: 0 });
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1276,7 +1300,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(raced);
         currentTx.sessionSystemRecord.deleteMany.mockResolvedValue({ count: 0 });
 
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1328,7 +1352,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce({ count: 0 })
             .mockResolvedValueOnce({ count: 1 });
 
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1360,7 +1384,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(row);
         const staleRevision = "ssr1.AAAACnJlY29yZC1vbmUAAAAB";
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1368,7 +1392,7 @@ describe("sessionSystemRecordService account scoping", () => {
             content: row.content,
             expectedRevision: staleRevision,
         })).resolves.toMatchObject({ ok: true, record: { revision: expect.stringMatching(/^ssr1\./) } });
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1392,7 +1416,7 @@ describe("sessionSystemRecordService account scoping", () => {
         };
         const malformedRevision = "ssr1.A";
 
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1400,7 +1424,7 @@ describe("sessionSystemRecordService account scoping", () => {
             content: { t: "plain", v: { title: "Changed" } },
             expectedRevision: malformedRevision,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_invalid_query" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1408,7 +1432,7 @@ describe("sessionSystemRecordService account scoping", () => {
             expectedRevision: malformedRevision,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_invalid_query" });
 
-        expect(testState.checkSessionAccess).not.toHaveBeenCalled();
+        expect(testState.readAccessSession).not.toHaveBeenCalled();
         expect(currentTx.session.findUnique).not.toHaveBeenCalled();
         expect(currentTx.sessionSystemRecord.findFirst).not.toHaveBeenCalled();
         expect(currentTx.sessionSystemRecord.updateMany).not.toHaveBeenCalled();
@@ -1435,7 +1459,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: new Date(),
         });
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1463,7 +1487,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: new Date(),
         });
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1491,7 +1515,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: new Date(),
         });
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1519,7 +1543,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: new Date(),
         });
 
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1554,13 +1578,13 @@ describe("sessionSystemRecordService account scoping", () => {
             localId: "note:one",
         };
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
             address: mismatchedAddress,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_kind_conflict" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1593,7 +1617,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(row);
         currentTx.sessionSystemRecord.deleteMany.mockResolvedValue({ count: 1 });
 
-        const page = await listSessionSystemRecordsV1({
+        const page = await listSessionSystemRecordsV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1606,7 +1630,7 @@ describe("sessionSystemRecordService account scoping", () => {
         }));
 
         const revision = (page as Extract<typeof page, { ok: true }>).page.records[0]!.revision;
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1618,7 +1642,7 @@ describe("sessionSystemRecordService account scoping", () => {
         });
     });
 
-    it("rejects a colliding v1 list lookahead row before deriving hasNext", async () => {
+    it("does not let a colliding lookahead row hide the requested v1 page", async () => {
         const currentTx = testState.currentTx as TxMock;
         const createdAt = new Date("2026-08-03T10:00:00.000Z");
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
@@ -1638,17 +1662,63 @@ describe("sessionSystemRecordService account scoping", () => {
             createdAt,
             updatedAt: createdAt,
         };
-        currentTx.sessionSystemRecord.findMany.mockResolvedValue([
+        currentTx.sessionSystemRecord.findMany.mockResolvedValueOnce([
             row,
             { ...row, id: "colliding-lookahead", pluginId: "other.plugin" },
         ]);
 
-        await expect(listSessionSystemRecordsV1({
+        const firstPage = await listSessionSystemRecordsV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
             query: { owner: "plugin", namespace: "notes", limit: 1 },
+        });
+        expect(firstPage).toMatchObject({
+            ok: true,
+            page: {
+                records: [{ id: "record-one" }],
+                hasNext: true,
+                nextCursor: expect.any(String),
+            },
+        });
+        if (!firstPage.ok) throw new Error("Expected the valid requested page");
+
+        currentTx.sessionSystemRecord.findMany.mockResolvedValueOnce([
+            { ...row, id: "colliding-lookahead", pluginId: "other.plugin" },
+        ]);
+        await expect(listSessionSystemRecordsV1({ authentication,
+            actorUserId: "actor",
+            sessionId: "s1",
+            pluginId: "acme.notes",
+            query: { owner: "plugin", namespace: "notes", limit: 1, cursor: firstPage.page.nextCursor },
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_address_collision" });
+    });
+
+    it("validates only the requested legacy page before exposing its continuation", async () => {
+        const currentTx = testState.currentTx as TxMock;
+        currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
+        const first = activityRecord();
+        const corruptNext = activityRecord({ id: "corrupt-next", namespace: "memory" });
+        currentTx.sessionSystemRecord.findMany
+            .mockResolvedValueOnce([first, corruptNext])
+            .mockResolvedValueOnce([corruptNext]);
+
+        const firstPage = await listSessionSystemRecords({ authentication,
+            actorUserId: "shared-editor",
+            sessionId: "s1",
+            namespace: "activity",
+            limit: 1,
+        });
+        expect(firstPage).toMatchObject({ ok: true, records: [{ id: "rec-wf" }], nextCursor: expect.any(String) });
+        if (!firstPage.ok || firstPage.nextCursor === null) throw new Error("Expected a continuation cursor");
+
+        await expect(listSessionSystemRecords({ authentication,
+            actorUserId: "shared-editor",
+            sessionId: "s1",
+            namespace: "activity",
+            limit: 1,
+            cursor: firstPage.nextCursor,
+        })).resolves.toEqual({ ok: false, error: "internal" });
     });
 
     it("lists an exact local id by its byte-exact record key and rejects a collation-matched raw variant", async () => {
@@ -1672,7 +1742,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: createdAt,
         }]);
 
-        await expect(listSessionSystemRecordsV1({
+        await expect(listSessionSystemRecordsV1({ authentication,
             actorUserId: "actor",
             sessionId: "s1",
             pluginId: "acme.notes",
@@ -1693,7 +1763,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(activityRecord());
 
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1706,7 +1776,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1718,7 +1788,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(null);
 
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1731,7 +1801,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1747,7 +1817,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(canonicalWinner);
         currentTx.sessionSystemRecord.create.mockRejectedValue({ code: "P2002" });
 
-        await expect(upsertSessionSystemRecord({
+        await expect(upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1767,7 +1837,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1789,7 +1859,7 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce(collidingWinner);
         currentTx.sessionSystemRecord.create.mockRejectedValue({ code: "P2002" });
 
-        await expect(upsertSessionSystemRecord({
+        await expect(upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1805,7 +1875,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1823,7 +1893,7 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.session.findUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "owner-account" });
         currentTx.sessionSystemRecord.findFirst.mockResolvedValueOnce(null);
 
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1835,7 +1905,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1848,14 +1918,14 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.findMany.mockResolvedValue([activityRecord()]);
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(activityRecord());
 
-        await expect(listSessionSystemRecords({
+        await expect(listSessionSystemRecords({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             kind: "workflow_run.v1",
             localId: "activity:workflow_run:v1:wf_demo",
         })).resolves.toMatchObject({ ok: true, records: [{ id: "rec-wf" }] });
-        await expect(getLatestSessionSystemRecord({
+        await expect(getLatestSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1891,13 +1961,13 @@ describe("sessionSystemRecordService account scoping", () => {
             }))
             .mockResolvedValueOnce(activityRecord({ namespace: "memory" }));
 
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             localId: "activity:workflow_run:v1:wf_demo",
         })).resolves.toEqual({ ok: false, error: "internal" });
-        await expect(getLatestSessionSystemRecord({
+        await expect(getLatestSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1915,21 +1985,25 @@ describe("sessionSystemRecordService account scoping", () => {
             .mockResolvedValueOnce([collidingRow])
             .mockResolvedValueOnce([activityRecord(), collidingRow]);
 
-        await expect(listSessionSystemRecords({
+        await expect(listSessionSystemRecords({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             kind: "workflow_run.v1",
             localId: "activity:workflow_run:v1:wf_demo",
         })).resolves.toEqual({ ok: false, error: "internal" });
-        await expect(listSessionSystemRecords({
+        await expect(listSessionSystemRecords({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             kind: "workflow_run.v1",
             localId: "activity:workflow_run:v1:wf_demo",
             limit: 1,
-        })).resolves.toEqual({ ok: false, error: "internal" });
+        })).resolves.toMatchObject({
+            ok: true,
+            records: [{ id: "rec-wf" }],
+            nextCursor: expect.any(String),
+        });
     });
 
     it("stores shared-editor activity workflow records under the session owner account", async () => {
@@ -1949,7 +2023,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: createdAt,
         });
 
-        const result = await upsertSessionSystemRecord({
+        const result = await upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -1964,7 +2038,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -1993,10 +2067,10 @@ describe("sessionSystemRecordService account scoping", () => {
     });
 
     it("rejects a view-only participant before mutating session-owner activity records", async () => {
-        testState.checkSessionAccess.mockResolvedValue({ level: "view", isOwner: false });
+        testState.readAccessSession.mockResolvedValue(accessSessionRow("view", "shared-viewer"));
         const currentTx = testState.currentTx as TxMock;
 
-        const result = await upsertSessionSystemRecord({
+        const result = await upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-viewer",
             sessionId: "s1",
             namespace: "activity",
@@ -2048,7 +2122,7 @@ describe("sessionSystemRecordService account scoping", () => {
         }));
         currentTx.sessionSystemRecord.updateMany.mockResolvedValue({ count: 1 });
 
-        const result = await upsertSessionSystemRecord({
+        const result = await upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -2065,10 +2139,17 @@ describe("sessionSystemRecordService account scoping", () => {
                 sessionId: "s1",
                 session: {
                     is: expect.objectContaining({
-                        id: "s1",
-                        OR: expect.arrayContaining([
-                            { accountId: "shared-editor" },
-                            expect.any(Object),
+                        AND: expect.arrayContaining([
+                            { id: "s1" },
+                            expect.objectContaining({
+                                OR: expect.arrayContaining([
+                                    expect.objectContaining({
+                                        accountId: "shared-editor",
+                                        account: { status: "active" },
+                                    }),
+                                    expect.objectContaining({ AND: expect.any(Array) }),
+                                ]),
+                            }),
                         ]),
                     }),
                 },
@@ -2107,7 +2188,7 @@ describe("sessionSystemRecordService account scoping", () => {
             updatedAt: createdAt,
         });
 
-        const result = await upsertSessionSystemRecord({
+        const result = await upsertSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "memory",
@@ -2128,7 +2209,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "shared-editor",
                 sessionId: "s1",
                 recordAddressKey: memoryKeys.recordAddressKey,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -2142,19 +2223,19 @@ describe("sessionSystemRecordService account scoping", () => {
         currentTx.sessionSystemRecord.findMany.mockResolvedValue([ownerRecord]);
         currentTx.sessionSystemRecord.findFirst.mockResolvedValue(ownerRecord);
 
-        await getSessionSystemRecord({
+        await getSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             localId: "activity:workflow_run:v1:wf_demo",
         });
-        await listSessionSystemRecords({
+        await listSessionSystemRecords({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
             kind: "workflow_run.v1",
         });
-        await getLatestSessionSystemRecord({
+        await getLatestSessionSystemRecord({ authentication,
             actorUserId: "shared-editor",
             sessionId: "s1",
             namespace: "activity",
@@ -2166,7 +2247,7 @@ describe("sessionSystemRecordService account scoping", () => {
                 accountId: "owner-account",
                 sessionId: "s1",
                 recordAddressKey: ACTIVITY_WORKFLOW_RECORD_KEY,
-                session: { is: expect.objectContaining({ id: "s1" }) },
+                session: { is: expect.objectContaining({ AND: expect.arrayContaining([{ id: "s1" }]) }) },
             }),
             select: expect.any(Object),
         }));
@@ -2201,41 +2282,41 @@ describe("sessionSystemRecordService account scoping", () => {
         };
         const content = { t: "encrypted" as const, c: "sealed-permission-record" };
 
-        await expect(readSessionSystemRecordV1({
+        await expect(readSessionSystemRecordV1({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             address,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(listSessionSystemRecordsV1({
+        await expect(listSessionSystemRecordsV1({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             query: { owner: "host", namespace: "permission", kind: "remote_settlement.v1", limit: 1 },
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(upsertSessionSystemRecordV1({
+        await expect(upsertSessionSystemRecordV1({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             address,
             content,
             expectedRevision: null,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
-        await expect(deleteSessionSystemRecordV1({
+        await expect(deleteSessionSystemRecordV1({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             address,
         })).resolves.toEqual({ ok: false, code: "plugin_session_record_forbidden" });
 
-        await expect(listSessionSystemRecords({
+        await expect(listSessionSystemRecords({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             namespace: "permission",
         })).resolves.toEqual({ ok: false, error: "forbidden" });
-        await expect(getSessionSystemRecord({
+        await expect(getSessionSystemRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             namespace: "permission",
             localId: address.localId,
         })).resolves.toEqual({ ok: false, error: "forbidden" });
-        await expect(upsertSessionSystemRecord({
+        await expect(upsertSessionSystemRecord({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             namespace: "permission",
@@ -2308,7 +2389,7 @@ describe("sessionSystemRecordService account scoping", () => {
             async ({ take }: { take: number }) => [publicMemoryRecord, publicActivityRecord].slice(0, take),
         );
 
-        const result = await listSessionSystemRecords({
+        const result = await listSessionSystemRecords({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             limit: 2,
@@ -2345,7 +2426,7 @@ describe("sessionSystemRecordService account scoping", () => {
             `v1:${createdAt.getTime()}:rec-private-import`,
             "utf8",
         ).toString("base64url");
-        const cursorPage = await listSessionSystemRecords({
+        const cursorPage = await listSessionSystemRecords({ authentication,
             actorUserId: "owner-account",
             sessionId: "s1",
             limit: 2,

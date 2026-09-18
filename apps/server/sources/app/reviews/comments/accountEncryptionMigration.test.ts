@@ -156,9 +156,11 @@ function migrationItem(
 
 function persistence(
     rows: ReviewCommentAccountEncryptionMigrationStoredComment[],
+    publicationCorrelationCount = 0,
 ): ReviewCommentAccountEncryptionMigrationPersistence {
     return {
         readInventory: vi.fn(async () => rows),
+        readPublicationCorrelationCount: vi.fn(async () => publicationCorrelationCount),
         rewriteCommentSensitiveEnvelope: vi.fn(async (params) => {
             const row = rows.find((candidate) => candidate.commentId === params.commentId);
             if (!row) throw new Error("missing");
@@ -314,5 +316,50 @@ describe("Review Comment Account-encryption migration owner", () => {
             directive: { action: "assert_empty" },
             persistence: empty,
         })).resolves.toEqual({ comments: [] });
+    });
+
+    it("refuses an otherwise empty transition while publication correlation rows exist", async () => {
+        const store = persistence([], 1);
+
+        await expect(migrateReviewCommentAccountEncryptionInTx({
+            accountId: "account-1",
+            targetMode: "plain",
+            directive: { action: "assert_empty" },
+            persistence: store,
+        })).rejects.toThrow("review_comment_migration_inventory_not_empty");
+    });
+
+    it("refuses a complete inventory rewrite while publication correlation rows exist", async () => {
+        const rows = [storedComment({ commentId: "comment-1" })];
+        const store = persistence(rows, 2);
+
+        await expect(migrateReviewCommentAccountEncryptionInTx({
+            accountId: "account-1",
+            targetMode: "plain",
+            directive: { action: "migrate", items: rows.map((row) => migrationItem(row)) },
+            persistence: store,
+        })).rejects.toThrow("review_comment_migration_inventory_not_empty");
+
+        expect(store.rewriteCommentSensitiveEnvelope).not.toHaveBeenCalled();
+        expect(store.rewriteEventSensitiveEnvelope).not.toHaveBeenCalled();
+    });
+
+    it("still matches an already applied post-state while publication correlation rows exist", async () => {
+        const row = storedComment({ commentId: "comment-1" });
+        const item = migrationItem(row);
+        (row as { sensitiveSource: ReviewCommentSensitiveMigrationSourceV1 }).sensitiveSource = {
+            v: 1,
+            layout: "canonical_v1",
+            envelope: item.targetSensitiveEnvelope,
+        };
+        (row.events[0] as { sensitiveEnvelope: BoundReviewCommentEventSensitiveEnvelopeV1 }).sensitiveEnvelope =
+            item.events[0]!.targetSensitiveEnvelope;
+
+        await expect(reviewCommentAccountEncryptionPostStateMatches({
+            accountId: "account-1",
+            targetMode: "plain",
+            directive: { action: "migrate", items: [item] },
+            persistence: persistence([row], 1),
+        })).resolves.toBe(true);
     });
 });

@@ -1,4 +1,5 @@
 import {
+    signAccountContentKeyBindingV1,
     decodeBase64,
     openBoxBundle,
     serializeStoredPluginWebhookDeliveryContentV1,
@@ -26,10 +27,10 @@ const content = {
 function e2eeAccount() {
     const signing = tweetnacl.sign.keyPair();
     const contentKey = tweetnacl.box.keyPair();
-    const signature = tweetnacl.sign.detached(
-        Buffer.concat([Buffer.from("Happy content key v1\0", "utf8"), Buffer.from(contentKey.publicKey)]),
-        signing.secretKey,
-    );
+    const signature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signing.secretKey,
+        contentPublicKey: contentKey.publicKey,
+    });
     return {
         row: {
             publicKey: Buffer.from(signing.publicKey).toString("hex"),

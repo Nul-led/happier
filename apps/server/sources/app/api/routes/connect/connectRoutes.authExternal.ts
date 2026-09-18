@@ -4,9 +4,10 @@ import tweetnacl from "tweetnacl";
 
 import { type Fastify } from "../../types";
 import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import { isEffectiveHomeAuthMethodActionEnabled } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { OAUTH_STATE_UNAVAILABLE_CODE } from "@/app/auth/oauthStateErrors";
-import { findOAuthProviderById } from "@/app/oauth/providers/registry";
-import { createExternalAuthorizeUrl } from "./oauthExternal/createExternalAuthorizeUrl";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
+import { createExternalAuthorizeAttempt, createExternalAuthorizeUrl } from "./oauthExternal/createExternalAuthorizeUrl";
 import { oauthExternalRateLimitAuthParamsPerIp } from "./oauthExternal/oauthExternalRateLimits";
 import { OAUTH_NOT_CONFIGURED_ERROR } from "./oauthExternal/oauthExternalErrors";
 import { registerExternalAuthFinalizeRoute } from "./oauthExternal/registerExternalAuthFinalizeRoute";
@@ -15,6 +16,7 @@ import { oauthAuthPendingSchema } from "./oauthExternal/oauthExternalSchemas";
 import { deleteOAuthPendingBestEffort, loadValidOAuthPending } from "./connectRoutes.oauthPending";
 import {
     AccountEncryptionMigrateExternalAuthBindingDigestV1Schema,
+    PasswordCredentialMutationDigestV1Schema,
     ExternalOAuthErrorResponseSchema,
     ExternalOAuthParamsResponseSchema,
 } from "@happier-dev/protocol";
@@ -34,6 +36,10 @@ import {
 import {
     resolveCurrentAccountDirectoryOAuthTarget,
 } from "./oauthExternal/accountDirectoryOAuthTarget";
+import { inTx } from "@/storage/inTx";
+import { resolveTeamInvitationFreshAccountAdmissionReferenceInTx } from "@/app/teams/invitations/freshAccountAdmission";
+import type { TeamOAuthAdmissionSource } from "@/app/teams/memberships/teamOAuthAdmissionSource";
+import { isTeamMembershipAdmissionEnabled } from "@/app/teams/memberships/membershipService";
 
 export function connectAuthExternalRoutes(app: Fastify) {
     //
@@ -42,10 +48,9 @@ export function connectAuthExternalRoutes(app: Fastify) {
 
     app.get("/v1/auth/external/:provider/params", {
         preHandler: async (request, reply) => {
-            if (
-                (request.query as { purpose?: unknown }).purpose
-                === "account_encryption_first_key"
-            ) {
+            if (["account_encryption_first_key", "account_password_enrollment"].includes(String(
+                (request.query as { purpose?: unknown }).purpose ?? "",
+            ))) {
                 return await app.authenticate(request, reply);
             }
         },
@@ -60,22 +65,33 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     purpose: z
                         .enum([
                             "account_encryption_first_key",
+                            "account_password_enrollment",
                             "account_directory",
+                            "team_admission",
                         ])
                         .optional(),
-                    requestDigest:
-                        AccountEncryptionMigrateExternalAuthBindingDigestV1Schema
-                            .optional(),
+                    requestDigest: z.union([
+                        AccountEncryptionMigrateExternalAuthBindingDigestV1Schema,
+                        PasswordCredentialMutationDigestV1Schema,
+                    ]).optional(),
                     endpointUrl: z.string().optional(),
                     endpointServerIdentityId: z.string().optional(),
                     canonicalServerUrl: z.string().optional(),
+                    teamId: z.string().optional(),
+                    connectionId: z.string().optional(),
+                    origin: z.enum(["home", "team"]).optional(),
                 })
                 .refine((q) => {
-                    if (q.purpose === "account_encryption_first_key") {
+                    if (q.purpose === "account_encryption_first_key" || q.purpose === "account_password_enrollment") {
                         return q.mode === "keyless"
                             && Boolean(q.proofHash)
                             && Boolean(q.requestDigest)
                             && !q.publicKey;
+                    }
+                    if (q.purpose === "team_admission") {
+                        const keyed = q.mode !== "keyless" && (Boolean(q.publicKey) !== Boolean(q.proofHash));
+                        const keyless = q.mode === "keyless" && Boolean(q.proofHash) && !q.publicKey;
+                        return (keyed || keyless) && Boolean(q.teamId);
                     }
                     if (q.purpose === "account_directory") {
                         const isKeyless = q.mode === "keyless"
@@ -100,16 +116,119 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 400: ExternalOAuthErrorResponseSchema,
                 403: ExternalOAuthErrorResponseSchema,
                 404: z.object({ error: z.literal("unsupported-provider") }),
+                503: ExternalOAuthErrorResponseSchema,
             },
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
+        const teamAdmission = request.query.purpose === "team_admission";
+        const teamId = teamAdmission ? String(request.query.teamId ?? "").trim() : "";
+        const teamProviderOrigin = teamAdmission ? request.query.origin ?? "team" : null;
+        let connectionId = teamAdmission ? String(request.query.connectionId ?? "").trim() : "";
+        if (teamAdmission && !teamId) {
+            return reply.code(400).send({ error: "invalid-team-admission" });
+        }
+        if (teamAdmission && !isTeamMembershipAdmissionEnabled()) {
+            return reply.code(403).send({ error: "invalid-team-admission" });
+        }
+        const resolved = await resolveOAuthRuntimeById(
+            process.env,
+            providerId,
+            teamAdmission && teamProviderOrigin === "team" ? { kind: "team", teamId } : undefined,
+        );
+        if (!resolved) return reply.code(404).send({ error: "unsupported-provider" });
+        const { provider, reference } = resolved;
+        let teamAdmissionConnection: { id: string; revision: number } | undefined;
+        let teamAdmissionSourceSeed:
+            | Extract<TeamOAuthAdmissionSource, { kind: "team_invitation" }>
+            | Omit<Extract<TeamOAuthAdmissionSource, { kind: "team_jit_identity" }>, "authAttemptId">
+            | null = null;
+        if (teamAdmission && teamProviderOrigin === "team") {
+            const connection = await db.teamIdentityConnection.findFirst({
+                where: {
+                    teamId,
+                    providerInstanceId: providerId,
+                    ...(connectionId ? { id: connectionId } : {}),
+                },
+                select: {
+                    id: true,
+                    teamId: true,
+                    providerInstanceId: true,
+                    revision: true,
+                    enabled: true,
+                    team: { select: { admissionMode: true, archivedAt: true } },
+                },
+            });
+            if (!connection || !connection.enabled || connection.team.archivedAt !== null) {
+                return reply.code(403).send({ error: "invalid-team-admission" });
+            }
+            connectionId = connection.id;
+            teamAdmissionConnection = { id: connection.id, revision: connection.revision };
+            const invitationToken = typeof request.headers["x-happier-team-invitation"] === "string"
+                ? request.headers["x-happier-team-invitation"].trim()
+                : "";
+            if (invitationToken) {
+                const invitation = await inTx((tx) => resolveTeamInvitationFreshAccountAdmissionReferenceInTx(tx, {
+                    token: invitationToken,
+                }));
+                if (!invitation || invitation.teamId !== teamId) {
+                    return reply.code(403).send({ error: "invalid-team-admission" });
+                }
+                if (connection.team.admissionMode !== "invite_only") {
+                    return reply.code(403).send({ error: "invalid-team-admission" });
+                }
+                teamAdmissionSourceSeed = {
+                    kind: "team_invitation",
+                    teamId,
+                    providerId,
+                    providerOrigin: "team",
+                    connectionId: connection.id,
+                    connectionRevision: connection.revision,
+                    admissionMode: "invite_only",
+                    invitationId: invitation.invitationId,
+                    tokenHash: invitation.tokenHash,
+                };
+            } else if (connection.team.admissionMode === "jit") {
+                teamAdmissionSourceSeed = {
+                    kind: "team_jit_identity",
+                    teamId,
+                    providerId,
+                    connectionId: connection.id,
+                    connectionRevision: connection.revision,
+                    admissionMode: "jit",
+                };
+            }
+        } else if (teamAdmission) {
+            const invitationToken = typeof request.headers["x-happier-team-invitation"] === "string"
+                ? request.headers["x-happier-team-invitation"].trim()
+                : "";
+            const admission = invitationToken ? await inTx(async (tx) => {
+                const [invitation, team] = await Promise.all([
+                    resolveTeamInvitationFreshAccountAdmissionReferenceInTx(tx, { token: invitationToken }),
+                    tx.team.findUnique({ where: { id: teamId }, select: { admissionMode: true } }),
+                ]);
+                return invitation
+                    && invitation.teamId === teamId
+                    && team?.admissionMode === "invite_only"
+                    ? invitation
+                    : null;
+            }) : null;
+            if (!admission) return reply.code(403).send({ error: "invalid-team-admission" });
+            teamAdmissionSourceSeed = {
+                kind: "team_invitation",
+                teamId,
+                providerId,
+                providerOrigin: "home",
+                connectionId: null,
+                connectionRevision: null,
+                admissionMode: "invite_only",
+                invitationId: admission.invitationId,
+                tokenHash: admission.tokenHash,
+            };
+        }
 
-        const isFirstKeyStepUp =
-            request.query.purpose
-            === "account_encryption_first_key";
+        const isFirstKeyStepUp = request.query.purpose === "account_encryption_first_key"
+            || request.query.purpose === "account_password_enrollment";
         const isAccountDirectory =
             request.query.purpose === "account_directory";
         if (isFirstKeyStepUp) {
@@ -164,9 +283,10 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     env: process.env,
                     providerId,
                     provider,
+                    reference,
                     publicKeyHex: null,
                     proofHash,
-                    purpose: "account_encryption_first_key",
+                    purpose: request.query.purpose,
                     userId: request.userId,
                     requestDigest,
                     ...(webAppOAuthReturnUrl
@@ -241,14 +361,27 @@ export function connectAuthExternalRoutes(app: Fastify) {
 
         const mode = (request.query as any)?.mode === "keyless" ? "keyless" : "keyed";
         const policy = resolveAuthPolicyFromEnv(process.env);
-        const keyedAllowed = policy.signupProviders.includes(providerId);
+        const keyedAllowed = teamAdmission
+            ? true
+            : isAccountDirectory
+            ? reference.source !== "managed" && policy.signupProviders.includes(providerId)
+            : await isEffectiveHomeAuthMethodActionEnabled({
+                env: process.env,
+                methodId: providerId,
+                actionId: "provision",
+                mode: "keyed",
+            });
         let keylessAllowed = false;
         if (isAccountDirectory && !keyedAllowed) {
             return reply.code(403).send({ error: "signup-provider-disabled" });
         }
-        if (mode === "keyless" && !isAccountDirectory) {
-            const keyless = readAuthOauthKeylessFeatureEnv(process.env);
-            keylessAllowed = keyless.enabled && keyless.providers.includes(providerId);
+        if (mode === "keyless" && !isAccountDirectory && !teamAdmission) {
+            keylessAllowed = await isEffectiveHomeAuthMethodActionEnabled({
+                env: process.env,
+                methodId: providerId,
+                actionId: "login",
+                mode: "keyless",
+            });
             if (!keylessAllowed) return reply.code(403).send({ error: "keyless-disabled" });
             const availability = resolveKeylessAccountsAvailability(process.env);
             if (!availability.ok) {
@@ -258,8 +391,12 @@ export function connectAuthExternalRoutes(app: Fastify) {
             // Universal proofHash auth-start: allow if either keyed signup or keyless is allowed.
             const proofHashCandidate = String((request.query as any)?.proofHash ?? "").trim();
             if (proofHashCandidate) {
-                const keyless = readAuthOauthKeylessFeatureEnv(process.env);
-                keylessAllowed = keyless.enabled && keyless.providers.includes(providerId);
+                keylessAllowed = await isEffectiveHomeAuthMethodActionEnabled({
+                    env: process.env,
+                    methodId: providerId,
+                    actionId: "login",
+                    mode: "keyless",
+                });
                 if (!keyedAllowed && !keylessAllowed) {
                     return reply.code(403).send({ error: "signup-provider-disabled" });
                 }
@@ -303,11 +440,34 @@ export function connectAuthExternalRoutes(app: Fastify) {
                 providerId,
                 headers: request.headers as any,
             });
+            if (teamAdmission) {
+                const attempt = await createExternalAuthorizeAttempt({
+                    flow: "auth",
+                    env: process.env,
+                    providerId,
+                    provider,
+                    reference,
+                    publicKeyHex,
+                    proofHash,
+                    purpose: "team_admission",
+                    connection: teamAdmissionConnection,
+                    admission: teamAdmissionSourceSeed,
+                    ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
+                });
+                if (!attempt) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
+                return reply.send({
+                    url: attempt.url,
+                    purpose: "team_admission" as const,
+                    teamId,
+                    admissionReference: attempt.attemptId,
+                });
+            }
             const url = await createExternalAuthorizeUrl({
                 flow: "auth",
                 env: process.env,
                 providerId,
                 provider,
+                reference,
                 publicKeyHex,
                 proofHash,
                 ...(accountDirectoryTarget
@@ -324,7 +484,9 @@ export function connectAuthExternalRoutes(app: Fastify) {
                     : {}),
                 ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
             });
-            if (!url) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
+            if (!url) {
+                return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
+            }
             return reply.send(accountDirectoryTarget
                 ? {
                     url,
@@ -363,8 +525,9 @@ export function connectAuthExternalRoutes(app: Fastify) {
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
+        if (!await resolveOAuthRuntimeById(process.env, providerId)) {
+            return reply.code(404).send({ error: "unsupported-provider" });
+        }
 
         const pendingKey = request.params.pending.toString().trim();
         if (!pendingKey) return reply.send({ success: true });

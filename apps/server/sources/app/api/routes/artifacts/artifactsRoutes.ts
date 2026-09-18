@@ -22,8 +22,24 @@ import {
     AccountStoredContentUpgradeRequiredV1Schema,
     CLIENT_UPGRADE_REQUIRED_HTTP_STATUS,
 } from "@happier-dev/protocol";
+import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 
 const DEFAULT_ARTIFACT_LIST_LIMIT = 500;
+
+function parseArtifactListCursor(value: string | undefined): { updatedAt: Date; id: string } | null {
+    if (!value) return null;
+    try {
+        const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as unknown;
+        if (!decoded || typeof decoded !== "object") return null;
+        const record = decoded as Record<string, unknown>;
+        const updatedAt = new Date(Number(record.updatedAt));
+        return typeof record.id === "string" && Number.isFinite(updatedAt.getTime())
+            ? { updatedAt, id: record.id }
+            : null;
+    } catch {
+        return null;
+    }
+}
 
 export function artifactsRoutes(app: Fastify) {
     // GET /v1/artifacts - List all artifacts for the account
@@ -35,6 +51,7 @@ export function artifactsRoutes(app: Fastify) {
         schema: {
             querystring: z.object({
                 limit: z.coerce.number().int().min(1).max(500).optional(),
+                cursor: z.string().min(1).optional(),
             }),
             response: {
                 200: z.array(z.object({
@@ -47,6 +64,7 @@ export function artifactsRoutes(app: Fastify) {
                     updatedAt: z.number()
                 })),
                 426: AccountStoredContentUpgradeRequiredV1Schema,
+                400: z.object({ error: z.literal('Failed to get artifacts') }),
                 500: z.object({
                     error: z.literal('Failed to get artifacts')
                 })
@@ -54,16 +72,23 @@ export function artifactsRoutes(app: Fastify) {
         }
     }, async (request, reply) => {
         const userId = request.userId;
-        const query = request.query as { limit?: number };
+        const query = request.query as { limit?: number; cursor?: string };
         const listLimit = typeof query.limit === "number" ? query.limit : DEFAULT_ARTIFACT_LIST_LIMIT;
+        const cursor = parseArtifactListCursor(query.cursor);
+        if (query.cursor && !cursor) return reply.code(400).send({ error: 'Failed to get artifacts' });
 
         try {
-            const artifacts = await db.artifact.findMany({
+            const [artifacts, account] = await Promise.all([
+                db.artifact.findMany({
                 where: {
                     accountId: userId,
                     ...artifactOrdinaryWhere,
+                    ...(cursor ? { OR: [
+                        { updatedAt: { lt: cursor.updatedAt } },
+                        { updatedAt: cursor.updatedAt, id: { lt: cursor.id } },
+                    ] } : {}),
                 },
-                orderBy: { updatedAt: 'desc' },
+                orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
                 take: listLimit,
                 select: {
                     id: true,
@@ -74,7 +99,18 @@ export function artifactsRoutes(app: Fastify) {
                     createdAt: true,
                     updatedAt: true
                 }
-            });
+                }),
+                db.account.findUnique({
+                    where: { id: userId },
+                    select: { encryptionMode: true },
+                }),
+            ]);
+            const accountMode = account
+                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
+                : null;
+            if (accountMode?.status !== "ready") {
+                throw new Error("Artifact Account mode is unavailable");
+            }
             if (
                 artifacts.some((artifact) =>
                     isPlainArtifactDataKeyBytes(
@@ -92,6 +128,7 @@ export function artifactsRoutes(app: Fastify) {
                 const header = openArtifactStoredContentBytes({
                     accountId: userId,
                     artifactId: artifact.id,
+                    mode: accountMode.mode,
                     field: "header",
                     dataEncryptionKey: artifact.dataEncryptionKey,
                     content: artifact.header,
@@ -151,16 +188,28 @@ export function artifactsRoutes(app: Fastify) {
         const { id } = request.params;
 
         try {
-            const artifact = await db.artifact.findFirst({
-                where: {
-                    id,
-                    accountId: userId,
-                    ...artifactOrdinaryWhere,
-                }
-            });
+            const [artifact, account] = await Promise.all([
+                db.artifact.findFirst({
+                    where: {
+                        id,
+                        accountId: userId,
+                        ...artifactOrdinaryWhere,
+                    },
+                }),
+                db.account.findUnique({
+                    where: { id: userId },
+                    select: { encryptionMode: true },
+                }),
+            ]);
 
             if (!artifact) {
                 return reply.code(404).send({ error: 'Artifact not found' });
+            }
+            const accountMode = account
+                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
+                : null;
+            if (accountMode?.status !== "ready") {
+                throw new Error("Artifact Account mode is unavailable");
             }
             if (
                 isPlainArtifactDataKeyBytes(
@@ -176,6 +225,7 @@ export function artifactsRoutes(app: Fastify) {
             const opened = openArtifactStoredContentPair({
                 accountId: userId,
                 artifactId: artifact.id,
+                mode: accountMode.mode,
                 dataEncryptionKey: artifact.dataEncryptionKey,
                 header: artifact.header,
                 body: artifact.body,

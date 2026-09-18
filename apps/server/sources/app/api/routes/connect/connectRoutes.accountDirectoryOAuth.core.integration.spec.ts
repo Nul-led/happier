@@ -61,6 +61,8 @@ function applyDirectoryOAuthEnv(
     overrides: Record<string, string | undefined> = {},
 ): void {
     harness.resetEnv({
+        HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self",
+        HAPPIER_SERVER_IDENTITY_ID: "srv_directory_oauth_test",
         HAPPIER_CANONICAL_SERVER_URL: CANONICAL_SERVER_URL,
         HAPPIER_PUBLIC_SERVER_URL: SERVING_ENDPOINT_URL,
         GITHUB_CLIENT_ID: "gh_client",
@@ -447,6 +449,12 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
         expect(await db.repeatKey.findUnique({ where: { key: pendingKey! } })).toBeNull();
         const identities = await db.accountIdentity.findMany({ where: { accountId: account.id } });
         expect(identities.length).toBe(1);
+        expect(await db.accountHomeDirectoryEntry.findUnique({
+            where: { accountId_homeServerIdentityId: { accountId: account.id, homeServerIdentityId: serverIdentityId } },
+        })).toMatchObject({ accountId: account.id, homeServerIdentityId: serverIdentityId });
+        expect(await db.accountDirectoryLink.findUnique({
+            where: { issuerServerIdentityId_issuerSubjectId: { issuerServerIdentityId: serverIdentityId, issuerSubjectId: account.id } },
+        })).toMatchObject({ accountId: account.id, issuerSubjectId: account.id });
 
         await app.close();
     });
@@ -539,7 +547,7 @@ describe("connectRoutes (Account Directory OAuth purpose)", () => {
         const winner = responses.find((response) => response.statusCode === 200);
         const loser = responses.find((response) => response.statusCode !== 200);
 
-        expect(responses.map((response) => response.statusCode).sort()).toEqual([
+        expect(responses.map((response) => response.statusCode).sort(), JSON.stringify(responses.map((response) => response.json()))).toEqual([
             200,
             400,
         ]);

@@ -5,13 +5,33 @@ import { changesRequestsCounter, changesReturnedChangesCounter } from "@/app/mon
 import { debug, warn } from "@/utils/logging/log";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { readAccountStoredContentCompatibilityForHttpRequest } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { sessionPluginCollectionHostReferenceAdapter } from "@/app/session/pluginCollectionHostReferenceAdapter";
+import { resolveSessionHostReferenceForAuthenticationInTx } from "@/app/session/pluginCollectionHostReferenceAdapter";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import { asServerProtocolZod } from "@/app/api/utils/protocolComposableZodAdapter";
 import { SessionIdSchema } from "@happier-dev/protocol/sessions";
+import { listQueuedExecutionRunPendingTargetsForSessions } from "@/app/session/pending/pendingMessageService";
 
 function redactIdForLogs(id: string): string {
     if (id.length <= 8) return `${id.slice(0, 2)}…`;
     return `${id.slice(0, 4)}…${id.slice(-4)}`;
+}
+
+function isPendingStateChangeHint(value: unknown): value is Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const hint = value as Record<string, unknown>;
+    return typeof hint.pendingCount === "number"
+        && Number.isSafeInteger(hint.pendingCount)
+        && hint.pendingCount >= 0
+        && typeof hint.pendingVersion === "number"
+        && Number.isSafeInteger(hint.pendingVersion)
+        && hint.pendingVersion >= 0;
+}
+
+function canProjectPendingExecutionRunTargets(value: unknown): boolean {
+    if (value === null || value === undefined) return true;
+    if (typeof value !== "object" || Array.isArray(value)) return false;
+    const hint = value as Record<string, unknown>;
+    return !(hint.v === 1 && hint.lifecycle === "deleted");
 }
 
 export function changesRoutes(app: Fastify) {
@@ -73,22 +93,34 @@ export function changesRoutes(app: Fastify) {
                     select: { seq: true },
                 });
                 if (!account) return null;
-                const access = await sessionPluginCollectionHostReferenceAdapter.resolveInTx({
+                const access = await resolveSessionHostReferenceForAuthenticationInTx({
                     tx,
                     accountId: userId,
                     targetId: sessionAccessSessionId,
+                    authentication: readSessionAccessAuthenticationFromRequest(request),
                 });
                 return {
                     v: 1 as const,
                     sessionId: sessionAccessSessionId,
                     throughCursor: account.seq,
-                    status: access.status === 'available' ? 'available' as const : 'unavailable' as const,
+                    status: access.status,
                 };
             });
             if (!probe) {
                 changesRequestsCounter.inc({ result: 'account-not-found' });
                 warn({ module: 'changes', userId: userIdRedacted }, 'Authenticated Session access probe missing account row');
                 return reply.code(404).send({ error: 'account-not-found' });
+            }
+            if (probe.status === 'authentication_required') {
+                changesRequestsCounter.inc({ result: 'authentication-required' });
+                // Existing clients interpret this carrier's 403 as global
+                // Account authentication failure. Keep Team reauthentication
+                // recoverable through the ordinary retry path.
+                return reply.code(503).send({ error: 'session_access_authentication_required' });
+            }
+            if (probe.status === 'authentication_unavailable') {
+                changesRequestsCounter.inc({ result: 'authentication-unavailable' });
+                return reply.code(503).send({ error: 'session_access_authentication_unavailable' });
             }
             changesRequestsCounter.inc({ result: 'ok' });
             changesReturnedChangesCounter.inc(0);
@@ -99,7 +131,10 @@ export function changesRoutes(app: Fastify) {
             return reply.send({
                 changes: [],
                 nextCursor: probe.throughCursor,
-                sessionAccessProbe: probe,
+                sessionAccessProbe: {
+                    ...probe,
+                    status: probe.status === 'available' ? 'available' as const : 'unavailable' as const,
+                },
             });
         }
 
@@ -175,9 +210,29 @@ export function changesRoutes(app: Fastify) {
         }
 
         const nextCursor = rows.length > 0 ? rows[rows.length - 1]!.cursor : after;
-        const visibleRows = compatibility.supportsPluginDataProtocol
-            ? rows
-            : rows.filter((row) => row.kind !== 'pluginDomain');
+        // Additive change kinds are withheld from peers that predate them, while `nextCursor`
+        // stays derived from the raw page so a withheld trailing row cannot stall the poll.
+        const visibleRows = rows.filter((row) => {
+            if (row.kind === 'pluginDomain') return compatibility.supportsPluginDataProtocol;
+            if (row.kind === 'machinePool') return compatibility.supportsMachinePoolChangeProtocol;
+            if (row.kind === 'savedSecretResource') return compatibility.supportsSavedSecretResourceChangeProtocol;
+            return true;
+        });
+        const pendingSessionIds = [...new Set(visibleRows.flatMap((row) =>
+            row.kind === 'session' && canProjectPendingExecutionRunTargets(row.hint)
+                ? [row.entityId]
+                : [],
+        ))];
+        const pendingTargets = await listQueuedExecutionRunPendingTargetsForSessions({
+            accountId: userId,
+            sessionIds: pendingSessionIds,
+        });
+        const pendingRunIdsBySessionId = new Map<string, string[]>();
+        for (const target of pendingTargets) {
+            const existing = pendingRunIdsBySessionId.get(target.sessionId);
+            if (existing) existing.push(target.runId);
+            else pendingRunIdsBySessionId.set(target.sessionId, [target.runId]);
+        }
         const sessionChangeCursors = new Map<string, number>();
         if (compatibility.supportsSessionAccessWitnessProtocol) {
             for (const row of visibleRows) {
@@ -190,24 +245,44 @@ export function changesRoutes(app: Fastify) {
                 sessionChangeCursors.set(sessionId, row.cursor);
             }
         }
-        const sessionAccessWitness = compatibility.supportsSessionAccessWitnessProtocol
+        const sessionAccessResolutions = compatibility.supportsSessionAccessWitnessProtocol
+            ? await Promise.all(
+                [...sessionChangeCursors.entries()].map(async ([sessionId, cursor]) => ({
+                    sessionId,
+                    cursor,
+                    resolution: await resolveSessionHostReferenceForAuthenticationInTx({
+                        tx: db,
+                        accountId: userId,
+                        targetId: sessionId,
+                        authentication: readSessionAccessAuthenticationFromRequest(request),
+                    }),
+                })),
+            )
+            : undefined;
+        const authenticationRequired = sessionAccessResolutions?.some(({ resolution }) =>
+            resolution.status === 'authentication_required');
+        if (authenticationRequired) {
+            changesRequestsCounter.inc({ result: 'authentication-required' });
+            return reply.code(503).send({ error: 'session_access_authentication_required' });
+        }
+        const authenticationUnavailable = sessionAccessResolutions?.some(({ resolution }) =>
+            resolution.status === 'authentication_unavailable');
+        if (authenticationUnavailable) {
+            changesRequestsCounter.inc({ result: 'authentication-unavailable' });
+            return reply.code(503).send({ error: 'session_access_authentication_unavailable' });
+        }
+        // Durable purge authority requires determinate access for every Session
+        // on the page. The early returns above preserve retry custody by never
+        // acknowledging an authentication-indeterminate change page.
+        const sessionAccessWitness = sessionAccessResolutions !== undefined
             ? {
                 v: 1 as const,
                 throughCursor: nextCursor,
-                entries: await Promise.all(
-                    [...sessionChangeCursors.entries()].map(async ([sessionId, cursor]) => {
-                        const access = await sessionPluginCollectionHostReferenceAdapter.resolveInTx({
-                            tx: db,
-                            accountId: userId,
-                            targetId: sessionId,
-                        });
-                        return {
-                            sessionId,
-                            cursor,
-                            status: access.status === 'available' ? 'available' as const : 'unavailable' as const,
-                        };
-                    }),
-                ),
+                entries: sessionAccessResolutions.map(({ sessionId, cursor, resolution }) => ({
+                    sessionId,
+                    cursor,
+                    status: resolution.status === 'available' ? 'available' as const : 'unavailable' as const,
+                })),
             }
             : undefined;
 
@@ -224,7 +299,14 @@ export function changesRoutes(app: Fastify) {
                 kind: row.kind,
                 entityId: row.entityId,
                 changedAt: row.changedAt.getTime(),
-                hint: row.hint ?? null,
+                hint: row.kind === 'session' && canProjectPendingExecutionRunTargets(row.hint)
+                    ? {
+                        ...(isPendingStateChangeHint(row.hint) || (row.hint && typeof row.hint === 'object' && !Array.isArray(row.hint))
+                            ? row.hint
+                            : {}),
+                        pendingExecutionRunIds: pendingRunIdsBySessionId.get(row.entityId) ?? [],
+                    }
+                    : row.hint ?? null,
             })),
             nextCursor,
             ...(sessionAccessWitness === undefined ? {} : { sessionAccessWitness }),

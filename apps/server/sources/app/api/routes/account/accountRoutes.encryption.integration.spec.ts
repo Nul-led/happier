@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import tweetnacl from "tweetnacl";
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
 } from "@happier-dev/protocol";
@@ -295,6 +296,10 @@ describe("accountRoutes (encryption mode integration)", () => {
                 expect(currentnessResponse.statusCode).toBe(400);
                 expect(currentnessResponse.json()).toEqual({
                     error: "migration-required",
+                    recipientEnvelopeReadiness: {
+                        status: "unavailable",
+                        reason: "encryption_setup_required",
+                    },
                 });
 
                 const partialResponse = await app.inject({
@@ -337,6 +342,12 @@ describe("accountRoutes (encryption mode integration)", () => {
                     expect(response.statusCode).toBe(400);
                     expect(response.json()).toEqual({
                         error: "migration-required",
+                        ...(url.endsWith("/currentness") ? {
+                            recipientEnvelopeReadiness: {
+                                status: "unavailable",
+                                reason: "encryption_inconsistent",
+                            },
+                        } : {}),
                     });
                 }
             },
@@ -355,6 +366,7 @@ describe("accountRoutes (encryption mode integration)", () => {
                 encryptionModeUpdatedAt:
                     new Date("2026-02-17T10:00:00.000Z"),
                 seq: 7,
+                settingsVersion: 11,
             },
             select: { id: true },
         });
@@ -375,6 +387,7 @@ describe("accountRoutes (encryption mode integration)", () => {
                 expect(res.json()).toEqual({
                     mode: "plain",
                     version: 7,
+                    settingsVersion: 11,
                     signingKeyFingerprint:
                         computeAccountEncryptionMigrateKeyFingerprintV1(
                             new Uint8Array(
@@ -389,7 +402,70 @@ describe("accountRoutes (encryption mode integration)", () => {
                             binding.contentPublicKey,
                         ),
                     updatedAt: 1771322400000,
+                    recipientEnvelopeReadiness: {
+                        status: "unavailable",
+                        reason: "plain_account",
+                    },
                 });
+            },
+        );
+    });
+
+    it("GET /v1/account/encryption/currentness projects recipient readiness without disclosing binding material", async () => {
+        const binding = createSignedAccountContentBinding();
+        const tamperedSignature = new Uint8Array(binding.contentPublicKeySig);
+        tamperedSignature[0] ^= 0xff;
+        const lowOrderSigning = tweetnacl.sign.keyPair();
+        const lowOrderKey = new Uint8Array(32);
+        // Reproduce malformed persisted binding bytes: the current Protocol signer
+        // intentionally refuses this low-order key before signing it.
+        const lowOrderMessage = new Uint8Array([
+            ...new TextEncoder().encode("Happy content key v1"), 0, ...lowOrderKey,
+        ]);
+        const rows = [
+            { name: "keyless Plain", mode: "plain", publicKey: null, key: null, signature: null, reason: "plain_account" },
+            { name: "complete E2EE", mode: "e2ee", publicKey: binding.publicKey, key: binding.contentPublicKey, signature: binding.contentPublicKeySig, reason: null },
+            { name: "missing signature", mode: "e2ee", publicKey: binding.publicKey, key: binding.contentPublicKey, signature: null, reason: "encryption_inconsistent" },
+            { name: "missing content key", mode: "e2ee", publicKey: binding.publicKey, key: null, signature: binding.contentPublicKeySig, reason: "encryption_inconsistent" },
+            { name: "invalid signature", mode: "e2ee", publicKey: binding.publicKey, key: binding.contentPublicKey, signature: tamperedSignature, reason: "encryption_inconsistent" },
+            { name: "signed low-order key", mode: "e2ee", publicKey: Buffer.from(lowOrderSigning.publicKey).toString("hex"), key: lowOrderKey, signature: new Uint8Array(tweetnacl.sign.detached(lowOrderMessage, lowOrderSigning.secretKey)), reason: "encryption_inconsistent" },
+        ] as const;
+
+        await withAuthenticatedTestApp(
+            (app) => accountRoutes(app as any),
+            async (app) => {
+                for (const row of rows) {
+                    // Reuse the same signing anchor sequentially; Account public keys are unique.
+                    const account = await db.account.create({
+                        data: {
+                            encryptionMode: row.mode,
+                            publicKey: row.publicKey,
+                            contentPublicKey: row.key,
+                            contentPublicKeySig: row.signature,
+                        },
+                        select: { id: true },
+                    });
+                    const response = await app.inject({
+                        method: "GET",
+                        url: "/v1/account/encryption/currentness",
+                        headers: { "x-test-user-id": account.id },
+                    });
+                    expect(response.statusCode, row.name).toBe(row.reason === "encryption_inconsistent" ? 400 : 200);
+                    const body = response.json();
+                    expect(body.recipientEnvelopeReadiness, row.name).toEqual(row.reason === null
+                        ? { status: "available" }
+                        : { status: "unavailable", reason: row.reason });
+                    if (response.statusCode === 400) {
+                        expect(body, row.name).toEqual({
+                            error: "migration-required",
+                            recipientEnvelopeReadiness: { status: "unavailable", reason: row.reason },
+                        });
+                    }
+                    expect(body).not.toHaveProperty("binding");
+                    expect(body).not.toHaveProperty("contentPublicKey");
+                    expect(body).not.toHaveProperty("contentPublicKeySig");
+                    await db.account.delete({ where: { id: account.id } });
+                }
             },
         );
     });

@@ -25,13 +25,31 @@ export function isPeerMediationGrantSigningAdvertisedForRequest(env: NodeJS.Proc
 type RouteHandler = (request: any, reply: any) => unknown | Promise<unknown>;
 type RoutePreHandler = (request: any, reply: any) => unknown | Promise<unknown>;
 
+/**
+ * The refusal a gated family sends when its feature is off.
+ *
+ * Most families send the generic `{ error }` envelope; a family whose route
+ * declares a strict typed result union may instead answer one member of that
+ * union (for example the public Team invitation preview's
+ * `{ outcome: "feature_unavailable" }`). The enabled/disabled decision stays
+ * here either way; only the presentation moves.
+ */
+export type ServerFeatureUnavailableBody = Readonly<Record<string, unknown>>;
+
+export const DEFAULT_SERVER_FEATURE_UNAVAILABLE_BODY: ServerFeatureUnavailableBody = { error: "not_found" };
+
 export function createServerFeatureGatePreHandler(
     featureId: FeatureId,
     env: NodeJS.ProcessEnv = process.env,
+    unavailableBody: ServerFeatureUnavailableBody = DEFAULT_SERVER_FEATURE_UNAVAILABLE_BODY,
+    // Typed public answers keep the default gate status only when the family has
+    // no richer vocabulary; a route whose result union can express the disabled
+    // feature truthfully declares its own status beside its own body.
+    unavailableStatus: number = 404,
 ): RoutePreHandler {
     return async (_request, reply) => {
         if (!isServerFeatureEnabledForRequest(featureId, env)) {
-            return reply.code(404).send({ error: "not_found" });
+            return reply.code(unavailableStatus).send(unavailableBody);
         }
         return undefined;
     };
@@ -60,11 +78,16 @@ function resolvePreHandlers(existing: unknown): RoutePreHandler[] {
     return [];
 }
 
-function withLeadingPreHandler(opts: any, preHandler: RoutePreHandler): any {
+function withLeadingPreHandler(
+    opts: any,
+    preHandler: RoutePreHandler,
+    routeConfig: Readonly<Record<string, unknown>>,
+): any {
     const base = opts && typeof opts === "object" ? opts : {};
     const existing = resolvePreHandlers(base.preHandler);
     const next = { ...base };
     next.preHandler = [preHandler, ...existing];
+    next.config = { ...(base.config ?? {}), ...routeConfig };
     return next;
 }
 
@@ -86,37 +109,40 @@ export function createServerFeatureGatedRouteApp<TApp extends RouteApp>(
     app: TApp,
     featureId: FeatureId,
     env: NodeJS.ProcessEnv = process.env,
+    unavailableBody: ServerFeatureUnavailableBody = DEFAULT_SERVER_FEATURE_UNAVAILABLE_BODY,
+    unavailableStatus: number = 404,
+    routeConfig: Readonly<Record<string, unknown>> = {},
 ): TApp {
-    const gate = createServerFeatureGatePreHandler(featureId, env);
+    const gate = createServerFeatureGatePreHandler(featureId, env, unavailableBody, unavailableStatus);
     const gated = Object.create(app) as TApp;
 
     gated.get = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.get(path, withLeadingPreHandler(opts, gate), handler);
+        return app.get(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.post = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.post(path, withLeadingPreHandler(opts, gate), handler);
+        return app.post(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.patch = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.patch(path, withLeadingPreHandler(opts, gate), handler);
+        return app.patch(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.delete = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.delete(path, withLeadingPreHandler(opts, gate), handler);
+        return app.delete(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.put = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.put(path, withLeadingPreHandler(opts, gate), handler);
+        return app.put(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.head = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.head(path, withLeadingPreHandler(opts, gate), handler);
+        return app.head(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
     gated.options = (path: string, optsOrHandler: unknown, maybeHandler?: unknown) => {
         const { opts, handler } = resolveOptsAndHandler(path, optsOrHandler, maybeHandler);
-        return app.options(path, withLeadingPreHandler(opts, gate), handler);
+        return app.options(path, withLeadingPreHandler(opts, gate, routeConfig), handler);
     };
 
     return gated;

@@ -5,6 +5,7 @@ import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { buildUpdateAccountUpdate, eventRouter } from "@/app/events/eventRouter";
 import { afterTx, type Tx } from "@/storage/inTx";
 import { buildAccountConnectedServicesProjection } from "../account/connectedServicesProjection";
+import { publishAccountCredentialSourceTeamsChangedInTx } from "@/app/teams/teamChanges";
 
 export async function recordConnectedServiceAccountProfileChange(params: Readonly<{
     tx: Tx;
@@ -21,6 +22,7 @@ export async function recordConnectedServiceAccountProfileChange(params: Readonl
         entityId: "self",
         hint: { connectedServices: true },
     });
+    await publishAccountCredentialSourceTeamsChangedInTx(params.tx, { accountId: params.accountId });
     afterTx(params.tx, () => {
         const payload = buildUpdateAccountUpdate(
             params.accountId,

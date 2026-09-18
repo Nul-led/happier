@@ -1,10 +1,11 @@
 import type { ReorderSessionOrganizationRequest } from "@happier-dev/protocol";
 
-import { createV2SessionListVisibilityWhere } from "@/app/api/routes/session/v2SessionListRows";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
 import { createVisibleUnarchivedOrganizationSessionWhere } from "./sessionVisibility";
 import type { SessionOrganizationTx } from "./types";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
-type OrderEntityReader = Pick<SessionOrganizationTx, "session" | "sessionOrganizationFolder" | "sessionOrganizationTag">;
+type OrderEntityReader = SessionOrganizationTx;
 
 interface OrderEntryLike {
     readonly scopeKind: string;
@@ -45,6 +46,7 @@ async function fetchActiveOrderEntitySets(params: Readonly<{
     accountId: string;
     entries: readonly OrderEntryLike[];
     reader: OrderEntityReader;
+    authentication: SessionAccessAuthentication;
 }>): Promise<ActiveOrderEntitySets> {
     const { sessionIds, folderIds, tagIds } = collectServerOwnedOrderEntityIds(params.entries);
 
@@ -52,8 +54,7 @@ async function fetchActiveOrderEntitySets(params: Readonly<{
         sessionIds.length > 0
             ? params.reader.session.findMany({
                 where: {
-                    id: { in: sessionIds },
-                    ...createV2SessionListVisibilityWhere({ userId: params.accountId }),
+                    AND: [{ id: { in: sessionIds } }, await buildSessionAccessWhere({ tx: params.reader, accountId: params.accountId, capability: 'readTranscript', mode: 'effective_access_v1', authentication: params.authentication })],
                 },
                 select: { id: true },
             })
@@ -93,6 +94,7 @@ export async function validateSessionOrganizationOrderRequest(params: Readonly<{
     accountId: string;
     reader: OrderEntityReader;
     request: ReorderSessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<boolean> {
     const entries = params.request.entries.length > 0
         ? params.request.entries.map((entry) => ({
@@ -111,6 +113,7 @@ export async function validateSessionOrganizationOrderRequest(params: Readonly<{
         accountId: params.accountId,
         entries,
         reader: params.reader,
+        authentication: params.authentication,
     });
     return entries.every((entry) => isOrderEntryValidForActiveEntities(entry, active));
 }
@@ -119,6 +122,7 @@ export async function validateSessionOrganizationSessionOrderItems(params: Reado
     accountId: string;
     reader: OrderEntityReader;
     entries: ReorderSessionOrganizationRequest["entries"];
+    authentication: SessionAccessAuthentication;
 }>): Promise<boolean> {
     if (params.entries.some((entry) => entry.itemKind !== "session")) return false;
 
@@ -133,7 +137,7 @@ export async function validateSessionOrganizationSessionOrderItems(params: Reado
         ? await params.reader.session.findMany({
             where: {
                 id: { in: sessionIds },
-                ...createVisibleUnarchivedOrganizationSessionWhere(params.accountId),
+                ...await createVisibleUnarchivedOrganizationSessionWhere(params.reader, params.accountId, params.authentication),
             },
             select: { id: true },
         })
@@ -146,6 +150,7 @@ export async function filterValidSessionOrganizationOrderEntries<T extends Order
     accountId: string;
     entries: readonly T[];
     reader: OrderEntityReader;
+    authentication: SessionAccessAuthentication;
 }>): Promise<T[]> {
     if (params.entries.length === 0) return [];
 
@@ -153,6 +158,7 @@ export async function filterValidSessionOrganizationOrderEntries<T extends Order
         accountId: params.accountId,
         entries: params.entries,
         reader: params.reader,
+        authentication: params.authentication,
     });
     return params.entries.filter((entry) => isOrderEntryValidForActiveEntities(entry, active));
 }

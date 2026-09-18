@@ -504,6 +504,34 @@ describe("plugin webhook claim/lease settlement", () => {
         });
     });
 
+    it("refuses execution start when the admitted route has been revoked after claim", async () => {
+        await seedDelivery();
+        const claimed = await claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => new Uint8Array(16).fill(12),
+        });
+        if (claimed.kind !== "delivery") throw new Error("expected claimed delivery");
+        await db.pluginWebhookRoute.update({
+            where: { id: "route-claim" },
+            data: { enabled: false, revokedAt: new Date(NOW.getTime() + 500) },
+        });
+
+        await expect(renewPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            transition: "executionStarted",
+            now: new Date(NOW.getTime() + 1_000),
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({
+            where: { id: claimed.deliveryId },
+            select: { executionStartedAt: true, attemptCount: true },
+        })).resolves.toEqual({ executionStartedAt: null, attemptCount: 0 });
+    });
+
     it("keeps an admitted delivery's frozen invocation target and revision through a later retarget without moving it", async () => {
         await seedDelivery();
         await db.machine.create({
@@ -689,6 +717,69 @@ describe("plugin webhook claim/lease settlement", () => {
             serverIdentityId: SERVER_IDENTITY_ID,
             now: new Date(NOW.getTime() + 2_000),
         }))).resolves.toEqual({ kind: "unavailable", code: "endpoint_unavailable" });
+    });
+
+    it("loses renewal and invocation authority when the Account disables the claimed plugin", async () => {
+        await seedDelivery();
+        const claimed = await claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => new Uint8Array(16).fill(5),
+        });
+        if (claimed.kind !== "delivery") throw new Error("expected claimed delivery");
+        const started = await renewPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            transition: "executionStarted",
+            now: new Date(NOW.getTime() + 1_000),
+        });
+        if (started.kind !== "renewed") throw new Error("expected execution-started renewal");
+        await db.accountPluginIntent.update({
+            where: {
+                accountId_pluginId: {
+                    accountId: "account-claim",
+                    pluginId: TARGET.materialization.pluginId,
+                },
+            },
+            data: { enabled: false },
+        });
+        const lease = { leaseId: claimed.lease.leaseId, revision: started.revision };
+
+        await expect(renewPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease,
+            transition: "renew",
+            now: new Date(NOW.getTime() + 2_000),
+        })).resolves.toEqual({ kind: "leaseLost" });
+        await expect(inTx(async (tx) => await validateCurrentPluginWebhookInvocationReferenceTxV1({
+            tx,
+            accountId: "account-claim",
+            reference: {
+                v: 1,
+                deliveryId: claimed.deliveryId,
+                endpoint: claimed.endpoint,
+                target: TARGET,
+                lease,
+            },
+            serverIdentityId: SERVER_IDENTITY_ID,
+            now: new Date(NOW.getTime() + 2_000),
+        }))).resolves.toEqual({ kind: "unavailable", code: "endpoint_unavailable" });
+
+        // The Action may already have produced an effect after executionStarted.
+        // Exact custody, not mutable Account intent, therefore owns settlement.
+        await expect(completePluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease,
+            disposition: "accepted",
+            now: new Date(NOW.getTime() + 3_000),
+        })).resolves.toEqual({ kind: "settled", state: "succeeded" });
     });
 
     it("recovers expired claims without charging pre-execution loss and dead-letters attempt exhaustion", async () => {
@@ -906,7 +997,46 @@ describe("plugin webhook claim/lease settlement", () => {
             });
     });
 
-    it("keeps completion, retry, and plugin-produced dead letters started-only", async () => {
+    it("settles a handler-authored content_unavailable dead letter once after execution starts", async () => {
+        await seedDelivery();
+        const claimed = await claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+        });
+        if (claimed.kind !== "delivery") throw new Error("expected claimed delivery");
+        const started = await renewPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: claimed.lease,
+            transition: "executionStarted",
+            now: new Date(NOW.getTime() + 1_000),
+        });
+        if (started.kind !== "renewed") throw new Error("expected execution-started renewal");
+        const settlement = {
+            accountId: "account-claim",
+            deliveryId: claimed.deliveryId,
+            target: TARGET,
+            lease: { leaseId: claimed.lease.leaseId, revision: started.revision },
+            result: { kind: "deadLetter", code: "content_unavailable" } as const,
+            now: new Date(NOW.getTime() + 2_000),
+        };
+
+        await expect(failPluginWebhookDeliveryV1(settlement))
+            .resolves.toEqual({ kind: "settled", state: "dead_letter" });
+        await expect(failPluginWebhookDeliveryV1(settlement))
+            .resolves.toEqual({ kind: "leaseLost" });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: claimed.deliveryId } }))
+            .resolves.toMatchObject({
+                state: "dead_letter",
+                attemptCount: 1,
+                leaseId: null,
+                lastErrorCode: "content_unavailable",
+            });
+    });
+
+    it("keeps completion, retry, and other dead letters started-only", async () => {
         await seedDelivery();
         const claimed = await claimPluginWebhookDeliveryV1({
             accountId: "account-claim",
@@ -1221,6 +1351,94 @@ describe("plugin webhook claim/lease settlement", () => {
             });
     });
 
+    it.each([
+        ["disabled", { enabled: false }],
+        ["selected version changed", { desiredVersion: "2.0.0" }],
+    ] as const)("does not claim or disclose content after the plugin intent is %s", async (_label, intentChange) => {
+        await seedDelivery();
+        await db.accountPluginIntent.update({
+            where: {
+                accountId_pluginId: {
+                    accountId: "account-claim",
+                    pluginId: TARGET.materialization.pluginId,
+                },
+            },
+            data: intentChange,
+        });
+        let randomByteCalls = 0;
+
+        await expect(claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => {
+                randomByteCalls += 1;
+                return new Uint8Array(16).fill(7);
+            },
+        })).resolves.toEqual({ kind: "none", retryAfterMs: 5_000 });
+        expect(randomByteCalls).toBe(0);
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-claim" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                leaseId: null,
+                claimedByMachineId: null,
+                claimedByMachineInstallationId: null,
+                payloadBytes: 256n,
+            });
+    });
+
+    it("defers a pre-effect-ineligible due head and claims the healthy delivery behind it", async () => {
+        await seedDelivery({ id: "delivery-healthy" });
+        const healthy = await db.pluginWebhookDelivery.findUniqueOrThrow({
+            where: { id: "delivery-healthy" },
+        });
+        for (const [index, suffix] of ["a", "b", "c"].entries()) {
+            await db.pluginWebhookDelivery.create({
+                data: {
+                    ...healthy,
+                    id: `delivery-stale-${suffix}`,
+                    deliveryIdentityDigest: String.fromCharCode(99 + index).repeat(64),
+                    endpointWebhookContributionId: `retired-webhook-${suffix}`,
+                    receivedAt: new Date(NOW.getTime() - 3_000 + index * 1_000),
+                },
+            });
+        }
+
+        await expect(claimPluginWebhookDeliveryV1({
+            accountId: "account-claim",
+            machine: MACHINE_CLAIM,
+            now: NOW,
+            randomBytes: () => new Uint8Array(16).fill(8),
+        })).resolves.toMatchObject({
+            kind: "delivery",
+            deliveryId: "delivery-healthy",
+            envelope: ENVELOPE,
+        });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-a" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: NOW,
+                lastErrorCode: "target_offline",
+                nextAttemptAt: new Date(NOW.getTime() + 5_000),
+            });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-b" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: null,
+                lastErrorCode: null,
+            });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-c" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: null,
+                lastErrorCode: null,
+            });
+    });
+
     it("transitions the stale ordered head and still reaches the eligible target with fixed claim work", async () => {
         await seedDelivery();
         const seedStaleDelivery = async (params: Readonly<{
@@ -1258,7 +1476,7 @@ describe("plugin webhook claim/lease settlement", () => {
                 },
             });
         };
-        // Two distinct ineligible target materializations sit ahead of the one
+        // Three distinct ineligible target materializations sit ahead of the one
         // eligible row. The claim must not iterate over all of them: it records
         // the typed transition for the ordered stale head, then selects the
         // eligible row from the one Availability-classified target set.
@@ -1273,6 +1491,12 @@ describe("plugin webhook claim/lease settlement", () => {
             digest: "d",
             materializationId: "materialization-stale-b",
             dueOffsetMs: -1_000,
+        });
+        await seedStaleDelivery({
+            id: "delivery-stale-c",
+            digest: "e",
+            materializationId: "materialization-stale-c",
+            dueOffsetMs: -500,
         });
 
         // §6.4: a stale/ineligible selected target receives its typed offline
@@ -1297,6 +1521,13 @@ describe("plugin webhook claim/lease settlement", () => {
                 lastErrorCode: "target_offline",
             });
         await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-b" } }))
+            .resolves.toMatchObject({
+                state: "queued",
+                attemptCount: 0,
+                offlineSinceAt: null,
+                lastErrorCode: null,
+            });
+        await expect(db.pluginWebhookDelivery.findUniqueOrThrow({ where: { id: "delivery-stale-c" } }))
             .resolves.toMatchObject({
                 state: "queued",
                 attemptCount: 0,

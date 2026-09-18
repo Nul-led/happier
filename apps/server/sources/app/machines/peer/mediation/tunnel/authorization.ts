@@ -9,6 +9,7 @@ import {
     type PeerTcpTunnelRelayAuthorizationFlowKindV1,
     type PeerTcpTunnelRelayAuthorizationPayloadV2,
     type PeerTcpTunnelRelayAuthorizationV2,
+    type ProviderBrokerRelayApplicationBindingV1,
     type TcpTunnelGrantScopeV1,
     type VoiceMediaApplicationAuthorityV1,
 } from "@happier-dev/protocol";
@@ -57,6 +58,24 @@ export type MintPeerTcpTunnelRelayAuthorizationV2Input = Readonly<{
     }>;
 }>;
 
+export type MintProviderBrokerRelayAuthorizationV2Input = Readonly<{
+    accountId: string;
+    targetMachineId: string;
+    relaySocketId: string;
+    binding: ProviderBrokerRelayApplicationBindingV1;
+    tunnelId: string;
+    nowMs: number;
+    ttlMs: number;
+    serverGateEnabled: boolean;
+    serverCaps: Readonly<{
+        maxBytes: number;
+        maxFrameBytes: number;
+        maxIdleMs: number;
+        maxDurationMs: number;
+    }>;
+    signingKey: Readonly<{ keyId: string; secretKey: Uint8Array }>;
+}>;
+
 function toBase64Url(bytes: Uint8Array): string {
     return Buffer.from(bytes).toString("base64url");
 }
@@ -79,6 +98,70 @@ function isIpv4LoopbackHost(host: string): boolean {
 function isLoopbackHost(host: string): boolean {
     const normalized = normalizeHost(host);
     return normalized === "localhost" || normalized === "::1" || isIpv4LoopbackHost(normalized);
+}
+
+/** Dedicated Home-to-broker application authority. It deliberately has no
+ * TCP destination: the target daemon resolves only its installed Provider
+ * broker application for the signed binding. */
+export function mintProviderBrokerRelayAuthorizationV2(
+    input: MintProviderBrokerRelayAuthorizationV2Input,
+): MintPeerTcpTunnelRelayAuthorizationV2Result {
+    if (!input.serverGateEnabled) {
+        return {
+            ok: false,
+            reasonCode: "blocked_by_server_policy",
+            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+        };
+    }
+    if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) {
+        return {
+            ok: false,
+            reasonCode: "invalid_ttl",
+            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+        };
+    }
+    const payload = PeerTcpTunnelRelayAuthorizationPayloadV2Schema.safeParse({
+        v: 2,
+        grantId: `relay_grant_${randomUUID()}`,
+        accountId: input.accountId,
+        targetMachineId: input.targetMachineId,
+        flowKind: "provider_broker",
+        routeKind: "server_relay",
+        tunnelId: input.tunnelId,
+        relaySocketId: input.relaySocketId,
+        providerBroker: input.binding,
+        capProfileId: "provider_broker_application_v1",
+        maxFrameBytes: input.serverCaps.maxFrameBytes,
+        maxIdleMs: input.serverCaps.maxIdleMs,
+        maxDurationMs: input.serverCaps.maxDurationMs,
+        maxTotalBytes: input.serverCaps.maxBytes,
+        iat: input.nowMs,
+        exp: input.nowMs + input.ttlMs,
+        aud: PEER_TCP_TUNNEL_RELAY_AUTHORIZATION_AUDIENCE_V1,
+    });
+    if (!payload.success) {
+        return {
+            ok: false,
+            reasonCode: "invalid_scope",
+            receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
+        };
+    }
+    const signature = tweetnacl.sign.detached(
+        Buffer.from(createPeerTcpTunnelRelayAuthorizationSigningInputV2(payload.data), "utf8"),
+        input.signingKey.secretKey,
+    );
+    return {
+        ok: true,
+        relayAuthorization: {
+            payload: payload.data,
+            signature: {
+                keyId: input.signingKey.keyId,
+                alg: "Ed25519",
+                valueBase64Url: toBase64Url(signature),
+            },
+        },
+        receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
+    };
 }
 
 export function mintPeerTcpTunnelRelayAuthorizationV2(

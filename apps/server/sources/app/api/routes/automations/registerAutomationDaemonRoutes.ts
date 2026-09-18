@@ -5,7 +5,7 @@ import { claimAutomationRun, heartbeatAutomationRun } from "@/app/automations/au
 import { listDaemonAssignments } from "@/app/automations/automationAssignmentService";
 import { toAutomationRunV2ApiDto } from "@/app/automations/automationApiProjection";
 import { readRetainedAutomationRunExecutionInputV2ForMode } from "@/app/automations/automationStoredContentRead";
-import { decodeAutomationRunCause } from "@/app/automations/automationRunCauseCodec";
+import { decodeAutomationRunCause, projectAutomationOriginRun } from "@/app/automations/automationRunCauseCodec";
 import {
     DEFAULT_AUTOMATION_WORKER_PUBLISHER_DEPENDENCIES,
     resolveExactAutomationWorkerPublisher,
@@ -39,27 +39,29 @@ export function registerAutomationDaemonRoutes(
             leaseDurationMs: request.body.leaseDurationMs ?? 30_000,
             requireV2RunRepresentability: true,
         });
-        const cause = result.run ? decodeAutomationRunCause(result.run) : null;
+        const run = result.run ? projectAutomationOriginRun(result.run) : null;
+        const automation = run && result.run?.automation ? result.run.automation : null;
+        const cause = run ? decodeAutomationRunCause(run) : null;
         const retainedV2OriginKind = cause?.kind === "manual"
             ? "manual" as const
             : cause?.kind === "trigger" && cause.triggerKind === "schedule"
                 ? "scheduled" as const
                 : undefined;
-        const frozenInput = result.run?.executionInputEnvelope && result.accountCurrentness
+        const frozenInput = run?.executionInputEnvelope && result.accountCurrentness
             ? readRetainedAutomationRunExecutionInputV2ForMode({
-                raw: result.run.executionInputEnvelope,
+                raw: run.executionInputEnvelope,
                 mode: result.accountCurrentness.mode,
                 retainedV2OriginKind,
             })
             : null;
 
         return {
-            run: result.run && frozenInput ? toAutomationRunV2ApiDto(result.run) : null,
-            automation: result.run && frozenInput
+            run: run && frozenInput ? toAutomationRunV2ApiDto(run) : null,
+            automation: run && automation && frozenInput
                 ? {
-                    id: result.run.automation.id,
-                    name: result.run.automation.name,
-                    enabled: result.run.automation.enabled,
+                    id: automation.id,
+                    name: automation.name,
+                    enabled: automation.enabled,
                     targetType: frozenInput.targetType,
                     templateCiphertext: frozenInput.templateCiphertext,
                 }
@@ -129,8 +131,8 @@ export function registerAutomationDaemonRoutes(
 
         return {
             assignments: rows.map((row) => {
-                const trigger = row.v2ScheduleTrigger;
-                if (!trigger || trigger.kind !== "schedule" || trigger.scheduleKind === null) {
+                const schedule = row.v2Schedule;
+                if (schedule === null) {
                     throw new Error("V2 assignment is missing its frozen schedule trigger");
                 }
                 return {
@@ -142,12 +144,7 @@ export function registerAutomationDaemonRoutes(
                         id: row.automation.id,
                         name: row.automation.name,
                         enabled: row.automation.enabled,
-                        schedule: {
-                            kind: trigger.scheduleKind,
-                            scheduleExpr: trigger.scheduleExpr,
-                            everyMs: trigger.everyMs,
-                            timezone: trigger.timezone,
-                        },
+                        schedule,
                         targetType: row.automation.targetType,
                         templateCiphertext: row.automation.templateCiphertext,
                         templateVersion: row.automation.templateVersion,

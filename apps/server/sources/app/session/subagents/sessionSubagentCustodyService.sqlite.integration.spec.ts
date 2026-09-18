@@ -11,6 +11,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { registerSessionSubagentCustodyRoutes } from '@/app/api/routes/session/registerSessionSubagentCustodyRoutes';
 import type { Fastify } from '@/app/api/types';
 import { withAuthenticatedTestApp } from '@/app/api/testkit/sqliteFastify';
+import { createPresentUserSessionAccessAuthentication } from '@/app/session/access/sessionAccessAuthentication.testkit';
 import { db } from '@/storage/db';
 import { createEnvPatcher } from '@/testkit/env';
 import { createLightSqliteHarness, type LightSqliteHarness } from '@/testkit/lightSqliteHarness';
@@ -20,6 +21,8 @@ import {
     mutateSessionSubagentCustody,
     retireSessionSubagentCustodyGeneration,
 } from './sessionSubagentCustodyService';
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 describe('durable subagent custody on SQLite', () => {
     let harness: LightSqliteHarness;
@@ -87,12 +90,12 @@ describe('durable subagent custody on SQLite', () => {
         const { account, session } = await seed();
         const mutation = request(session.id, { groupId: `group-${randomUUID()}` });
 
-        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: mutation });
+        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation });
         expect(created).toMatchObject({ ok: true, replayed: false, record: { groupId: mutation.groupId, revision: 0 } });
         if (!created.ok) throw new Error(created.error);
         expect(created.record).not.toHaveProperty('content');
         expect(created.record).not.toHaveProperty('custodyKey');
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: mutation }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation }))
             .resolves.toEqual({ ...created, replayed: true });
 
         await expect(db.sessionSubagentCustody.findFirstOrThrow({
@@ -109,9 +112,10 @@ describe('durable subagent custody on SQLite', () => {
         const { account, session } = await seed();
         const mutation = request(session.id);
         const results = await Promise.all([
-            mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: mutation }),
+            mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation }),
             mutateSessionSubagentCustody({
                 actorUserId: account.id,
+                authentication,
                 sessionId: session.id,
                 request: { ...mutation, content: { t: 'encrypted', c: 'c2FtZS1kZXRhaWwtZnJlc2gtY2lwaGVydGV4dA==' } },
             }),
@@ -127,10 +131,10 @@ describe('durable subagent custody on SQLite', () => {
         const first = request(session.id, { content: { t: 'encrypted', c: 'Y2lwaGVydGV4dC13aXRoLW5vbmNlLWE=' } });
         const retry = { ...first, content: { t: 'encrypted' as const, c: 'Y2lwaGVydGV4dC13aXRoLW5vbmNlLWI=' } };
 
-        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: first });
+        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: first });
         await db.$disconnect();
         await db.$connect();
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: retry }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: retry }))
             .resolves.toEqual({ ...created, replayed: true });
         await expect(db.sessionSubagentCustody.findFirstOrThrow({ where: { sessionId: session.id } }))
             .resolves.toMatchObject({ content: first.content });
@@ -139,15 +143,17 @@ describe('durable subagent custody on SQLite', () => {
     it('conflicts changed encrypted detail fingerprints and rejects spoofed plain fingerprints before writing', async () => {
         const { account: encryptedOwner, session: encryptedSession } = await seed();
         const first = request(encryptedSession.id);
-        await expect(mutateSessionSubagentCustody({ actorUserId: encryptedOwner.id, sessionId: encryptedSession.id, request: first }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: encryptedOwner.id, authentication, sessionId: encryptedSession.id, request: first }))
             .resolves.toMatchObject({ ok: true, replayed: false });
         await expect(mutateSessionSubagentCustody({
             actorUserId: encryptedOwner.id,
+            authentication,
             sessionId: encryptedSession.id,
             request: { ...first, content: { t: 'encrypted', c: 'ZGlmZmVyZW50' }, contentFingerprint: `hmac-sha256:${'b'.repeat(64)}` },
         })).resolves.toEqual({ ok: false, error: 'idempotency-conflict' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: encryptedOwner.id,
+            authentication,
             sessionId: encryptedSession.id,
             request: { ...first, groupId: 'changed-non-content-field', content: { t: 'encrypted', c: 'ZnJlc2gtY2lwaGVydGV4dA==' } },
         })).resolves.toEqual({ ok: false, error: 'idempotency-conflict' });
@@ -157,7 +163,7 @@ describe('durable subagent custody on SQLite', () => {
             content: { t: 'plain', v: { private: 'detail' } },
             contentFingerprint: `sha256:${'0'.repeat(64)}`,
         });
-        await expect(mutateSessionSubagentCustody({ actorUserId: plainOwner.id, sessionId: plainSession.id, request: spoofed }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: plainOwner.id, authentication, sessionId: plainSession.id, request: spoofed }))
             .resolves.toEqual({ ok: false, error: 'invalid-params' });
         await expect(db.sessionSubagentCustody.count({ where: { sessionId: plainSession.id } })).resolves.toBe(0);
         await expect(db.sessionSubagentCustodyReceipt.count({ where: { sessionId: plainSession.id } })).resolves.toBe(0);
@@ -166,10 +172,11 @@ describe('durable subagent custody on SQLite', () => {
     it('replays the same operation across CAS retry state while conflicting semantic changes', async () => {
         const { account, session } = await seed();
         const first = request(session.id, { operationId: 'semantic-operation' });
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: first }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: first }))
             .resolves.toMatchObject({ ok: true, replayed: false });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...first, expectedRevision: 0 },
         })).resolves.toMatchObject({ ok: true, replayed: true, record: { revision: 0 } });
@@ -179,17 +186,19 @@ describe('durable subagent custody on SQLite', () => {
             { ...first, groupId: 'other-group' },
             { ...first, status: 'completed' as const },
         ]) {
-            await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: changed }))
+            await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: changed }))
                 .resolves.toEqual({ ok: false, error: 'idempotency-conflict' });
         }
 
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...first, operationId: 'independent-operation', subagentId: `${first.subagentId}-independent` },
         })).resolves.toMatchObject({ ok: true, replayed: false });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: request(session.id, { operationId: first.operationId, subagentId: first.subagentId }),
         })).resolves.toMatchObject({ ok: true, replayed: false });
@@ -203,6 +212,7 @@ describe('durable subagent custody on SQLite', () => {
 
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...mutation, custodyKey: mismatchedKey },
         })).resolves.toEqual({ ok: false, error: 'invalid-params' });
@@ -228,15 +238,15 @@ describe('durable subagent custody on SQLite', () => {
         const ownerWrite = request(session.id, { scope, subagentId: sharedIdentity, operationId: 'same-operation' });
         const participantWrite = request(session.id, { scope, subagentId: sharedIdentity, operationId: 'same-operation' });
 
-        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, sessionId: session.id, request: ownerWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: ownerWrite }))
             .resolves.toMatchObject({ ok: true, replayed: false });
-        await expect(mutateSessionSubagentCustody({ actorUserId: participant.id, sessionId: session.id, request: participantWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: participant.id, authentication, sessionId: session.id, request: participantWrite }))
             .resolves.toMatchObject({ ok: true, replayed: false });
-        await expect(listSessionSubagentCustody({ actorUserId: owner.id, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
+        await expect(listSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
             .resolves.toMatchObject({ ok: true, records: [{ subagentId: sharedIdentity }] });
-        await expect(listSessionSubagentCustody({ actorUserId: participant.id, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
+        await expect(listSessionSubagentCustody({ actorUserId: participant.id, authentication, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
             .resolves.toMatchObject({ ok: true, records: [{ subagentId: sharedIdentity }] });
-        await expect(mutateSessionSubagentCustody({ actorUserId: outsider.id, sessionId: session.id, request: request(session.id, { scope }) }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: outsider.id, authentication, sessionId: session.id, request: request(session.id, { scope }) }))
             .resolves.toEqual({ ok: false, error: 'session-not-found' });
         await expect(db.sessionSubagentCustody.groupBy({ by: ['accountId'], where: { sessionId: session.id }, _count: true }))
             .resolves.toEqual(expect.arrayContaining([
@@ -245,7 +255,7 @@ describe('durable subagent custody on SQLite', () => {
             ]));
 
         await db.sessionShare.delete({ where: { id: share.id } });
-        await expect(listSessionSubagentCustody({ actorUserId: participant.id, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
+        await expect(listSessionSubagentCustody({ actorUserId: participant.id, authentication, sessionId: session.id, query: { ...scope, custodyKey: ownerWrite.custodyKey } }))
             .resolves.toEqual({ ok: false, error: 'session-not-found' });
     });
 
@@ -255,11 +265,13 @@ describe('durable subagent custody on SQLite', () => {
 
         await expect(mutateSessionSubagentCustody({
             actorUserId: encryptedOwner.id,
+            authentication,
             sessionId: encryptedSession.id,
             request: request(encryptedSession.id, { content: { t: 'plain', v: { visible: true } } }),
         })).resolves.toEqual({ ok: false, error: 'invalid-params', code: 'session_encryption_mode_mismatch' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: plainOwner.id,
+            authentication,
             sessionId: plainSession.id,
             request: request(plainSession.id, { content: { t: 'encrypted', c: 'Y2lwaGVydGV4dA==' } }),
         })).resolves.toEqual({ ok: false, error: 'invalid-params', code: 'session_encryption_mode_mismatch' });
@@ -287,17 +299,18 @@ describe('durable subagent custody on SQLite', () => {
             content: { t: 'plain', v: null },
         });
 
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: first }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: first }))
             .resolves.toMatchObject({ ok: true, replayed: false, record: { subagentId: longId, groupId: '' } });
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: second }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: second }))
             .resolves.toMatchObject({ ok: true, replayed: false, record: { subagentId: longId.toLowerCase(), groupId: ' Group ' } });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...first, content: { t: 'plain', v: { 'é': 3, A: 2, z: 1 } } },
         })).resolves.toMatchObject({ ok: true, replayed: true });
 
-        const listed = await listSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, query: { ...scope, custodyKey: first.custodyKey } });
+        const listed = await listSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, query: { ...scope, custodyKey: first.custodyKey } });
         expect(listed).toMatchObject({ ok: true });
         if (!listed.ok) throw new Error(listed.error);
         expect(listed.records.map((record) => record.subagentId)).toEqual(expect.arrayContaining([longId, longId.toLowerCase()]));
@@ -314,7 +327,7 @@ describe('durable subagent custody on SQLite', () => {
             END
         `);
         try {
-            await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: request(session.id) }))
+            await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: request(session.id) }))
                 .resolves.toEqual({ ok: false, error: 'internal' });
         } finally {
             await db.$executeRawUnsafe('DROP TRIGGER IF EXISTS force_subagent_receipt_failure');
@@ -327,8 +340,8 @@ describe('durable subagent custody on SQLite', () => {
         const { account, session } = await seed();
         const base = request(session.id);
         const results = await Promise.all([
-            mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: { ...base, operationId: 'race-a' } }),
-            mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: { ...base, operationId: 'race-b' } }),
+            mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: { ...base, operationId: 'race-a' } }),
+            mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: { ...base, operationId: 'race-b' } }),
         ]);
         expect(results).toEqual(expect.arrayContaining([
             expect.objectContaining({ ok: true, replayed: false }),
@@ -341,25 +354,28 @@ describe('durable subagent custody on SQLite', () => {
     it('enforces real CAS and terminal monotonicity while preserving immutable replay summaries', async () => {
         const { account, session } = await seed();
         const initial = request(session.id);
-        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: initial });
+        const created = await mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: initial });
         expect(created).toMatchObject({ ok: true, replayed: false, record: { revision: 0, status: 'running' } });
 
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...initial, operationId: 'stale-cas', expectedRevision: 9 },
         })).resolves.toEqual({ ok: false, error: 'cas-conflict' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...initial, operationId: 'complete', expectedRevision: 0, status: 'completed' },
         })).resolves.toMatchObject({ ok: true, replayed: false, record: { revision: 1, status: 'completed' } });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...initial, operationId: 'terminal-regression', expectedRevision: 1, status: 'running' },
         })).resolves.toEqual({ ok: false, error: 'terminal-regression' });
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: initial }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: initial }))
             .resolves.toEqual({ ...created, replayed: true });
     });
 
@@ -382,7 +398,7 @@ describe('durable subagent custody on SQLite', () => {
             })),
         });
         const overRecordCap = request(session.id, { scope: recordScope, operationId: 'record-257' });
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: overRecordCap }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: overRecordCap }))
             .resolves.toEqual({ ok: false, error: 'capacity-exceeded' });
         await expect(db.sessionSubagentCustody.count({ where: { accountId: account.id, sessionId: session.id, custodyKey: recordCustodyKey } }))
             .resolves.toBe(256);
@@ -410,7 +426,7 @@ describe('durable subagent custody on SQLite', () => {
             })),
         });
         const overReceiptCap = request(session.id, { scope: receiptScope, operationId: 'receipt-4097' });
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: overReceiptCap }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: overReceiptCap }))
             .resolves.toEqual({ ok: false, error: 'capacity-exceeded' });
         await expect(db.sessionSubagentCustody.count({ where: { accountId: account.id, sessionId: session.id, custodyKey: receiptCustodyKey } }))
             .resolves.toBe(0);
@@ -442,17 +458,20 @@ describe('durable subagent custody on SQLite', () => {
         const exactRecordCap = request(recordSession.id, { operationId: 'aggregate-record-256' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: recordOwner.id,
+            authentication,
             sessionId: recordSession.id,
             request: exactRecordCap,
         })).resolves.toMatchObject({ ok: true, replayed: false });
         const overRecordCap = request(recordSession.id, { operationId: 'aggregate-record-257' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: recordOwner.id,
+            authentication,
             sessionId: recordSession.id,
             request: overRecordCap,
         })).resolves.toEqual({ ok: false, error: 'capacity-exceeded' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: recordOwner.id,
+            authentication,
             sessionId: recordSession.id,
             request: request(recordSession.id, {
                 scope: firstRecordScope,
@@ -510,17 +529,20 @@ describe('durable subagent custody on SQLite', () => {
         const exactReceiptCap = request(receiptSession.id, { operationId: 'aggregate-receipt-4096' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: receiptOwner.id,
+            authentication,
             sessionId: receiptSession.id,
             request: exactReceiptCap,
         })).resolves.toMatchObject({ ok: true, replayed: false });
         await expect(mutateSessionSubagentCustody({
             actorUserId: receiptOwner.id,
+            authentication,
             sessionId: receiptSession.id,
             request: exactReceiptCap,
         })).resolves.toMatchObject({ ok: true, replayed: true });
         const overReceiptCap = request(receiptSession.id, { operationId: 'aggregate-receipt-4097' });
         await expect(mutateSessionSubagentCustody({
             actorUserId: receiptOwner.id,
+            authentication,
             sessionId: receiptSession.id,
             request: overReceiptCap,
         })).resolves.toEqual({ ok: false, error: 'capacity-exceeded' });
@@ -564,12 +586,12 @@ describe('durable subagent custody on SQLite', () => {
         });
 
         for (const mutation of [currentWrite, rollbackWrite, releasedWrite]) {
-            await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, sessionId: session.id, request: mutation }))
+            await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: mutation }))
                 .resolves.toMatchObject({ ok: true, replayed: false });
         }
-        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, sessionId: secondSession.id, request: releasedSecondSessionWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: secondSession.id, request: releasedSecondSessionWrite }))
             .resolves.toMatchObject({ ok: true, replayed: false });
-        await expect(mutateSessionSubagentCustody({ actorUserId: participant.id, sessionId: session.id, request: participantWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: participant.id, authentication, sessionId: session.id, request: participantWrite }))
             .resolves.toMatchObject({ ok: true, replayed: false });
 
         await expect(retireSessionSubagentCustodyGeneration({
@@ -600,12 +622,13 @@ describe('durable subagent custody on SQLite', () => {
         await db.$connect();
         await expect(mutateSessionSubagentCustody({
             actorUserId: owner.id,
+            authentication,
             sessionId: session.id,
             request: { ...releasedWrite, operationId: 'stale-handle-after-retirement' },
         })).resolves.toEqual({ ok: false, error: 'generation-retired' });
-        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, sessionId: session.id, request: currentWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: currentWrite }))
             .resolves.toMatchObject({ ok: true, replayed: true });
-        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, sessionId: session.id, request: rollbackWrite }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: owner.id, authentication, sessionId: session.id, request: rollbackWrite }))
             .resolves.toMatchObject({ ok: true, replayed: true });
 
         await db.session.delete({ where: { id: session.id } });
@@ -629,6 +652,7 @@ describe('durable subagent custody on SQLite', () => {
         });
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: target,
         })).resolves.toMatchObject({ ok: true, replayed: false });
@@ -691,7 +715,7 @@ describe('durable subagent custody on SQLite', () => {
         });
 
         const [mutationResult, retirementResult] = await Promise.all([
-            mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: mutation }),
+            mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation }),
             retireSessionSubagentCustodyGeneration({
                 actorUserId: account.id,
                 request: { pluginId: mutation.scope.pluginId, immutableGenerationId: mutation.scope.immutableGenerationId },
@@ -708,6 +732,7 @@ describe('durable subagent custody on SQLite', () => {
         })).resolves.toBe(0);
         await expect(mutateSessionSubagentCustody({
             actorUserId: account.id,
+            authentication,
             sessionId: session.id,
             request: { ...mutation, operationId: 'generation-race-stale-retry' },
         })).resolves.toEqual({ ok: false, error: 'generation-retired' });
@@ -750,7 +775,7 @@ describe('durable subagent custody on SQLite', () => {
             ],
         });
 
-        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, sessionId: session.id, request: mutation }))
+        await expect(mutateSessionSubagentCustody({ actorUserId: account.id, authentication, sessionId: session.id, request: mutation }))
             .resolves.toMatchObject({ ok: true, replayed: false, record: { revision: 0 } });
         await expect(db.sessionSubagentCustodyReceipt.count({ where: { sessionId: session.id } })).resolves.toBe(1);
     });

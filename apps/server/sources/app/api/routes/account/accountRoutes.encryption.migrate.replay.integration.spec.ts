@@ -1,5 +1,5 @@
 import Fastify from "fastify";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
     afterAll,
     afterEach,
@@ -16,6 +16,7 @@ import {
     ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
     CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
     attachAccountEncryptionMigrateProofSignatureV1,
@@ -37,11 +38,16 @@ import {
 } from "@/app/encryption/accountEncryptionMigrationReplayBindingV1";
 import { eventRouter } from "@/app/events/eventRouter";
 import { db } from "@/storage/db";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import {
     createLightSqliteHarness,
     type LightSqliteHarness,
 } from "@/testkit/lightSqliteHarness";
 import { registerAccountEncryptionMigrateRoutes } from "./registerAccountEncryptionMigrateRoutes";
+import { mutateSessionDraft, readSessionDraft } from "@/app/account/sessionDrafts/sessionDraftService";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
     const copy = new Uint8Array(bytes.byteLength);
@@ -53,13 +59,10 @@ function createSignedContentKeyBinding(
     signingSecretKey: Uint8Array,
 ) {
     const contentKeyPair = tweetnacl.box.keyPair();
-    const contentPublicKeySig = tweetnacl.sign.detached(
-        Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKeyPair.publicKey),
-        ]),
-        signingSecretKey,
-    );
+    const contentPublicKeySig = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signingSecretKey,
+        contentPublicKey: contentKeyPair.publicKey,
+    });
     return {
         contentPublicKey:
             privacyKit.encodeBase64(
@@ -110,7 +113,12 @@ function createTestApp() {
         typeof registerAccountEncryptionMigrateRoutes
     >[0];
     typed.decorate("authenticate", async (
-        request: { headers: Record<string, unknown>; userId?: string },
+        request: {
+            headers: Record<string, unknown>;
+            userId?: string;
+            authAuthority?: "present_user";
+            authTokenKind?: "account";
+        },
         reply: { code: (status: number) => { send: (body: unknown) => unknown } },
     ) => {
         const userId = request.headers["x-test-user-id"];
@@ -118,6 +126,9 @@ function createTestApp() {
             return reply.code(401).send({ error: "Unauthorized" });
         }
         request.userId = userId;
+        // Authentication is the genuine boundary replaced by this route harness.
+        request.authAuthority = "present_user";
+        request.authTokenKind = "account";
     });
     typed.addHook("preValidation", async (request) => {
         captureAccountStoredContentCompatibilityForHttpRequest(request);
@@ -168,6 +179,79 @@ describe("Account encryption migration exact replay", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it("returns capable draft records from an atomic mode change and exact read-only replay", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST: "none",
+        });
+        const signing = tweetnacl.sign.keyPair();
+        const binding = createSignedContentKeyBinding(signing.secretKey);
+        const account = await db.account.create({ data: {
+            publicKey: Buffer.from(signing.publicKey).toString("hex"),
+            contentPublicKey: binding.contentPublicKeyBytes,
+            contentPublicKeySig: binding.contentPublicKeySigBytes,
+            encryptionMode: "e2ee", settings: "ciphertext", settingsVersion: 0,
+        } });
+        const address = { kind: "newSession" as const, draftId: randomUUID() };
+        const mutationId = randomUUID();
+        const content = { t: "plain" as const, v: { v: 2 as const, address, document: {
+            v: 2 as const,
+            composer: {
+                text: { mutationId, value: "Preserve this launch" },
+                mentions: { mutationId, value: [] },
+                attachments: { mutationId, value: [] },
+            },
+            target: { kind: "newSession" as const, authoring: { executionTarget: { mutationId, value: {
+                kind: "temporary_computer", serverId: "home-a", artifactTarget: "linux-x64", workspace: { kind: "endpoint_home" },
+            } } } },
+            extensions: {},
+        } } };
+        expect(await mutateSessionDraft({
+            accountId: account.id, address, expectedRevision: "absent",
+            content: { t: "encrypted", v: 2, c: "source-ciphertext" },
+            authentication,
+        })).toMatchObject({ status: "updated", record: { revision: 0 } });
+        const currentAccount = await db.account.findUniqueOrThrow({ where: { id: account.id } });
+        const request = {
+            toMode: "plain", expectedAccountVersion: currentAccount.seq,
+            expectedSigningKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(signing.publicKey),
+            expectedContentKeyFingerprint: computeAccountEncryptionMigrateKeyFingerprintV1(binding.contentPublicKeyBytes),
+            expectedSettingsVersion: 0, settingsContent: { t: "plain", v: {} },
+            connectedServices: { action: "assert_empty" }, automations: { action: "assert_empty" },
+            machines: { action: "assert_empty" }, todos: { action: "assert_empty" }, artifacts: { action: "assert_empty" },
+            sessions: { action: "assert_empty" }, reviewComments: { action: "assert_empty" },
+            sessionOrganization: { action: "assert_empty" }, pets: { action: "assert_empty" },
+            sessionDrafts: { v: 2, items: [{ address, expectedRevision: 0, content }] },
+        } satisfies AccountEncryptionMigrateRequest;
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const invoke = () => app.inject({
+                method: "POST", url: "/v1/account/encryption/migrate",
+                headers: {
+                    [ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER]: String(CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION),
+                    "content-type": "application/json", "x-test-user-id": account.id,
+                },
+                payload: request,
+            });
+            const response = await invoke();
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toMatchObject({
+                success: true, mode: "plain", sessionDrafts: { v: 2, records: [{ address, revision: 1, content }] },
+            });
+            const beforeReplay = await readSessionDraft({ accountId: account.id, address, epoch: "v2", authentication });
+            socketEmit.mockClear();
+            const replay = await invoke();
+            expect(replay.statusCode, replay.body).toBe(200);
+            expect(replay.json()).toEqual(response.json());
+            expect(await readSessionDraft({ accountId: account.id, address, epoch: "v2", authentication })).toEqual(beforeReplay);
+            expect(socketEmit).not.toHaveBeenCalled();
+        } finally {
+            await app.close();
+        }
     });
 
     it("returns exact e2ee-to-plain lost-response replay success without writes or events", async () => {
@@ -718,6 +802,9 @@ describe("Account encryption migration exact replay", () => {
 
     it("rolls fresh first-key proof consumption back when Session admission rejects", async () => {
         harness.resetEnv({
+            GITHUB_CLIENT_ID: "client",
+            GITHUB_CLIENT_SECRET: "secret",
+            GITHUB_REDIRECT_URL: "https://api.example.test/v1/oauth/github/callback",
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
         });
@@ -795,6 +882,12 @@ describe("Account encryption migration exact replay", () => {
                     purpose:
                         "account_encryption_first_key",
                     provider: "github",
+                    securityBinding: {
+                        provider: (await resolveOAuthRuntimeById(process.env, "github"))!.reference,
+                        connection: null,
+                        admission: null,
+                        purpose: "account_encryption_first_key",
+                    },
                     userId: account.id,
                     providerUserId:
                         "replay-rollback-user",

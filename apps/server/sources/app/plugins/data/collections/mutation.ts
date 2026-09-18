@@ -42,7 +42,8 @@ import {
     readMaterializedPluginCollectionContract,
 } from "./contracts";
 import { retirePluginCollectionCandidatePreparationStagesTx } from "./candidatePreparationLifecycle";
-import { pluginCollectionHostReferenceResolver } from "./hostReferenceResolver";
+import { resolvePluginCollectionHostReferenceForAuthenticationInTx } from "./hostReferenceResolver";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import type { PluginCollectionHostReferenceKind } from "./hostReferences";
 import {
     findPluginCollectionBatchQuotaIncompatibility,
@@ -1052,16 +1053,21 @@ async function validateHostRelationTargetsInTx(input: Readonly<{
     accountId: string;
     edges: readonly PluginCollectionPreparedRelationEdge[];
     maximumBatchRows: number;
+    authentication: SessionAccessAuthentication | undefined;
 }>): Promise<void> {
     const hostEdges = input.edges.filter((edge) => edge.relation.kind === "host");
+    if (hostEdges.length > 0 && !input.authentication) {
+        throw new PluginCollectionMutationOperationError("collection_relation_unavailable");
+    }
     for (const batch of boundedChunks(hostEdges, input.maximumBatchRows)) {
         await Promise.all(batch.map(async (edge) => {
             if (edge.relation.kind !== "host") return;
-            const resolution = await pluginCollectionHostReferenceResolver.resolveInTx({
+            const resolution = await resolvePluginCollectionHostReferenceForAuthenticationInTx({
                 tx: input.tx,
                 accountId: input.accountId,
                 hostKind: edge.relation.hostKind,
                 targetId: edge.targetRowId,
+                authentication: input.authentication!,
             });
             if (resolution.status !== "available") {
                 throw new PluginCollectionMutationOperationError("collection_relation_unavailable");
@@ -1150,6 +1156,7 @@ export async function preparePluginCollectionRelationReplacementInTx(input: Read
     contract: NormalizedPluginAccountCollectionContractV1;
     changes: readonly RelationRowChange[];
     maximumBatchRows: number;
+    authentication: SessionAccessAuthentication | undefined;
     skipPersistedUniqueRelationCollisionCheck?: boolean;
 }>): Promise<PluginCollectionPreparedRelationReplacement> {
     const sourceRowDbIds = input.changes.map((change) => change.rowDbId);
@@ -1169,6 +1176,7 @@ export async function preparePluginCollectionRelationReplacementInTx(input: Read
         accountId: input.accountId,
         edges,
         maximumBatchRows: input.maximumBatchRows,
+        authentication: input.authentication,
     });
     assertCandidateRelationUniqueness({ edges });
     if (input.skipPersistedUniqueRelationCollisionCheck !== true) {
@@ -1286,6 +1294,7 @@ export async function replaceRelationEdgesForRowsTx(input: Readonly<{
     resolved: ResolvedWritableCollection;
     changes: readonly RelationRowChange[];
     maximumBatchRows: number;
+    authentication: SessionAccessAuthentication | undefined;
 }>): Promise<void> {
     const prepared = await preparePluginCollectionRelationReplacementInTx({
         tx: input.tx,
@@ -1293,6 +1302,7 @@ export async function replaceRelationEdgesForRowsTx(input: Readonly<{
         contract: input.resolved.contract,
         changes: input.changes,
         maximumBatchRows: input.maximumBatchRows,
+        authentication: input.authentication,
     });
     await materializePluginCollectionRelationReplacementInTx({
         tx: input.tx,
@@ -1315,6 +1325,7 @@ export async function replaceRelationEdgesForRowTx(input: Readonly<{
         resolved: input.resolved,
         changes: [input.change],
         maximumBatchRows: 1,
+        authentication: undefined,
     });
 }
 
@@ -1452,10 +1463,6 @@ async function applyIncomingRelationDeletesTx(input: Readonly<{
             },
         },
     });
-    if (incoming.length > 200) {
-        throw new PluginCollectionMutationOperationError("collection_relation_unavailable");
-    }
-
     const restrictions: Array<Readonly<{
         sourcePluginId: string;
         sourceCollectionId: string;
@@ -1535,7 +1542,7 @@ async function applyIncomingRelationDeletesTx(input: Readonly<{
     const firstRestriction = restrictions[0];
     if (firstRestriction) {
         throw new PluginCollectionMutationOperationError("collection_relation_restricted", {
-            dependentCount: restrictions.length,
+            dependentCount: Math.min(restrictions.length, 200),
             continuation: {
                 pluginId: firstRestriction.sourcePluginId,
                 collectionId: firstRestriction.sourceCollectionId,
@@ -1552,6 +1559,11 @@ async function applyIncomingRelationDeletesTx(input: Readonly<{
                 },
             },
         });
+    }
+    // A known restriction is actionable even when the bounded incoming page
+    // overflows. Only automatic nullification requires the complete edge set.
+    if (incoming.length > 200) {
+        throw new PluginCollectionMutationOperationError("collection_relation_unavailable");
     }
 
     const changes: Array<Readonly<{
@@ -1693,6 +1705,7 @@ async function mutatePluginCollectionInTx(input: Readonly<{
     accountId: string;
     request: PluginCollectionMutationRequestV1;
     deployment: PluginDataCollectionsCapabilities;
+    authentication: SessionAccessAuthentication | undefined;
     /**
      * Physical retirement deletes the row that would otherwise carry the
      * retired revision, so the requested collection cannot be invalidated at
@@ -1894,6 +1907,7 @@ async function mutatePluginCollectionInTx(input: Readonly<{
             resolved,
             changes: relationChanges,
             maximumBatchRows: input.deployment.maxBatchRows,
+            authentication: input.authentication,
         });
     }
     const nullifiedChanges = await applyIncomingRelationDeletesTx({
@@ -2034,6 +2048,7 @@ async function mutatePluginCollectionInTx(input: Readonly<{
 export async function mutatePluginCollection(input: Readonly<{
     accountId: string;
     request: unknown;
+    authentication: SessionAccessAuthentication;
 }>): Promise<PluginCollectionMutationResultV1> {
     const request = PluginCollectionMutationRequestV1Schema.parse(input.request);
     const deployment = readPluginsFeatureEnv(process.env).collectionLimits;
@@ -2053,6 +2068,7 @@ export async function mutatePluginCollection(input: Readonly<{
         accountId: input.accountId,
         request,
         deployment,
+        authentication: input.authentication,
     }));
 }
 
@@ -2135,6 +2151,7 @@ export async function forgetPluginCollection(input: Readonly<{
                 accountId: input.accountId,
                 deployment: readPluginsFeatureEnv(process.env).collectionLimits,
                 physicallyRetiresRequestedRow: true,
+                authentication: undefined,
                 request: {
                     pluginId: request.pluginId,
                     collectionId: request.collectionId,

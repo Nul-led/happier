@@ -337,11 +337,116 @@ describe("Friends + GitHub gating (integration)", () => {
         await app.close();
     });
 
-    it("GET /v1/user/search succeeds for light flavor when DB provider env is unset", async () => {
+    it("GET /v1/user/search collaboration discovery remains independent of social gating and excludes arbitrary Accounts", async () => {
+        applyFriendsRouteEnv(harness, {
+            HAPPIER_FEATURE_SOCIAL_FRIENDS__ENABLED: "0",
+            HAPPIER_FEATURE_SOCIAL_FRIENDS__ALLOW_USERNAME: "0",
+            GITHUB_CLIENT_ID: "test_client_id",
+            GITHUB_CLIENT_SECRET: "test_client_secret",
+            GITHUB_REDIRECT_URL: "https://app.example.test/oauth/github/callback",
+        });
+
+        const app = createTestApp();
+        await userRoutes(app as any);
+        await app.ready();
+
+        const actor = await db.account.create({
+            data: { publicKey: "pk-collaboration-actor", username: "collaboration_actor" },
+            select: { id: true },
+        });
+        const friend = await db.account.create({
+            data: { publicKey: "pk-collaboration-friend", username: "collaboration_friend" },
+            select: { id: true },
+        });
+        const teammate = await db.account.create({
+            data: { publicKey: "pk-collaboration-teammate", username: "collaboration_teammate" },
+            select: { id: true },
+        });
+        const outsider = await db.account.create({
+            data: { publicKey: "pk-collaboration-outsider", username: "collaboration_outsider" },
+            select: { id: true },
+        });
+        await db.userRelationship.create({
+            data: { fromUserId: friend.id, toUserId: actor.id, status: "friend" },
+        });
+        const team = await db.team.create({ data: { name: "Collaboration Team" }, select: { id: true } });
+        await db.teamMembership.createMany({ data: [
+            { teamId: team.id, accountId: actor.id, role: "member" },
+            { teamId: team.id, accountId: teammate.id, role: "member" },
+        ] });
+
+        const res = await app.inject({
+            method: "GET",
+            url: "/v1/user/search?query=collaboration_&purpose=collaboration",
+            headers: { "x-test-user-id": actor.id },
+        });
+
+        expect(res.statusCode).toBe(200);
+        const body = res.json() as { users: Array<{ id: string }> };
+        expect(body.users.map((user) => user.id).sort()).toEqual([friend.id, teammate.id].sort());
+        expect(body.users.map((user) => user.id)).not.toContain(outsider.id);
+        await app.close();
+    });
+
+    it("pages every matching username with an opaque continuation instead of hiding the eleventh Account", async () => {
+        applyFriendsRouteEnv(harness);
+
+        const app = createTestApp();
+        await userRoutes(app as any);
+        await app.ready();
+
+        const current = await db.account.create({
+            data: { publicKey: "pk-search-pagination-current", username: "search_pagination_current" },
+            select: { id: true },
+        });
+        const matches = await Promise.all(Array.from({ length: 11 }, async (_, index) => await db.account.create({
+            data: {
+                publicKey: `pk-search-pagination-${index}`,
+                username: `paged_candidate_${String(index).padStart(2, "0")}`,
+            },
+            select: { id: true, username: true },
+        })));
+
+        const first = await app.inject({
+            method: "GET",
+            url: "/v1/user/search?query=paged_candidate_",
+            headers: { "x-test-user-id": current.id },
+        });
+        expect(first.statusCode).toBe(200);
+        const firstBody = first.json() as { users: Array<{ id: string }>; nextCursor: string | null };
+        expect(firstBody.users).toHaveLength(10);
+        expect(firstBody.nextCursor).toEqual(expect.any(String));
+
+        const second = await app.inject({
+            method: "GET",
+            url: `/v1/user/search?${new URLSearchParams({ query: "paged_candidate_", cursor: firstBody.nextCursor! })}`,
+            headers: { "x-test-user-id": current.id },
+        });
+        expect(second.statusCode).toBe(200);
+        const secondBody = second.json() as { users: Array<{ id: string }>; nextCursor: string | null };
+        expect(secondBody.users.map((user) => user.id)).toEqual([matches[10]!.id]);
+        expect(secondBody.nextCursor).toBeNull();
+        expect(new Set([...firstBody.users.map((user) => user.id), ...secondBody.users.map((user) => user.id)]))
+            .toEqual(new Set(matches.map((match) => match.id)));
+
+        const wrongQuery = await app.inject({
+            method: "GET",
+            url: `/v1/user/search?${new URLSearchParams({ query: "different_candidate_", cursor: firstBody.nextCursor! })}`,
+            headers: { "x-test-user-id": current.id },
+        });
+        expect(wrongQuery.statusCode).toBe(400);
+        expect(wrongQuery.json()).toEqual({ error: "invalid_cursor" });
+
+        await app.close();
+    });
+
+    it.each([undefined, "mysql"])("GET /v1/user/search uses portable prefix filters with provider %s", async (provider) => {
         applyFriendsRouteEnv(harness, {
             HAPPIER_SERVER_FLAVOR: "light",
             HAPPY_SERVER_FLAVOR: "light",
-            HAPPIER_DB_PROVIDER: undefined,
+            // SQLite rejects the same unsupported `mode` argument as MySQL.
+            // This does not substitute for the real MySQL DB-contract lane.
+            HAPPIER_DB_PROVIDER: provider,
             HAPPY_DB_PROVIDER: undefined,
         });
 

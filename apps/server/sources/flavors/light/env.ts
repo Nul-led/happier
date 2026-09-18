@@ -6,7 +6,7 @@ import { homedir as defaultHomedir, tmpdir } from 'node:os';
 import {
     renderPrismaCompatibleSqliteDatabaseUrl,
     resolveManagedServerLightPathEnvValue,
-} from '@happier-dev/cli-common/firstPartyRuntime';
+} from '@happier-dev/cli-common/firstPartyRuntime/server';
 import {
     expandHomeDirPath,
     resolveHomeDirFromEnvironment,

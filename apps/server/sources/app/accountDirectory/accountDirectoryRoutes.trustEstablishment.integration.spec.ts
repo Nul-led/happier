@@ -94,7 +94,7 @@ describe("Account Directory Home trust route admission (integration)", () => {
                 kind: "terminal",
                 authority: "account_automation",
             }),
-            (await auth.createApiToken({ accountId: account.id, label: "trust-route PAT" })).token,
+            (await auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "trust-route PAT" })).token,
         ];
         const pending = await createPendingApproval(account.id, "denied");
         const body = linkBody();

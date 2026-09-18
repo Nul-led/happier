@@ -1,63 +1,78 @@
 import { describe, expect, it } from "vitest";
+import { NOT_STARTED_VIEWER_READ_STATE_V1, type ViewerReadStateV1 } from "@happier-dev/protocol";
 
-import { computeSessionContributesToActivityBadge } from "./accountActivityBadge";
+import {
+    computeSessionContributesToActivityBadge,
+    didSessionActivityBadgeSignalChange,
+    didViewerActivityBadgeContributionChange,
+    type SessionViewerBadgeInputs,
+} from "./accountActivityBadge";
+
+const HOSTED_PUBLICATION = {
+    currentStorageState: "hosted",
+    acceptedThroughServerSeq: null,
+    materializationPublicationId: null,
+    materializedThroughSourceAt: null,
+    publishedThroughServerSeq: null,
+} as const;
+
+function tracked(lastViewedSessionSeq: number): ViewerReadStateV1 {
+    return { state: "tracking", lastViewedSessionSeq, unreadSince: null };
+}
+
+function badgeInputs(overrides: Partial<SessionViewerBadgeInputs> = {}): SessionViewerBadgeInputs {
+    return {
+        ...HOSTED_PUBLICATION,
+        active: true,
+        archivedAt: null,
+        seq: 5,
+        pendingCount: 0,
+        pendingBlockedCount: 0,
+        pendingPermissionRequestCount: 0,
+        pendingUserActionRequestCount: 0,
+        latestReadyEventSeq: null,
+        latestTurnStatus: null,
+        lastRuntimeIssue: null,
+        tracked: true,
+        viewerReadState: tracked(5),
+        ...overrides,
+    };
+}
 
 describe("computeSessionContributesToActivityBadge", () => {
-    it("does not count queued pending input as badge attention", () => {
-        expect(computeSessionContributesToActivityBadge({
-            active: true,
-            archivedAt: null,
-            seq: 5,
-            lastViewedSessionSeq: 5,
-            pendingCount: 2,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
-        })).toBe(false);
+    it("retains durable unread attention when the runtime is inactive", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            active: false,
+            viewerReadState: tracked(4),
+        }))).toBe(true);
     });
 
-    it("counts blocked pending delivery as badge attention", () => {
-        expect(computeSessionContributesToActivityBadge({
-            active: true,
-            archivedAt: null,
-            seq: 5,
-            lastViewedSessionSeq: 5,
-            pendingCount: 2,
-            pendingBlockedCount: 1,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
-        })).toBe(true);
+    it("stays quiet for a viewer with no read row instead of treating history as unread", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            seq: 42,
+            viewerReadState: NOT_STARTED_VIEWER_READ_STATE_V1,
+        }))).toBe(false);
     });
 
-    it("does not count provider runtime activity as user attention", () => {
-        const sessionWithRuntimeActivity = {
-            active: true,
-            archivedAt: null,
-            seq: 5,
-            lastViewedSessionSeq: 5,
-            pendingCount: 0,
-            pendingBlockedCount: 0,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
-            latestTurnStatus: "completed",
-            lastRuntimeIssue: null,
-            runtimeActivityState: "active",
-            runtimeActivityActiveCount: 1,
-            runtimeActivityObservedAt: 1_000,
-            runtimeActivityRevision: 2,
-        };
+    it("stays quiet for an untracked viewer even with unread facts", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            tracked: false,
+            viewerReadState: tracked(1),
+            pendingPermissionRequestCount: 2,
+        }))).toBe(false);
+    });
 
-        expect(computeSessionContributesToActivityBadge(sessionWithRuntimeActivity)).toBe(false);
+    it("does not interpret malformed runtime issue text as primary-session failure", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            latestTurnStatus: "failed",
+            lastRuntimeIssue: "not a canonical runtime issue",
+        }))).toBe(false);
     });
 
     it("counts failed primary-session runtime issues as badge attention", () => {
-        expect(computeSessionContributesToActivityBadge({
-            active: true,
-            archivedAt: null,
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
             seq: 0,
-            lastViewedSessionSeq: 0,
-            pendingCount: 0,
-            pendingPermissionRequestCount: 0,
-            pendingUserActionRequestCount: 0,
+            viewerReadState: tracked(0),
             latestTurnStatus: "failed",
             lastRuntimeIssue: JSON.stringify({
                 v: 1,
@@ -67,22 +82,68 @@ describe("computeSessionContributesToActivityBadge", () => {
                 code: "agent_status_error",
                 occurredAt: 1,
             }),
-        })).toBe(true);
+        }))).toBe(true);
+    });
+
+    it("does not count queued pending input as badge attention", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({ pendingCount: 2 }))).toBe(false);
+    });
+
+    it("counts blocked pending delivery as badge attention", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            pendingCount: 2,
+            pendingBlockedCount: 1,
+        }))).toBe(true);
+    });
+
+    it("counts a ready event the viewer has not caught up with, matching the Session list", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            seq: 4,
+            viewerReadState: tracked(4),
+            latestReadyEventSeq: 5,
+        }))).toBe(true);
+    });
+
+    it("counts an explicit positive standing through the canonical attention projection", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            attentionStanding: "positive",
+        }))).toBe(true);
+    });
+
+    it("does not count provider runtime activity as user attention", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            latestTurnStatus: "completed",
+        }))).toBe(false);
     });
 
     it("does not count unpublished imported transcript rows as badge attention", () => {
-        const partialSession = {
-            active: true,
-            archivedAt: null,
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
             seq: 9,
-            lastViewedSessionSeq: 4,
+            viewerReadState: tracked(4),
             currentStorageState: "server_partial",
             acceptedThroughServerSeq: 4,
-            materializationPublicationId: null,
-            materializedThroughSourceAt: null,
-            publishedThroughServerSeq: null,
-        };
+        }))).toBe(false);
+    });
 
-        expect(computeSessionContributesToActivityBadge(partialSession)).toBe(false);
+    it("stays quiet for an archived Session", () => {
+        expect(computeSessionContributesToActivityBadge(badgeInputs({
+            archivedAt: new Date(),
+            viewerReadState: tracked(1),
+        }))).toBe(false);
+    });
+});
+
+describe("didSessionActivityBadgeSignalChange", () => {
+    it("does not invent unread before a missing private cursor is seeded", () => {
+        expect(didViewerActivityBadgeContributionChange(badgeInputs(), null, 5)).toBe(false);
+    });
+    it("reports a change when blocked pending delivery appears", () => {
+        const before = badgeInputs();
+        expect(didSessionActivityBadgeSignalChange(before, { ...before, pendingBlockedCount: 1 })).toBe(true);
+    });
+
+    it("ignores the shared read cursor, which no longer decides another Account's badge", () => {
+        const before = badgeInputs();
+        expect(didSessionActivityBadgeSignalChange(before, { ...before, lastViewedSessionSeq: 0 })).toBe(false);
     });
 });

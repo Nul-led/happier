@@ -2,22 +2,38 @@ import * as privacyKit from "privacy-kit";
 import { z } from "zod";
 
 import { type Fastify } from "../../../types";
-import { connectExternalIdentity } from "@/app/auth/providers/identity";
+import { prepareExternalIdentityConnection } from "@/app/auth/providers/identity";
 import { Context } from "@/context";
 import { decryptString } from "@/modules/encrypt";
-import { findOAuthProviderById } from "@/app/oauth/providers/registry";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import { db } from "@/storage/db";
 import { validateUsername } from "@/app/social/usernamePolicy";
-import { deleteOAuthPendingBestEffort, loadValidOAuthPending } from "../connectRoutes.oauthPending";
+import {
+    consumeValidOAuthPendingInTx,
+    deleteOAuthPendingBestEffort,
+    loadValidOAuthPending,
+} from "../connectRoutes.oauthPending";
 import { PROVIDER_ALREADY_LINKED_ERROR } from "./oauthExternalErrors";
-import { connectPendingSchema } from "./oauthExternalSchemas";
+import { connectPendingSchema, hasInvalidOAuthSecurityBinding } from "./oauthExternalSchemas";
+import { requireCurrentOAuthPendingRuntime, requireCurrentOAuthPendingRuntimeInTx } from "./oauthSecurityBinding";
+import { oauthExternalFinalizeErrorHandler } from "./oauthExternalFinalizeErrorHandler";
 import {
     ExternalOAuthFinalizeConnectRequestSchema,
     ExternalOAuthFinalizeConnectSuccessResponseSchema,
 } from "@happier-dev/protocol";
+import { inTx } from "@/storage/inTx";
+import { isEffectiveHomeAuthMethodActionEnabledInTx } from "@/app/auth/methods/effectiveHomeAuthMethods";
+import {
+    AuthenticationEvidenceLimitError,
+    mergeCurrentAuthenticationEvidenceInTx,
+    readOAuthAuthenticationEvidenceInTx,
+} from "@/app/auth/authenticationEvidence";
+import { auth } from "@/app/auth/auth";
+import { requireTeamOAuthAdmissionInTx } from "@/app/teams/memberships/teamOAuthAdmission";
 
 export function registerExternalConnectFinalizeRoute(app: Fastify) {
     app.post("/v1/connect/external/:provider/finalize", {
+        errorHandler: oauthExternalFinalizeErrorHandler,
         preHandler: app.authenticate,
         schema: {
             params: z.object({ provider: z.string() }),
@@ -28,27 +44,33 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                 403: z.object({ error: z.enum(["forbidden", "not-eligible"]) }),
                 404: z.object({ error: z.literal("unsupported-provider") }),
                 409: z.union([
+                    z.object({ error: z.literal("auth_provider_configuration_changed") }),
                     z.object({ error: z.literal("username-taken") }),
+                    z.object({ error: z.literal("credential_authentication_evidence_limit") }),
                     z.object({ error: z.literal(PROVIDER_ALREADY_LINKED_ERROR), provider: z.string() }),
                 ]),
             },
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
-
         const pendingKey = request.body.pending.toString().trim();
         if (!pendingKey) return reply.code(400).send({ error: "invalid-pending" });
 
         const pending = await loadValidOAuthPending(pendingKey);
-        if (!pending) return reply.code(400).send({ error: "invalid-pending" });
+        if (!pending) {
+            if (!await resolveOAuthRuntimeById(process.env, providerId)) return reply.code(404).send({ error: "unsupported-provider" });
+            return reply.code(400).send({ error: "invalid-pending" });
+        }
 
         let parsedValue: z.infer<typeof connectPendingSchema>;
         try {
-            const parsed = connectPendingSchema.safeParse(JSON.parse(pending.value));
+            const value: unknown = JSON.parse(pending.value);
+            const parsed = connectPendingSchema.safeParse(value);
             if (!parsed.success) {
                 await deleteOAuthPendingBestEffort(pendingKey);
+                if (hasInvalidOAuthSecurityBinding(value)) {
+                    return reply.code(409).send({ error: "auth_provider_configuration_changed" });
+                }
                 return reply.code(400).send({ error: "invalid-pending" });
             }
             parsedValue = parsed.data;
@@ -63,6 +85,15 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
         if (parsedValue.userId !== request.userId) {
             return reply.code(403).send({ error: "forbidden" });
         }
+
+        const bindingInput = {
+            providerId,
+            pendingKey,
+            binding: parsedValue.securityBinding,
+            purpose: parsedValue.securityBinding?.purpose ?? null,
+        } as const;
+        const isTeamAdmission = parsedValue.securityBinding?.purpose === "team_admission";
+        await requireCurrentOAuthPendingRuntime(bindingInput);
 
         const validation = validateUsername(request.body.username, process.env);
         if (!validation.ok) return reply.code(400).send({ error: "invalid-username" });
@@ -104,7 +135,8 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
 
         const ctx = Context.create(request.userId);
         try {
-            await connectExternalIdentity({
+            const prepared = await prepareExternalIdentityConnection({
+                reference: parsedValue.securityBinding?.provider,
                 providerId,
                 ctx,
                 profile: pendingProfile,
@@ -112,17 +144,67 @@ export function registerExternalConnectFinalizeRoute(app: Fastify) {
                 refreshToken,
                 preferredUsername: username,
             });
+            const token = await inTx(async (tx) => {
+                await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
+                if (!isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                    env: process.env,
+                    methodId: providerId,
+                    actionId: "connect",
+                })) return false;
+                if (!await consumeValidOAuthPendingInTx(tx, pending)) return null;
+                await prepared.connectInTx(tx);
+                const teamAuthenticationEvidence = isTeamAdmission
+                    ? await requireTeamOAuthAdmissionInTx(tx, {
+                        env: process.env,
+                        accountId: request.userId,
+                        provider: parsedValue.securityBinding?.provider,
+                        connection: parsedValue.securityBinding?.connection,
+                        admission: parsedValue.securityBinding?.admission,
+                    })
+                    : undefined;
+                const newlyVerified = teamAuthenticationEvidence?.authenticationEvidence ?? (parsedValue.securityBinding
+                    ? await readOAuthAuthenticationEvidenceInTx(tx, {
+                        accountId: request.userId,
+                        providerId,
+                        runtimeFingerprint: parsedValue.securityBinding.provider.runtimeFingerprint,
+                        ...(parsedValue.securityBinding.connection?.id
+                            ? { teamConnectionId: parsedValue.securityBinding.connection.id }
+                            : {}),
+                    })
+                    : undefined);
+                const authenticationEvidence = await mergeCurrentAuthenticationEvidenceInTx(tx, {
+                    env: process.env,
+                    accountId: request.userId,
+                    initiating: request.authTokenAuthenticationEvidence,
+                    newlyVerified,
+                });
+                return await auth.createTokenInTx(tx, request.userId, undefined, {
+                    kind: "account",
+                    authority: "present_user",
+                    ...(authenticationEvidence.length > 0 ? { authenticationEvidence } : {}),
+                });
+            });
+            if (!token) {
+                return reply.code(400).send({ error: "invalid-pending" });
+            }
+            return reply.send({ success: true, token });
         } catch (error) {
+            if (error instanceof Error && error.message === "invalid-pending") {
+                await deleteOAuthPendingBestEffort(pendingKey);
+                return reply.code(400).send({ error: "invalid-pending" });
+            }
             if (error instanceof Error && error.message === "not-eligible") {
                 return reply.code(403).send({ error: "not-eligible" });
             }
             if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
                 return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
             }
+            if (error instanceof AuthenticationEvidenceLimitError) {
+                return reply.code(409).send({ error: error.code });
+            }
             throw error;
         }
 
-        await deleteOAuthPendingBestEffort(pendingKey);
-        return reply.send({ success: true });
+        throw new Error("External connection finalization completed without publishing its replacement credential");
     });
 }

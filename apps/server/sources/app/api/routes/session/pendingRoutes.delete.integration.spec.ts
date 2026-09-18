@@ -41,7 +41,7 @@ describe("sessionPendingRoutes (delete) (status mapping)", () => {
             ok: true,
             pendingCount: 3,
             pendingVersion: 7,
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");

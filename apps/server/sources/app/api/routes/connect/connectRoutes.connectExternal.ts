@@ -2,8 +2,9 @@ import { z } from "zod";
 
 import { type Fastify } from "../../types";
 import { Context } from "@/context";
-import { findOAuthProviderById } from "@/app/oauth/providers/registry";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import { disconnectExternalIdentity } from "@/app/auth/providers/identity";
+import { IdentityManagementDeniedError } from "@/app/auth/providers/accountIdentityLifecycle";
 import { deleteOAuthPendingBestEffort, loadValidOAuthPending } from "./connectRoutes.oauthPending";
 import { createExternalAuthorizeUrl } from "./oauthExternal/createExternalAuthorizeUrl";
 import { oauthExternalRateLimitConnectParamsPerUser } from "./oauthExternal/oauthExternalRateLimits";
@@ -25,6 +26,9 @@ export function connectConnectExternalRoutes(app: Fastify) {
         config: { rateLimit: oauthExternalRateLimitConnectParamsPerUser() },
         schema: {
             params: z.object({ provider: z.string() }),
+            querystring: z.object({
+                connectFinalization: z.literal("credential_adoption_v1").optional(),
+            }),
             response: {
                 200: ExternalOAuthParamsResponseSchema,
                 400: ExternalOAuthErrorResponseSchema,
@@ -33,8 +37,9 @@ export function connectConnectExternalRoutes(app: Fastify) {
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
+        const resolved = await resolveOAuthRuntimeById(process.env, providerId);
+        if (!resolved) return reply.code(404).send({ error: "unsupported-provider" });
+        const { provider, reference } = resolved;
 
         try {
             const webAppOAuthReturnUrl = resolveWebAppOAuthReturnUrlFromRequestHeaders({
@@ -47,7 +52,11 @@ export function connectConnectExternalRoutes(app: Fastify) {
                 env: process.env,
                 providerId,
                 provider,
+                reference,
                 userId: request.userId,
+                ...(request.query.connectFinalization
+                    ? { connectFinalization: request.query.connectFinalization }
+                    : {}),
                 ...(webAppOAuthReturnUrl ? { webAppOAuthReturnUrl } : {}),
             });
             if (!url) return reply.code(400).send({ error: OAUTH_STATE_UNAVAILABLE_CODE });
@@ -73,8 +82,9 @@ export function connectConnectExternalRoutes(app: Fastify) {
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
+        if (!await resolveOAuthRuntimeById(process.env, providerId)) {
+            return reply.code(404).send({ error: "unsupported-provider" });
+        }
 
         const pendingKey = request.params.pending.toString().trim();
         if (!pendingKey) return reply.send({ success: true });
@@ -99,15 +109,26 @@ export function connectConnectExternalRoutes(app: Fastify) {
             response: {
                 200: z.object({ success: z.literal(true) }),
                 404: z.union([NotFoundSchema, z.object({ error: z.literal("unsupported-provider") })]),
+                409: z.object({
+                    error: z.literal("identity-management-denied"),
+                    reason: z.enum(["required_by_team", "last_login_method", "management_unavailable"]),
+                }),
             },
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
-
         const ctx = Context.create(request.userId);
-        await disconnectExternalIdentity({ providerId, ctx });
+        try {
+            await disconnectExternalIdentity({ providerId, ctx });
+        } catch (error) {
+            if (error instanceof IdentityManagementDeniedError) {
+                return reply.code(409).send({ error: "identity-management-denied", reason: error.reason });
+            }
+            if (error instanceof Error && error.message === "unsupported-provider") {
+                return reply.code(404).send({ error: "unsupported-provider" });
+            }
+            throw error;
+        }
         return reply.send({ success: true });
     });
 }

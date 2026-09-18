@@ -59,6 +59,8 @@ function releaseRow(input: Readonly<{
             archiveDigestSha256: `sha256:${"c".repeat(64)}`,
             resources: [],
         },
+        packageAssetArtifactId: null,
+        packageAssetArtifact: null,
         uiArtifacts: [{
             contributionId: "hosted",
             tier: "hostedWeb",

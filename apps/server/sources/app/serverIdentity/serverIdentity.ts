@@ -1,4 +1,5 @@
 import { db, isPrismaErrorCode } from "@/storage/db";
+import type { Tx } from "@/storage/inTx";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 
 export const SERVER_IDENTITY_CACHE_KEY = "server.identity.v1";
@@ -45,13 +46,21 @@ async function persistPinnedServerIdentityId(serverIdentityId: string): Promise<
     });
 }
 
-async function readPersistedServerIdentityId(): Promise<string | null> {
-    const row = await db.simpleCache.findUnique({
+async function readPersistedServerIdentityId(reader: Pick<Tx, "simpleCache"> = db): Promise<string | null> {
+    const row = await reader.simpleCache.findUnique({
         where: { key: SERVER_IDENTITY_CACHE_KEY },
         select: { value: true },
     });
     const value = row?.value.trim();
     return value ? assertValidServerIdentityId(value, SERVER_IDENTITY_CACHE_KEY) : null;
+}
+
+/** Reads the current identity without opening an out-of-transaction writer. */
+export async function readCurrentServerIdentityId(
+    env: NodeJS.ProcessEnv = process.env,
+    reader: Pick<Tx, "simpleCache"> = db,
+): Promise<string | null> {
+    return readPinnedServerIdentityId(env) ?? await readPersistedServerIdentityId(reader);
 }
 
 export async function getOrCreateServerIdentityId(

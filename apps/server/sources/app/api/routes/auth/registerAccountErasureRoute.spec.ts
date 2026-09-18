@@ -8,14 +8,14 @@ import { registerAccountErasureRoute } from "./registerAccountErasureRoute";
 
 describe("registerAccountErasureRoute", () => {
     beforeEach(() => deletion.mockClear());
-    it("selects only the authenticated Account and disconnects its sockets after deletion", async () => {
+    it("selects only the authenticated Account and leaves socket revocation to the lifecycle owner", async () => {
         let handler: any;
         const app: any = { authenticate: vi.fn(), disconnectAccountSockets: vi.fn(), post: vi.fn((_path: string, _options: unknown, next: any) => { handler = next; }) };
         registerAccountErasureRoute(app);
         const reply: any = { send: vi.fn(async (body) => body), code: vi.fn() };
         await expect(handler({ userId: "present-user", validationError: null }, reply)).resolves.toEqual({ status: "deleted" });
         expect(deletion).toHaveBeenCalledWith({ accountId: "present-user" });
-        expect(app.disconnectAccountSockets).toHaveBeenCalledWith("present-user");
+        expect(app.disconnectAccountSockets).not.toHaveBeenCalled();
     });
     it("does not disconnect sockets when blob deletion failure preserves the Account", async () => {
         deletion.mockResolvedValueOnce({ status: "failed", code: "account_erasure_blob_delete_failed" });
@@ -25,6 +25,18 @@ describe("registerAccountErasureRoute", () => {
         const reply: any = { send: vi.fn(async (body) => body), code: vi.fn() };
         await expect(handler({ userId: "present-user", validationError: null }, reply)).rejects.toThrow(/account_erasure_blob_delete_failed/u);
         expect(deletion).toHaveBeenCalledWith({ accountId: "present-user" });
+        expect(app.disconnectAccountSockets).not.toHaveBeenCalled();
+    });
+    it("returns an actionable ownership conflict instead of a generic failure", async () => {
+        deletion.mockResolvedValueOnce({ status: "failed", code: "home_owner_transfer_required" });
+        let handler: any;
+        const app: any = { authenticate: vi.fn(), disconnectAccountSockets: vi.fn(), post: vi.fn((_path: string, _options: unknown, next: any) => { handler = next; }) };
+        registerAccountErasureRoute(app);
+        const send = vi.fn(async (body) => body);
+        const code = vi.fn(() => ({ send }));
+        await expect(handler({ userId: "present-user", validationError: null }, { code, send }))
+            .resolves.toEqual({ error: "home_owner_transfer_required" });
+        expect(code).toHaveBeenCalledWith(409);
         expect(app.disconnectAccountSockets).not.toHaveBeenCalled();
     });
     it("rejects malformed confirmation before deletion", async () => {

@@ -1,10 +1,12 @@
 import { machineInstallationPublicKeysEqual } from "./installationProof";
+import { isPersistentMachine, type MachineKind } from "@happier-dev/protocol";
 
 export type MachineReplacementSource = "automatic" | "manual";
 
 export type MachineReplacementRow = Readonly<{
     id: string;
     accountId: string;
+    kind?: MachineKind;
     active: boolean;
     revokedAt: Date | null;
     installationId?: string | null;
@@ -39,6 +41,9 @@ export function validateMachineReplacement(input: MachineReplacementValidationIn
     }
     if (!replacementMachine || replacementMachine.accountId !== accountId) {
         return { ok: false, statusCode: 404, reason: "replacement_machine_not_found" };
+    }
+    if (!isPersistentMachine(oldMachine) || !isPersistentMachine(replacementMachine)) {
+        return { ok: false, statusCode: 400, reason: "persistent_machine_required" };
     }
     if (oldMachine.id === replacementMachineId) {
         return { ok: false, statusCode: 400, reason: "replacement_same_machine" };

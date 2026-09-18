@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     PLUGIN_COLLECTION_REVISION_MAX,
     PluginAccountCollectionContributionV1Schema,
@@ -10,6 +11,7 @@ import {
     PluginManifestV2Schema,
     PluginCollectionQueryResultV1Schema,
     PluginCollectionUiQueryResultV1Schema,
+    PluginCollectionUiQueryTransportResultV1Schema,
     decodeBase64,
     encodeBase64,
     encodePluginCollectionIndexSortKeyV1,
@@ -22,7 +24,8 @@ import {
     materializePluginCollectionContractsFromManifestTx,
     preparePluginCollectionWritableContractsTx,
 } from "@/app/plugins/data/collections/contracts";
-import { mutatePluginCollection } from "@/app/plugins/data/collections/mutation";
+import { mutatePluginCollection as mutatePluginCollectionWithAuthentication } from "@/app/plugins/data/collections/mutation";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import {
     acquireAccountEncryptionTransitionFenceInTx,
     applyAccountEncryptionTransitionInTx,
@@ -39,11 +42,19 @@ import { pluginDataRoutes } from "./pluginDataRoutes";
 const PLUGIN_ID = "example.tasks";
 const COLLECTION_ID = "tasks";
 const QUERY_ID = "open-by-status";
+const PRIVATE_QUERY_ID = "open-private-by-status";
 const V3_HEADERS = {
     "x-happier-account-stored-content-protocol": String(
         ACCOUNT_STORED_CONTENT_PLUGIN_DATA_PROTOCOL_VERSION,
     ),
 } as const;
+const authentication = createPresentUserSessionAccessAuthentication();
+
+function mutatePluginCollection(
+    input: Omit<Parameters<typeof mutatePluginCollectionWithAuthentication>[0], "authentication">,
+) {
+    return mutatePluginCollectionWithAuthentication({ ...input, authentication });
+}
 
 const COLLECTION_MANIFEST = {
     schemaVersion: 2,
@@ -87,6 +98,20 @@ const COLLECTION_MANIFEST = {
                 order: "asc",
                 pageSize: 1,
                 projectedFields: ["status", "title"],
+            }, {
+                id: PRIVATE_QUERY_ID,
+                indexId: "by-status",
+                parameters: {
+                    status: {
+                        kind: "string",
+                        maxUtf8Bytes: 16,
+                        enum: ["closed", "open"],
+                    },
+                },
+                prefix: [{ kind: "parameter", parameterId: "status" }],
+                order: "asc",
+                pageSize: 1,
+                projectedFields: ["status", "privateNote"],
             }],
             relations: [],
             migrations: [],
@@ -459,6 +484,33 @@ const HOST_MACHINE_RELATION_COLLECTION_MANIFEST = {
     },
 } as const;
 
+const HOST_SESSION_RELATION_COLLECTION_MANIFEST = {
+    ...HOST_MACHINE_RELATION_COLLECTION_MANIFEST,
+    id: "example.session-tasks",
+    displayName: "Session relation fixture",
+    contributes: {
+        accountCollections: [{
+            ...HOST_MACHINE_RELATION_COLLECTION_MANIFEST.contributes.accountCollections[0],
+            schema: {
+                ...HOST_MACHINE_RELATION_COLLECTION_MANIFEST.contributes.accountCollections[0].schema,
+                properties: {
+                    id: { type: "string", maxLength: 256 },
+                    title: { type: "string", maxLength: 256 },
+                    "session-id": { type: "string", maxLength: 256 },
+                },
+                required: ["id", "title", "session-id"],
+            },
+            serverReadable: ["id", "title", "session-id"],
+            relations: [{
+                id: "session",
+                kind: "host",
+                field: "session-id",
+                hostKind: "session",
+            }],
+        }],
+    },
+} as const;
+
 type SeedRow = Readonly<{
     rowId: string;
     status: "closed" | "open";
@@ -494,17 +546,14 @@ function validE2eeAccountFields(): Readonly<{
 }> {
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const contentBinding = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(content.publicKey),
-    ]);
+
     return {
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         contentPublicKey: new Uint8Array(Array.from(content.publicKey)),
-        contentPublicKeySig: new Uint8Array(Array.from(tweetnacl.sign.detached(
-            contentBinding,
-            signing.secretKey,
-        ))),
+        contentPublicKeySig: new Uint8Array(Array.from(signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: content.publicKey,
+        }))),
     };
 }
 
@@ -1052,12 +1101,12 @@ async function seedReadyNonIndexedInstantCollectionAccount(accountId: string): P
     return ref;
 }
 
-async function seedReadyRelationCollectionAccount(accountId: string) {
+async function seedReadyRelationCollectionAccount(accountId: string, manifest: unknown = RELATION_COLLECTION_MANIFEST) {
     await createAccount({ id: accountId, mode: "plain", seq: 0 });
     const refs = await inTx(async (tx) => (
         await materializePluginCollectionContractsFromManifestTx({
             tx,
-            manifest: RELATION_COLLECTION_MANIFEST,
+            manifest,
         })
     ));
     const refsByCollectionId = new Map(refs.map((ref) => [ref.collectionId, ref]));
@@ -1075,7 +1124,7 @@ async function seedReadyRelationCollectionAccount(accountId: string) {
             revision: BigInt(1),
         },
     });
-    await retainCollectionRelease({ accountId, manifest: RELATION_COLLECTION_MANIFEST, refs });
+    await retainCollectionRelease({ accountId, manifest, refs });
     const taskContract = await db.pluginCollectionContract.findFirstOrThrow({
         where: {
             pluginId: taskRef.pluginId,
@@ -1166,6 +1215,30 @@ async function seedReadyHostMachineRelationCollectionAccount(
         data: {
             accountId,
             pluginId: HOST_MACHINE_RELATION_COLLECTION_MANIFEST.id,
+            desiredVersion: "1.0.0",
+            enabled: true,
+            offlineUiHosting: "disabled",
+            writableCollections: toPrismaJson([ref]),
+            revision: BigInt(1),
+        },
+    });
+    return { ref };
+}
+
+async function seedReadyHostSessionRelationCollectionAccount(accountId: string) {
+    await createAccount({ id: accountId, mode: "plain", seq: 0 });
+    const refs = await inTx(async (tx) => (
+        await materializePluginCollectionContractsFromManifestTx({
+            tx,
+            manifest: HOST_SESSION_RELATION_COLLECTION_MANIFEST,
+        })
+    ));
+    const ref = refs[0];
+    if (!ref) throw new Error("Fixture Session relation contract was not materialized.");
+    await db.accountPluginIntent.create({
+        data: {
+            accountId,
+            pluginId: HOST_SESSION_RELATION_COLLECTION_MANIFEST.id,
             desiredVersion: "1.0.0",
             enabled: true,
             offlineUiHosting: "disabled",
@@ -1517,6 +1590,11 @@ describe("plugin collection UI query route", () => {
             () => db.accountPluginRelease.deleteMany(),
             () => db.pluginCollectionContract.deleteMany(),
             () => db.accountChange.deleteMany(),
+            () => db.sessionShare.deleteMany(),
+            () => db.sessionTeamGrant.deleteMany(),
+            () => db.teamMembership.deleteMany(),
+            () => db.team.deleteMany(),
+            () => db.session.deleteMany(),
             () => db.machine.deleteMany(),
             () => db.account.deleteMany(),
         ]);
@@ -2416,6 +2494,53 @@ describe("plugin collection UI query route", () => {
         });
     });
 
+    it("transports a private static projection for the Account client without making it server-readable", async () => {
+        const accountId = "account-ui-query-private-projection";
+        const { ref } = await seedCurrentCollectionAccount({
+            accountId,
+            rows: [{
+                rowId: "task-private",
+                status: "open",
+                title: "Server title",
+                revision: 1,
+                contentEnvelope: { t: "plain", v: { privateNote: "Client-only note" } },
+            }],
+        });
+
+        await withPluginDataApp(async (app) => {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/ui-query",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": accountId,
+                    ...V3_HEADERS,
+                },
+                payload: queryRequest({
+                    uiQueryId: PRIVATE_QUERY_ID,
+                    readerContext: ref,
+                }),
+            });
+
+            expect(response.statusCode).toBe(200);
+            expect(PluginCollectionUiQueryTransportResultV1Schema.parse(response.json())).toEqual({
+                rows: [{
+                    context: {
+                        collection: { pluginId: PLUGIN_ID, collectionId: COLLECTION_ID },
+                        rowId: "task-private",
+                        revision: 1,
+                    },
+                    fields: { status: "open" },
+                    logicalRow: {
+                        content: { t: "plain", v: { privateNote: "Client-only note" } },
+                        projection: { status: "open", title: "Server title" },
+                    },
+                }],
+                changeCursor: 41,
+            });
+        });
+    });
+
     it("keeps static UI-query rows and their AccountChange cursor in one snapshot", async () => {
         const accountId = "account-ui-query-single-snapshot";
         const { ref } = await seedCurrentCollectionAccount({
@@ -2720,7 +2845,7 @@ describe("plugin collection UI query route", () => {
             contractDigest: ref.contractDigest,
             privacyProjection: expect.objectContaining({
                 rowIdField: "id",
-                uiQueries: [expect.objectContaining({ id: QUERY_ID })],
+                uiQueries: expect.arrayContaining([expect.objectContaining({ id: QUERY_ID })]),
             }),
         });
 
@@ -5513,6 +5638,97 @@ describe("plugin collection UI query route", () => {
         })).resolves.toEqual({ deletedAt: null });
     });
 
+    it.each([
+        { count: 200, mixed: false, nullifyOnly: false },
+        { count: 201, mixed: false, nullifyOnly: false },
+        { count: 200, mixed: true, nullifyOnly: false },
+        { count: 201, mixed: false, nullifyOnly: true },
+    ])("preserves bounded restriction recovery for $count dependents (mixed: $mixed, nullifyOnly: $nullifyOnly)", async ({ count, mixed, nullifyOnly }) => {
+        const accountId = "account-large-restriction";
+        const task = RELATION_COLLECTION_MANIFEST.contributes.accountCollections[1];
+        const manifest = {
+            ...RELATION_COLLECTION_MANIFEST,
+            contributes: {
+                accountCollections: [
+                    RELATION_COLLECTION_MANIFEST.contributes.accountCollections[0],
+                    {
+                        ...task,
+                        schema: {
+                            ...task.schema,
+                            required: nullifyOnly ? ["id", "title"] : task.schema.required,
+                            properties: { ...task.schema.properties, optionalProject: { type: "string", maxLength: 256 } },
+                        },
+                        serverReadable: [...task.serverReadable, "optionalProject"],
+                        relations: [
+                            { ...task.relations[0], unique: false, required: !nullifyOnly, onDelete: nullifyOnly ? "nullify" : "restrict" },
+                            { id: "zz-optional", kind: "collection", field: "optionalProject", collectionId: "projects", required: false, onDelete: "nullify" },
+                        ],
+                    },
+                ],
+            },
+        };
+        const { projectRef, taskRef } = await seedReadyRelationCollectionAccount(accountId, manifest);
+        const projectWriter = { schemaVersion: projectRef.schemaVersion, contractDigest: projectRef.contractDigest };
+        const taskWriter = { schemaVersion: taskRef.schemaVersion, contractDigest: taskRef.contractDigest };
+        await mutatePluginCollection({ accountId, request: {
+            pluginId: projectRef.pluginId, collectionId: "projects", writerContext: projectWriter,
+            operations: [{ kind: "put", rowId: "project-a", expectedRevision: "absent", expectedAbsenceEpoch: 0,
+                content: { t: "plain", v: {} }, projection: { id: "project-a", title: "Project A" } }],
+        } });
+        for (let offset = 0; offset < count; offset += 100) {
+            await mutatePluginCollection({ accountId, request: {
+                pluginId: taskRef.pluginId, collectionId: "tasks", writerContext: taskWriter,
+                operations: Array.from({ length: Math.min(100, count - offset) }, (_, index) => {
+                    const rowId = `task-${String(offset + index).padStart(3, "0")}`;
+                    return { kind: "put" as const, rowId, expectedRevision: "absent" as const, expectedAbsenceEpoch: 0,
+                        content: { t: "plain" as const, v: {} }, projection: {
+                            id: rowId, title: rowId, "project-id": "project-a",
+                            optionalProject: mixed && offset + index === 0 ? "project-a" : null,
+                        } };
+                }),
+            } });
+        }
+        await withPluginDataApp(async (app) => {
+            const headers = { "x-test-user-id": accountId, ...V3_HEADERS };
+            const deletion = { pluginId: projectRef.pluginId, collectionId: "projects", writerContext: projectWriter,
+                operations: [{ kind: "delete", rowId: "project-a", expectedRevision: 1 }] };
+            const blocked = await app.inject({ method: "POST", url: "/v1/plugins/data/mutate", headers, payload: deletion });
+            expect(blocked.statusCode).toBe(409);
+            await expect(db.pluginCollectionRow.count({ where: { accountId, deletedAt: null } })).resolves.toBe(count + 1);
+            await expect(db.pluginCollectionRow.count({ where: { accountId, revision: { not: 1 } } })).resolves.toBe(0);
+            if (nullifyOnly) {
+                expect(blocked.json()).toEqual({ error: "collection_relation_unavailable" });
+                return;
+            }
+            expect(blocked.json()).toMatchObject({ error: "collection_relation_restricted", dependentCount: Math.min(count, 200),
+                continuation: { pluginId: taskRef.pluginId, collectionId: "tasks", relationId: "project",
+                    target: { collectionId: "projects", rowId: "project-a" },
+                    query: { indexId: "by-project-id", prefix: ["project-a"], order: "asc", limit: 200 } } });
+
+            // Consume the returned query, delete a bounded page, and requery until the target can be deleted.
+            const continuation = blocked.json().continuation;
+            let removed = 0;
+            while (removed < count) {
+                const page = await app.inject({ method: "POST", url: "/v1/plugins/data/query", headers,
+                    payload: { pluginId: continuation.pluginId, collectionId: continuation.collectionId,
+                        readerContext: taskRef, ...continuation.query } });
+                expect(page.statusCode).toBe(200);
+                const rows = PluginCollectionQueryResultV1Schema.parse(page.json()).rows;
+                expect(rows.length).toBeGreaterThan(0);
+                for (let offset = 0; offset < rows.length; offset += 100) {
+                    await mutatePluginCollection({ accountId, request: {
+                        pluginId: taskRef.pluginId, collectionId: "tasks", writerContext: taskWriter,
+                        operations: rows.slice(offset, offset + 100).map((row) => ({ kind: "delete", rowId: row.rowId, expectedRevision: row.revision })),
+                    } });
+                }
+                removed += rows.length;
+            }
+            expect(removed).toBe(count);
+            const deleted = await app.inject({ method: "POST", url: "/v1/plugins/data/mutate", headers, payload: deletion });
+            expect(deleted.statusCode).toBe(200);
+        });
+    });
+
     it("persists an Account-visible Machine host relation and rolls back an unavailable target", async () => {
         const accountId = "account-collection-host-relation";
         const { ref } = await seedReadyHostMachineRelationCollectionAccount(accountId);
@@ -5600,6 +5816,73 @@ describe("plugin collection UI query route", () => {
                 collectionId: "tasks",
             },
         })).resolves.toBe(1);
+    });
+
+    it("qualifies a Session host relation with the mutation credential instead of structural Team entitlement", async () => {
+        const accountId = "account-collection-session-host-relation";
+        const ownerId = "owner-collection-session-host-relation";
+        const { ref } = await seedReadyHostSessionRelationCollectionAccount(accountId);
+        await createAccount({ id: ownerId, mode: "plain", seq: 0 });
+        const session = await db.session.create({ data: {
+            accountId: ownerId,
+            tag: "session-host-relation",
+            metadata: "{}",
+            encryptionMode: "plain",
+        } });
+        const team = await db.team.create({ data: {
+            name: "Restricted host relation Team",
+            authenticationPolicy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+        } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId, role: "member" } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id,
+            teamId: team.id,
+            accessLevel: "view",
+            effectiveAt: new Date(),
+        } });
+        const headers = { "x-test-user-id": accountId, ...V3_HEADERS };
+        const mutation = (rowId: string) => ({
+            pluginId: HOST_SESSION_RELATION_COLLECTION_MANIFEST.id,
+            collectionId: "tasks",
+            writerContext: { schemaVersion: ref.schemaVersion, contractDigest: ref.contractDigest },
+            operations: [{
+                kind: "put" as const,
+                rowId,
+                expectedRevision: "absent" as const,
+                expectedAbsenceEpoch: 0,
+                content: { t: "plain" as const, v: {} },
+                projection: { id: rowId, title: "Task", "session-id": session.id },
+            }],
+        });
+
+        await withPluginDataApp(async (app) => {
+            const unqualified = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: mutation("unqualified"),
+            });
+            expect(unqualified.statusCode).toBe(409);
+            expect(unqualified.json()).toEqual({ error: "collection_relation_unavailable" });
+
+            await db.sessionShare.create({ data: {
+                sessionId: session.id,
+                sharedByUserId: ownerId,
+                sharedWithUserId: accountId,
+                accessLevel: "view",
+            } });
+            const direct = await app.inject({
+                method: "POST",
+                url: "/v1/plugins/data/mutate",
+                headers,
+                payload: mutation("direct"),
+            });
+            expect(direct.statusCode).toBe(200);
+        });
     });
 
     it("validates an E2EE host relation from its server-readable projection without reading private content", async () => {

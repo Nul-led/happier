@@ -1,30 +1,41 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createInTxHarness } from '@/app/api/testkit/txHarness';
+import {
+    createEmptySessionFollowEdgeTransactionModel,
+    createInTxHarness,
+} from '@/app/api/testkit/txHarness';
+
+let deleteOwnedSession: typeof import('./deleteOwnedSession').deleteOwnedSession;
 
 const emitUpdate = vi.fn();
-const buildDeleteSessionUpdate = vi.fn((_sid: string, updSeq: number, updId: string) => ({
-    id: updId,
-    seq: updSeq,
-    body: { t: 'delete-session', sid: _sid },
-}));
-
-vi.mock('@/app/events/eventRouter', () => ({
-    eventRouter: { emitUpdate },
-    buildDeleteSessionUpdate,
-}));
+// Socket emission is the transport boundary; deletion and change projection stay real.
+vi.mock('@/app/events/eventRouter', async () => {
+    const actual = await vi.importActual<typeof import('@/app/events/eventRouter')>('@/app/events/eventRouter');
+    return { ...actual, eventRouter: { ...actual.eventRouter, emitUpdate } };
+});
 
 const randomKeyNaked = vi.fn()
     .mockReturnValueOnce('upd-owner')
     .mockReturnValueOnce('upd-u2');
 vi.mock('@/utils/keys/randomKeyNaked', () => ({ randomKeyNaked }));
 
-const markAccountChanged = vi.fn(async (_tx: any, params: any) => {
-    if (params.accountId === 'owner') return 301;
-    if (params.accountId === 'u2') return 302;
-    return 999;
-});
-vi.mock('@/app/changes/markAccountChanged', () => ({ markAccountChanged }));
+const upsertAccountChange = vi.fn(async () => ({}));
+const allocateAccountSeq = vi.fn(async (params: { where: { id: string } }) => ({
+    seq: params.where.id === 'owner' ? 301 : 302,
+}));
+const findAudienceAccounts = vi.fn();
+const findSession = vi.fn(async () => ({
+    accountId: 'owner',
+    account: { status: 'active' },
+    seq: 0,
+    currentStorageState: 'hosted',
+    acceptedThroughServerSeq: null,
+    materializationPublicationId: null,
+    materializedThroughSourceAt: null,
+    publishedThroughServerSeq: null,
+    teamGrants: [],
+    groupGrants: [],
+}));
 
 vi.mock('@/utils/logging/log', () => ({ log: vi.fn() }));
 
@@ -34,61 +45,80 @@ const deleteSession = vi.fn(async () => ({ count: 1 }));
 const deleteMessages = vi.fn(async () => ({ count: 2 }));
 const deleteReports = vi.fn(async () => ({ count: 1 }));
 const deleteAccessKeys = vi.fn(async () => ({ count: 1 }));
+const findRunnerActivation = vi.fn(async () => null);
 const findSessionDraft = vi.fn(async () => null);
+const findSessionDrafts = vi.fn(async () => []);
 
 vi.mock('@/storage/inTx', () => {
         const { inTx, afterTx } = createInTxHarness(() => ({
             session: {
                 findFirst,
+                findUnique: findSession,
                 updateMany: claimSession,
                 deleteMany: deleteSession,
             },
+            account: { findMany: findAudienceAccounts, update: allocateAccountSeq },
+            accountChange: { upsert: upsertAccountChange },
             sessionMessage: { deleteMany: deleteMessages },
             usageReport: { deleteMany: deleteReports },
             accessKey: { deleteMany: deleteAccessKeys },
-            userKVStore: { findUnique: findSessionDraft },
+            ephemeralRunnerActivation: { findFirst: findRunnerActivation },
+            sessionFollowEdge: createEmptySessionFollowEdgeTransactionModel(),
+            userKVStore: { findMany: findSessionDrafts, findUnique: findSessionDraft },
         }));
 
     return { afterTx, inTx };
 });
 
+function seedDeleteTarget(metadataLayoutVersion: 0 | 1, recipientAccountIds: string[]): void {
+    findFirst.mockResolvedValueOnce({
+        id: 's1',
+        accountId: 'owner',
+        metadataLayoutVersion,
+        updatedAt: new Date('2025-01-01T00:00:00.000Z'),
+    });
+    findAudienceAccounts.mockResolvedValueOnce(recipientAccountIds.map(id => ({ id })));
+}
+
 describe('deleteOwnedSession', () => {
+    beforeAll(async () => {
+        ({ deleteOwnedSession } = await import('./deleteOwnedSession'));
+    });
+
     beforeEach(() => {
         vi.clearAllMocks();
     });
 
     it('deletes a session by id for system-initiated retention and emits owner + share updates', async () => {
         const { log } = await import('@/utils/logging/log');
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 0,
-            shares: [{ sharedWithUserId: 'u2' }],
-        });
+        seedDeleteTarget(0, ['owner', 'u2']);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const ok = await deleteOwnedSession({ sessionId: 's1', reason: 'retention_policy' });
 
         expect(ok).toEqual({ ok: true });
         expect(findFirst).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: 's1' },
         }));
-        expect(markAccountChanged).toHaveBeenCalledWith(expect.anything(), {
+        expect(upsertAccountChange).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({
             accountId: 'owner',
             kind: 'session',
             entityId: 's1',
             hint: { lifecycle: 'deleted', v: 1 },
-        });
-        expect(markAccountChanged).toHaveBeenCalledWith(expect.anything(), {
+            }),
+        }));
+        expect(upsertAccountChange).toHaveBeenCalledWith(expect.objectContaining({
+            create: expect.objectContaining({
             accountId: 'u2',
             kind: 'session',
             entityId: 's1',
             hint: { lifecycle: 'deleted', v: 1 },
-        });
+            }),
+        }));
         expect(claimSession.mock.invocationCallOrder[0]!).toBeLessThan(
-            markAccountChanged.mock.invocationCallOrder[0]!,
+            upsertAccountChange.mock.invocationCallOrder[0]!,
         );
-        expect(markAccountChanged.mock.invocationCallOrder[0]!).toBeLessThan(
+        expect(upsertAccountChange.mock.invocationCallOrder[0]!).toBeLessThan(
             deleteMessages.mock.invocationCallOrder[0]!,
         );
         expect(deleteMessages).toHaveBeenCalledWith({ where: { sessionId: 's1' } });
@@ -105,13 +135,46 @@ describe('deleteOwnedSession', () => {
             }),
             'Session deleted successfully',
         );
-        expect(emitUpdate).toHaveBeenCalledTimes(2);
+        const deletionUpdates = emitUpdate.mock.calls.filter(([update]) => update.payload.body.t === 'delete-session');
+        expect(deletionUpdates).toHaveLength(2);
+        expect(deletionUpdates).toEqual(expect.arrayContaining([
+            [expect.objectContaining({
+                userId: 'owner',
+                recipientFilter: { type: 'user-scoped-only' },
+            })],
+            [expect.objectContaining({
+                userId: 'u2',
+                recipientFilter: { type: 'user-scoped-only' },
+            })],
+        ]));
+    });
+
+    it('contains an after-commit deletion publication failure without an unhandled rejection', async () => {
+        const publicationFailure = new Error('recipient transport unavailable');
+        emitUpdate.mockImplementationOnce(() => {
+            throw publicationFailure;
+        });
+        seedDeleteTarget(0, ['owner']);
+
+        const result = await deleteOwnedSession({ sessionId: 's1', reason: 'retention_policy' });
+
+        expect(result).toEqual({ ok: true });
+        await vi.waitFor(async () => {
+            const { log } = await import('@/utils/logging/log');
+            expect(log).toHaveBeenCalledWith(
+                expect.objectContaining({
+                    module: 'session-delete',
+                    sessionId: 's1',
+                    error: publicationFailure,
+                }),
+                'Failed to emit one or more delete-session updates',
+            );
+        });
     });
 
     it('returns false when an explicit ownerAccountId does not match', async () => {
         findFirst.mockResolvedValueOnce(null);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const ok = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',
@@ -125,7 +188,6 @@ describe('deleteOwnedSession', () => {
     it('merges a sessionWhereGuard into the transactional lookup for retention safety', async () => {
         findFirst.mockResolvedValueOnce(null);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const params: Parameters<typeof deleteOwnedSession>[0] & {
             sessionWhereGuard: {
                 updatedAt: { lt: Date };
@@ -155,7 +217,6 @@ describe('deleteOwnedSession', () => {
     it('does not let an additional guard replace the exact session or Account owner', async () => {
         findFirst.mockResolvedValueOnce(null);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const result = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',
@@ -179,15 +240,9 @@ describe('deleteOwnedSession', () => {
 
     it('reports a lost delete condition as a conflict, not as an absent session, and emits nothing', async () => {
         const { log } = await import('@/utils/logging/log');
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 0,
-            shares: [{ sharedWithUserId: 'u2' }],
-        });
+        seedDeleteTarget(0, ['owner', 'u2']);
         deleteSession.mockResolvedValueOnce({ count: 0 });
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const ok = await deleteOwnedSession({
             sessionId: 's1',
             reason: 'retention_policy',
@@ -218,19 +273,13 @@ describe('deleteOwnedSession', () => {
 
     it('separates a session that is absent or not owned from one whose delete condition was lost', async () => {
         findFirst.mockResolvedValueOnce(null);
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const absent = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',
             reason: 'user_request',
         });
 
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 1,
-            shares: [],
-        });
+        seedDeleteTarget(1, ['owner']);
         claimSession.mockResolvedValueOnce({ count: 0 });
         const conflicted = await deleteOwnedSession({
             sessionId: 's1',
@@ -245,14 +294,8 @@ describe('deleteOwnedSession', () => {
     });
 
     it('allows deletion of a layout-1 session without interpreting its stored content', async () => {
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 1,
-            shares: [{ sharedWithUserId: 'u2' }],
-        });
+        seedDeleteTarget(1, ['owner', 'u2']);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const result = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',
@@ -260,20 +303,14 @@ describe('deleteOwnedSession', () => {
         });
 
         expect(result).toEqual({ ok: true });
-        expect(markAccountChanged).toHaveBeenCalledTimes(2);
+        expect(upsertAccountChange).toHaveBeenCalledTimes(2);
         expect(deleteMessages).toHaveBeenCalledOnce();
         expect(deleteSession).toHaveBeenCalledOnce();
     });
 
     it('keeps legacy layout-0 deletion valid and carries the layout fence into the final delete', async () => {
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 0,
-            shares: [],
-        });
+        seedDeleteTarget(0, ['owner']);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const result = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',
@@ -295,14 +332,8 @@ describe('deleteOwnedSession', () => {
     });
 
     it('deletes layout 1 with the observed layout guarded atomically', async () => {
-        findFirst.mockResolvedValueOnce({
-            id: 's1',
-            accountId: 'owner',
-            metadataLayoutVersion: 1,
-            shares: [],
-        });
+        seedDeleteTarget(1, ['owner']);
 
-        const { deleteOwnedSession } = await import('./deleteOwnedSession');
         const result = await deleteOwnedSession({
             sessionId: 's1',
             ownerAccountId: 'owner',

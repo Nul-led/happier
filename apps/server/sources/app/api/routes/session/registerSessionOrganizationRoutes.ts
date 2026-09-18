@@ -54,6 +54,7 @@ import {
 } from "@/app/session/organization/organizationMutations";
 import { fetchSessionOrganizationSnapshot } from "@/app/session/organization/organizationQueries";
 import { reorderSessionOrganization, reorderSessionPins } from "@/app/session/organization/organizationOrdering";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import { type Fastify } from "../../types";
 
 const SESSION_FOLDERS_FEATURE_ID: FeatureId = "sessions.folders";
@@ -111,6 +112,9 @@ function buildSnapshotRequestFromQuery(query: unknown) {
         ...(parseOptionalBoolean(record.includeAttentionStandings) !== undefined
             ? { includeAttentionStandings: parseOptionalBoolean(record.includeAttentionStandings) }
             : {}),
+        ...(parseOptionalBoolean(record.includeAttentionReminderTimes) !== undefined
+            ? { includeAttentionReminderTimes: parseOptionalBoolean(record.includeAttentionReminderTimes) }
+            : {}),
         ...(parseDelimitedQueryList(record.assignmentSessionIds) ? { assignmentSessionIds: parseDelimitedQueryList(record.assignmentSessionIds) } : {}),
         ...(parseDelimitedQueryList(record.folderIds) ? { folderIds: parseDelimitedQueryList(record.folderIds) } : {}),
         ...(parseDelimitedQueryList(record.tagIds) ? { tagIds: parseDelimitedQueryList(record.tagIds) } : {}),
@@ -137,6 +141,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const snapshot = await fetchSessionOrganizationSnapshot({
             accountId: request.userId,
             request: parsedRequest.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
 
         const includesCurrentOnlyDisplayState = [
@@ -180,10 +185,12 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             ? await canAccessVisibleUnarchivedSessionForOrganization({
                 accountId: request.userId,
                 sessionId: parsedParams.data.sessionId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             })
             : await canAccessSyncedSessionForOrganization({
                 accountId: request.userId,
                 sessionId: parsedParams.data.sessionId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
         if (!visible) {
             return reply.code(404).send({ error: "Session not found" });
@@ -193,6 +200,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             if (result.error === "session-not-found") {
@@ -213,7 +221,6 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
                 200: SetSessionAttentionStandingResponseSchema,
                 400: z.object({ error: z.literal("invalid-session-attention-standing") }),
                 404: z.object({ error: z.literal("Session not found") }),
-                409: z.object({ error: z.literal("session-attention-standing-limit-exceeded") }),
             },
         },
     }, async (request, reply) => {
@@ -223,14 +230,16 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             return reply.code(400).send({ error: "invalid-session-attention-standing" });
         }
 
-        const visible = parsedBody.data.standing === null
+        const visible = parsedBody.data.standing === null || parsedBody.data.remindAt === null
             ? await canAccessSyncedSessionForOrganization({
                 accountId: request.userId,
                 sessionId: parsedParams.data.sessionId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             })
             : await canAccessVisibleUnarchivedSessionForOrganization({
                 accountId: request.userId,
                 sessionId: parsedParams.data.sessionId,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
         if (!visible) {
             return reply.code(404).send({ error: "Session not found" });
@@ -240,11 +249,9 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
-            if (result.error === "session-attention-standing-limit-exceeded") {
-                return reply.code(409).send({ error: result.error });
-            }
             return reply.code(404).send({ error: "Session not found" });
         }
 
@@ -274,6 +281,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             const result = await reorderSessionPins({
                 accountId: request.userId,
                 request: parsedBody.data,
+                authentication: readSessionAccessAuthenticationFromRequest(request),
             });
             if ("error" in result) {
                 if (result.error === "session-pin-limit-exceeded") {
@@ -287,6 +295,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const result = await reorderSessionOrganization({
             accountId: request.userId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             return reply.code(400).send({ error: "invalid-session-organization-order" });
@@ -317,6 +326,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const result = await reorderSessionPins({
             accountId: request.userId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             if (result.error === "session-pin-limit-exceeded") {
@@ -407,6 +417,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const visible = await canAccessSyncedSessionForOrganization({
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!visible) {
             return reply.code(404).send({ error: "Session not found" });
@@ -416,6 +427,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
             folderId: parsedBody.data.folderId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             return reply.code(400).send({ error: "invalid-session-folder-assignment" });
@@ -442,6 +454,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             accountId: request.userId,
             fromFolderIds: parsedBody.data.fromFolderIds,
             toFolderId: parsedBody.data.toFolderId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             return reply.code(400).send({ error: "invalid-session-folder-assignment-move" });
@@ -525,6 +538,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const result = await importLegacySessionOrganization({
             accountId: request.userId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             if (result.error === "invalid-session-organization-import") {
@@ -612,6 +626,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
         const visible = await canAccessSyncedSessionForOrganization({
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!visible) {
             return reply.code(404).send({ error: "Session not found" });
@@ -621,6 +636,7 @@ export function registerSessionOrganizationRoutes(app: Fastify) {
             accountId: request.userId,
             sessionId: parsedParams.data.sessionId,
             request: parsedBody.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if ("error" in result) {
             return reply.code(400).send({ error: "invalid-session-tag-assignments" });

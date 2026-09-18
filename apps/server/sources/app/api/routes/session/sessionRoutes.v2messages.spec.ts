@@ -8,7 +8,7 @@ import {
     enqueuePendingMessage,
     emitUpdate,
     createSessionRouteTestBuilder,
-    getSessionParticipantUserIds,
+    createSessionAccessProjectionRelations,
     markAccountChanged,
     resetSessionRouteMocks,
 } from "./sessionRoutes.testkit";
@@ -39,10 +39,10 @@ describe("sessionRoutes v2 messages", () => {
             query: {},
         });
 
-        expect(txSessionMessageFindFirst).toHaveBeenCalledWith({
-            where: { sessionId: "s1", localId: "l1" },
+        expect(txSessionMessageFindFirst).toHaveBeenCalledWith(expect.objectContaining({
+            where: expect.objectContaining({ sessionId: "s1", localId: "l1" }),
             select: expect.any(Object),
-        });
+        }));
 
         expect(res).toEqual({
             message: {
@@ -51,6 +51,7 @@ describe("sessionRoutes v2 messages", () => {
                 localId: "l1",
                 sidechainId: "sc-1",
                 content: { t: "encrypted", c: "cipher" },
+                accountActor: null,
                 createdAt: createdAt.getTime(),
                 updatedAt: updatedAt.getTime(),
             },
@@ -77,7 +78,11 @@ describe("sessionRoutes v2 messages", () => {
             txSessionFindUnique,
             txSessionMessageFindFirst,
         } = await import("./sessionRoutes.testkit");
-        txSessionFindUnique.mockResolvedValueOnce({
+        txSessionFindUnique.mockResolvedValue({
+            ...createSessionAccessProjectionRelations(),
+            id: "s1",
+            accountId: "u1",
+            seq: 7,
             currentStorageState: "snapshot_complete",
             acceptedThroughServerSeq: null,
             materializationPublicationId: "publication-1",
@@ -94,11 +99,11 @@ describe("sessionRoutes v2 messages", () => {
         });
 
         expect(txSessionMessageFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: {
+            where: expect.objectContaining({
                 sessionId: "s1",
                 localId: "private-row",
                 seq: { lte: 7 },
-            },
+            }),
         }));
         expect(reply.code).toHaveBeenCalledWith(404);
     });
@@ -110,7 +115,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             didUpdate: false,
             message: { id: "m1", seq: 10, localId: "l1", content: { t: "encrypted", c: "c" }, createdAt, updatedAt: createdAt },
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 111 },
                 { accountId: "u2", cursor: 222 },
             ],
@@ -123,13 +128,13 @@ describe("sessionRoutes v2 messages", () => {
             body: { ciphertext: "cipher", localId: "l1" },
         });
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             ciphertext: "cipher",
             localId: "l1",
             sidechainId: null,
-        });
+        }));
 
         expect(buildNewMessageUpdate).toHaveBeenCalledTimes(2);
         expect(buildNewMessageUpdate).toHaveBeenCalledWith(expect.anything(), "s1", 111, expect.any(String));
@@ -140,6 +145,32 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             message: { id: "m1", seq: 10, localId: "l1", createdAt: createdAt.getTime() },
         });
+    });
+
+    it("does not let an authenticated public caller opt out of Account admission for a user-looking transcript row", async () => {
+        const createdAt = new Date("2020-01-01T00:00:00.000Z");
+        createSessionMessage.mockResolvedValue({
+            ok: true,
+            didWrite: true,
+            didUpdate: false,
+            message: { id: "m1", seq: 10, localId: "l1", content: { t: "encrypted", c: "c" }, createdAt, updatedAt: createdAt },
+            recipientCursors: [],
+        });
+
+        const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
+        await route.invoke({
+            params: { sessionId: "s1" },
+            headers: {},
+            body: { ciphertext: "cipher", localId: "l1", messageRole: "user", transcriptOnly: true },
+        });
+
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
+            actorUserId: "u1",
+            sessionId: "s1",
+            messageRole: "user",
+            inputAdmission: "authenticatedAccount",
+            authentication: expect.any(Object),
+        }));
     });
 
     it("emits trusted write-service attention impact with new-message updates", async () => {
@@ -163,7 +194,7 @@ describe("sessionRoutes v2 messages", () => {
                 createdAt,
                 updatedAt: createdAt,
             },
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 111 },
             ],
         });
@@ -195,7 +226,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             didUpdate: false,
             message: { id: "m-ready", seq: 10, localId: "ready-local", content: { t: "encrypted", c: "c" }, createdAt, updatedAt: createdAt },
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 111 },
                 { accountId: "u2", cursor: 222 },
             ],
@@ -229,7 +260,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             didUpdate: false,
             message: { id: "m1", seq: 10, localId: "l1", content: { t: "encrypted", c: "c" }, createdAt, updatedAt: createdAt },
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -247,13 +278,13 @@ describe("sessionRoutes v2 messages", () => {
             },
         });
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             ciphertext: "cipher",
             localId: "l1",
             sidechainId: null,
-        });
+        }));
     });
 
     it("forwards sidechainId to the message write service when provided", async () => {
@@ -263,7 +294,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             didUpdate: false,
             message: { id: "m1", seq: 10, localId: "l1", sidechainId: "sc-1", content: { t: "encrypted", c: "c" }, createdAt, updatedAt: createdAt },
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -273,32 +304,16 @@ describe("sessionRoutes v2 messages", () => {
             body: { ciphertext: "cipher", localId: "l1", sidechainId: "sc-1" },
         });
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             ciphertext: "cipher",
             localId: "l1",
             sidechainId: "sc-1",
-        });
+        }));
     });
 
-    it("adapts the remote-dev@6eabb977 predecessor direct human HTTP send into canonical Pending admission", async () => {
-        enqueuePendingMessage.mockResolvedValue({
-            ok: true,
-            didWrite: true,
-            pending: {
-                localId: "l1",
-                messageRole: "user",
-                content: { t: "encrypted", c: "c" },
-                requestedAction: { v: 1, kind: "enqueue" },
-            },
-            participantCursors: [],
-            pendingCount: 1,
-            pendingBlockedCount: 0,
-            pendingVersion: 1,
-            badgeAttentionChanged: false,
-        });
-
+    it("keeps the public human HTTP send on authenticated Account admission", async () => {
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
         await route.invoke({
             params: { sessionId: "s1" },
@@ -306,15 +321,15 @@ describe("sessionRoutes v2 messages", () => {
             body: { ciphertext: "cipher", localId: "l1", messageRole: "user" },
         });
 
-        expect(enqueuePendingMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             ciphertext: "cipher",
             localId: "l1",
             messageRole: "user",
-            requestedAction: { v: 1, kind: "enqueue" },
-        });
-        expect(createSessionMessage).not.toHaveBeenCalled();
+            inputAdmission: "authenticatedAccount",
+        }));
+        expect(enqueuePendingMessage).not.toHaveBeenCalled();
     });
 
     it("forwards unsupported messageRole metadata without rejecting the write", async () => {
@@ -333,7 +348,7 @@ describe("sessionRoutes v2 messages", () => {
                 createdAt,
                 updatedAt: createdAt,
             },
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -370,7 +385,7 @@ describe("sessionRoutes v2 messages", () => {
                 createdAt,
                 updatedAt,
             },
-            participantCursors: [{ accountId: "u1", cursor: 111 }],
+            recipientCursors: [{ accountId: "u1", cursor: 111 }],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -399,7 +414,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: false,
             didUpdate: false,
             message: { id: "m1", seq: 10, localId: "idem-1", content: { t: "encrypted", c: "c" }, sidechainId: null, createdAt, updatedAt: createdAt },
-            participantCursors: [],
+            recipientCursors: [],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -409,13 +424,13 @@ describe("sessionRoutes v2 messages", () => {
             body: { ciphertext: "cipher" },
         });
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             ciphertext: "cipher",
             localId: "idem-1",
             sidechainId: null,
-        });
+        }));
         expect(emitUpdate).not.toHaveBeenCalled();
 
         expect(reply.send).toHaveBeenCalledWith({
@@ -431,7 +446,7 @@ describe("sessionRoutes v2 messages", () => {
             didWrite: true,
             didUpdate: false,
             message: { id: "m1", seq: 10, localId: null, sidechainId: null, content: { t: "plain", v: { type: "user", text: "hi" } }, createdAt, updatedAt: createdAt },
-            participantCursors: [{ accountId: "u1", cursor: 111 }],
+            recipientCursors: [{ accountId: "u1", cursor: 111 }],
         });
 
         const route = await createSessionRouteTestBuilder("POST", "/v2/sessions/:sessionId/messages");
@@ -441,13 +456,13 @@ describe("sessionRoutes v2 messages", () => {
             body: { content: { t: "plain", v: { type: "user", text: "hi" } } },
         });
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             content: { t: "plain", v: { type: "user", text: "hi" } },
             localId: null,
             sidechainId: null,
-        });
+        }));
 
         expect(res).toEqual({
             didWrite: true,

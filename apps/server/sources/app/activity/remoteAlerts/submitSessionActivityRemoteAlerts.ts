@@ -1,0 +1,218 @@
+import {
+    ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1,
+    ActivityRemoteAlertV2Schema,
+    resolveAccountRemoteAlertPolicyCurrentness,
+    resolveActivityRemoteAlertEventForPersonalEventV2,
+    resolveExpoNotificationSoundName,
+    resolvePushNotificationAndroidChannelId,
+    resolveRemoteAlertPolicyDecision,
+    type ActivityRemoteAlertCommittedMessageV2,
+    type ActivityRemoteAlertEventV2,
+    type SessionPersonalEventKindV1,
+} from "@happier-dev/protocol";
+
+import { listSessionPersonalEventRecipients } from "@/app/session/personal/eventEligibility";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPublisherPresence";
+import { hasExactCurrentPublisherAuthorityInTx } from "@/app/session/pending/hasExactCurrentPublisherAuthorityInTx";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { log } from "@/utils/logging/log";
+
+import { sendAccountExpoPushMessages, type AccountPushDelivery } from "../accountPushTransport";
+
+/**
+ * Generic Happier copy for the OS-visible fallback.
+ *
+ * No Session title, author, or message text crosses the Home or the push
+ * provider on this leg. The native consumer enriches the alert locally, within
+ * the stricter of the submitted preview ceiling and its current local policy.
+ */
+const REMOTE_ALERT_FALLBACK_BODY: Record<ActivityRemoteAlertEventV2["type"], string> = {
+    ready: "A session you follow is ready.",
+    permission_request: "A session you follow needs permission.",
+    user_action_request: "A session you follow needs your input.",
+    assigned: "A session was assigned to you.",
+    failed: "A session you follow failed.",
+    cancelled: "A session you follow was cancelled.",
+    human_message: "A session you follow has a new message.",
+    message: "A session you follow has a new message.",
+    discussion_mention: "You were mentioned in a session discussion.",
+    source_unavailable: "A followed session source is unavailable.",
+};
+
+function resolveRemoteAlertFallbackBody(
+    event: ActivityRemoteAlertEventV2,
+    assignmentAutoFollowed: boolean | undefined,
+): string {
+    if (event.type === "assigned" && assignmentAutoFollowed === true) {
+        return "Following because you were assigned.";
+    }
+    return REMOTE_ALERT_FALLBACK_BODY[event.type];
+}
+
+export type SubmitSessionActivityRemoteAlertsParams = Readonly<{
+    sessionId: string;
+    event: SessionPersonalEventKindV1;
+    /** Required for sequence-backed events: the committed sequence and its canonical owner. */
+    committedMessage?: ActivityRemoteAlertCommittedMessageV2;
+    /** Required for committed terminal turn events. */
+    committedTurnId?: string;
+    /** One-shot targets established by the committed semantic mutation owner. */
+    targetAccountIds?: readonly string[];
+    /** True only when this committed assignment inserted the recipient's automatic Follow. */
+    assignmentAutoFollowed?: boolean;
+    /** Authenticated human source of a committed post; never alert that Account about its own post. */
+    sourceAccountId?: string;
+    /** Accounts receiving a more specific alert for this same committed fact. */
+    excludeAccountIds?: readonly string[];
+    runtimeComposition?: Readonly<{
+        /** Authenticated publisher authority captured by the socket owner for the committed event. */
+        publisherAuthority: CurrentSessionPublisherAuthority;
+        /** Actual sender composition established by the runtime host before commit. */
+        ownerActivityDelivery: "rich_sender" | "home_required";
+    }>;
+    now?: Date;
+}>;
+
+/**
+ * The Home leg of the approved closed-app collaborator alert (Lane 09C §10.4 C5b).
+ *
+ * It composes the existing owners only: Lane 09B decides recipient eligibility,
+ * the recipient's own published remote-alert projection plus its device
+ * registration decide whether an OS-visible alert is permitted, and the existing
+ * Account push transport submits it. Mute and quiet hours are applied **before**
+ * submission; no OS fallback is ever the enforcement point.
+ *
+ * The installed native consumer may enrich the permitted generic fallback
+ * after an exact-Home access/key recheck. Missing, locked, timed-out or
+ * unsupported enrichment always retains this already-policy-approved copy.
+ */
+export async function submitSessionActivityRemoteAlerts(
+    params: SubmitSessionActivityRemoteAlertsParams,
+): Promise<readonly string[]> {
+    if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) return [];
+    const alertEvent = resolveActivityRemoteAlertEventForPersonalEventV2(
+        params.event,
+        params.committedMessage,
+        params.committedTurnId,
+    );
+    if (!alertEvent) return [];
+
+    const session = await db.session.findUnique({ where: { id: params.sessionId }, select: { accountId: true } });
+    if (!session) return [];
+
+    const recipients = await listSessionPersonalEventRecipients({
+        sessionId: params.sessionId,
+        event: params.event,
+        ...(params.targetAccountIds ? { targetAccountIds: params.targetAccountIds } : {}),
+    });
+    const richOwnerSenderOwnsDelivery = await resolveRichOwnerSenderResponsibility({
+        sessionId: params.sessionId,
+        sessionOwnerAccountId: session.accountId,
+        runtimeComposition: params.runtimeComposition,
+    });
+    const excluded = new Set(params.excludeAccountIds ?? []);
+    const candidates = recipients
+        .map((recipient) => recipient.accountId)
+        .filter((accountId) => accountId !== params.sourceAccountId)
+        .filter((accountId) => !excluded.has(accountId))
+        .filter((accountId) => !(richOwnerSenderOwnsDelivery && accountId === session.accountId));
+    if (candidates.length === 0) return [];
+
+    const policyEvent = ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1[alertEvent.type];
+    const now = params.now ?? new Date();
+    const serverId = await getOrCreateServerIdentityId(process.env);
+    const accounts = await db.account.findMany({
+        where: { id: { in: candidates } },
+        select: { id: true, settingsVersion: true, remoteAlertPolicy: true },
+    });
+    const tokens = await db.accountPushToken.findMany({
+        where: { accountId: { in: candidates } },
+        select: { accountId: true, token: true, remoteAlerts: true },
+    });
+
+    const deliveries: AccountPushDelivery[] = [];
+    const alerted = new Set<string>();
+    for (const account of accounts) {
+        // An absent or stale projection means the recipient's current policy is
+        // unknown here, so this leg stays unavailable rather than guessing.
+        const currentness = resolveAccountRemoteAlertPolicyCurrentness(account.remoteAlertPolicy, account.settingsVersion);
+        if (currentness.status !== "current") continue;
+        for (const token of tokens.filter((row) => row.accountId === account.id)) {
+            const decision = resolveRemoteAlertPolicyDecision({
+                accountPolicy: currentness.policy,
+                devicePolicy: token.remoteAlerts,
+                event: policyEvent,
+                now,
+            });
+            if (!decision || decision.delivery === "suppress") continue;
+            const soundId = decision.delivery === "silent" || decision.sound.kind === "none" || decision.sound.kind === "custom"
+                ? "none"
+                : decision.sound.id;
+            const sound = resolveExpoNotificationSoundName(soundId);
+            const data = ActivityRemoteAlertV2Schema.parse({
+                type: "activity_alert", v: 2,
+                serverId, sessionId: params.sessionId, accountId: account.id,
+                event: alertEvent,
+                previewBehavior: decision.previewBehavior,
+            });
+            deliveries.push({
+                accountId: account.id,
+                token: token.token,
+                message: {
+                    to: token.token,
+                    title: "Happier",
+                    body: resolveRemoteAlertFallbackBody(alertEvent, params.assignmentAutoFollowed),
+                    ...(sound === null ? {} : { sound }),
+                    channelId: resolvePushNotificationAndroidChannelId({
+                        kind: alertEvent.type === "permission_request"
+                            ? "permission"
+                            : alertEvent.type === "user_action_request" ? "user_action" : "ready",
+                        soundId,
+                    }),
+                    priority: decision.delivery === "silent" ? "normal" : "high",
+                    mutableContent: true,
+                    data,
+                },
+            });
+            alerted.add(account.id);
+        }
+    }
+
+    if (deliveries.length === 0) return [];
+    await sendAccountExpoPushMessages(deliveries, "activity-remote-alerts");
+    return [...alerted];
+}
+
+async function resolveRichOwnerSenderResponsibility(params: Readonly<{
+    sessionId: string;
+    sessionOwnerAccountId: string;
+    runtimeComposition?: SubmitSessionActivityRemoteAlertsParams["runtimeComposition"];
+}>): Promise<boolean> {
+    const composition = params.runtimeComposition;
+    if (!composition || composition.ownerActivityDelivery !== "rich_sender") return false;
+    const authority = composition.publisherAuthority;
+    if (authority.sessionId !== params.sessionId || authority.accountId !== params.sessionOwnerAccountId) return false;
+    return await inTx(async (tx) => {
+        if (!await hasExactCurrentPublisherAuthorityInTx(
+            tx,
+            authority,
+            params.sessionOwnerAccountId,
+            params.sessionId,
+        )) return false;
+        const machine = await tx.machine.findUnique({
+            where: { id: authority.machineId },
+            select: { kind: true },
+        });
+        return machine?.kind === "persistent";
+    });
+}
+
+/** Fire-and-forget wrapper for committed mutation owners that must not await transport. */
+export function scheduleSessionActivityRemoteAlerts(params: SubmitSessionActivityRemoteAlertsParams): void {
+    void submitSessionActivityRemoteAlerts(params).catch((error) => {
+        log({ module: "activity-remote-alerts", level: "warn" }, "failed to submit session remote alerts", error);
+    });
+}

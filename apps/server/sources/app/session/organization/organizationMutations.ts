@@ -1,5 +1,4 @@
 import {
-    SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS,
     SESSION_ORGANIZATION_MAX_FOLDERS,
     SESSION_ORGANIZATION_MAX_LABELS,
     SESSION_ORGANIZATION_MAX_PINNED_SESSIONS,
@@ -19,8 +18,11 @@ import {
     type UpsertSessionOrganizationLabelRequest,
 } from "@happier-dev/protocol";
 
-import { createV2SessionListVisibilityWhere } from "@/app/api/routes/session/v2SessionListRows";
-import { inTx } from "@/storage/inTx";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
+import { scheduleAccountActivityBadgeRefresh } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { acknowledgeCurrentSessionDiscussionFrontiersInTx } from "@/app/session/discussions/readState";
+import { applyViewerReadCursorOperationInTx } from "@/app/session/personal/readState";
+import { afterTx, inTx } from "@/storage/inTx";
 import {
     areSessionOrganizationDisplayEnvelopesAllowedForAccount,
     isSessionOrganizationDisplayEnvelopeAllowedForAccount,
@@ -52,6 +54,7 @@ import {
 import { validateSessionOrganizationSessionOrderItems } from "./organizationOrderValidation";
 import { createVisibleUnarchivedOrganizationSessionWhere } from "./sessionVisibility";
 import type { SessionOrganizationTx } from "./types";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 type ImportLegacySessionOrganizationErrorCode =
     | "invalid-session-organization-import"
@@ -99,11 +102,11 @@ function appendGroupedImportOrderEntry(
 async function canAccessSyncedSessionForOrganizationInTx(tx: SessionOrganizationTx, params: Readonly<{
     accountId: string;
     sessionId: string;
+    authentication: SessionAccessAuthentication;
 }>): Promise<boolean> {
     const row = await tx.session.findFirst({
         where: {
-            id: params.sessionId,
-            ...createV2SessionListVisibilityWhere({ userId: params.accountId }),
+            AND: [{ id: params.sessionId }, await buildSessionAccessWhere({ tx, accountId: params.accountId, capability: 'readTranscript', mode: 'effective_access_v1', authentication: params.authentication })],
         },
         select: { id: true },
     });
@@ -113,11 +116,12 @@ async function canAccessSyncedSessionForOrganizationInTx(tx: SessionOrganization
 async function canAccessVisibleUnarchivedSessionForOrganizationInTx(tx: SessionOrganizationTx, params: Readonly<{
     accountId: string;
     sessionId: string;
+    authentication: SessionAccessAuthentication;
 }>): Promise<boolean> {
     const row = await tx.session.findFirst({
         where: {
             id: params.sessionId,
-            ...createVisibleUnarchivedOrganizationSessionWhere(params.accountId),
+            ...await createVisibleUnarchivedOrganizationSessionWhere(tx, params.accountId, params.authentication),
         },
         select: { id: true },
     });
@@ -138,6 +142,7 @@ export async function validateSessionOrganizationDisplayEnvelopesForAccount(para
 export async function importLegacySessionOrganization(params: Readonly<{
     accountId: string;
     request: ImportLegacySessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<ImportLegacySessionOrganizationResponse | { error: ImportLegacySessionOrganizationErrorCode }> {
     try {
         return await inTx(async (tx) => {
@@ -165,6 +170,7 @@ export async function importLegacySessionOrganization(params: Readonly<{
                     accountId: params.accountId,
                     entries: orderRequest.entries,
                     reader: tx,
+                    authentication: params.authentication,
                 });
                 if (!validPinnedOrder) {
                     failSessionOrganizationImport("invalid-session-organization-import");
@@ -176,6 +182,7 @@ export async function importLegacySessionOrganization(params: Readonly<{
                 const visible = await canAccessVisibleUnarchivedSessionForOrganizationInTx(tx, {
                     accountId: params.accountId,
                     sessionId: pin.sessionId,
+                    authentication: params.authentication,
                 });
                 if (!visible) continue;
 
@@ -183,6 +190,7 @@ export async function importLegacySessionOrganization(params: Readonly<{
                     accountId: params.accountId,
                     sessionId: pin.sessionId,
                     request: { pinned: true, sortKey: pin.sortKey ?? null },
+                    authentication: params.authentication,
                 });
                 if ("error" in result) {
                     failSessionOrganizationImport(result.error === "session-pin-limit-exceeded"
@@ -224,12 +232,14 @@ export async function importLegacySessionOrganization(params: Readonly<{
                 const visible = await canAccessSyncedSessionForOrganizationInTx(tx, {
                     accountId: params.accountId,
                     sessionId: assignment.sessionId,
+                    authentication: params.authentication,
                 });
                 if (!visible) continue;
                 const result = await setSessionTagAssignmentsInTx(tx, {
                     accountId: params.accountId,
                     sessionId: assignment.sessionId,
                     request: { tagIds: assignment.tagIds },
+                    authentication: params.authentication,
                 });
                 if ("error" in result) {
                     failSessionOrganizationImport("invalid-session-organization-import");
@@ -240,7 +250,8 @@ export async function importLegacySessionOrganization(params: Readonly<{
                 if (orderRequest.scopeKind === "pinned") {
                     const result = await reorderSessionPinsInTx(tx, {
                         accountId: params.accountId,
-                        request: orderRequest,
+                    request: orderRequest,
+                    authentication: params.authentication,
                     });
                     if ("error" in result) {
                         failSessionOrganizationImport(result.error === "session-pin-limit-exceeded"
@@ -250,7 +261,8 @@ export async function importLegacySessionOrganization(params: Readonly<{
                 } else {
                     const result = await reorderSessionOrganizationInTx(tx, {
                         accountId: params.accountId,
-                        request: orderRequest,
+                    request: orderRequest,
+                    authentication: params.authentication,
                     });
                     if ("error" in result) {
                         failSessionOrganizationImport("invalid-session-organization-import");
@@ -294,6 +306,7 @@ export async function setSessionPinInTx(tx: SessionOrganizationTx, params: Reado
     accountId: string;
     sessionId: string;
     request: SetSessionPinRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<Readonly<{ pin: ReturnType<typeof mapSessionOrganizationPin> | null }> | { error: "session-pin-limit-exceeded" | "session-not-found" }> {
     if (!params.request.pinned) {
         await tx.sessionPin.deleteMany({
@@ -310,6 +323,7 @@ export async function setSessionPinInTx(tx: SessionOrganizationTx, params: Reado
     const visible = await canAccessVisibleUnarchivedSessionForOrganizationInTx(tx, {
         accountId: params.accountId,
         sessionId: params.sessionId,
+        authentication: params.authentication,
     });
     if (!visible) {
         return { error: "session-not-found" };
@@ -323,7 +337,7 @@ export async function setSessionPinInTx(tx: SessionOrganizationTx, params: Reado
         const pinnedCount = await tx.sessionPin.count({
             where: {
                 accountId: params.accountId,
-                session: createVisibleUnarchivedOrganizationSessionWhere(params.accountId),
+                session: await createVisibleUnarchivedOrganizationSessionWhere(tx, params.accountId, params.authentication),
             },
         });
         if (pinnedCount >= SESSION_ORGANIZATION_MAX_PINNED_SESSIONS) {
@@ -355,27 +369,48 @@ export async function setSessionPin(params: Readonly<{
     accountId: string;
     sessionId: string;
     request: SetSessionPinRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<Readonly<{ pin: ReturnType<typeof mapSessionOrganizationPin> | null }> | { error: "session-pin-limit-exceeded" | "session-not-found" }> {
     return await inTx(async (tx) => await setSessionPinInTx(tx, params));
+}
+
+async function markSessionAttentionStandingChangedInTx(tx: SessionOrganizationTx, params: Readonly<{
+    accountId: string;
+    scope: "attentionStandings";
+    sessionIds: readonly string[];
+}>): Promise<void> {
+    await markSessionOrganizationChanged(tx, params);
+    afterTx(tx, () => scheduleAccountActivityBadgeRefresh({
+        badgeAttentionChanged: true,
+        accountIds: [params.accountId],
+    }));
 }
 
 /**
  * Writes the account-scoped attention standing override for one session.
  *
- * `standing: null` clears the override so the account default applies again; that clear path
- * deliberately skips the visibility guard (mirroring pin removal) so an account can always drop
- * state it owns, even for a session that is no longer visible or has been archived.
+ * Standing and reminder are independent mutations on one record. Scheduling snapshots the exact
+ * prior standing override inside the row; removing the reminder restores it (or removes a
+ * reminder-only row), so snoozing never changes the user's durable attention preference.
+ *
+ * Only a genuine change marks the organization scope and schedules the Account badge refresh.
+ * Re-asserting the standing already stored, or clearing one that was never declared, returns the
+ * current record without a write, so a repeated menu tap costs no checkpoint bump and no badge
+ * push. The refresh itself is `afterTx`-scheduled, so a rolled-back enclosing transaction never
+ * emits one.
  */
 export async function setSessionAttentionStandingInTx(tx: SessionOrganizationTx, params: Readonly<{
     accountId: string;
     sessionId: string;
     request: SetSessionAttentionStandingRequest;
-}>): Promise<Readonly<{ standing: ReturnType<typeof mapSessionAttentionStanding> | null }> | { error: "session-not-found" | "session-attention-standing-limit-exceeded" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ standing: ReturnType<typeof mapSessionAttentionStanding> | null }> | { error: "session-not-found" }> {
     if (params.request.standing === null) {
-        await tx.sessionAttentionStanding.deleteMany({
+        const deleted = await tx.sessionAttentionStanding.deleteMany({
             where: { accountId: params.accountId, sessionId: params.sessionId },
         });
-        await markSessionOrganizationChanged(tx, {
+        if (deleted.count === 0) return { standing: null };
+        await markSessionAttentionStandingChangedInTx(tx, {
             accountId: params.accountId,
             scope: "attentionStandings",
             sessionIds: [params.sessionId],
@@ -383,46 +418,124 @@ export async function setSessionAttentionStandingInTx(tx: SessionOrganizationTx,
         return { standing: null };
     }
 
+    if (params.request.remindAt === null) {
+        const existingReminder = await tx.sessionAttentionStanding.findUnique({
+            where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
+            select: { sessionId: true, standing: true, remindAt: true, standingBeforeReminder: true, updatedAt: true },
+        });
+        if (!existingReminder) {
+            return { standing: null };
+        }
+        if (!existingReminder.remindAt) {
+            return { standing: mapSessionAttentionStanding(existingReminder) };
+        }
+        if (existingReminder.standingBeforeReminder === null) {
+            await tx.sessionAttentionStanding.deleteMany({
+                where: { accountId: params.accountId, sessionId: params.sessionId },
+            });
+            await markSessionAttentionStandingChangedInTx(tx, {
+                accountId: params.accountId,
+                scope: "attentionStandings",
+                sessionIds: [params.sessionId],
+            });
+            return { standing: null };
+        }
+
+        const restoredStanding = await tx.sessionAttentionStanding.update({
+            where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
+            data: {
+                standing: existingReminder.standingBeforeReminder,
+                remindAt: null,
+                standingBeforeReminder: null,
+            },
+            select: { sessionId: true, standing: true, remindAt: true, updatedAt: true },
+        });
+        await markSessionAttentionStandingChangedInTx(tx, {
+            accountId: params.accountId,
+            scope: "attentionStandings",
+            sessionIds: [params.sessionId],
+        });
+        return { standing: mapSessionAttentionStanding(restoredStanding) };
+    }
+
     const visible = await canAccessVisibleUnarchivedSessionForOrganizationInTx(tx, {
         accountId: params.accountId,
         sessionId: params.sessionId,
+        authentication: params.authentication,
     });
     if (!visible) {
         return { error: "session-not-found" };
     }
 
-    // Bound the collection at its writer, the way the pin limit is enforced, so the snapshot's
-    // `.max()` can never reject a whole organization payload that this account was allowed to store.
-    // Only a row that does not exist yet grows it; overwriting an existing standing is always allowed
-    // so a user at the bound can still flip a session they already declared.
     const existingStanding = await tx.sessionAttentionStanding.findUnique({
         where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
-        select: { id: true },
+        select: { id: true, sessionId: true, standing: true, remindAt: true, standingBeforeReminder: true, updatedAt: true },
     });
-    if (!existingStanding) {
-        const standingCount = await tx.sessionAttentionStanding.count({
-            where: {
-                accountId: params.accountId,
-                session: createVisibleUnarchivedOrganizationSessionWhere(params.accountId),
-            },
+    if (
+        typeof params.request.standing === "boolean"
+        && existingStanding?.remindAt === null
+        && existingStanding.standing === params.request.standing
+    ) {
+        return { standing: mapSessionAttentionStanding(existingStanding) };
+    }
+    if (typeof params.request.remindAt === "number") {
+        // The read-state owner, rather than cursor-row existence, decides whether
+        // this Account is currently tracked. An unfollowed collaborator may
+        // retain an inert historical row; setting a reminder is still valid and
+        // must not turn that row back into tracking.
+        const read = await applyViewerReadCursorOperationInTx(tx, {
+            accountId: params.accountId,
+            sessionId: params.sessionId,
+            operation: { kind: "mark-read" },
+            authentication: params.authentication,
         });
-        if (standingCount >= SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS) {
-            return { error: "session-attention-standing-limit-exceeded" };
+        if (!read.ok && read.error !== "session-not-tracked") {
+            return { error: "session-not-found" };
+        }
+        if (read.ok) {
+            await acknowledgeCurrentSessionDiscussionFrontiersInTx(tx, {
+                accountId: params.accountId,
+                sessionId: params.sessionId,
+            });
         }
     }
 
-    const standing = await tx.sessionAttentionStanding.upsert({
-        where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
-        create: {
-            accountId: params.accountId,
-            sessionId: params.sessionId,
-            standing: params.request.standing,
-        },
-        update: { standing: params.request.standing },
-        select: { sessionId: true, standing: true, updatedAt: true },
-    });
+    const standing = typeof params.request.remindAt === "number"
+        ? await tx.sessionAttentionStanding.upsert({
+            where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
+            create: {
+                accountId: params.accountId,
+                sessionId: params.sessionId,
+                standing: false,
+                remindAt: new Date(params.request.remindAt),
+                standingBeforeReminder: null,
+            },
+            update: {
+                remindAt: new Date(params.request.remindAt),
+                standingBeforeReminder: existingStanding?.remindAt
+                    ? existingStanding.standingBeforeReminder
+                    : existingStanding?.standing ?? null,
+            },
+            select: { sessionId: true, standing: true, remindAt: true, updatedAt: true },
+        })
+        : await tx.sessionAttentionStanding.upsert({
+            where: { accountId_sessionId: { accountId: params.accountId, sessionId: params.sessionId } },
+            create: {
+                accountId: params.accountId,
+                sessionId: params.sessionId,
+                standing: params.request.standing!,
+                remindAt: null,
+                standingBeforeReminder: null,
+            },
+            update: {
+                standing: params.request.standing!,
+                remindAt: null,
+                standingBeforeReminder: null,
+            },
+            select: { sessionId: true, standing: true, remindAt: true, updatedAt: true },
+        });
 
-    await markSessionOrganizationChanged(tx, {
+    await markSessionAttentionStandingChangedInTx(tx, {
         accountId: params.accountId,
         scope: "attentionStandings",
         sessionIds: [params.sessionId],
@@ -435,7 +548,8 @@ export async function setSessionAttentionStanding(params: Readonly<{
     accountId: string;
     sessionId: string;
     request: SetSessionAttentionStandingRequest;
-}>): Promise<Readonly<{ standing: ReturnType<typeof mapSessionAttentionStanding> | null }> | { error: "session-not-found" | "session-attention-standing-limit-exceeded" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ standing: ReturnType<typeof mapSessionAttentionStanding> | null }> | { error: "session-not-found" }> {
     return await inTx(async (tx) => await setSessionAttentionStandingInTx(tx, params));
 }
 
@@ -636,7 +750,9 @@ export async function setSessionFolderAssignmentInTx(tx: SessionOrganizationTx, 
     accountId: string;
     sessionId: string;
     folderId: string | null;
-}>): Promise<Readonly<{ sessionId: string; folderId: string | null }> | { error: "invalid-folder" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ sessionId: string; folderId: string | null }> | { error: "invalid-folder" | "session-not-found" }> {
+    if (!await canAccessSyncedSessionForOrganizationInTx(tx, params)) return { error: "session-not-found" };
     if (params.folderId !== null) {
         const targetFolder = await findActiveSessionOrganizationFoldersById({
             tx,
@@ -690,7 +806,8 @@ export async function setSessionFolderAssignment(params: Readonly<{
     accountId: string;
     sessionId: string;
     folderId: string | null;
-}>): Promise<Readonly<{ sessionId: string; folderId: string | null }> | { error: "invalid-folder" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ sessionId: string; folderId: string | null }> | { error: "invalid-folder" | "session-not-found" }> {
     return await inTx(async (tx) =>
         await setSessionFolderAssignmentInTx(tx, params),
     );
@@ -723,6 +840,11 @@ export async function applySessionCreationPlacementInTx(tx: SessionOrganizationT
 }>): Promise<Readonly<{ folderId: string | null; tagIds: string[] }> | {
     error: "invalid-folder" | "invalid-session-tags";
 }> {
+    const ownedSession = await tx.session.findFirst({
+        where: { id: params.sessionId, accountId: params.accountId },
+        select: { id: true },
+    });
+    if (!ownedSession) return { error: "invalid-folder" };
     if (params.folderId !== null) {
         const targetFolder = await findActiveSessionOrganizationFoldersById({
             tx,
@@ -740,20 +862,34 @@ export async function applySessionCreationPlacementInTx(tx: SessionOrganizationT
         return { error: "invalid-session-tags" };
     }
 
-    const folder = await setSessionFolderAssignmentInTx(tx, {
+    await tx.sessionFolderAssignment.deleteMany({
+        where: { accountId: params.accountId, sessionId: params.sessionId },
+    });
+    if (params.folderId !== null) {
+        await tx.sessionFolderAssignment.create({
+            data: { accountId: params.accountId, sessionId: params.sessionId, folderId: params.folderId },
+        });
+    }
+    await tx.sessionTagAssignment.deleteMany({
+        where: { accountId: params.accountId, sessionId: params.sessionId },
+    });
+    if (params.tagIds.length > 0) {
+        await tx.sessionTagAssignment.createMany({
+            data: params.tagIds.map((tagId) => ({ accountId: params.accountId, sessionId: params.sessionId, tagId })),
+        });
+    }
+    await markSessionFolderAssignmentChanged(tx, {
         accountId: params.accountId,
         sessionId: params.sessionId,
         folderId: params.folderId,
     });
-    if ("error" in folder) return folder;
-    const tags = await setSessionTagAssignmentsInTx(tx, {
+    await markSessionOrganizationChanged(tx, {
         accountId: params.accountId,
-        sessionId: params.sessionId,
-        request: { tagIds: [...params.tagIds] },
+        scope: "tagAssignments",
+        sessionIds: [params.sessionId],
+        tagIds: [...params.tagIds],
     });
-    if ("error" in tags) return tags;
-
-    return { folderId: folder.folderId, tagIds: tags.tagIds };
+    return { folderId: params.folderId, tagIds: [...params.tagIds] };
 }
 
 /**
@@ -795,6 +931,7 @@ export async function moveSessionFolderAssignments(params: Readonly<{
     accountId: string;
     fromFolderIds: readonly string[];
     toFolderId: string | null;
+    authentication: SessionAccessAuthentication;
 }>): Promise<MoveSessionFolderAssignmentsResponse | { error: "invalid-folder" }> {
     return await inTx(async (tx) => {
         if (params.toFolderId !== null) {
@@ -811,6 +948,13 @@ export async function moveSessionFolderAssignments(params: Readonly<{
         const where = {
             accountId: params.accountId,
             folderId: { in: [...params.fromFolderIds] },
+            session: await buildSessionAccessWhere({
+                tx,
+                accountId: params.accountId,
+                capability: "readTranscript",
+                mode: "effective_access_v1",
+                authentication: params.authentication,
+            }),
         };
         const assignments = await tx.sessionFolderAssignment.findMany({
             where,
@@ -934,6 +1078,7 @@ export async function deleteSessionOrganizationTag(params: Readonly<{
             accountId: params.accountId,
             scope: "tags",
             tagIds: [params.request.tagId],
+            deletedTagIds: [params.request.tagId],
         });
         if (removedAssignments.count > 0) {
             await markSessionOrganizationChanged(tx, {
@@ -954,7 +1099,8 @@ export async function setSessionTagAssignments(params: Readonly<{
     accountId: string;
     sessionId: string;
     request: SetSessionTagAssignmentsRequest;
-}>): Promise<Readonly<{ sessionId: string; tagIds: string[] }> | { error: "invalid-session-tags" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ sessionId: string; tagIds: string[] }> | { error: "invalid-session-tags" | "session-not-found" }> {
     return await inTx(async (tx) => await setSessionTagAssignmentsInTx(tx, params));
 }
 
@@ -962,7 +1108,9 @@ export async function setSessionTagAssignmentsInTx(tx: SessionOrganizationTx, pa
     accountId: string;
     sessionId: string;
     request: SetSessionTagAssignmentsRequest;
-}>): Promise<Readonly<{ sessionId: string; tagIds: string[] }> | { error: "invalid-session-tags" }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ sessionId: string; tagIds: string[] }> | { error: "invalid-session-tags" | "session-not-found" }> {
+    if (!await canAccessSyncedSessionForOrganizationInTx(tx, params)) return { error: "session-not-found" };
     const uniqueTagIds = await validateSessionOrganizationTagIdsInTx(tx, {
         accountId: params.accountId,
         tagIds: params.request.tagIds,

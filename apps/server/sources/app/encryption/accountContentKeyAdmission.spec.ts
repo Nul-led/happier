@@ -1,3 +1,4 @@
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import { describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
 
@@ -9,16 +10,16 @@ import {
 function createBinding() {
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const payload = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(content.publicKey),
-    ]);
+
     return {
         accountPublicKeyHex:
             Buffer.from(signing.publicKey).toString("hex"),
         contentPublicKey: new Uint8Array(content.publicKey),
         contentPublicKeySignature: new Uint8Array(
-            tweetnacl.sign.detached(payload, signing.secretKey),
+            signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey,
+                contentPublicKey: content.publicKey,
+            }),
         ),
     };
 }
@@ -26,6 +27,8 @@ function createBinding() {
 function createLowOrderBinding() {
     const signing = tweetnacl.sign.keyPair();
     const contentPublicKey = new Uint8Array(tweetnacl.box.publicKeyLength);
+    // The canonical signer rejects this low-order key; raw signing exercises
+    // admission of a correctly signed but unsafe persisted binding.
     const payload = Buffer.concat([
         Buffer.from("Happy content key v1\u0000", "utf8"),
         Buffer.from(contentPublicKey),

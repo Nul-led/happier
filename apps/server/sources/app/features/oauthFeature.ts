@@ -1,11 +1,11 @@
 import type { FeaturesPayloadDelta } from "./types";
-import { resolveOAuthProviderStatuses } from "@/app/oauth/providers/registry";
+import { resolveDeploymentOAuthProviderStatuses } from "@/app/auth/providers/deploymentProviderFeatures";
 
 export function resolveOAuthFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
     return {
         capabilities: {
             oauth: {
-                providers: resolveOAuthProviderStatuses(env),
+                providers: resolveDeploymentOAuthProviderStatuses(env),
             },
         },
     };

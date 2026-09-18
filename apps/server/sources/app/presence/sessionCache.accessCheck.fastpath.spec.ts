@@ -11,6 +11,7 @@ vi.mock("@/app/monitoring/metrics/index", () => ({
 
 const dbMocks = createDbMocks({
     session: ["findUnique"],
+    sessionShare: ["findUnique"],
 } as const);
 
 installDbModuleMock({ db: dbMocks.db });
@@ -24,6 +25,8 @@ describe("ActivityCache session validation fast path", () => {
         dbMocks.db.session.findUnique.mockResolvedValue({
             id: "s1",
             accountId: "u1",
+            currentStorageState: "hosted",
+            shares: [{ id: "share-1", accessLevel: "admin", canApprovePermissions: true }],
             active: true,
             lastActiveAt: new Date("2026-01-01T00:00:00.000Z"),
         } as any);
@@ -34,7 +37,7 @@ describe("ActivityCache session validation fast path", () => {
         activityCache = null;
     });
 
-    it("reuses the access-control session row instead of issuing a second session lookup", async () => {
+    it("reads owner activity in one session lookup", async () => {
         ({ activityCache } = await import("./sessionCache"));
 
         const ok = await activityCache.isSessionValid("s1", "u1");
@@ -51,6 +54,17 @@ describe("ActivityCache session validation fast path", () => {
                 }),
             }),
         );
+    });
+
+    it("does not admit a shared admin as an owner publisher", async () => {
+        ({ activityCache } = await import("./sessionCache"));
+        dbMocks.db.sessionShare.findUnique.mockResolvedValue({
+            accessLevel: "admin",
+            canApprovePermissions: true,
+        });
+
+        await expect(activityCache.isSessionValid("s1", "collaborator")).resolves.toBe(false);
+        expect(activityCache.isSessionObservedActive("s1")).toBe(false);
     });
 
     it("reuses a seeded session validation without issuing any session lookup", async () => {

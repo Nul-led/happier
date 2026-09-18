@@ -8,6 +8,7 @@ import {
     deriveAutomationManualOccurrenceKeyV1,
     normalizeAutomationTemplateEnvelopeStoredRead,
     parseAutomationStoredDefinitionExecutionRecipeV1,
+    parseAutomationStoredWorkflowDefinitionRecipeV2,
     serializeAutomationRunExecutionRecipeV1,
     toAutomationRunExecutionInputV1Origin,
     automationReplyHandoffIdForRunV1,
@@ -17,12 +18,18 @@ import {
 import { afterTx, type Tx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
+import { attachAutomationWorkflowBodyTx } from "@/app/workflows/workflowRunService";
+import {
+    resolveAutomationRecipeFeaturePolicy,
+    type AutomationRecipeFeaturePolicy,
+} from "./automationRecipeFeaturePolicy";
 
 import { automationRunItemSelect } from "./automationPersistenceSelect";
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import {
     decodeAutomationRunCause,
     encodeAutomationRunCause,
+    projectAutomationOriginRun,
     retainedV2OriginKindForRun,
 } from "./automationRunCauseCodec";
 import {
@@ -45,6 +52,7 @@ export type AutomationRunAdmissionIneligibleReason =
     | "triggerKindMismatch"
     | "capacity"
     | "idempotencyKeyInvalid"
+    | "featureDisabled"
     | "definitionInvalid";
 
 export type AutomationRunAdmissionResult =
@@ -101,6 +109,20 @@ function targetTypeForRecipe(recipe: Readonly<{ target: Readonly<{ kind: string 
     if (recipe.target.kind === "newSession") return "new_session" as const;
     if (recipe.target.kind === "existingSession") return "existing_session" as const;
     return "execution_run" as const;
+}
+
+function hasCauseOwnedPrivateInput(cause: AutomationRunCause): boolean {
+    return cause.kind === "conversation"
+        || (cause.kind === "trigger" && cause.triggerKind === "pluginEvent");
+}
+
+function triggerEvidenceMatchesCause(
+    cause: AutomationRunCause,
+    triggerEvidence: unknown | null,
+): boolean {
+    return hasCauseOwnedPrivateInput(cause)
+        ? triggerEvidence !== null
+        : triggerEvidence === null;
 }
 
 /**
@@ -207,7 +229,8 @@ type AutomationAdmissionTrigger = Prisma.AutomationTriggerGetPayload<{
 type PreparedAutomationRunAdmission = Readonly<{
     request: AutomationRunAdmissionRequest;
     cause: AutomationRunCause;
-    executionInputEnvelope: string;
+    executionInputEnvelope: string | null;
+    workflowDefinitionEnvelope: string | null;
     automation: AutomationAdmissionDefinition;
 }>;
 
@@ -220,10 +243,9 @@ function consumesEventConversationCapacity(cause: AutomationRunCause): boolean {
         || (cause.kind === "trigger" && cause.triggerKind === "pluginEvent");
 }
 
-function isExactTurnSessionLifecycleCause(cause: AutomationRunCause): boolean {
+function isSessionLifecycleCause(cause: AutomationRunCause): boolean {
     return cause.kind === "trigger"
-        && cause.triggerKind === "sessionLifecycle"
-        && cause.evidence.policy.kind === "currentTurn";
+        && cause.triggerKind === "sessionLifecycle";
 }
 
 function prepareAutomationRunAdmission(params: Readonly<{
@@ -232,6 +254,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
     existingRuns: readonly AutomationRunItem[];
     automationsById: ReadonlyMap<string, AutomationAdmissionDefinition>;
     triggersById: ReadonlyMap<string, AutomationAdmissionTrigger>;
+    recipeFeaturePolicy: AutomationRecipeFeaturePolicy;
 }>): PreparedAutomationRunAdmissionResult {
     const cause = params.cause;
     const existing = findExistingRun({
@@ -247,16 +270,17 @@ function prepareAutomationRunAdmission(params: Readonly<{
     const assignmentMayBeFrozen = (assignment: AutomationAdmissionDefinition["assignments"][number]): boolean => {
         const availability = classifyMachineAvailabilityState(assignment.machine);
         return availability === "available"
-            || (availability === "replaced" && isExactTurnSessionLifecycleCause(cause));
+            || (availability === "replaced" && isSessionLifecycleCause(cause));
     };
     const admissionAutomation: AutomationAdmissionDefinition = {
         ...automation,
         assignments: automation.assignments.filter(assignmentMayBeFrozen),
     };
     // The select loads only enabled assignments. Replayable causes freeze only
-    // presently available machines; the one-shot exact-turn cause may retain a
-    // reversibly replaced machine so undo can make the already-admitted Run
-    // claimable. An empty post-policy snapshot is permanently unclaimable.
+    // presently available machines; every Session-lifecycle occurrence is
+    // non-replayable and may retain a reversibly replaced machine so undo can
+    // make the already-admitted Run claimable. An empty post-policy snapshot
+    // is permanently unclaimable.
     // Rejoin above keeps already-admitted Runs on their immutable snapshots.
     if (admissionAutomation.assignments.length === 0) {
         return { kind: "ineligible", reason: "noEnabledAssignment" };
@@ -279,17 +303,15 @@ function prepareAutomationRunAdmission(params: Readonly<{
     const triggerEvidence = parseTriggerEvidenceEnvelope(
         params.request.executionTriggerEvidenceEnvelope ?? params.request.triggerEvidenceEnvelope,
     );
-    let executionInputEnvelope: string;
+    let executionInputEnvelope: string | null;
+    let workflowDefinitionEnvelope: string | null = null;
     if (definition.kind === "available") {
         if (
             definition.recipe.templateVersion !== automation.templateVersion
             || definition.recipe.triggerEvidence !== null
             || targetTypeForRecipe(definition.recipe) !== automation.targetType
             || triggerEvidence === undefined
-            || ((cause.kind === "conversation" || (cause.kind === "trigger" && cause.triggerKind === "pluginEvent"))
-                && triggerEvidence === null)
-            || ((cause.kind === "manual" || (cause.kind === "trigger" && cause.triggerKind !== "pluginEvent"))
-                && triggerEvidence !== null)
+            || !triggerEvidenceMatchesCause(cause, triggerEvidence)
         ) return { kind: "ineligible", reason: "definitionInvalid" };
         const frozen = serializeAutomationRunExecutionRecipeV1({
             ...definition.recipe,
@@ -299,25 +321,46 @@ function prepareAutomationRunAdmission(params: Readonly<{
         if (frozen.kind !== "available") return { kind: "ineligible", reason: "definitionInvalid" };
         executionInputEnvelope = frozen.serialized;
     } else {
-        const legacyCause = cause.kind === "manual"
-            || (cause.kind === "trigger" && cause.triggerKind === "schedule");
-        let legacyTemplate: unknown;
-        try { legacyTemplate = JSON.parse(automation.templateCiphertext); } catch { legacyTemplate = null; }
-        if (
-            !legacyCause
-            || automation.targetType === "execution_run"
-            || triggerEvidence !== null
-            || normalizeAutomationTemplateEnvelopeStoredRead(legacyTemplate) === null
-        ) return { kind: "ineligible", reason: "definitionInvalid" };
-        const origin = toAutomationRunExecutionInputV1Origin(cause);
-        if (!origin) return { kind: "ineligible", reason: "definitionInvalid" };
-        executionInputEnvelope = JSON.stringify(AutomationRunExecutionInputV1Schema.parse({
-            kind: "happier_automation_run_execution_input_v1",
-            targetType: automation.targetType,
-            templateVersion: automation.templateVersion,
-            templateCiphertext: automation.templateCiphertext,
-            origin,
-        }));
+        const workflowDefinition = parseAutomationStoredWorkflowDefinitionRecipeV2(
+            automation.templateCiphertext,
+        );
+        if (workflowDefinition.kind === "available") {
+            if (!params.recipeFeaturePolicy.workflowsEnabled) {
+                return { kind: "ineligible", reason: "featureDisabled" };
+            }
+            if (
+                workflowDefinition.recipe.templateVersion !== automation.templateVersion
+                || workflowDefinition.recipe.triggerEvidence !== null
+                || automation.targetType !== null
+                || triggerEvidence === undefined
+                || !triggerEvidenceMatchesCause(cause, triggerEvidence)
+            ) return { kind: "ineligible", reason: "definitionInvalid" };
+            executionInputEnvelope = null;
+            workflowDefinitionEnvelope = createCanonicalJsonSigningInput(
+                workflowDefinition.recipe.workflow,
+            );
+        } else {
+            const legacyCause = cause.kind === "manual"
+                || (cause.kind === "trigger" && cause.triggerKind === "schedule");
+            let legacyTemplate: unknown;
+            try { legacyTemplate = JSON.parse(automation.templateCiphertext); } catch { legacyTemplate = null; }
+            if (
+                !legacyCause
+                || automation.targetType === null
+                || automation.targetType === "execution_run"
+                || triggerEvidence !== null
+                || normalizeAutomationTemplateEnvelopeStoredRead(legacyTemplate) === null
+            ) return { kind: "ineligible", reason: "definitionInvalid" };
+            const origin = toAutomationRunExecutionInputV1Origin(cause);
+            if (!origin) return { kind: "ineligible", reason: "definitionInvalid" };
+            executionInputEnvelope = JSON.stringify(AutomationRunExecutionInputV1Schema.parse({
+                kind: "happier_automation_run_execution_input_v1",
+                targetType: automation.targetType,
+                templateVersion: automation.templateVersion,
+                templateCiphertext: automation.templateCiphertext,
+                origin,
+            }));
+        }
     }
 
     return {
@@ -326,6 +369,7 @@ function prepareAutomationRunAdmission(params: Readonly<{
             request: params.request,
             cause,
             executionInputEnvelope,
+            workflowDefinitionEnvelope,
             automation: admissionAutomation,
         },
     };
@@ -336,20 +380,21 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
     accountId: string;
     admission: PreparedAutomationRunAdmission;
 }>): Promise<AutomationRunAdmissionResult> {
-    const { request, cause, executionInputEnvelope, automation } = params.admission;
+    const { request, cause, executionInputEnvelope, workflowDefinitionEnvelope, automation } = params.admission;
     const dueAt = cause.kind === "trigger" && cause.triggerKind === "schedule"
         ? new Date(cause.evidence.scheduledFor)
         : request.now;
     const causeFields = encodeAutomationRunCause(cause);
     const runId = request.replyHandoff ? randomUUID() : null;
-    const initialExecutionDispatchState = initialAutomationExecutionDispatchStateForRun(
-        executionInputEnvelope,
-    );
-    const run = await params.tx.automationRun.create({
+    const initialExecutionDispatchState = executionInputEnvelope === null
+        ? null
+        : initialAutomationExecutionDispatchStateForRun(executionInputEnvelope);
+    const inserted = await params.tx.automationRun.create({
         data: {
             ...(runId !== null ? { id: runId } : {}),
             automationId: request.automationId,
             accountId: params.accountId,
+            ...(workflowDefinitionEnvelope !== null ? { originKind: "automation" } : {}),
             state: "queued",
             ...causeFields,
             // One derivation owner for the persisted identity and the rejoin
@@ -393,6 +438,24 @@ async function insertPreparedAutomationRunTx(params: Readonly<{
         } satisfies Prisma.AutomationRunUncheckedCreateInput,
         select: automationRunItemSelect,
     });
+    let run = projectAutomationOriginRun(inserted);
+    if (!run) throw new Error("Admitted Automation Run has invalid origin correspondence");
+    if (workflowDefinitionEnvelope !== null) {
+        await attachAutomationWorkflowBodyTx(params.tx, {
+            accountId: params.accountId,
+            runId: run.id,
+            automationId: request.automationId,
+            definitionEnvelope: workflowDefinitionEnvelope,
+        });
+        const attached = await params.tx.automationRun.findUnique({
+            where: { id: run.id },
+            select: automationRunItemSelect,
+        });
+        if (!attached) throw new Error("Attached Automation workflow Run is unavailable");
+        const projected = projectAutomationOriginRun(attached);
+        if (!projected) throw new Error("Attached Automation workflow Run has invalid origin correspondence");
+        run = projected;
+    }
     await params.tx.automation.update({
         where: { id: request.automationId },
         data: { lastRunAt: request.now },
@@ -432,8 +495,10 @@ export async function admitAutomationRunsTx(params: Readonly<{
     tx: Tx;
     accountId: string;
     admissions: readonly AutomationRunAdmissionRequest[];
+    recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }>): Promise<readonly AutomationRunAdmissionResult[]> {
     if (params.admissions.length === 0) return [];
+    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? resolveAutomationRecipeFeaturePolicy();
     const parsedAdmissions = params.admissions.map((request) => ({
         request,
         cause: AutomationRunCauseSchema.parse(request.cause),
@@ -449,7 +514,7 @@ export async function admitAutomationRunsTx(params: Readonly<{
     })).values()];
     // Membership probes fan out with the triggering batch; SQLite's portable
     // bind ceiling is a provider transport fact, never a cap on admitted work.
-    const existingRuns = occurrenceDiscriminators.length === 0
+    const existingRunRows = occurrenceDiscriminators.length === 0
         ? []
         : (await Promise.all(automationPortableQueryChunks({
             values: occurrenceDiscriminators,
@@ -460,9 +525,20 @@ export async function admitAutomationRunsTx(params: Readonly<{
             bindingsPerValue: 2,
             fixedBindings: 1,
         }).map((chunk) => params.tx.automationRun.findMany({
-            where: { accountId: params.accountId, OR: [...chunk] },
+            where: {
+                accountId: params.accountId,
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
+                OR: [...chunk],
+            },
             select: automationRunItemSelect,
         })))).flat();
+    const existingRuns = existingRunRows.map((row) => {
+        const run = projectAutomationOriginRun(row);
+        if (!run) throw new Error("Stored Automation Run has invalid origin correspondence");
+        return run;
+    });
     const automationIds = [...new Set(parsedAdmissions.map(({ request }) => request.automationId))];
     const triggerIds = [...new Set(parsedAdmissions.flatMap(({ cause }) => (
         cause.kind === "trigger" ? [cause.triggerId] : []
@@ -493,8 +569,9 @@ export async function admitAutomationRunsTx(params: Readonly<{
     // survive reversible machine replacement. Account ownership and permanent
     // revocation are cause-independent. The preparation owner below applies
     // the cause-specific availability rule: replayable causes freeze only
-    // available machines, while non-replayable exact-turn occurrences also
-    // preserve reversibly replaced machines for natural claim after undo.
+    // available machines, while every non-replayable Session-lifecycle
+    // occurrence preserves reversibly replaced machines for natural claim
+    // after undo.
     const automationsById = new Map(automations.map((automation) => [
         automation.id,
         {
@@ -512,6 +589,7 @@ export async function admitAutomationRunsTx(params: Readonly<{
         existingRuns,
         automationsById,
         triggersById,
+        recipeFeaturePolicy,
     }));
 
     // Capacity is deterministic prefix admission in request order. Exact
@@ -571,11 +649,13 @@ export async function admitAutomationRunsTx(params: Readonly<{
 export async function admitAutomationRunTx(params: Readonly<{
     tx: Tx;
     accountId: string;
+    recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }> & AutomationRunAdmissionRequest): Promise<AutomationRunAdmissionResult> {
     const [result] = await admitAutomationRunsTx({
         tx: params.tx,
         accountId: params.accountId,
         admissions: [params],
+        ...(params.recipeFeaturePolicy ? { recipeFeaturePolicy: params.recipeFeaturePolicy } : {}),
     });
     if (!result) throw new Error("Automation admission produced no result");
     return result;

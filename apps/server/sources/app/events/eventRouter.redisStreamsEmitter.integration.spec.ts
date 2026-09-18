@@ -72,7 +72,7 @@ async function startCluster(): Promise<StartedCluster> {
     const attachConnectionHandler = (io: Server) => {
         io.on("connection", (socket) => {
             const userId = socket.handshake.auth.userId as string | undefined;
-            const clientType = socket.handshake.auth.clientType as "user-scoped" | undefined;
+            const clientType = socket.handshake.auth.clientType as "user-scoped" | "machine-scoped" | "session-scoped" | undefined;
             if (!userId || !clientType) {
                 socket.disconnect();
                 return;
@@ -81,6 +81,12 @@ async function startCluster(): Promise<StartedCluster> {
             socket.join(getSocketRooms({
                 userId,
                 clientType,
+                ...(typeof socket.handshake.auth.sessionId === "string"
+                    ? { sessionId: socket.handshake.auth.sessionId }
+                    : {}),
+                ...(typeof socket.handshake.auth.machineId === "string"
+                    ? { machineId: socket.handshake.auth.machineId }
+                    : {}),
             }));
         });
     };
@@ -94,7 +100,7 @@ async function startCluster(): Promise<StartedCluster> {
     return {
         ioA,
         ioB,
-        emitter: new RedisStreamsRoomEmitter(redisEmitter, { maxLen: 2_000 }),
+        emitter: new RedisStreamsRoomEmitter(redisEmitter, { maxLen: 2_000, streamName: "socket.io" }),
         redisA,
         redisB,
         redisEmitter,
@@ -116,14 +122,27 @@ async function startCluster(): Promise<StartedCluster> {
     };
 }
 
-async function connectClient(port: number): Promise<ClientSocket> {
+async function connectClient(
+    port: number,
+    clientType: "user-scoped" | "machine-scoped" | "session-scoped" = "user-scoped",
+    userId = "user-1",
+    binding: Readonly<{ sessionId?: string; machineId?: string }> = {},
+): Promise<ClientSocket> {
     const socket = createClient(`http://127.0.0.1:${port}`, {
         path: SOCKET_PATH,
         transports: ["websocket"],
         timeout: 5_000,
         auth: {
-            userId: "user-1",
-            clientType: "user-scoped",
+            userId,
+            clientType,
+            ...(clientType === "session-scoped"
+                ? { sessionId: binding.sessionId ?? "session-1" }
+                : {}),
+            ...(clientType === "machine-scoped"
+                ? { machineId: binding.machineId ?? "machine-1" }
+                : binding.machineId
+                    ? { machineId: binding.machineId }
+                    : {}),
         },
     });
 
@@ -154,6 +173,58 @@ describe("eventRouter redis streams emitter integration", () => {
         while (startedClusters.length > 0) {
             await startedClusters.pop()?.close();
         }
+    });
+
+    it("disconnects user and machine rooms on both replicas from the worker emitter without touching another Account", async () => {
+        const cluster = await startCluster();
+        startedClusters.push(cluster);
+        const sockets = await Promise.all([
+            connectClient(cluster.portA),
+            connectClient(cluster.portB, "machine-scoped"),
+        ]);
+        const other = await connectClient(cluster.portB, "user-scoped", "user-2");
+        startedClients.push(...sockets, other);
+        eventRouter.setIo(cluster.emitter);
+        const disconnected = sockets.map((socket) => new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Account socket stayed connected")), 5_000);
+            socket.once("disconnect", () => { clearTimeout(timer); resolve(); });
+        }));
+        eventRouter.disconnectAccountSockets("user-1");
+        await Promise.all(disconnected);
+        expect(other.connected).toBe(true);
+    });
+
+    it("disconnects one exact Machine and its bound Session socket across replicas without evicting another same-Session profile", async () => {
+        const cluster = await startCluster();
+        startedClusters.push(cluster);
+        const machine = await connectClient(cluster.portB, "machine-scoped", "user-1", {
+            machineId: "machine-1",
+        });
+        const boundSession = await connectClient(cluster.portB, "session-scoped", "user-1", {
+            sessionId: "session-1",
+            machineId: "machine-1",
+        });
+        const ownerSession = await connectClient(cluster.portB, "session-scoped", "user-1", {
+            sessionId: "session-1",
+        });
+        startedClients.push(machine, boundSession, ownerSession);
+        eventRouter.setIo(cluster.emitter);
+
+        const disconnected = [machine, boundSession].map((socket) => new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("Exact resource socket stayed connected")), 5_000);
+            socket.once("disconnect", () => {
+                clearTimeout(timer);
+                resolve();
+            });
+        }));
+        eventRouter.disconnectMachineAndSessionSockets({
+            accountId: "user-1",
+            machineId: "machine-1",
+            sessionIds: ["session-1"],
+        });
+
+        await Promise.all(disconnected);
+        expect(ownerSession.connected).toBe(true);
     });
 
     it("delivers room-targeted updates from an external emitter process to connected api sockets", async () => {

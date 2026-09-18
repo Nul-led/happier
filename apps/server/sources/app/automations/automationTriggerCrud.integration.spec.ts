@@ -1199,7 +1199,10 @@ describe("automation trigger-set CRUD", () => {
                 data: {
                     automationId: automation.id,
                     accountId: account.id,
-                    state: "succeeded",
+                    // Workflow Runs share the physical table, but their
+                    // additional lifecycle states are not Automation API
+                    // states and must only advance the raw history cursor.
+                    state: "interrupted",
                     causeKind: "manual",
                     causeOccurredAt: new Date(base + 2),
                     executionInputEnvelope: JSON.stringify(executionRecipe(1)),
@@ -1215,6 +1218,9 @@ describe("automation trigger-set CRUD", () => {
             requireV2RunRepresentability: true,
         });
         expect(first).toEqual({ runs: [], nextCursor: currentOnly.id });
+        await expect(listAutomationRuns({
+            accountId: account.id, automationId: automation.id, limit: 1,
+        })).resolves.toEqual({ runs: [], nextCursor: currentOnly.id });
         const second = await listAutomationRuns({
             accountId: account.id, automationId: automation.id, limit: 1,
             cursor: first!.nextCursor,

@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client";
 import { Buffer } from "node:buffer";
 import { isDeepStrictEqual } from "node:util";
 
@@ -44,14 +45,20 @@ import {
     type SessionPermissionMediationRecordStored,
     type SessionPermissionMediationRecordWriteRequest,
 } from "@happier-dev/protocol";
+import {
+    SessionBoardItemRecordContentV1Schema,
+    SessionBoardLayoutRecordContentV1Schema,
+} from "@happier-dev/protocol/sessions/board";
 import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { resolveEncryptionWriteRejectionCode, type EncryptionPolicyRejectionCode } from "@/app/session/encryptionRejectionCodes";
 import {
-    buildCurrentSessionParticipantWhere,
-    checkSessionAccess,
-    requireAccessLevel,
-    type SessionAccess,
-} from "@/app/share/accessControl";
+    resolveEffectiveSessionAccess,
+    type EffectiveSessionAccess,
+} from "@/app/session/access/sessionAccess";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 import { isPrismaErrorCode } from "@/storage/prisma";
 import {
@@ -72,11 +79,13 @@ const PLUGIN_SESSION_SYSTEM_RECORD_CURSOR_PREFIX = "ssrp1";
 
 type SessionSystemRecordV1ErrorCode =
     | "plugin_session_records_unavailable"
+    | "plugin_session_record_feature_disabled"
     | "plugin_session_record_invalid_query"
     | "plugin_session_record_address_collision"
     | "plugin_session_record_kind_conflict"
     | "plugin_session_record_revision_conflict"
     | "plugin_session_record_revision_exhausted"
+    | "plugin_session_record_storage_mode_mismatch"
     | "plugin_session_record_forbidden"
     | "plugin_session_not_found"
     | "plugin_session_record_internal";
@@ -95,6 +104,7 @@ type SessionSystemRecordV1BaseParams = Readonly<{
     actorUserId: string;
     sessionId: string;
     pluginId?: string;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type PersistedSessionSystemRecordRow = Readonly<{
@@ -134,6 +144,7 @@ export type UpsertSessionSystemRecordParams = Readonly<{
     kind: SessionSystemRecordKind;
     localId: string;
     content: SessionStoredMessageContent;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type ListSessionSystemRecordsParams = Readonly<{
@@ -144,6 +155,7 @@ export type ListSessionSystemRecordsParams = Readonly<{
     localId?: string;
     limit?: number;
     cursor?: string;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type GetSessionSystemRecordParams = Readonly<{
@@ -151,6 +163,7 @@ export type GetSessionSystemRecordParams = Readonly<{
     sessionId: string;
     namespace: SessionSystemRecordNamespace;
     localId: string;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type GetLatestSessionSystemRecordParams = Readonly<{
@@ -158,6 +171,7 @@ export type GetLatestSessionSystemRecordParams = Readonly<{
     sessionId: string;
     namespace: SessionSystemRecordNamespace;
     kind: SessionSystemRecordKind;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type UpsertSessionSystemRecordResult =
@@ -313,6 +327,74 @@ export async function findExactHostSessionSystemRecordInTx(
     return { ok: true, keys, row: null };
 }
 
+type WriteExternalSessionHistoricalImportRecordInTxResult =
+    | Readonly<{ ok: true }>
+    | Readonly<{
+        ok: false;
+        code: "address_collision" | "kind_conflict" | "create_race";
+    }>;
+
+/**
+ * Persist an External Sessions historical-import authority record after its
+ * orchestrator has performed domain authorization and currentness checks.
+ * Keeping this narrow physical write here prevents the import workflow from
+ * becoming a second SessionSystemRecord owner or exposing a generic write path.
+ */
+export async function writeExternalSessionHistoricalImportRecordInTx(
+    tx: Tx,
+    params: Readonly<{
+        accountId: string;
+        sessionId: string;
+        kind: "historical_import" | "takeover_admission";
+        localId: string;
+        content: object;
+    }>,
+): Promise<WriteExternalSessionHistoricalImportRecordInTxResult> {
+    const namespace = "external_sessions";
+    // These two schema-owned records are JSON objects; Prisma's input type cannot
+    // represent their readonly protocol fields and conditionally omitted members.
+    const content = params.content as Prisma.InputJsonValue;
+    const lookup = await findExactHostSessionSystemRecordInTx(tx, { ...params, namespace });
+    if (!lookup.ok) return { ok: false, code: "address_collision" };
+    if (lookup.row) {
+        if (lookup.row.kind !== params.kind) return { ok: false, code: "kind_conflict" };
+        await tx.sessionSystemRecord.update({
+            where: { id: lookup.row.id },
+            data: {
+                kind: params.kind,
+                content,
+                ownerKind: "host",
+                pluginId: null,
+                namespaceAddressKey: lookup.keys.namespaceAddressKey,
+                recordAddressKey: lookup.keys.recordAddressKey,
+                version: { increment: 1 },
+            },
+        });
+        return { ok: true };
+    }
+    try {
+        await tx.sessionSystemRecord.create({
+            data: {
+                accountId: params.accountId,
+                sessionId: params.sessionId,
+                namespace,
+                kind: params.kind,
+                localId: params.localId,
+                content,
+                ownerKind: "host",
+                pluginId: null,
+                namespaceAddressKey: lookup.keys.namespaceAddressKey,
+                recordAddressKey: lookup.keys.recordAddressKey,
+                version: 1,
+            },
+        });
+        return { ok: true };
+    } catch (error) {
+        if (isPrismaErrorCode(error, "P2002")) return { ok: false, code: "create_race" };
+        throw error;
+    }
+}
+
 async function findHostRecordByAddress(
     tx: Tx,
     params: Readonly<{
@@ -320,6 +402,7 @@ async function findHostRecordByAddress(
         accountId: string;
         sessionId: string;
         requiredAccess: CurrentSessionRecordAccess;
+        authentication: SessionAccessAuthentication;
         namespace: SessionSystemRecordNamespace;
         localId: string;
     }>,
@@ -338,10 +421,11 @@ async function findHostRecordByAddress(
             accountId: params.accountId,
             sessionId: params.sessionId,
             recordAddressKey: keys.recordAddressKey,
-            ...currentSessionRecordWhere({
+            ...await currentSessionRecordWhere(tx, {
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: params.requiredAccess,
+                authentication: params.authentication,
             }),
         },
         select: SESSION_SYSTEM_RECORD_SELECT,
@@ -376,14 +460,14 @@ function decodeCursor(cursor: string | undefined): { updatedAt: Date; id: string
     }
 }
 
-async function ensureSessionRecordAccess(params: Readonly<{ actorUserId: string; sessionId: string }>): Promise<
-    | { ok: true; access: SessionAccess }
+async function ensureSessionRecordAccess(params: Readonly<{ actorUserId: string; sessionId: string; authentication: SessionAccessAuthentication }>): Promise<
+    | { ok: true; access: EffectiveSessionAccess }
     | { ok: false; error: "invalid-params" | "session-not-found" }
 > {
     if (!params.actorUserId || !params.sessionId) {
         return { ok: false, error: "invalid-params" };
     }
-    const access = await checkSessionAccess(params.actorUserId, params.sessionId);
+    const access = await resolveEffectiveSessionAccess(db, { accountId: params.actorUserId, sessionId: params.sessionId, authentication: params.authentication });
     if (!access) {
         return { ok: false, error: "session-not-found" };
     }
@@ -391,7 +475,7 @@ async function ensureSessionRecordAccess(params: Readonly<{ actorUserId: string;
 }
 
 function canMutateHostSystemRecord(params: Readonly<{
-    access: SessionAccess;
+    access: EffectiveSessionAccess;
     namespace: SessionSystemRecordNamespace;
     kind: SessionSystemRecordKind;
 }>): boolean {
@@ -404,7 +488,7 @@ function canMutateHostSystemRecord(params: Readonly<{
 }
 
 function canReadHostSystemRecords(params: Readonly<{
-    access: SessionAccess;
+    access: EffectiveSessionAccess;
     namespace?: SessionSystemRecordNamespace;
     kind?: SessionSystemRecordKind;
 }>): boolean {
@@ -625,6 +709,19 @@ function storedV1Record(
     };
 }
 
+function storedV1RecordForSessionMode(
+    row: PersistedSessionSystemRecordRow,
+    expected: PersistedSessionSystemRecordAddress,
+    sessionEncryptionMode: "e2ee" | "plain",
+): SessionSystemRecordV1Result<{ record: SessionSystemRecordStored }> {
+    const projected = storedV1Record(row, expected);
+    if (!projected.ok) return projected;
+    if ((sessionEncryptionMode === "plain") !== (projected.record.content.t === "plain")) {
+        return { ok: false, code: "plugin_session_record_storage_mode_mismatch" };
+    }
+    return projected;
+}
+
 function encodeSessionSystemRecordV1Cursor(row: Pick<PersistedSessionSystemRecordRow, "updatedAt" | "id">): string {
     return Buffer.from(JSON.stringify([PLUGIN_SESSION_SYSTEM_RECORD_CURSOR_PREFIX, row.updatedAt.toISOString(), row.id]), "utf8").toString("base64url");
 }
@@ -643,9 +740,9 @@ function decodeSessionSystemRecordV1Cursor(cursor: string | null | undefined): R
     }
 }
 
-function satisfiesSystemRecordPolicy(access: SessionAccess, requirement: SessionSystemRecordKindPolicy["read"]): boolean {
+function satisfiesSystemRecordPolicy(access: EffectiveSessionAccess, requirement: SessionSystemRecordKindPolicy["read"]): boolean {
     if (requirement === "unavailable") return false;
-    return requirement === "visible" || requireAccessLevel(access, "edit");
+    return requirement === "visible" || access.capabilities.editSessionRecords;
 }
 
 function currentSessionRecordAccessForRequirement(
@@ -654,36 +751,42 @@ function currentSessionRecordAccessForRequirement(
     return requirement === "edit" ? "edit" : "visible";
 }
 
-function currentSessionRecordWhere(params: Readonly<{
+async function currentSessionRecordWhere(tx: Tx, params: Readonly<{
     actorUserId: string;
     sessionId: string;
     requiredAccess: CurrentSessionRecordAccess;
-}>): Readonly<{ session: { is: ReturnType<typeof buildCurrentSessionParticipantWhere> } }> {
+    authentication: SessionAccessAuthentication;
+}>): Promise<Readonly<{ session: { is: Prisma.SessionWhereInput } }>> {
     return {
         session: {
-            is: buildCurrentSessionParticipantWhere({
-                userId: params.actorUserId,
-                sessionId: params.sessionId,
-                ...(params.requiredAccess === "edit" ? { minimumAccess: "edit" as const } : {}),
-            }),
+            is: { AND: [{ id: params.sessionId }, await buildSessionAccessWhere({
+                tx,
+                accountId: params.actorUserId,
+                capability: params.requiredAccess === "edit" ? "editSessionRecords" : "readTranscript",
+                mode: "effective_access_v1",
+                authentication: params.authentication,
+            })] },
         },
     };
 }
 
 async function hasCurrentSessionRecordAccessInTx(
-    tx: Pick<Tx, "session">,
+    tx: Tx,
     params: Readonly<{
         actorUserId: string;
         sessionId: string;
         requiredAccess: CurrentSessionRecordAccess;
+    authentication: SessionAccessAuthentication;
     }>,
 ): Promise<boolean> {
     const session = await tx.session.findFirst({
-        where: buildCurrentSessionParticipantWhere({
-            userId: params.actorUserId,
-            sessionId: params.sessionId,
-            ...(params.requiredAccess === "edit" ? { minimumAccess: "edit" as const } : {}),
-        }),
+        where: { AND: [{ id: params.sessionId }, await buildSessionAccessWhere({
+            tx,
+            accountId: params.actorUserId,
+            capability: params.requiredAccess === "edit" ? "editSessionRecords" : "readTranscript",
+            mode: "effective_access_v1",
+            authentication: params.authentication,
+        })] },
         select: { id: true },
     });
     return session !== null;
@@ -744,6 +847,19 @@ async function ensureV1RecordAccess(
     ) {
         return { ok: false, code: "plugin_session_record_invalid_query" };
     }
+    // `surface` is the Board's strict read surface. Its feature decision is an
+    // operation-scoped refusal, not absence of the System Record protocol and
+    // not a catalog permission. Keep the check here so HTTP, Action and direct
+    // service consumers cannot drift, while every unrelated namespace keeps
+    // using the same active protocol and policy catalog.
+    if (
+        target.owner === "host"
+        && target.namespace === "surface"
+        && target.operation === "read"
+        && !isServerFeatureEnabledForRequest("sessions.board", process.env)
+    ) {
+        return { ok: false, code: "plugin_session_record_feature_disabled" };
+    }
     const access = await ensureSessionRecordAccess(params);
     if (!access.ok) {
         return {
@@ -801,10 +917,11 @@ async function findV1RecordByAddress(
             accountId: params.accountId,
             sessionId: params.sessionId,
             recordAddressKey: keys.recordAddressKey,
-            ...currentSessionRecordWhere({
+            ...await currentSessionRecordWhere(tx, {
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: params.requiredAccess,
+                authentication: params.authentication,
             }),
         },
         select: SESSION_SYSTEM_RECORD_SELECT,
@@ -825,6 +942,7 @@ async function refetchV1RecordAfterMutation(
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: currentAccess,
+                authentication: params.authentication,
             })) {
                 return { ok: false, code: "plugin_session_record_forbidden" as const };
             }
@@ -906,12 +1024,13 @@ export async function readSessionSystemRecordV1(
                     actorUserId: params.actorUserId,
                     sessionId: params.sessionId,
                     requiredAccess: "visible",
+                    authentication: params.authentication,
                 })) {
                     return { ok: false, code: "plugin_session_record_forbidden" as const };
                 }
                 return { ok: true, record: null };
             }
-            const projected = storedV1Record(found.row, found.expected);
+            const projected = storedV1RecordForSessionMode(found.row, found.expected, access.sessionEncryptionMode);
             if (!projected.ok) return projected;
             if (found.row.kind !== params.address.kind) {
                 return { ok: false, code: "plugin_session_record_kind_conflict" as const };
@@ -959,10 +1078,11 @@ export async function listSessionSystemRecordsV1(
                 where: {
                     accountId: access.accountId,
                     sessionId: params.sessionId,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: "visible",
+                        authentication: params.authentication,
                     }),
                     ...(exactLocalId !== undefined
                         ? { recordAddressKey: keys.recordAddressKey }
@@ -983,26 +1103,29 @@ export async function listSessionSystemRecordsV1(
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: "visible",
+                authentication: params.authentication,
             })) {
                 return { ok: false, code: "plugin_session_record_forbidden" as const };
             }
+            const pageRows = rows.slice(0, parsed.data.limit);
             const projectedRows: SessionSystemRecordStored[] = [];
-            for (const row of rows) {
-                const projected = storedV1Record(row, {
+            // The extra row is only a continuation witness. Validating it as
+            // part of this page would let a corrupt next-page row suppress
+            // otherwise valid records the caller actually requested.
+            for (const row of pageRows) {
+                const projected = storedV1RecordForSessionMode(row, {
                     ...expectedAddress,
                     localId: exactLocalId ?? row.localId,
-                });
+                }, access.sessionEncryptionMode);
                 if (!projected.ok) return projected;
                 projectedRows.push(projected.record);
             }
-            const pageRows = rows.slice(0, parsed.data.limit);
-            const records = projectedRows.slice(0, parsed.data.limit);
             const hasNext = rows.length > parsed.data.limit;
             const last = pageRows.at(-1);
             return {
                 ok: true,
                 page: {
-                    records,
+                    records: projectedRows,
                     nextCursor: hasNext && last ? encodeSessionSystemRecordV1Cursor(last) : null,
                     hasNext,
                 },
@@ -1066,10 +1189,11 @@ async function settleV1UnconditionalCreateRace(
                     sessionId: params.sessionId,
                     recordAddressKey: raced.keys.recordAddressKey,
                     id: currentRow.id,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: currentAccess,
+                        authentication: params.authentication,
                     }),
                 },
                 data: { content: params.content, version: { increment: 1 } },
@@ -1079,6 +1203,7 @@ async function settleV1UnconditionalCreateRace(
                     actorUserId: params.actorUserId,
                     sessionId: params.sessionId,
                     requiredAccess: currentAccess,
+                    authentication: params.authentication,
                 })) {
                     return { ok: false, code: "plugin_session_record_forbidden" as const };
                 }
@@ -1089,10 +1214,11 @@ async function settleV1UnconditionalCreateRace(
                     accountId,
                     sessionId: params.sessionId,
                     recordAddressKey: raced.keys.recordAddressKey,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: "visible",
+                        authentication: params.authentication,
                     }),
                 },
                 select: SESSION_SYSTEM_RECORD_SELECT,
@@ -1125,6 +1251,118 @@ export async function upsertSessionSystemRecordV1(
     }>,
 ): Promise<SessionSystemRecordV1Result<{ record: SessionSystemRecordStored }>> {
     return await upsertSessionSystemRecordV1Attempt(params, true);
+}
+
+async function upsertSessionSystemRecordV1InTx(
+    tx: Tx,
+    params: SessionSystemRecordV1BaseParams & Readonly<{ address: SessionSystemRecordAddress; content: SessionSystemRecordContent; expectedRevision?: SessionSystemRecordRevision | null; }>,
+    access: Readonly<{ accountId: string; currentAccess: CurrentSessionRecordAccess }>,
+): Promise<SessionSystemRecordV1Result<{ record: SessionSystemRecordStored }> | V1UpsertMutationRace> {
+    const found = await findV1RecordByAddress(tx, {
+        ...params,
+        accountId: access.accountId,
+        requiredAccess: access.currentAccess,
+    });
+    if (!found) return { ok: false, code: "plugin_session_record_invalid_query" as const };
+    const current = found.row;
+    if (current) {
+        const projected = storedV1Record(current, found.expected);
+        if (!projected.ok) return projected;
+        if (current.kind !== params.address.kind) {
+            return { ok: false, code: "plugin_session_record_kind_conflict" as const };
+        }
+        const sameEnvelope = isDeepStrictEqual(current.content, params.content);
+        const expected = params.expectedRevision === undefined || params.expectedRevision === null
+            ? null
+            : parseSessionSystemRecordRevision(params.expectedRevision);
+        if (params.expectedRevision === null) {
+            if (sameEnvelope) return projected;
+            return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
+        }
+        if (expected && (expected.id !== current.id || expected.version !== current.version)) {
+            if (sameEnvelope) return projected;
+            return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
+        }
+        if (sameEnvelope) return projected;
+        if (current.version >= SESSION_SYSTEM_RECORD_VERSION_MAX) {
+            return { ok: false, code: "plugin_session_record_revision_exhausted" as const };
+        }
+        const updated = await tx.sessionSystemRecord.updateMany({
+            where: {
+                accountId: access.accountId,
+                sessionId: params.sessionId,
+                recordAddressKey: found.keys.recordAddressKey,
+                id: current.id,
+                ...(params.expectedRevision === undefined ? {} : { version: current.version }),
+                ...await currentSessionRecordWhere(tx, {
+                    actorUserId: params.actorUserId,
+                    sessionId: params.sessionId,
+                    requiredAccess: access.currentAccess,
+                    authentication: params.authentication,
+                }),
+            },
+            data: { content: params.content, version: { increment: 1 } },
+        });
+        if (updated.count !== 1) {
+            if (!await hasCurrentSessionRecordAccessInTx(tx, {
+                actorUserId: params.actorUserId,
+                sessionId: params.sessionId,
+                requiredAccess: access.currentAccess,
+                authentication: params.authentication,
+            })) {
+                return { ok: false, code: "plugin_session_record_forbidden" as const };
+            }
+            return {
+                kind: params.expectedRevision === undefined
+                    ? "retry-unconditional-upsert" as const
+                    : "refetch-conditional-upsert-conflict" as const,
+            };
+        }
+        const next = await tx.sessionSystemRecord.findFirst({
+            where: {
+                accountId: access.accountId,
+                sessionId: params.sessionId,
+                recordAddressKey: found.keys.recordAddressKey,
+                ...await currentSessionRecordWhere(tx, {
+                    actorUserId: params.actorUserId,
+                    sessionId: params.sessionId,
+                    requiredAccess: "visible",
+                    authentication: params.authentication,
+                }),
+            },
+            select: SESSION_SYSTEM_RECORD_SELECT,
+        }) as PersistedSessionSystemRecordRow | null;
+        return next ? storedV1Record(next, found.expected) : { ok: false, code: "plugin_session_record_internal" as const };
+    }
+
+    if (params.expectedRevision !== undefined && params.expectedRevision !== null) {
+        return { ok: false, code: "plugin_session_record_revision_conflict" };
+    }
+    if (!await hasCurrentSessionRecordAccessInTx(tx, {
+        actorUserId: params.actorUserId,
+        sessionId: params.sessionId,
+        requiredAccess: access.currentAccess,
+        authentication: params.authentication,
+    })) {
+        return { ok: false, code: "plugin_session_record_forbidden" };
+    }
+    const created = await tx.sessionSystemRecord.create({
+        data: {
+            accountId: access.accountId,
+            sessionId: params.sessionId,
+            ownerKind: found.expected.ownerKind,
+            pluginId: found.expected.pluginId,
+            namespace: params.address.namespace,
+            kind: params.address.kind,
+            localId: params.address.localId,
+            content: params.content,
+            namespaceAddressKey: found.keys.namespaceAddressKey,
+            recordAddressKey: found.keys.recordAddressKey,
+            version: 1,
+        },
+        select: SESSION_SYSTEM_RECORD_SELECT,
+    }) as PersistedSessionSystemRecordRow;
+    return storedV1Record(created, found.expected);
 }
 
 async function upsertSessionSystemRecordV1Attempt(
@@ -1160,109 +1398,7 @@ async function upsertSessionSystemRecordV1Attempt(
 
     let outcome: SessionSystemRecordV1Result<{ record: SessionSystemRecordStored }> | V1UpsertMutationRace;
     try {
-        outcome = await inTx(async (tx) => {
-            const found = await findV1RecordByAddress(tx, {
-                ...params,
-                accountId: access.accountId,
-                requiredAccess: access.currentAccess,
-            });
-            if (!found) return { ok: false, code: "plugin_session_record_invalid_query" as const };
-            const current = found.row;
-            if (current) {
-                const projected = storedV1Record(current, found.expected);
-                if (!projected.ok) return projected;
-                if (current.kind !== params.address.kind) {
-                    return { ok: false, code: "plugin_session_record_kind_conflict" as const };
-                }
-                const sameEnvelope = isDeepStrictEqual(current.content, params.content);
-                const expected = params.expectedRevision === undefined || params.expectedRevision === null
-                    ? null
-                    : parseSessionSystemRecordRevision(params.expectedRevision);
-                if (params.expectedRevision === null) {
-                    if (sameEnvelope) return projected;
-                    return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
-                }
-                if (expected && (expected.id !== current.id || expected.version !== current.version)) {
-                    if (sameEnvelope) return projected;
-                    return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
-                }
-                if (sameEnvelope) return projected;
-                if (current.version >= SESSION_SYSTEM_RECORD_VERSION_MAX) {
-                    return { ok: false, code: "plugin_session_record_revision_exhausted" as const };
-                }
-                const updated = await tx.sessionSystemRecord.updateMany({
-                    where: {
-                        accountId: access.accountId,
-                        sessionId: params.sessionId,
-                        recordAddressKey: found.keys.recordAddressKey,
-                        id: current.id,
-                        ...(params.expectedRevision === undefined ? {} : { version: current.version }),
-                        ...currentSessionRecordWhere({
-                            actorUserId: params.actorUserId,
-                            sessionId: params.sessionId,
-                            requiredAccess: access.currentAccess,
-                        }),
-                    },
-                    data: { content: params.content, version: { increment: 1 } },
-                });
-                if (updated.count !== 1) {
-                    if (!await hasCurrentSessionRecordAccessInTx(tx, {
-                        actorUserId: params.actorUserId,
-                        sessionId: params.sessionId,
-                        requiredAccess: access.currentAccess,
-                    })) {
-                        return { ok: false, code: "plugin_session_record_forbidden" as const };
-                    }
-                    return {
-                        kind: params.expectedRevision === undefined
-                            ? "retry-unconditional-upsert" as const
-                            : "refetch-conditional-upsert-conflict" as const,
-                    };
-                }
-                const next = await tx.sessionSystemRecord.findFirst({
-                    where: {
-                        accountId: access.accountId,
-                        sessionId: params.sessionId,
-                        recordAddressKey: found.keys.recordAddressKey,
-                        ...currentSessionRecordWhere({
-                            actorUserId: params.actorUserId,
-                            sessionId: params.sessionId,
-                            requiredAccess: "visible",
-                        }),
-                    },
-                    select: SESSION_SYSTEM_RECORD_SELECT,
-                }) as PersistedSessionSystemRecordRow | null;
-                return next ? storedV1Record(next, found.expected) : { ok: false, code: "plugin_session_record_internal" as const };
-            }
-
-            if (params.expectedRevision !== undefined && params.expectedRevision !== null) {
-                return { ok: false, code: "plugin_session_record_revision_conflict" };
-            }
-            if (!await hasCurrentSessionRecordAccessInTx(tx, {
-                actorUserId: params.actorUserId,
-                sessionId: params.sessionId,
-                requiredAccess: access.currentAccess,
-            })) {
-                return { ok: false, code: "plugin_session_record_forbidden" };
-            }
-            const created = await tx.sessionSystemRecord.create({
-                data: {
-                    accountId: access.accountId,
-                    sessionId: params.sessionId,
-                    ownerKind: found.expected.ownerKind,
-                    pluginId: found.expected.pluginId,
-                    namespace: params.address.namespace,
-                    kind: params.address.kind,
-                    localId: params.address.localId,
-                    content: params.content,
-                    namespaceAddressKey: found.keys.namespaceAddressKey,
-                    recordAddressKey: found.keys.recordAddressKey,
-                    version: 1,
-                },
-                select: SESSION_SYSTEM_RECORD_SELECT,
-            }) as PersistedSessionSystemRecordRow;
-            return storedV1Record(created, found.expected);
-        });
+        outcome = await inTx((tx) => upsertSessionSystemRecordV1InTx(tx, params, access));
     } catch (error) {
         if (!isPrismaErrorCode(error, "P2002")) {
             return { ok: false, code: "plugin_session_record_internal" };
@@ -1307,10 +1443,11 @@ async function settleV1UnconditionalDeleteMiss(
                     sessionId: params.sessionId,
                     recordAddressKey: found.keys.recordAddressKey,
                     id: found.row!.id,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: currentAccess,
+                        authentication: params.authentication,
                     }),
                 },
             });
@@ -1319,6 +1456,7 @@ async function settleV1UnconditionalDeleteMiss(
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: currentAccess,
+                authentication: params.authentication,
             })) {
                 return { ok: false, code: "plugin_session_record_forbidden" as const };
             }
@@ -1340,6 +1478,68 @@ function isV1DeleteMutationRace(
         && (value.kind === "settle-unconditional-delete" || value.kind === "refetch-conditional-delete-conflict");
 }
 
+async function deleteSessionSystemRecordV1InTx(
+    tx: Tx,
+    params: SessionSystemRecordV1BaseParams & Readonly<{ address: SessionSystemRecordAddress; expectedRevision?: SessionSystemRecordRevision; }>,
+    access: Readonly<{ accountId: string; currentAccess: CurrentSessionRecordAccess }>,
+): Promise<SessionSystemRecordV1Result<Record<never, never>> | V1DeleteMutationRace> {
+    const found = await findV1RecordByAddress(tx, {
+        ...params,
+        accountId: access.accountId,
+        requiredAccess: access.currentAccess,
+    });
+    if (!found) return { ok: false, code: "plugin_session_record_invalid_query" as const };
+    if (!found.row) {
+        if (!await hasCurrentSessionRecordAccessInTx(tx, {
+            actorUserId: params.actorUserId,
+            sessionId: params.sessionId,
+            requiredAccess: access.currentAccess,
+            authentication: params.authentication,
+        })) {
+            return { ok: false, code: "plugin_session_record_forbidden" as const };
+        }
+        return { ok: true };
+    }
+    const projected = storedV1Record(found.row, found.expected);
+    if (!projected.ok) return projected;
+    if (found.row.kind !== params.address.kind) {
+        return { ok: false, code: "plugin_session_record_kind_conflict" as const };
+    }
+    const revision = params.expectedRevision ? parseSessionSystemRecordRevision(params.expectedRevision) : null;
+    if (params.expectedRevision && (!revision || revision.id !== found.row.id || revision.version !== found.row.version)) {
+        return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
+    }
+    const deleted = await tx.sessionSystemRecord.deleteMany({
+        where: {
+            accountId: access.accountId,
+            sessionId: params.sessionId,
+            recordAddressKey: found.keys.recordAddressKey,
+            id: found.row.id,
+            ...(revision ? { version: revision.version } : {}),
+            ...await currentSessionRecordWhere(tx, {
+                actorUserId: params.actorUserId,
+                sessionId: params.sessionId,
+                requiredAccess: access.currentAccess,
+                authentication: params.authentication,
+            }),
+        },
+    });
+    if (deleted.count === 1) return { ok: true };
+    if (!await hasCurrentSessionRecordAccessInTx(tx, {
+        actorUserId: params.actorUserId,
+        sessionId: params.sessionId,
+        requiredAccess: access.currentAccess,
+        authentication: params.authentication,
+    })) {
+        return { ok: false, code: "plugin_session_record_forbidden" as const };
+    }
+    return {
+        kind: params.expectedRevision === undefined
+            ? "settle-unconditional-delete" as const
+            : "refetch-conditional-delete-conflict" as const,
+    };
+}
+
 export async function deleteSessionSystemRecordV1(
     params: SessionSystemRecordV1BaseParams & Readonly<{
         address: SessionSystemRecordAddress;
@@ -1356,60 +1556,7 @@ export async function deleteSessionSystemRecordV1(
     if (!access.ok) return access;
     let outcome: SessionSystemRecordV1Result<Record<never, never>> | V1DeleteMutationRace;
     try {
-        outcome = await inTx(async (tx) => {
-            const found = await findV1RecordByAddress(tx, {
-                ...params,
-                accountId: access.accountId,
-                requiredAccess: access.currentAccess,
-            });
-            if (!found) return { ok: false, code: "plugin_session_record_invalid_query" as const };
-            if (!found.row) {
-                if (!await hasCurrentSessionRecordAccessInTx(tx, {
-                    actorUserId: params.actorUserId,
-                    sessionId: params.sessionId,
-                    requiredAccess: access.currentAccess,
-                })) {
-                    return { ok: false, code: "plugin_session_record_forbidden" as const };
-                }
-                return { ok: true };
-            }
-            const projected = storedV1Record(found.row, found.expected);
-            if (!projected.ok) return projected;
-            if (found.row.kind !== params.address.kind) {
-                return { ok: false, code: "plugin_session_record_kind_conflict" as const };
-            }
-            const revision = params.expectedRevision ? parseSessionSystemRecordRevision(params.expectedRevision) : null;
-            if (params.expectedRevision && (!revision || revision.id !== found.row.id || revision.version !== found.row.version)) {
-                return { ok: false, code: "plugin_session_record_revision_conflict" as const, currentRevision: projected.record.revision };
-            }
-            const deleted = await tx.sessionSystemRecord.deleteMany({
-                where: {
-                    accountId: access.accountId,
-                    sessionId: params.sessionId,
-                    recordAddressKey: found.keys.recordAddressKey,
-                    id: found.row.id,
-                    ...(revision ? { version: revision.version } : {}),
-                    ...currentSessionRecordWhere({
-                        actorUserId: params.actorUserId,
-                        sessionId: params.sessionId,
-                        requiredAccess: access.currentAccess,
-                    }),
-                },
-            });
-            if (deleted.count === 1) return { ok: true };
-            if (!await hasCurrentSessionRecordAccessInTx(tx, {
-                actorUserId: params.actorUserId,
-                sessionId: params.sessionId,
-                requiredAccess: access.currentAccess,
-            })) {
-                return { ok: false, code: "plugin_session_record_forbidden" as const };
-            }
-            return {
-                kind: params.expectedRevision === undefined
-                    ? "settle-unconditional-delete" as const
-                    : "refetch-conditional-delete-conflict" as const,
-            };
-        });
+        outcome = await inTx((tx) => deleteSessionSystemRecordV1InTx(tx, params, access));
     } catch {
         return { ok: false, code: "plugin_session_record_internal" };
     }
@@ -1418,6 +1565,66 @@ export async function deleteSessionSystemRecordV1(
         return await settleV1UnconditionalDeleteMiss(params, access.accountId, access.currentAccess);
     }
     return await resolveV1ConditionalDeleteMiss(params, access.accountId, access.currentAccess);
+}
+
+type SessionBoardRecordReadResult = SessionSystemRecordV1Result<{ record: SessionSystemRecordStored | null }>
+    | Readonly<{ ok: false; code: "session_system_record_storage_mode_mismatch" }>;
+
+interface SessionBoardRecordScopeInTx {
+    /** null identifies the fixed layout; a string identifies an item. */
+    validateContent(localId: string | null, content: SessionSystemRecordContent): "invalid" | "storage_mode_mismatch" | null;
+    read(localId: string | null): Promise<SessionBoardRecordReadResult>;
+    upsert(localId: string | null, content: SessionSystemRecordContent, expectedRevision: SessionSystemRecordRevision | null): ReturnType<typeof upsertSessionSystemRecordV1InTx>;
+    remove(localId: string, expectedRevision: SessionSystemRecordRevision): ReturnType<typeof deleteSessionSystemRecordV1InTx>;
+}
+
+/**
+ * Mint the typed Board's exact-Session record scope inside its transaction.
+ * Generic CRUD never receives this scope: its catalog policy remains unavailable.
+ * Both callers use the same conditional row operations above.
+ */
+export async function resolveSessionBoardRecordsInTx(tx: Tx, params: Readonly<{ actorUserId: string; sessionId: string; authentication: SessionAccessAuthentication }>): Promise<SessionBoardRecordScopeInTx | null> {
+    if (!isSessionSystemRecordsProtocolV1Active() || !isServerFeatureEnabledForRequest("sessions.board", process.env)) return null;
+    const authority = await resolveEffectiveSessionAccess(tx, { accountId: params.actorUserId, sessionId: params.sessionId, authentication: params.authentication });
+    if (!authority?.capabilities.editSessionRecords) return null;
+    const session = await tx.session.findUnique({ where: { id: params.sessionId }, select: { accountId: true, encryptionMode: true } });
+    if (!session) return null;
+    const access = { accountId: session.accountId, currentAccess: "edit" as const };
+    const matchesPersistedMode = (content: SessionSystemRecordContent) =>
+        (session.encryptionMode === "plain") === (content.t === "plain");
+    const address = (localId: string | null): SessionSystemRecordAddress => ({
+        owner: "host", namespace: "surface", kind: localId === null ? "layout.v1" : "item.v1", localId: localId ?? "layout",
+    });
+    return {
+        validateContent(localId: string | null, content: SessionSystemRecordContent): "invalid" | "storage_mode_mismatch" | null {
+            const boardContentSchema = localId === null
+                ? SessionBoardLayoutRecordContentV1Schema
+                : SessionBoardItemRecordContentV1Schema;
+            if (!boardContentSchema.safeParse(content).success) return "invalid";
+            if (!matchesPersistedMode(content)) return "storage_mode_mismatch";
+            const storage = buildStorageModeRejection({ storagePolicy: readEncryptionFeatureEnv(process.env).storagePolicy,
+                sessionEncryptionMode: session.encryptionMode === "plain" ? "plain" : "e2ee", content });
+            if (!storage.ok) return "storage_mode_mismatch";
+            return hasValidRegisteredHostPlainContent({ address: address(localId), content }) ? null : "invalid";
+        },
+        async read(localId: string | null): Promise<SessionBoardRecordReadResult> {
+            const found = await findV1RecordByAddress(tx, { ...params, address: address(localId), accountId: access.accountId, requiredAccess: "edit" });
+            if (!found) return { ok: false, code: "plugin_session_record_invalid_query" };
+            if (!found.row) return { ok: true, record: null };
+            if (found.row.kind !== address(localId).kind) return { ok: false, code: "plugin_session_record_kind_conflict" };
+            const projected = storedV1Record(found.row, found.expected);
+            if (projected.ok && !matchesPersistedMode(projected.record.content)) {
+                return { ok: false, code: "session_system_record_storage_mode_mismatch" };
+            }
+            return projected;
+        },
+        async upsert(localId: string | null, content: SessionSystemRecordContent, expectedRevision: SessionSystemRecordRevision | null) {
+            return await upsertSessionSystemRecordV1InTx(tx, { ...params, address: address(localId), content, expectedRevision }, access);
+        },
+        async remove(localId: string, expectedRevision: SessionSystemRecordRevision) {
+            return await deleteSessionSystemRecordV1InTx(tx, { ...params, address: address(localId), expectedRevision }, access);
+        },
+    };
 }
 
 /**
@@ -1448,6 +1655,7 @@ type PermissionMediationRecordFailure = Readonly<{
 export type PermissionMediationRecordAccessParams = Readonly<{
     actorUserId: string;
     sessionId: string;
+    authentication: SessionAccessAuthentication;
 }>;
 
 export type ReadPermissionMediationRecordParams = PermissionMediationRecordAccessParams & Readonly<{
@@ -1630,7 +1838,7 @@ async function ensurePermissionMediationRecordAccess(
     // Permission mediation payloads are owner-private. A shared participant
     // may have edit or even approval authority without being able to inspect,
     // mutate, or prune this encrypted ledger.
-    if (!access.access.isOwner) {
+    if (access.access.level !== "owner") {
         return { ok: false, code: "permission_mediation_record_forbidden" };
     }
     return await inTx(async (tx) => {
@@ -2035,6 +2243,7 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                 requiredAccess: currentAccess,
                 namespace: params.namespace,
                 localId: params.localId,
+                authentication: params.authentication,
             });
             if (!lookup.ok) return { ok: false, error: "internal" };
             const existing = lookup.row;
@@ -2050,6 +2259,7 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                     actorUserId: params.actorUserId,
                     sessionId: params.sessionId,
                     requiredAccess: currentAccess,
+                    authentication: params.authentication,
                 })) {
                     return { ok: false, error: "forbidden" };
                 }
@@ -2058,10 +2268,11 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                     where: {
                         id: existing.id,
                         sessionId: params.sessionId,
-                        ...currentSessionRecordWhere({
+                        ...await currentSessionRecordWhere(tx, {
                             actorUserId: params.actorUserId,
                             sessionId: params.sessionId,
                             requiredAccess: currentAccess,
+                            authentication: params.authentication,
                         }),
                     },
                     data: {
@@ -2078,6 +2289,7 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: currentAccess,
+                        authentication: params.authentication,
                     })) {
                         return { ok: false, error: "forbidden" };
                     }
@@ -2090,6 +2302,7 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                     requiredAccess: currentAccess,
                     namespace: params.namespace,
                     localId: params.localId,
+                    authentication: params.authentication,
                 });
                 if (!updatedLookup.ok || !updatedLookup.row) return { ok: false, error: "internal" };
                 const updatedRecord = toSessionSystemRecordRow(updatedLookup.row);
@@ -2101,6 +2314,7 @@ async function upsertSessionSystemRecordWithCreateRaceRetry(
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: currentAccess,
+                authentication: params.authentication,
             })) {
                 return { ok: false, error: "forbidden" };
             }
@@ -2160,6 +2374,7 @@ export async function listSessionSystemRecords(
                 ? session.accountId
                 : undefined;
             const publicRecordScopes = SESSION_SYSTEM_RECORD_NAMESPACES.flatMap((namespace) => {
+                if (namespace === "surface") return [];
                 if (params.namespace !== undefined && params.namespace !== namespace) return [];
                 const registeredKinds = Object.keys(
                     SESSION_SYSTEM_RECORD_CATALOG[namespace].kinds,
@@ -2192,10 +2407,11 @@ export async function listSessionSystemRecords(
             const rows = await tx.sessionSystemRecord.findMany({
                 where: {
                     sessionId: params.sessionId,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: "visible",
+                        authentication: params.authentication,
                     }),
                     ...(cursor
                         ? {
@@ -2228,17 +2444,18 @@ export async function listSessionSystemRecords(
                 actorUserId: params.actorUserId,
                 sessionId: params.sessionId,
                 requiredAccess: "visible",
+                authentication: params.authentication,
             })) {
                 return { ok: false, error: "forbidden" as const };
             }
-            if (persistedRows.some((row) => !isHostRowInListScope({
+            const pageRows = persistedRows.slice(0, limit);
+            if (pageRows.some((row) => !isHostRowInListScope({
                 row,
                 scopes: publicRecordScopes,
                 localId: params.localId,
             }))) {
                 return { ok: false, error: "internal" };
             }
-            const pageRows = persistedRows.slice(0, limit);
             const records = pageRows.map(toSessionSystemRecordRow);
             if (records.some((record) => record === null)) return { ok: false, error: "internal" };
             const last = pageRows.at(-1);
@@ -2284,6 +2501,7 @@ export async function getSessionSystemRecord(
                 requiredAccess: "visible",
                 namespace: params.namespace,
                 localId: params.localId,
+                authentication: params.authentication,
             });
             if (!lookup.ok) return { ok: false, error: "internal" };
             const row = lookup.row;
@@ -2292,6 +2510,7 @@ export async function getSessionSystemRecord(
                     actorUserId: params.actorUserId,
                     sessionId: params.sessionId,
                     requiredAccess: "visible",
+                    authentication: params.authentication,
                 })) {
                     return { ok: false, error: "forbidden" };
                 }
@@ -2341,10 +2560,11 @@ export async function getLatestSessionSystemRecord(
                     sessionId: params.sessionId,
                     kind: params.kind,
                     namespaceAddressKey: addressKeys.namespaceAddressKey,
-                    ...currentSessionRecordWhere({
+                    ...await currentSessionRecordWhere(tx, {
                         actorUserId: params.actorUserId,
                         sessionId: params.sessionId,
                         requiredAccess: "visible",
+                        authentication: params.authentication,
                     }),
                 },
                 orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
@@ -2355,6 +2575,7 @@ export async function getLatestSessionSystemRecord(
                     actorUserId: params.actorUserId,
                     sessionId: params.sessionId,
                     requiredAccess: "visible",
+                    authentication: params.authentication,
                 })) {
                     return { ok: false, error: "forbidden" };
                 }

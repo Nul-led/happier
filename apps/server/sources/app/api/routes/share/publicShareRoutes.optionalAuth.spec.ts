@@ -5,11 +5,11 @@ import { createDbMocks, createDbTransactionMock, installDbModuleMock } from "../
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
-const verifyTokenForRoute = vi.fn(async () => null as any);
+const verifyTokenDisposition = vi.fn(async () => ({ status: "invalid" as const }) as any);
 vi.mock("@/app/auth/auth", () => ({
     // Mock sits at the real production seam: registerPublicShareReadRoutes
-    // resolves optional bearers through auth.verifyTokenForRoute.
-    auth: { verifyTokenForRoute },
+    // resolves optional bearers through auth.verifyTokenDisposition.
+    auth: { verifyTokenDisposition },
 }));
 
 // Mirrors the production logPublicShareAccess contract (accessLogger.ts) so
@@ -27,12 +27,12 @@ vi.mock("@/app/share/accessLogger", () => ({
     getUserAgent: vi.fn(() => "ua"),
 }));
 
-vi.mock("@/app/share/types", () => ({
-    PROFILE_SELECT: {},
+vi.mock("@/app/account/profile/accountDisplayProfile", () => ({
+    ACCOUNT_DISPLAY_PROFILE_SELECT: {},
     toShareUserProfile: vi.fn((a: any) => ({ id: a?.id ?? "owner" })),
 }));
 
-vi.mock("@/app/share/accessControl", () => ({
+vi.mock("@/app/session/access/sessionAccess", () => ({
     isSessionOwner: vi.fn(async () => true),
 }));
 
@@ -108,6 +108,7 @@ function createCurrentRouteTestBuilder(
 describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        verifyTokenDisposition.mockResolvedValue({ status: "invalid" });
         dbMocks.reset();
         txDbMocks.reset();
         dbTransaction.transaction.mockClear();
@@ -119,6 +120,46 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
             ...createSignedAccountContentBinding(),
         });
         vi.stubEnv("HANDY_MASTER_SECRET", "public-share-test-secret");
+    });
+
+    it.each([
+        "/v1/public-share/:token",
+        "/v1/public-share/:token/messages",
+    ] as const)("rejects a verified Runner bearer before reading public route %s", async (path) => {
+        verifyTokenDisposition.mockResolvedValue({
+            status: "verified",
+            credential: {
+                userId: "owner",
+                authTokenKind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                legacy: false,
+            },
+        });
+        const { publicShareRoutes } = await import("./publicShareRoutes");
+        const route = createCurrentRouteTestBuilder({
+            method: "GET",
+            path,
+            defaultRequest: {
+                params: { token: "tok" },
+                query: {},
+                headers: {
+                    authorization: "Bearer runner",
+                    "x-happier-account-stored-content-protocol": String(
+                        CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION,
+                    ),
+                },
+            },
+            registerRoutes(app) {
+                publicShareRoutes(app as any);
+            },
+        });
+
+        const reply = route.createReply();
+        await route.handler(route.createRequest(), reply);
+
+        expect(reply.statusCode).toBe(403);
+        expect(inTx).not.toHaveBeenCalled();
+        expect(logPublicShareAccess).not.toHaveBeenCalled();
     });
 
     it("does not call app.authenticate() for /v1/public-share/:token and succeeds even with invalid bearer", async () => {
@@ -235,7 +276,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
         const payload = await route.handler(route.createRequest(), reply);
 
         expect(route.app.authenticate).not.toHaveBeenCalled();
-        expect(verifyTokenForRoute).toHaveBeenCalledTimes(2);
+        expect(verifyTokenDisposition).toHaveBeenCalledTimes(2);
         expect(reply.statusCode).toBe(200);
         expect(payload).toEqual(
             expect.objectContaining({
@@ -651,7 +692,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
             expectedLoggedUserId: null,
         },
     ])("treats the public token as the only per-viewer authority for $label", async ({ verified, expectedLoggedUserId }) => {
-        verifyTokenForRoute.mockResolvedValueOnce(verified);
+        verifyTokenDisposition.mockResolvedValueOnce({ status: "verified", credential: verified });
         txDbMocks.db.publicSessionShare.findUnique.mockResolvedValue({
             id: "ps1",
             sessionId: "s1",
@@ -787,7 +828,7 @@ describe("publicShareRoutes optional auth (no reply-already-sent)", () => {
         const payload = await route.handler(route.createRequest(), reply);
 
         expect(route.app.authenticate).not.toHaveBeenCalled();
-        expect(verifyTokenForRoute).toHaveBeenCalledTimes(1);
+        expect(verifyTokenDisposition).toHaveBeenCalledTimes(1);
         expect(reply.statusCode).toBe(200);
         expect(txDbMocks.db.sessionMessage.findMany).toHaveBeenCalledWith(expect.objectContaining({
             where: {

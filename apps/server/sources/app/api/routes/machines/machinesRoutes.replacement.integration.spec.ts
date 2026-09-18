@@ -5,6 +5,7 @@ import { MACHINE_PLAIN_DATA_KEY_MARKER } from "@happier-dev/protocol";
 import { createDbMocks, installDbModuleMock } from "../../testkit/dbMocks";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createInTxHarness } from "../../testkit/txHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
 
@@ -14,6 +15,7 @@ vi.mock("@/app/changes/markAccountChangedAfterCommit", () => ({ markAccountChang
 
 const emitUpdate = vi.fn();
 const getConnections = vi.fn(() => new Set());
+const disconnectMachineAndSessionSockets = vi.fn();
 const buildNewMachineUpdate = vi.fn((_machine: unknown, seq: number, id: string) => ({
     id,
     seq,
@@ -25,7 +27,7 @@ const buildUpdateMachineUpdate = vi.fn((machineId: string, seq: number, id: stri
     body: { t: "update-machine", machineId, ...(extra && typeof extra === "object" ? extra : {}) },
 }));
 vi.mock("@/app/events/eventRouter", () => ({
-    eventRouter: { emitUpdate, getConnections },
+    eventRouter: { emitUpdate, getConnections, disconnectMachineAndSessionSockets },
     buildNewMachineUpdate,
     buildUpdateMachineUpdate,
 }));
@@ -53,7 +55,7 @@ const dbMocks = createDbMocks({
     machine: ["findFirst", "findMany", "findUnique"],
 } as const);
 const txDbMocks = createDbMocks({
-    accessKey: ["deleteMany"],
+    accessKey: ["deleteMany", "findMany"],
     machine: ["create", "findFirst", "update", "updateMany"],
 } as const);
 
@@ -167,15 +169,18 @@ describe("machinesRoutes machine replacement", () => {
         dbMocks.reset();
         txDbMocks.reset();
         getConnections.mockReturnValue(new Set());
+        const accountContentBinding = createSignedAccountContentBinding();
         dbMocks.db.account.findUnique.mockResolvedValue({
-            contentPublicKey: null,
-            publicKey: "account-signing-key",
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         dbMocks.db.account.updateMany.mockResolvedValue({ count: 0 });
         dbMocks.db.machine.findFirst.mockResolvedValue(null);
         dbMocks.db.machine.findUnique.mockResolvedValue(null);
         txDbMocks.db.accessKey.deleteMany.mockResolvedValue({ count: 0 });
+        txDbMocks.db.accessKey.findMany.mockResolvedValue([
+            { sessionId: "session-on-replaced-machine" },
+        ]);
         txDbMocks.db.machine.create.mockImplementation(async (args: MachineCreateMockArgs) => ({
             ...baseMachine,
             ...args.data,
@@ -293,6 +298,11 @@ describe("machinesRoutes machine replacement", () => {
             }),
         }));
         expect(invalidateMachine).toHaveBeenCalledWith("m1");
+        expect(disconnectMachineAndSessionSockets).toHaveBeenCalledWith({
+            accountId: "u1",
+            machineId: "m1",
+            sessionIds: ["session-on-replaced-machine"],
+        });
         // Replacement is reversible. It marks the old machine unavailable but
         // preserves Automation definitions and admitted Runs so undo can make
         // the old machine usable again without a restoration journal.

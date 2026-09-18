@@ -106,14 +106,20 @@ async function findConversationOccurrenceTx(params: Readonly<{
     automationId: string;
     occurrenceKey: string;
 }>): Promise<ExistingConversationOccurrenceRow | null> {
-    return await params.tx.automationRun.findFirst({
+    const row = await params.tx.automationRun.findFirst({
         where: {
             automationId: params.automationId,
+            originKind: "automation",
             causeKind: "conversation",
             occurrenceKey: params.occurrenceKey,
         },
         select: existingConversationOccurrenceSelect,
     });
+    if (row === null) return null;
+    if (row.causeKind === null) {
+        throw new Error("Stored Automation occurrence has invalid origin correspondence");
+    }
+    return { ...row, causeKind: row.causeKind };
 }
 
 type FinalResultDeliveryV1 = Extract<

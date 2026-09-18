@@ -24,6 +24,7 @@ describe("resolveAuthPolicyFromEnv (offboarding enabled default)", () => {
                     displayName: "Corp SSO",
                     issuer: "https://example.com",
                     clientId: "client",
+                    clientAuthenticationMethod: "client_secret_post",
                     clientSecret: "secret",
                     redirectUrl: "https://app.example.com/oauth/callback",
                     scopes: "openid profile email",

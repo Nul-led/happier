@@ -11,10 +11,15 @@ import {
     PresentUserRequiredResponseSchema,
     requirePresentUser,
 } from "@/app/api/utils/requirePresentUser";
-import { inTx } from "@/storage/inTx";
+import { inTx, type Tx } from "@/storage/inTx";
 import { evaluateProvisioningResponsePolicy } from "./provisioningResponsePolicy";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import { recordAuthEnrollmentOutcome } from "@/app/monitoring/metrics/authMetrics";
+import {
+    parseAuthenticationEvidenceSnapshot,
+    resolveCurrentAuthenticationEvidenceInTx,
+} from "@/app/auth/authenticationEvidence";
+import { AuthTokenAuthenticationEvidenceSnapshotV1Schema, type AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
 
 const BASE64_URL_REGEX = /^[A-Za-z0-9_-]+$/;
 const EXPIRED_TERMINAL_AUTH_CLEANUP_LIMIT = 32;
@@ -25,6 +30,32 @@ type RegisterTerminalAuthRequestRoutesContext = {
     terminalAuthPolicy: TerminalAuthRequestPolicy;
     isTerminalAuthExpired: IsTerminalAuthExpired;
 };
+
+async function resolveApprovedTerminalEvidenceInTx(
+    tx: Tx,
+    input: Readonly<{
+        accountId: string;
+        approvalTokenEpoch: number | null;
+        snapshotValue: unknown;
+    }>,
+): Promise<Readonly<
+    | { status: "current"; evidence: readonly AuthTokenAuthenticationEvidenceV1[] }
+    | { status: "unavailable" }
+>> {
+    if (input.approvalTokenEpoch === null) return { status: "current", evidence: [] };
+    const account = await tx.account.findUnique({
+        where: { id: input.accountId },
+        select: { tokenEpoch: true },
+    });
+    const snapshot = parseAuthenticationEvidenceSnapshot(input.snapshotValue);
+    if (!snapshot || account?.tokenEpoch !== input.approvalTokenEpoch) return { status: "unavailable" };
+    const evidence = await resolveCurrentAuthenticationEvidenceInTx(tx, {
+        env: process.env,
+        accountId: input.accountId,
+        evidence: snapshot.evidence,
+    });
+    return evidence.length > 0 ? { status: "current", evidence } : { status: "unavailable" };
+}
 
 async function cleanupExpiredTerminalAuthRequests(params: Readonly<{
     now: Date;
@@ -89,7 +120,10 @@ export function registerTerminalAuthRequestRoutes(
                     }).strict(),
                     z.object({ state: z.literal('authorized') }).strict(),
                 ]),
-                409: z.object({ error: z.literal('claim_mismatch') }),
+                409: z.object({ error: z.enum([
+                    'claim_mismatch',
+                    'credential_authentication_evidence_unavailable',
+                ]) }),
                 410: z.object({ error: z.literal('expired') }),
                 401: z.object({
                     error: z.literal('Invalid public key')
@@ -164,13 +198,26 @@ export function registerTerminalAuthRequestRoutes(
                 return reply.send({ state: "authorized" as const });
             }
             const serverIdentityId = await getOrCreateServerIdentityId(process.env);
-            const token = await auth.createToken(
-                answer.responseAccountId!,
-                { session: answer.id },
-                { kind: "terminal", authority: "account_automation" },
-            );
+            const tokenResult = await inTx(async (tx) => {
+                const resolved = await resolveApprovedTerminalEvidenceInTx(tx, {
+                    accountId: answer.responseAccountId!,
+                    approvalTokenEpoch: answer.approvalTokenEpoch,
+                    snapshotValue: answer.authenticationEvidence,
+                });
+                if (resolved.status === "unavailable") {
+                    return { status: "evidence_unavailable" } as const;
+                }
+                return { status: "created", token: await auth.createTokenInTx(tx, answer.responseAccountId!, { session: answer.id }, {
+                    kind: "terminal",
+                    authority: "account_automation",
+                    ...(resolved.evidence.length > 0 ? { authenticationEvidence: resolved.evidence } : {}),
+                }) } as const;
+            });
+            if (tokenResult.status === "evidence_unavailable") {
+                return reply.code(409).send({ error: "credential_authentication_evidence_unavailable" as const });
+            }
             return reply.send(buildTerminalAuthAuthorizedPayload({
-                token,
+                token: tokenResult.token,
                 response: answer.response,
                 serverIdentityId,
             }));
@@ -251,7 +298,10 @@ export function registerTerminalAuthRequestRoutes(
                         serverIdentityId: z.string().optional(),
                     }),
                 ]),
-                409: z.object({ error: z.literal("claim_not_supported") }),
+                409: z.object({ error: z.enum([
+                    "claim_not_supported",
+                    "credential_authentication_evidence_unavailable",
+                ]) }),
                 401: z.object({ error: z.literal("unauthorized") }),
                 410: z.union([z.object({ error: z.literal("expired") }), z.object({ error: z.literal("consumed") })]),
             },
@@ -313,13 +363,26 @@ export function registerTerminalAuthRequestRoutes(
         // Resolve every fallible part of the response before publishing the one-shot
         // claim. A failed identity lookup or token mint must leave the request retryable.
         const serverIdentityId = await getOrCreateServerIdentityId(process.env);
-        const token = await auth.createToken(
-            authRequest.responseAccountId!,
-            { session: authRequest.id },
-            { kind: "terminal", authority: "account_automation" },
-        );
+        const tokenResult = await inTx(async (tx) => {
+            const resolved = await resolveApprovedTerminalEvidenceInTx(tx, {
+                accountId: authRequest.responseAccountId!,
+                approvalTokenEpoch: authRequest.approvalTokenEpoch,
+                snapshotValue: authRequest.authenticationEvidence,
+            });
+            if (resolved.status === "unavailable") {
+                return { status: "evidence_unavailable" } as const;
+            }
+            return { status: "created", token: await auth.createTokenInTx(tx, authRequest.responseAccountId!, { session: authRequest.id }, {
+                kind: "terminal",
+                authority: "account_automation",
+                ...(resolved.evidence.length > 0 ? { authenticationEvidence: resolved.evidence } : {}),
+            }) } as const;
+        });
+        if (tokenResult.status === "evidence_unavailable") {
+            return reply.code(409).send({ error: "credential_authentication_evidence_unavailable" as const });
+        }
         const authorizedPayload = buildTerminalAuthAuthorizedPayload({
-            token,
+            token: tokenResult.token,
             response: authRequest.response,
             serverIdentityId,
         });
@@ -344,6 +407,7 @@ export function registerTerminalAuthRequestRoutes(
                 response: z.string(),
                 publicKey: z.string(),
                 responseKind: z.enum(["tokenOnly", "dataKey"]).optional(),
+                authorizeUnattendedTeamAccess: z.boolean().optional(),
             }).strict(),
             response: {
                 200: z.object({ success: z.literal(true) }),
@@ -355,8 +419,8 @@ export function registerTerminalAuthRequestRoutes(
                     error: z.enum([
                         "provisioning_kind_mismatch",
                         "provisioning_material_unavailable",
-                        "legacy_provisioning_unavailable",
                         "already_completed",
+                        "credential_authentication_evidence_unavailable",
                     ]),
                 }).strict(),
                 426: z.object({ error: z.literal("terminal_provisioning_update_required") }).strict(),
@@ -405,6 +469,7 @@ export function registerTerminalAuthRequestRoutes(
                     encryptionMode: true,
                     contentPublicKey: true,
                     contentPublicKeySig: true,
+                    tokenEpoch: true,
                 },
             });
             if (!account) return { status: "material_unavailable" } as const;
@@ -418,11 +483,26 @@ export function registerTerminalAuthRequestRoutes(
             }
 
             if (authRequest.response !== null || authRequest.responseAccountId !== null) {
+                const existingAuthorized = authRequest.approvalTokenEpoch !== null;
                 return authRequest.response === request.body.response
                     && authRequest.responseAccountId === request.userId
+                    && existingAuthorized === (request.body.authorizeUnattendedTeamAccess === true)
                     ? { status: "success" } as const
                     : { status: "already_completed" } as const;
             }
+            const evidence = request.body.authorizeUnattendedTeamAccess === true
+                ? await resolveCurrentAuthenticationEvidenceInTx(tx, {
+                    env: process.env,
+                    accountId: request.userId,
+                    evidence: request.authTokenAuthenticationEvidence,
+                })
+                : [];
+            if (request.body.authorizeUnattendedTeamAccess === true && evidence.length === 0) {
+                return { status: "evidence_unavailable" } as const;
+            }
+            const evidenceSnapshot = evidence.length > 0
+                ? AuthTokenAuthenticationEvidenceSnapshotV1Schema.parse({ v: 1, evidence })
+                : null;
             const completed = await tx.terminalAuthRequest.updateMany({
                 where: {
                     id: authRequest.id,
@@ -432,15 +512,18 @@ export function registerTerminalAuthRequestRoutes(
                 data: {
                     response: request.body.response,
                     responseAccountId: request.userId,
+                    authenticationEvidence: evidenceSnapshot,
+                    approvalTokenEpoch: request.body.authorizeUnattendedTeamAccess === true ? account.tokenEpoch : null,
                 },
             });
             if (completed.count === 1) return { status: "success" } as const;
             const raced = await tx.terminalAuthRequest.findUnique({
                 where: { id: authRequest.id },
-                select: { response: true, responseAccountId: true },
+                select: { response: true, responseAccountId: true, approvalTokenEpoch: true },
             });
             return raced?.response === request.body.response
                 && raced.responseAccountId === request.userId
+                && (raced.approvalTokenEpoch !== null) === (request.body.authorizeUnattendedTeamAccess === true)
                 ? { status: "success" } as const
                 : { status: "already_completed" } as const;
         });
@@ -463,6 +546,10 @@ export function registerTerminalAuthRequestRoutes(
         if (outcome.status === "already_completed") {
             recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "rejected" });
             return reply.code(409).send({ error: "already_completed" });
+        }
+        if (outcome.status === "evidence_unavailable") {
+            recordAuthEnrollmentOutcome({ flow: "terminal", outcome: "rejected" });
+            return reply.code(409).send({ error: "credential_authentication_evidence_unavailable" });
         }
         recordAuthEnrollmentOutcome({
             flow: "terminal",

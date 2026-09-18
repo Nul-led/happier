@@ -1,64 +1,14 @@
-import { Expo, type ExpoPushMessage } from "expo-server-sdk";
-import { collectExpoPushTokensMarkedUnregistered } from "@happier-dev/protocol";
-
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 
+import { listRelevantAccountIdsForSessionBadgeRefresh } from "@/app/session/personal/readState";
+
+import { sendAccountExpoPushMessages, type AccountPushDelivery } from "./accountPushTransport";
 import { computeAccountActivityBadgeCounts } from "./accountActivityBadge";
 
-const expo = new Expo();
 const BADGE_REFRESH_COALESCE_MS = 25;
 const pendingBadgeRefreshAccountIds = new Set<string>();
 let pendingBadgeRefreshTimer: NodeJS.Timeout | null = null;
-
-type BadgeRefreshDelivery = Readonly<{
-    accountId: string;
-    token: string;
-    message: ExpoPushMessage;
-}>;
-
-async function deleteInvalidAccountPushTokens(deliveries: ReadonlyArray<BadgeRefreshDelivery>): Promise<void> {
-    if (deliveries.length === 0) return;
-    await db.accountPushToken.deleteMany({
-        where: {
-            OR: deliveries.map((delivery) => ({
-                accountId: delivery.accountId,
-                token: delivery.token,
-            })),
-        },
-    });
-}
-
-async function sendExpoBadgeRefreshMessages(deliveries: ReadonlyArray<BadgeRefreshDelivery>): Promise<void> {
-    const validDeliveries = deliveries.filter((delivery) => Expo.isExpoPushToken(delivery.message.to));
-    if (validDeliveries.length === 0) return;
-    const invalidDeliveries = new Map<string, BadgeRefreshDelivery>();
-    let deliveryOffset = 0;
-
-    for (const chunk of expo.chunkPushNotifications(validDeliveries.map((delivery) => delivery.message))) {
-        const chunkDeliveries = validDeliveries.slice(deliveryOffset, deliveryOffset + chunk.length);
-        deliveryOffset += chunk.length;
-        try {
-            const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-            const invalidTokens = new Set(
-                collectExpoPushTokensMarkedUnregistered({
-                    messages: chunk,
-                    tickets: ticketChunk,
-                }),
-            );
-            if (invalidTokens.size > 0) {
-                for (const delivery of chunkDeliveries) {
-                    if (!invalidTokens.has(delivery.token)) continue;
-                    invalidDeliveries.set(`${delivery.accountId}:${delivery.token}`, delivery);
-                }
-            }
-        } catch (error) {
-            log({ module: "activity-badges", level: "warn" }, "failed to send Expo badge refresh chunk", error);
-        }
-    }
-
-    await deleteInvalidAccountPushTokens([...invalidDeliveries.values()]);
-}
 
 function scheduleCoalescedBadgeRefresh(accountIds: ReadonlyArray<string>): void {
     for (const accountId of accountIds) {
@@ -89,7 +39,7 @@ export async function refreshAccountActivityBadgePushes(params: Readonly<{ accou
 
     const badgeCounts = await computeAccountActivityBadgeCounts(accountIds);
 
-    const deliveries: BadgeRefreshDelivery[] = [];
+    const deliveries: AccountPushDelivery[] = [];
     for (const pushToken of pushTokens) {
         deliveries.push({
             accountId: pushToken.accountId,
@@ -102,13 +52,33 @@ export async function refreshAccountActivityBadgePushes(params: Readonly<{ accou
         });
     }
 
-    await sendExpoBadgeRefreshMessages(deliveries);
+    await sendAccountExpoPushMessages(deliveries, "activity-badges");
 }
 
-export async function refreshSessionParticipantBadgePushes(params: Readonly<{
+/**
+ * Schedules the existing coalesced badge refresh for an exact Account set.
+ * Recipient selection belongs to the personal candidate owner; this function
+ * only batches and transports.
+ */
+export function scheduleAccountActivityBadgeRefresh(params: Readonly<{
     badgeAttentionChanged: boolean;
-    participantCursors: ReadonlyArray<{ accountId: string }>;
+    accountIds: ReadonlyArray<string>;
+}>): void {
+    if (!params.badgeAttentionChanged) return;
+    scheduleCoalescedBadgeRefresh(params.accountIds);
+}
+
+/**
+ * The Session-scoped replacement for the removed projection-recipient helper.
+ * Badge refresh now follows the exact owner-or-active-Follow tracking relation
+ * rather than every Account that can read the Session, so broad Team access can
+ * no longer become badge fanout (L09B-R6).
+ */
+export async function refreshTrackedSessionAccountBadgePushes(params: Readonly<{
+    badgeAttentionChanged: boolean;
+    sessionId: string;
 }>): Promise<void> {
     if (!params.badgeAttentionChanged) return;
-    scheduleCoalescedBadgeRefresh(params.participantCursors.map(({ accountId }) => accountId));
+    const accountIds = await listRelevantAccountIdsForSessionBadgeRefresh(params.sessionId);
+    scheduleCoalescedBadgeRefresh(accountIds);
 }

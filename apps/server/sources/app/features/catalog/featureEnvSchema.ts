@@ -1,5 +1,10 @@
 export const FEATURE_ENV_KEYS = Object.freeze({
+  machinesPoolsEnabled: 'HAPPIER_FEATURE_MACHINES_POOLS__ENABLED',
+  teamsEnabled: 'HAPPIER_FEATURE_TEAMS__ENABLED',
+  teamsCredentialResourcesEnabled: 'HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED',
+  teamsCredentialResourcesExternalApiEnabled: 'HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED',
   automationsEnabled: 'HAPPIER_FEATURE_AUTOMATIONS__ENABLED',
+  workflowsEnabled: 'HAPPIER_FEATURE_WORKFLOWS__ENABLED',
 
   bugReportsEnabled: 'HAPPIER_FEATURE_BUG_REPORTS__ENABLED',
   bugReportsProviderUrl: 'HAPPIER_FEATURE_BUG_REPORTS__PROVIDER_URL',
@@ -30,9 +35,15 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   petsSyncEncryptedCustomPetSyncPolicy: 'HAPPIER_FEATURE_PETS_SYNC__ENCRYPTED_CUSTOM_PET_SYNC_POLICY',
 
   sessionsHandoffEnabled: 'HAPPIER_FEATURE_SESSIONS_HANDOFF__ENABLED',
+  sessionsEphemeralRunnerEnabled: 'HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED',
   sessionsAgentSwitchingEnabled: 'HAPPIER_FEATURE_SESSIONS_AGENT_SWITCHING__ENABLED',
   sessionsFoldersEnabled: 'HAPPIER_FEATURE_SESSIONS_FOLDERS__ENABLED',
   sessionsDraftsEnabled: 'HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED',
+  sessionsFilteredListingEnabled: 'HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED',
+  sessionsBoardEnabled: 'HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED',
+  sessionsFollowingEnabled: 'HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED',
+  sessionsCollaborationEnabled: 'HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED',
+  sessionsConversationsEnabled: 'HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED',
   sessionsUsageLimitRecoveryEnabled: 'HAPPIER_FEATURE_SESSIONS_USAGE_LIMIT_RECOVERY__ENABLED',
   machinesTransferDirectPeerEnabled: 'HAPPIER_FEATURE_MACHINES_TRANSFER_DIRECT_PEER__ENABLED',
   machinesRpcDirectPeerEnabled: 'HAPPIER_FEATURE_MACHINES_RPC_DIRECT_PEER__ENABLED',
@@ -52,8 +63,6 @@ export const FEATURE_ENV_KEYS = Object.freeze({
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__SUPPORTED_ENCODINGS',
   machinesTunnelServerRoutedPreferredEncoding:
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__PREFERRED_ENCODING',
-  machinesTunnelServerRoutedAllowV1Fallback:
-    'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__ALLOW_V1_FALLBACK',
   machinesTunnelServerRoutedMaxBinaryHeaderBytes:
     'HAPPIER_FEATURE_MACHINES_TUNNEL_SERVER_ROUTED__MAX_BINARY_HEADER_BYTES',
   machinesTunnelServerRoutedMaxRawPayloadBytes:
@@ -194,6 +203,13 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   authUiAutoRedirectEnabled: 'HAPPIER_FEATURE_AUTH_UI__AUTO_REDIRECT_ENABLED',
   authUiAutoRedirectProviderId: 'HAPPIER_FEATURE_AUTH_UI__AUTO_REDIRECT_PROVIDER_ID',
   authUiRecoveryKeyReminderEnabled: 'HAPPIER_FEATURE_AUTH_UI__RECOVERY_KEY_REMINDER_ENABLED',
+  // Native email/password deployment configuration. This is required server
+  // configuration for the `email_password` method decision, not a published
+  // per-method feature bit: no `auth.login.emailPassword` capability exists.
+  // Lane 01 Home governance replaces these inputs once its authentication
+  // policy projection exists; until then they are the only enablement source.
+  authEmailPasswordEnabled: 'HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED',
+  authEmailPasswordProvisionEnabled: 'HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED',
   authMtlsEnabled: 'HAPPIER_FEATURE_AUTH_MTLS__ENABLED',
   authMtlsMode: 'HAPPIER_FEATURE_AUTH_MTLS__MODE',
   authMtlsAutoProvision: 'HAPPIER_FEATURE_AUTH_MTLS__AUTO_PROVISION',
@@ -212,6 +228,8 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   authOauthKeylessEnabled: 'HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_ENABLED',
   authOauthKeylessProviders: 'HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_PROVIDERS',
   authOauthKeylessAutoProvision: 'HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_AUTO_PROVISION',
+  authManagedIdentityPrivateNetworkEnabled:
+    'HAPPIER_FEATURE_AUTH_MANAGED_IDENTITY__PRIVATE_NETWORK_ENABLED',
 
   encryptionStoragePolicy: 'HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY',
   encryptionAllowAccountOptOut: 'HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT',

@@ -2,7 +2,7 @@ import { readServerEnabledBit, type HomeSearchCapabilities } from "@happier-dev/
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { HomeIrohEndpointState } from "@/app/iroh/homeIrohEndpoint";
 import {
@@ -11,14 +11,19 @@ import {
     type HomeConnectionDescriptorContinuityStore,
 } from '@/app/features/homeConnectionDescriptorContinuity';
 
-import { createEnvReset } from "../../testkit/env";
+import { applyEnvValues, createEnvReset } from "../../testkit/env";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { db } from "@/storage/db";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
+import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import {
     resolveCachedPublicServerUrl,
     resetPublicServerUrlInferenceCacheForTests,
 } from "@/app/integrations/publicUrl/publicServerUrlInference";
 
-const resetEnv = createEnvReset({
+let databaseEnv: Record<string, string | undefined> = {};
+
+const resetEnvToDeploymentBase = createEnvReset({
     ...process.env,
     HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: undefined,
     HAPPIER_FEATURE_ENCRYPTION__DEFAULT_ACCOUNT_MODE: undefined,
@@ -36,7 +41,21 @@ const resetEnv = createEnvReset({
     HAPPIER_TAILSCALE_INFER_PUBLIC_URL: "0",
     HAPPIER_BUILD_FEATURES_ALLOW: undefined,
     HAPPIER_BUILD_FEATURES_DENY: undefined,
+    HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: undefined,
+    HAPPIER_AUTH_SIGN_IN_SERVICE_URL: undefined,
+    HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID: undefined,
+    HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME: undefined,
 });
+
+/**
+ * Cases reset the environment to a deployment baseline captured before the
+ * SQLite harness existed, so the connection keys are re-applied after every
+ * reset; without them the route's effective-Home read has no database.
+ */
+function resetEnv(overrides?: Parameters<typeof resetEnvToDeploymentBase>[0]): void {
+    resetEnvToDeploymentBase(overrides);
+    applyEnvValues(databaseEnv);
+}
 
 type ServerIdentityRouteModuleMock = Readonly<{
     getOrCreateServerIdentityId: (env?: NodeJS.ProcessEnv) => Promise<string>;
@@ -44,8 +63,45 @@ type ServerIdentityRouteModuleMock = Readonly<{
     readCachedServerIdentityIdForHotPath: (env?: NodeJS.ProcessEnv) => string | null;
 }>;
 
+/**
+ * One case replaces the server-identity reader. It does so through a standing
+ * passthrough mock with a per-case override rather than a module reset, because
+ * resetting the registry for every case both exhausted this file's heap and left
+ * the reset copy of the database module without a client.
+ */
+const serverIdentityOverride = vi.hoisted(() => ({
+    value: null as ServerIdentityRouteModuleMock | null,
+}));
+vi.mock("@/app/serverIdentity/serverIdentity", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("@/app/serverIdentity/serverIdentity")>();
+    return {
+        ...actual,
+        getOrCreateServerIdentityId: async (env?: NodeJS.ProcessEnv) =>
+            await (serverIdentityOverride.value ?? actual).getOrCreateServerIdentityId(env),
+        readPinnedServerIdentityId: (env?: NodeJS.ProcessEnv) =>
+            (serverIdentityOverride.value ?? actual).readPinnedServerIdentityId(env),
+        readCachedServerIdentityIdForHotPath: (env?: NodeJS.ProcessEnv) =>
+            (serverIdentityOverride.value ?? actual).readCachedServerIdentityIdForHotPath(env),
+    };
+});
+
 let descriptorContinuityDir = "";
 const descriptorContinuityPath = (): string => join(descriptorContinuityDir, "home.descriptor.json");
+
+/**
+ * `/v1/features` resolves the effective Home authentication decision, which is a
+ * database read, so every case in this file needs a live client — not only the
+ * two that write a governance row. One file-level SQLite harness supplies it;
+ * the per-case `resetEnv()` snapshot predates the harness, so the connection
+ * keys are re-applied after each reset.
+ */
+let harness: LightSqliteHarness;
+
+/**
+ * Only the server-identity case replaces a module, and a replaced module needs a
+ * fresh registry. Resetting per case instead is what exhausted this file's heap,
+ * so the reset is confined here and the fresh registry gets its own client.
+ */
 
 async function getFeaturesPayload(
     requestOverrides: Record<string, unknown> = {},
@@ -57,9 +113,24 @@ async function getFeaturesPayload(
     resolveHomeIrohEndpointState?: () => HomeIrohEndpointState,
     continuityStoreOverride?: HomeConnectionDescriptorContinuityStore | null,
 ) {
-    if (serverIdentityMock) {
-        vi.doMock("@/app/serverIdentity/serverIdentity", () => serverIdentityMock);
-    }
+    if (serverIdentityMock) serverIdentityOverride.value = serverIdentityMock;
+    return await invokeFeaturesRoute(
+        requestOverrides,
+        resolveHomeSearchCapability,
+        resolveHomeIrohEndpointState,
+        continuityStoreOverride,
+    );
+}
+
+async function invokeFeaturesRoute(
+    requestOverrides: Record<string, unknown>,
+    resolveHomeSearchCapability?: () => Readonly<{
+        enabled: boolean;
+        reason?: "index_unavailable" | "indexing";
+    }> | undefined,
+    resolveHomeIrohEndpointState?: () => HomeIrohEndpointState,
+    continuityStoreOverride?: HomeConnectionDescriptorContinuityStore | null,
+) {
     const { featuresRoutes } = await import("./featuresRoutes");
     const route = createRouteTestBuilder({
         method: "GET",
@@ -81,17 +152,38 @@ async function getFeaturesPayload(
 }
 
 describe("featuresRoutes", () => {
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({
+            tempDirPrefix: "happier-features-routes-",
+            initAuth: true,
+            env: { AUTH_REQUIRED_LOGIN_PROVIDERS: "" },
+        });
+        // Only the connection keys travel into each case: the harness's data
+        // directory and master secret would change what the deployment baseline
+        // these cases assert against actually says.
+        databaseEnv = {
+            HAPPIER_DB_PROVIDER: process.env.HAPPIER_DB_PROVIDER,
+            HAPPY_DB_PROVIDER: process.env.HAPPY_DB_PROVIDER,
+            DATABASE_URL: process.env.DATABASE_URL,
+        };
+    }, 300_000);
+
+    afterAll(async () => {
+        await harness.close();
+    });
+
     beforeEach(async () => {
-        vi.resetModules();
-        vi.doUnmock("@/app/serverIdentity/serverIdentity");
+        serverIdentityOverride.value = null;
         resetPublicServerUrlInferenceCacheForTests();
         resetEnv();
         descriptorContinuityDir = await mkdtemp(join(tmpdir(), "features-descriptor-"));
     });
 
     afterEach(async () => {
-        vi.doUnmock("@/app/serverIdentity/serverIdentity");
+        serverIdentityOverride.value = null;
         resetPublicServerUrlInferenceCacheForTests();
+        // The Home governance row is the one piece of shared state a case writes.
+        await db.homeGovernancePolicy.deleteMany({});
         resetEnv();
         await rm(descriptorContinuityDir, { recursive: true, force: true });
         descriptorContinuityDir = "";
@@ -110,6 +202,74 @@ describe("featuresRoutes", () => {
         capability = { enabled: true };
         const ready = await getFeaturesPayload({}, undefined, resolveCapability);
         expect(ready.payload.capabilities.homeSearch).toEqual({ enabled: true });
+    });
+
+    it.each(['external', 'self'] as const)('publishes policy and own presentation through serialized HTTP for %s', async (mode) => {
+        process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_MODE = mode;
+        process.env.HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME = 'This service';
+        process.env.HANDY_MASTER_SECRET = 'features-publication-test-secret';
+        if (mode === 'external') {
+            process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_URL = 'https://accounts.example.test';
+            process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID = 'srv_accounts';
+        }
+        const { featuresRoutes } = await import('./featuresRoutes');
+        await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+            const response = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(response.statusCode, response.body).toBe(200);
+            const payload = response.json();
+            expect(payload.signInService).toEqual(mode === 'self' ? { v: 1, mode } : {
+                v: 1,
+                mode,
+                endpoint: 'https://accounts.example.test',
+                expectedServerIdentityId: 'srv_accounts',
+            });
+            expect(payload.accountServicePresentation).toEqual({ v: 1, displayName: 'This service' });
+            expect(payload.capabilities.auth.methods).toBeDefined();
+        });
+    });
+
+    it('projects legacy auth methods from the persisted Home decision', async () => {
+        process.env.AUTH_REQUIRED_LOGIN_PROVIDERS = '';
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = '1';
+        process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED = '1';
+        process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED = '1';
+        process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY = 'optional';
+        const { featuresRoutes } = await import('./featuresRoutes');
+        await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+            await db.homeGovernancePolicy.create({
+                data: {
+                    id: 'home',
+                    authenticationPolicy: { v: 1, enabledMethodIds: ['email_password'] },
+                },
+            });
+            const response = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(response.statusCode, response.body).toBe(200);
+            const auth = response.json().capabilities.auth;
+            expect(auth.methods.find((method: { id: string }) => method.id === 'key_challenge')
+                ?.actions.every((action: { enabled: boolean }) => !action.enabled)).toBe(true);
+            expect(auth.login.methods.find((method: { id: string }) => method.id === 'key_challenge'))
+                .toEqual({ id: 'key_challenge', enabled: false });
+            expect(auth.methods.map((method: { id: string }) => method.id)).not.toContain('email_password');
+        });
+    });
+
+    it('publishes the persisted Home sign-in-service narrowing instead of the deployment value', async () => {
+        process.env.AUTH_REQUIRED_LOGIN_PROVIDERS = '';
+        process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_MODE = 'external';
+        process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_URL = 'https://accounts.example.test';
+        process.env.HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID = 'srv_accounts';
+        const { featuresRoutes } = await import('./featuresRoutes');
+        await withAuthenticatedTestApp((app) => featuresRoutes(app), async (app) => {
+            await db.homeGovernancePolicy.create({
+                data: {
+                    id: 'home',
+                    authenticationPolicy: { v: 1, signInService: { mode: 'disabled' } },
+                },
+            });
+            const response = await app.inject({ method: 'GET', url: '/v1/features' });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json().signInService).toEqual({ v: 1, mode: 'disabled' });
+        });
     });
 
     it("advertises Home unavailability but makes no Home claim when no lifecycle is composed", async () => {
@@ -593,6 +753,7 @@ describe("featuresRoutes", () => {
                         displayName: "Acme Okta",
                         issuer: "https://issuer.example.test",
                         clientId: "cid",
+                        clientAuthenticationMethod: "client_secret_post",
                         clientSecret: "secret",
                         redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
                     },

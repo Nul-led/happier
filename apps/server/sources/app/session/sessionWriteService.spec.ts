@@ -1,12 +1,16 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+    signAccountContentKeyBindingV1,
     computeContentPublicKeyFingerprint,
     type SessionTranscriptObservationProvenanceV1,
     VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
 import { createEnvPatcher } from "@/testkit/env";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { createDbMocks, installDbModuleMock } from "../api/testkit/dbMocks";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 type MockFunction = ReturnType<typeof vi.fn>;
 type SessionWriteTxMock = {
@@ -14,15 +18,26 @@ type SessionWriteTxMock = {
     $executeRawUnsafe?: MockFunction;
     account: {
         findUnique: MockFunction;
+        findMany: MockFunction;
     };
     session: {
         findUnique: MockFunction;
         findFirst: MockFunction;
+        findMany: MockFunction;
         update: MockFunction;
         updateMany: MockFunction;
     };
     sessionShare: {
         findUnique: MockFunction;
+        findMany: MockFunction;
+    };
+    accountSessionReadState: {
+        findUnique: MockFunction;
+        updateMany: MockFunction;
+    };
+    accountSessionFollow: {
+        findUnique: MockFunction;
+        findMany: MockFunction;
     };
     sessionMessage: {
         findFirst: MockFunction;
@@ -34,6 +49,7 @@ type SessionWriteTxMock = {
     sessionTurn: {
         findUnique: MockFunction;
         findFirst: MockFunction;
+        findMany: MockFunction;
         create: MockFunction;
         update: MockFunction;
     };
@@ -42,26 +58,158 @@ type SessionWriteTxMock = {
         create: MockFunction;
         update: MockFunction;
     };
+    sessionTeamCredentialBinding: {
+        findUnique: MockFunction;
+    };
+    sessionFollowEdge: {
+        findMany: MockFunction;
+    };
 };
 
 let currentTx: SessionWriteTxMock;
 let transactionQueue: SessionWriteTxMock[] = [];
 
+type SessionFixtureRow = Record<string, unknown> & {
+    accountId?: string;
+    shares?: Array<{ id?: string; sharedWithUserId: string; accessLevel?: "view" | "edit" | "admin"; canApprovePermissions?: boolean }>;
+};
+
+const originalSessionQueries = new WeakMap<SessionWriteTxMock, MockFunction>();
+const originalSessionListQueries = new WeakMap<SessionWriteTxMock, MockFunction>();
+const originalSessionShareListQueries = new WeakMap<SessionWriteTxMock, MockFunction>();
+const originalAccountQueries = new WeakMap<SessionWriteTxMock, MockFunction>();
+
+/**
+ * Model additional Prisma projections of the same fixture row without consuming
+ * the queued domain snapshots. This is a database-boundary fixture, not an ACL:
+ * the real access projector, query compiler and recipient owner still execute.
+ */
+function withSessionProjectionQueries(tx: SessionWriteTxMock): SessionWriteTxMock {
+    const sessionQuery = originalSessionQueries.get(tx) ?? tx.session.findUnique;
+    const sessionListQuery = originalSessionListQueries.get(tx) ?? tx.session.findMany;
+    const sessionShareListQuery = originalSessionShareListQueries.get(tx) ?? tx.sessionShare.findMany;
+    const accountQuery = originalAccountQueries.get(tx) ?? tx.account.findMany;
+    originalSessionQueries.set(tx, sessionQuery);
+    originalSessionListQueries.set(tx, sessionListQuery);
+    originalSessionShareListQueries.set(tx, sessionShareListQuery);
+    originalAccountQueries.set(tx, accountQuery);
+    let storedRow: SessionFixtureRow | null | undefined;
+    let mutationContextRead = false;
+    tx.session.findUnique = new Proxy(sessionQuery, {
+        async apply(target, thisArg, args) {
+            const query = args[0] as { where: { id: string }; select?: Record<string, unknown> };
+            const select = query.select ?? {};
+            const accessProjection = "teamGrants" in select && "shares" in select;
+            const audienceProjection = "teamGrants" in select && !("shares" in select);
+            const ownerProjection = Object.keys(select).length === 1 && select.accountId === true;
+            if (ownerProjection && storedRow !== undefined) return storedRow ? { accountId: storedRow.accountId } : null;
+            if (!accessProjection && !audienceProjection || storedRow === undefined) {
+                const row = await Reflect.apply(target, thisArg, args) as SessionFixtureRow | null | undefined;
+                if (row == null) {
+                    storedRow = null;
+                } else {
+                    storedRow = { ...storedRow, ...row };
+                }
+                mutationContextRead = "tag" in select && "encryptionMode" in select;
+                if (!accessProjection && !audienceProjection) return row;
+            }
+            if (!storedRow) return null;
+            const row = {
+                id: query.where.id,
+                currentStorageState: "hosted",
+                account: { status: "active" },
+                teamGrants: [],
+                groupGrants: [],
+                ...storedRow,
+                shares: (storedRow.shares ?? []).map(share => ({
+                    id: `share-${share.sharedWithUserId}`,
+                    accessLevel: "view",
+                    canApprovePermissions: false,
+                    ...share,
+                })),
+            };
+            if (accessProjection && mutationContextRead) {
+                const shares = select.shares as { where: { sharedWithUserId: { in: string[] } } };
+                for (const accountId of shares.where.sharedWithUserId.in) {
+                    if (accountId === row.accountId) continue;
+                    const grant = await tx.sessionShare.findUnique({
+                        where: { sessionId_sharedWithUserId: { sessionId: query.where.id, sharedWithUserId: accountId } },
+                    }) as { accessLevel: "view" | "edit" | "admin"; canApprovePermissions?: boolean } | null | undefined;
+                    if (grant !== undefined) {
+                        row.shares = row.shares.filter(share => share.sharedWithUserId !== accountId);
+                        if (grant) row.shares.push({ id: `share-${accountId}`, sharedWithUserId: accountId, accessLevel: grant.accessLevel, canApprovePermissions: grant.canApprovePermissions ?? false });
+                    }
+                }
+            }
+            return row;
+        },
+    });
+    tx.account.findMany = new Proxy(accountQuery, {
+        async apply(target, thisArg, args) {
+            const configured = await Reflect.apply(target, thisArg, args);
+            if (configured !== undefined) return configured;
+            // Existing domain fixtures carry their owner/direct Account census.
+            return storedRow ? [...new Set([storedRow.accountId, ...(storedRow.shares ?? []).map(share => share.sharedWithUserId)])]
+                .filter((id): id is string => typeof id === "string").map(id => ({ id })) : [];
+        },
+    });
+    tx.session.findMany = new Proxy(sessionListQuery, {
+        async apply(target, thisArg, args) {
+            const query = args[0] as {
+                where?: { id?: { in?: string[] } };
+                select?: Record<string, unknown>;
+            };
+            const recipientProjection = Array.isArray(query.where?.id?.in)
+                && query.select?.accountId === true
+                && typeof query.select?.account === "object";
+            if (!recipientProjection || storedRow === undefined) {
+                return await Reflect.apply(target, thisArg, args);
+            }
+            if (!storedRow) return [];
+            return query.where!.id!.in!.map((id) => ({
+                id,
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
+                ...storedRow,
+                account: { status: "active" },
+            }));
+        },
+    });
+    tx.sessionShare.findMany = new Proxy(sessionShareListQuery, {
+        async apply(target, thisArg, args) {
+            const query = args[0] as { where?: { sessionId?: { in?: string[] } }; select?: Record<string, unknown> };
+            const recipientProjection = Array.isArray(query.where?.sessionId?.in)
+                && query.select?.sessionId === true
+                && query.select?.sharedWithUserId === true;
+            if (!recipientProjection || storedRow === undefined) {
+                return await Reflect.apply(target, thisArg, args);
+            }
+            if (!storedRow) return [];
+            const sessionId = query.where!.sessionId!.in![0]!;
+            return (storedRow.shares ?? []).map((share) => ({
+                sessionId,
+                sharedWithUserId: share.sharedWithUserId,
+            }));
+        },
+    });
+    return tx;
+}
+
 function createAccountContentBinding() {
     const signingKeyPair = tweetnacl.sign.keyPair();
     const contentKeyPair = tweetnacl.box.keyPair();
-    const signedPayload = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(contentKeyPair.publicKey),
-    ]);
+
     return {
         publicKey: Buffer.from(signingKeyPair.publicKey).toString("hex"),
         contentPublicKey: Buffer.from(contentKeyPair.publicKey),
         contentPublicKeySig: Buffer.from(
-            tweetnacl.sign.detached(
-                signedPayload,
-                signingKeyPair.secretKey,
-            ),
+            signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signingKeyPair.secretKey,
+                contentPublicKey: contentKeyPair.publicKey,
+            }),
         ),
         fingerprint: computeContentPublicKeyFingerprint(
             new Uint8Array(contentKeyPair.publicKey),
@@ -84,7 +232,7 @@ const afterTx = vi.hoisted(() => vi.fn((_tx: unknown, callback: () => void) => {
     afterTxCallbacks.push(callback);
 }));
 vi.mock("@/storage/inTx", () => ({
-    inTx: async <T>(fn: (tx: SessionWriteTxMock) => T | Promise<T>) => await fn(transactionQueue.shift() ?? currentTx),
+    inTx: async <T>(fn: (tx: SessionWriteTxMock) => T | Promise<T>) => await fn(withSessionProjectionQueries(transactionQueue.shift() ?? currentTx)),
     afterTx: (tx: unknown, callback: () => void) => afterTx(tx, callback),
 }));
 
@@ -108,11 +256,6 @@ const admitSessionLifecycleAutomationRunsTx = vi.fn<
 vi.mock("@/app/automations/automationSessionLifecycleAdmission", () => ({
     admitSessionLifecycleAutomationRunsTx: (...args: unknown[]) =>
         admitSessionLifecycleAutomationRunsTx(...args),
-}));
-
-const getSessionParticipantUserIds = vi.fn<(...args: unknown[]) => Promise<string[]>>();
-vi.mock("@/app/share/sessionParticipants", () => ({
-    getSessionParticipantUserIds: (...args: unknown[]) => getSessionParticipantUserIds(...args),
 }));
 
 const markAccountChanged = vi.fn<(...args: unknown[]) => Promise<number>>();
@@ -172,7 +315,6 @@ describe("sessionWriteService", () => {
     }, 60_000);
 
     beforeEach(() => {
-        getSessionParticipantUserIds.mockReset();
         markAccountChanged.mockReset();
         observeCreateSessionMessageStage.mockReset();
         sessionMessageRoleMismatchCounter.inc.mockReset();
@@ -190,15 +332,26 @@ describe("sessionWriteService", () => {
         currentTx = {
             account: {
                 findUnique: vi.fn(),
+                findMany: vi.fn(),
             },
             session: {
                 findUnique: vi.fn(),
                 findFirst: vi.fn().mockResolvedValue({ id: "s1", accountId: "u1" }),
+                findMany: vi.fn().mockResolvedValue([]),
                 update: vi.fn(),
                 updateMany: vi.fn(),
             },
             sessionShare: {
                 findUnique: vi.fn(),
+                findMany: vi.fn(),
+            },
+            accountSessionReadState: {
+                findUnique: vi.fn(),
+                updateMany: vi.fn().mockResolvedValue({ count: 0 }),
+            },
+            accountSessionFollow: {
+                findUnique: vi.fn().mockResolvedValue(null),
+                findMany: vi.fn().mockResolvedValue([]),
             },
             sessionMessage: {
                 findFirst: vi.fn(),
@@ -210,6 +363,7 @@ describe("sessionWriteService", () => {
             sessionTurn: {
                 findUnique: vi.fn(),
                 findFirst: vi.fn(),
+                findMany: vi.fn(),
                 create: vi.fn(),
                 update: vi.fn(),
             },
@@ -217,6 +371,12 @@ describe("sessionWriteService", () => {
                 findUnique: vi.fn(),
                 create: vi.fn(),
                 update: vi.fn(),
+            },
+            sessionTeamCredentialBinding: {
+                findUnique: vi.fn().mockResolvedValue(null),
+            },
+            sessionFollowEdge: {
+                findMany: vi.fn().mockResolvedValue([]),
             },
         };
     });
@@ -264,7 +424,7 @@ describe("sessionWriteService", () => {
                 lastRuntimeIssueJson: null,
             });
             currentTx.session.update.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValue(201);
 
             const result = await reassertSessionLatestTurnStatus({
@@ -381,7 +541,7 @@ describe("sessionWriteService", () => {
                 })
                 .mockResolvedValueOnce(hostedTranscriptPublication());
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
 
             const res = await updateSessionRuntimeActivityProjection({
                 accountId: "u1",
@@ -449,7 +609,7 @@ describe("sessionWriteService", () => {
                         runtimeActivityRevision: BigInt(4),
                     });
                 currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-                getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+                currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
 
                 const res = await updateSessionRuntimeActivityProjection({
                     accountId: "u1",
@@ -478,7 +638,7 @@ describe("sessionWriteService", () => {
                     runtimeActivityRevision: BigInt(4),
                 });
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
 
             const res = await updateSessionRuntimeActivityProjection({
                 accountId: "u1",
@@ -608,7 +768,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValue(2);
 
-            const result = await createSessionMessage({
+            const result = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: " historical-id ",
@@ -650,7 +810,7 @@ describe("sessionWriteService", () => {
                 runtimeActivityRevision: BigInt(1),
             });
 
-            const result = await createSessionMessage({
+            const result = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "history-id",
@@ -709,7 +869,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValue(2);
 
-            const result = await createSessionMessage({
+            const result = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "history-raced-by-successor",
@@ -765,7 +925,7 @@ describe("sessionWriteService", () => {
 
             accessRows();
             currentTx.sessionMessage.findUnique.mockResolvedValueOnce(existing);
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 ...base,
                 trustedSourceTimestamps: { createdAt: 100, updatedAt: 200 },
             })).resolves.toMatchObject({ ok: true, didWrite: false, didUpdate: false });
@@ -774,7 +934,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique.mockReset();
             accessRows();
             currentTx.sessionMessage.findUnique.mockResolvedValueOnce(existing);
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 ...base,
                 trustedSourceTimestamps: { createdAt: 100, updatedAt: 199 },
             })).resolves.toEqual({ ok: false, error: "invalid-params" });
@@ -815,7 +975,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
             currentTx.sessionMessage.findUnique.mockResolvedValueOnce(existing);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: existing.localId,
@@ -829,7 +989,7 @@ describe("sessionWriteService", () => {
                 didWrite: false,
                 didUpdate: false,
                 message: { id: existing.id, localId: existing.localId },
-                participantCursors: [],
+                recipientCursors: [],
             });
 
             expect(currentTx.sessionMessage.create).not.toHaveBeenCalled();
@@ -871,7 +1031,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
             currentTx.sessionMessage.findUnique.mockResolvedValueOnce(existing);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: existing.localId,
@@ -924,7 +1084,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValue(101);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: existing.localId,
@@ -999,7 +1159,7 @@ describe("sessionWriteService", () => {
                 updatedAt: new Date(300),
             });
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "history-structured",
@@ -1095,7 +1255,7 @@ describe("sessionWriteService", () => {
 
                 arrangePath(existing);
                 currentTx.sessionMessage.update.mockResolvedValueOnce(watermarked);
-                const advanced = await createSessionMessage({
+                const advanced = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                     ...base,
                     content: existing.content,
                     trustedSourceTimestamps: { createdAt: 100, updatedAt: 201 },
@@ -1111,13 +1271,13 @@ describe("sessionWriteService", () => {
                     didWrite: false,
                     didUpdate: false,
                     badgeAttentionChanged: false,
-                    participantCursors: [],
+                    recipientCursors: [],
                     message: { sourceUpdatedAt: new Date(201) },
                 });
                 expect(markAccountChanged).not.toHaveBeenCalled();
 
                 arrangePath(watermarked);
-                const staleContent = await createSessionMessage({
+                const staleContent = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                     ...base,
                     content: { t: "plain", v: { role: "agent", content: { type: "text", text: "stale-different" } } },
                     trustedSourceTimestamps: { createdAt: 100, updatedAt: 200 },
@@ -1174,7 +1334,7 @@ describe("sessionWriteService", () => {
                 .mockRejectedValueOnce({ code: "P2025" })
                 .mockResolvedValueOnce(advanced);
 
-            const result = await createSessionMessage({
+            const result = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: "trusted-revision-race",
@@ -1241,7 +1401,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionMessage.findUnique.mockResolvedValue(existing);
             currentTx.sessionMessage.update.mockRejectedValueOnce({ code: "P2025" });
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 localId: existing.localId,
@@ -1290,7 +1450,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
             currentTx.sessionMessage.findUnique.mockResolvedValue(existing);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -1347,7 +1507,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionMessage.update.mockResolvedValue({ ...existing, messageRole: "agent" });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -1361,7 +1521,7 @@ describe("sessionWriteService", () => {
                 didWrite: false,
                 didUpdate: true,
                 badgeAttentionChanged: false,
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
             });
 
             expect(currentTx.sessionMessage.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -1398,7 +1558,7 @@ describe("sessionWriteService", () => {
                 createdAt: new Date(1),
                 updatedAt: new Date(2),
             });
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "c1",
@@ -1416,15 +1576,16 @@ describe("sessionWriteService", () => {
                     localId: "l1",
                     sidechainId: null,
                     messageRole: null,
+                    inputAdmissionReceipt: null,
                     content: { t: "encrypted", c: "c1" },
                     createdAt: new Date(1),
                     updatedAt: new Date(2),
                 },
-                participantCursors: [],
+                recipientCursors: [],
             });
             expect(currentTx.session.update).toHaveBeenCalledWith(expect.objectContaining({
                 where: { id: "s1", currentStorageState: "hosted" },
-                select: { seq: true },
+                select: { seq: true, tag: true },
                 data: expect.objectContaining({ seq: { increment: 1 } }),
             }));
             expect(currentTx.sessionMessage.create).toHaveBeenCalledWith(
@@ -1475,7 +1636,7 @@ describe("sessionWriteService", () => {
             dbMocks.db.sessionShare.findUnique.mockResolvedValue({ accessLevel: "edit" });
             dbMocks.db.sessionMessage.findUnique.mockResolvedValue(staleWinner);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "editor",
                 sessionId: "s1",
                 ciphertext: "next",
@@ -1524,7 +1685,7 @@ describe("sessionWriteService", () => {
             dbMocks.db.session.findUnique.mockResolvedValue(session);
             dbMocks.db.sessionMessage.findUnique.mockResolvedValue(staleWinner);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "next",
@@ -1569,7 +1730,7 @@ describe("sessionWriteService", () => {
             dbMocks.db.session.findUnique.mockResolvedValue(session);
             dbMocks.db.sessionMessage.findUnique.mockResolvedValue(existing);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -1612,7 +1773,7 @@ describe("sessionWriteService", () => {
                 updatedAt: new Date(2),
             });
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "c1",
@@ -1682,7 +1843,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "voice-history",
                 ciphertext: "corrected",
@@ -1704,7 +1865,7 @@ describe("sessionWriteService", () => {
                     seq: 4,
                     localId: "voice-history-final",
                 }),
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 101 },
                 ],
             });
@@ -1770,10 +1931,10 @@ describe("sessionWriteService", () => {
                 updatedAt,
             });
 
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "next",
@@ -1793,7 +1954,7 @@ describe("sessionWriteService", () => {
                     affectsMeaningfulActivity: true,
                 },
                 message: expect.objectContaining({ id: "m1", seq: 4, localId: "l1" }),
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 101 },
                     { accountId: "u2", cursor: 102 },
                 ],
@@ -1812,7 +1973,6 @@ describe("sessionWriteService", () => {
                     },
                 }),
             );
-            expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
         });
 
         it("replays an exact immutable divider P2002 winner without rewriting it", async () => {
@@ -1850,7 +2010,7 @@ describe("sessionWriteService", () => {
             dbMocks.db.sessionShare.findUnique.mockResolvedValue(null);
             dbMocks.db.sessionMessage.findUnique.mockResolvedValue(winner);
 
-            const result = await createSessionMessage({
+            const result = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "same",
@@ -1870,11 +2030,12 @@ describe("sessionWriteService", () => {
                     localId: winner.localId,
                     sidechainId: null,
                     messageRole: "event",
+                    inputAdmissionReceipt: null,
                     content: winner.content,
                     createdAt,
                     updatedAt,
                 },
-                participantCursors: [],
+                recipientCursors: [],
             });
             expect(currentTx.sessionMessage.update).not.toHaveBeenCalled();
             expect(markAccountChanged).not.toHaveBeenCalled();
@@ -1919,7 +2080,7 @@ describe("sessionWriteService", () => {
             });
             dbMocks.db.sessionShare.findUnique.mockResolvedValue(null);
             dbMocks.db.sessionMessage.findUnique.mockResolvedValue(winner);
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
 
             const params = {
@@ -1999,7 +2160,7 @@ describe("sessionWriteService", () => {
                 .mockResolvedValueOnce(winningCorrection);
             markAccountChanged.mockResolvedValueOnce(101);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: initial.c,
@@ -2080,7 +2241,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionMessage.update.mockResolvedValue({ ...existing, content });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content,
@@ -2136,7 +2297,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionMessage.update.mockResolvedValue({ ...existing, messageRole: "agent" });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            await expect(createSessionMessage({
+            await expect(createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -2147,7 +2308,7 @@ describe("sessionWriteService", () => {
                 didWrite: false,
                 didUpdate: true,
                 badgeAttentionChanged: false,
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
             });
 
             expect(currentTx.sessionMessage.update).toHaveBeenCalledWith(expect.objectContaining({
@@ -2162,7 +2323,7 @@ describe("sessionWriteService", () => {
             currentTx.session.findUnique.mockResolvedValue({ accountId: "owner" });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u2",
                 sessionId: "s1",
                 ciphertext: "c1",
@@ -2216,10 +2377,10 @@ describe("sessionWriteService", () => {
                 updatedAt,
             });
 
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -2233,7 +2394,7 @@ describe("sessionWriteService", () => {
             expect(res.message.id).toBe("m1");
             expect(res.message.seq).toBe(10);
             expect(res.badgeAttentionChanged).toBe(true);
-            expect(res.participantCursors).toEqual([
+            expect(res.recipientCursors).toEqual([
                 { accountId: "u1", cursor: 101 },
                 { accountId: "u2", cursor: 102 },
             ]);
@@ -2250,7 +2411,6 @@ describe("sessionWriteService", () => {
                 entityId: "s1",
                 hint: { lastMessageSeq: 10, lastMessageId: "m1" },
             });
-            expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
             expect(currentTx.session.findUnique).toHaveBeenCalledTimes(2);
             expect(currentTx.sessionMessage.findUnique).not.toHaveBeenCalled();
             expect(currentTx.session.updateMany).toHaveBeenCalledTimes(1);
@@ -2293,6 +2453,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: { t: "encrypted", c: "cipher" },
@@ -2307,16 +2469,18 @@ describe("sessionWriteService", () => {
             expect(res.ok).toBe(true);
             if (!res.ok) return;
             expect(res.badgeAttentionChanged).toBe(false);
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 10 } }, { lastViewedSessionSeq: null }],
+                    sessionId: "s1",
+                    accountId: { in: ["u1"] },
+                    account: { status: "active" },
+                    lastViewedSessionSeq: { gte: 9, lt: 10 },
                 },
-                data: { lastViewedSessionSeq: 10 },
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
             });
             expect(currentTx.session.update).toHaveBeenNthCalledWith(1, {
                 where: { id: "s1", currentStorageState: "hosted" },
-                select: { seq: true },
+                select: { seq: true, tag: true },
                 data: { seq: { increment: 1 } },
             });
             expect(currentTx.session.update).toHaveBeenCalledTimes(1);
@@ -2340,7 +2504,7 @@ describe("sessionWriteService", () => {
                 active: false,
                 archivedAt: null,
             });
-            currentTx.session.update.mockResolvedValue({ seq: 10 });
+            currentTx.session.update.mockResolvedValue({ seq: 10, tag: VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG });
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
             currentTx.sessionMessage.create.mockResolvedValue({
                 id: "m-voice-history",
@@ -2354,7 +2518,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "voice-history",
                 content: { t: "encrypted", c: "cipher" },
@@ -2369,13 +2533,15 @@ describe("sessionWriteService", () => {
                 affectsMeaningfulActivity: false,
             });
             expect(res.badgeAttentionChanged).toBe(false);
-            expect(currentTx.session.updateMany).toHaveBeenCalledTimes(1);
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: "voice-history",
-                    OR: [{ lastViewedSessionSeq: { lt: 10 } }, { lastViewedSessionSeq: null }],
+                    sessionId: "voice-history",
+                    accountId: { in: ["u1"] },
+                    account: { status: "active" },
+                    lastViewedSessionSeq: { gte: 0, lt: 10 },
                 },
-                data: { lastViewedSessionSeq: 10 },
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
             });
         });
 
@@ -2411,6 +2577,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: { t: "encrypted", c: "cipher" },
@@ -2421,13 +2589,15 @@ describe("sessionWriteService", () => {
             expect(res.ok).toBe(true);
             if (!res.ok) return;
             expect(res.badgeAttentionChanged).toBe(false);
-            expect(currentTx.session.updateMany).toHaveBeenCalledTimes(1);
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 10 } }, { lastViewedSessionSeq: null }],
+                    sessionId: "s1",
+                    accountId: { in: ["u1"] },
+                    account: { status: "active" },
+                    lastViewedSessionSeq: { gte: 9, lt: 10 },
                 },
-                data: { lastViewedSessionSeq: 10 },
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
             });
         });
 
@@ -2480,7 +2650,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content,
@@ -2495,13 +2665,15 @@ describe("sessionWriteService", () => {
                 affectsUnread: false,
                 affectsMeaningfulActivity: false,
             });
-            expect(currentTx.session.updateMany).toHaveBeenCalledTimes(1);
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 10 } }, { lastViewedSessionSeq: null }],
+                    sessionId: "s1",
+                    accountId: { in: ["u1"] },
+                    account: { status: "active" },
+                    lastViewedSessionSeq: { gte: 9, lt: 10 },
                 },
-                data: { lastViewedSessionSeq: 10 },
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
             });
         });
 
@@ -2538,6 +2710,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u2",
                 sessionId: "s1",
                 content: { t: "encrypted", c: "cipher" },
@@ -2600,6 +2774,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: { t: "plain", v: {
@@ -2645,12 +2821,9 @@ describe("sessionWriteService", () => {
                     active: true,
                     archivedAt: null,
                 })
-                .mockResolvedValueOnce(hostedTranscriptPublication())
-                .mockResolvedValueOnce({
-                    lastViewedSessionSeq: 12,
-                });
+                .mockResolvedValueOnce(hostedTranscriptPublication());
             currentTx.session.update.mockResolvedValue({ seq: 10 });
-            currentTx.session.updateMany.mockResolvedValue({ count: 0 });
+            currentTx.accountSessionReadState.updateMany.mockResolvedValue({ count: 0 });
             currentTx.sessionMessage.create.mockResolvedValue({
                 id: "m-auth",
                 seq: 10,
@@ -2664,6 +2837,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: { t: "encrypted", c: "cipher" },
@@ -2678,18 +2853,17 @@ describe("sessionWriteService", () => {
             expect(res.ok).toBe(true);
             if (!res.ok) return;
             expect(res.badgeAttentionChanged).toBe(false);
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+            expect(currentTx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
                 where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 10 } }, { lastViewedSessionSeq: null }],
+                    sessionId: "s1",
+                    accountId: { in: ["u1"] },
+                    account: { status: "active" },
+                    lastViewedSessionSeq: { gte: 9, lt: 10 },
                 },
-                data: { lastViewedSessionSeq: 10 },
+                data: { lastViewedSessionSeq: 10, unreadSince: null },
             });
             expect(currentTx.session.update).toHaveBeenCalledTimes(1);
-            expect(currentTx.session.findUnique).toHaveBeenNthCalledWith(3, {
-                where: { id: "s1" },
-                select: { lastViewedSessionSeq: true },
-            });
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
         });
 
         it("captures message and ready timestamps after the session seq increment lock is acquired", async () => {
@@ -2714,6 +2888,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -2732,7 +2908,7 @@ describe("sessionWriteService", () => {
             });
             expect(currentTx.session.update).toHaveBeenCalledWith({
                 where: { id: "s1", currentStorageState: "hosted" },
-                select: { seq: true },
+                select: { seq: true, tag: true },
                 data: {
                     seq: { increment: 1 },
                 },
@@ -2782,6 +2958,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -2843,6 +3021,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -2929,7 +3109,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: readyContent,
@@ -3014,6 +3194,8 @@ describe("sessionWriteService", () => {
             markAccountChanged.mockResolvedValueOnce(101).mockResolvedValueOnce(102);
 
             const res = await createSessionMessage({
+                authentication,
+                inputAdmission: "authenticatedAccount",
                 actorUserId: "collab-1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3077,7 +3259,7 @@ describe("sessionWriteService", () => {
 
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3127,7 +3309,7 @@ describe("sessionWriteService", () => {
             });
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3143,11 +3325,12 @@ describe("sessionWriteService", () => {
                 localId: "l1",
                 sidechainId: null,
                 messageRole: null,
+                inputAdmissionReceipt: null,
                 content: { t: "encrypted", c: "cipher" },
                 createdAt,
                 updatedAt,
             });
-            expect(res.participantCursors).toEqual([{ accountId: "u1", cursor: 101 }]);
+            expect(res.recipientCursors).toEqual([{ accountId: "u1", cursor: 101 }]);
             expect(currentTx.$queryRawUnsafe).toBeUndefined();
             expect(currentTx.session.update).toHaveBeenCalledTimes(1);
             const sessionUpdateCall = currentTx.session.update.mock.calls[0]?.[0];
@@ -3155,7 +3338,7 @@ describe("sessionWriteService", () => {
             const messageCreateCall = currentTx.sessionMessage.create.mock.calls[0]?.[0];
             expect(sessionUpdateCall).toEqual({
                 where: { id: "s1", currentStorageState: "hosted" },
-                select: { seq: true },
+                select: { seq: true, tag: true },
                 data: {
                     seq: { increment: 1 },
                 },
@@ -3172,7 +3355,6 @@ describe("sessionWriteService", () => {
                 },
             });
             expect(currentTx.sessionMessage.create).toHaveBeenCalledTimes(1);
-            expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
             expect(markAccountChanged).toHaveBeenCalledWith(expect.anything(), {
                 accountId: "u1",
                 kind: "session",
@@ -3250,7 +3432,7 @@ describe("sessionWriteService", () => {
                 updatedAt,
             });
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3268,11 +3450,12 @@ describe("sessionWriteService", () => {
                     localId: "l1",
                     sidechainId: null,
                     messageRole: null,
+                    inputAdmissionReceipt: null,
                     content: { t: "encrypted", c: "cipher" },
                     createdAt,
                     updatedAt,
                 },
-                participantCursors: [],
+                recipientCursors: [],
             });
             expect(currentTx.$queryRawUnsafe).toBeUndefined();
             expect(currentTx.session.update).toHaveBeenCalledTimes(1);
@@ -3295,10 +3478,10 @@ describe("sessionWriteService", () => {
                 createdAt,
                 updatedAt: createdAt,
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 ciphertext: "cipher",
@@ -3326,10 +3509,10 @@ describe("sessionWriteService", () => {
                 createdAt,
                 updatedAt: createdAt,
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101);
 
-                const res = await createSessionMessage({
+                const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                     actorUserId: "u1",
                     sessionId: "s1",
                     content: { t: "plain", v: { type: "user", text: "hi" } },
@@ -3364,10 +3547,10 @@ describe("sessionWriteService", () => {
                 createdAt,
                 updatedAt: createdAt,
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101);
 
-            const res = await createSessionMessage({
+            const res = await createSessionMessage({ authentication, inputAdmission: "authenticatedAccount",
                 actorUserId: "u1",
                 sessionId: "s1",
                 content: { t: "plain", v: { role: "agent", content: { type: "acp", data: { type: "tool-call" } } } },
@@ -3415,7 +3598,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
             markAccountChanged.mockResolvedValueOnce(10).mockResolvedValueOnce(11);
 
-            const res = await updateSessionMetadata({
+            const res = await updateSessionMetadata({ authentication,
                 actorUserId: "u2",
                 sessionId: "s1",
                 expectedVersion: 5,
@@ -3437,7 +3620,7 @@ describe("sessionWriteService", () => {
             });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce({ accessLevel: "view" });
 
-            const res = await updateSessionMetadata({
+            const res = await updateSessionMetadata({ authentication,
                 actorUserId: "u2",
                 sessionId: "s1",
                 expectedVersion: 5,
@@ -3476,7 +3659,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 0 });
 
-            const res = await updateSessionMetadata({
+            const res = await updateSessionMetadata({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 expectedVersion: 5,
@@ -3492,8 +3675,9 @@ describe("sessionWriteService", () => {
 
         it("keeps semantically equal plaintext metadata at the current version without a write", async () => {
             currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({ accountId: "u1" })
+                .mockResolvedValue({
+                    accountId: "u1",
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
                     metadataVersion: 5,
@@ -3510,9 +3694,9 @@ describe("sessionWriteService", () => {
                     active: true,
                     archivedAt: null,
                 });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
+            currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
 
-            const res = await updateSessionMetadata({
+            const res = await updateSessionMetadata({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 expectedVersion: 5,
@@ -3523,58 +3707,43 @@ describe("sessionWriteService", () => {
                 ok: true,
                 version: 5,
                 metadata: "{\"a\":1,\"b\":2}",
-                participantCursors: [],
+                recipientCursors: [],
                 badgeAttentionChanged: false,
             });
             expect(currentTx.session.updateMany).not.toHaveBeenCalled();
         });
 
-        it("advances only the read cursor for a semantic metadata no-op using the layout fence", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    metadataLayoutVersion: 0,
-                    ownerMetadata: null,
-                    metadataVersion: 5,
-                    metadata: "{\"a\":1,\"b\":2}",
-                    encryptionMode: "plain",
-                    seq: 9,
-                    pendingCount: 0,
-                    pendingBlockedCount: 0,
-                    lastViewedSessionSeq: 2,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    latestTurnStatus: null,
-                    lastRuntimeIssue: null,
-                    active: true,
-                    archivedAt: null,
-                });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
+        it("advances only the private cursor for a semantic metadata no-op", async () => {
+            const session = {
+                id: "s1", ...hostedTranscriptPublication(),
+                metadataLayoutVersion: 0, ownerMetadata: null, metadataVersion: 5,
+                metadata: '{"a":1,"b":2}', encryptionMode: "plain", seq: 9,
+                account: { status: "active" }, shares: [], teamGrants: [], groupGrants: [],
+                latestReadyEventSeq: null, latestTurnStatus: null,
+            };
+            const privateReadState = {
+                findUnique: vi.fn().mockResolvedValue({ lastViewedSessionSeq: 2, unreadSince: new Date(100) }),
+                updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+            };
+            Object.assign(currentTx, { accountSessionReadState: privateReadState });
+            currentTx.account.findUnique.mockResolvedValue({ status: "active" });
+            currentTx.session.findUnique.mockResolvedValue(session);
+            markAccountChanged.mockResolvedValue(200);
 
-            const res = await updateSessionMetadata({
-                actorUserId: "u1",
-                sessionId: "s1",
-                expectedVersion: 5,
-                metadataCiphertext: "{\"b\":2,\"a\":1}",
-                readCursorHintV1: { lastViewedSessionSeq: 8 },
+            const result = await updateSessionMetadata({ authentication,
+                actorUserId: "u1", sessionId: "s1", expectedVersion: 5,
+                metadataCiphertext: '{"b":2,"a":1}', readCursorHintV1: { lastViewedSessionSeq: 8 },
             });
 
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    metadataVersion: 5,
-                    metadataLayoutVersion: 0,
-                    ownerMetadata: null,
-                },
-                data: { lastViewedSessionSeq: 8 },
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+            expect(privateReadState.updateMany).toHaveBeenCalledWith({
+                where: { accountId: "u1", sessionId: "s1", lastViewedSessionSeq: { lt: 8 } },
+                data: { lastViewedSessionSeq: 8, unreadSince: new Date(100) },
             });
-            expect(res).toEqual(expect.objectContaining({
-                ok: true,
-                version: 5,
-                metadata: "{\"a\":1,\"b\":2}",
-                lastViewedSessionSeq: 8,
-            }));
+            expect(result).toMatchObject({
+                ok: true, version: 5, metadata: '{"a":1,"b":2}', recipientCursors: [],
+                privateReadCursor: { accountId: "u1", lastViewedSessionSeq: 8, actorChangeCursor: 200 },
+            });
         });
 
     });
@@ -3617,7 +3786,7 @@ describe("sessionWriteService", () => {
                     archivedAt: null,
                 });
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
             const occurrence = {
@@ -3688,7 +3857,7 @@ describe("sessionWriteService", () => {
                     archivedAt: null,
                 });
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
@@ -3754,7 +3923,7 @@ describe("sessionWriteService", () => {
                     archivedAt: null,
                 });
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
@@ -3906,7 +4075,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const res = await updateSessionAgentState({
@@ -3936,7 +4105,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const res = await updateSessionAgentState({
@@ -3972,7 +4141,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
@@ -4010,7 +4179,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const res = await updateSessionAgentState({
@@ -4046,7 +4215,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & { pendingRequestNewestCreatedAt: number } = {
@@ -4098,7 +4267,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionTurn.findUnique.mockResolvedValue(null);
             currentTx.sessionTurnMutationReceipt.findUnique.mockResolvedValue(null);
             currentTx.sessionTurn.create.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & {
@@ -4172,7 +4341,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
             const params: Parameters<typeof updateSessionAgentState>[0] & Record<"runtimeIssueSummaryV1", unknown> = {
@@ -4345,7 +4514,7 @@ describe("sessionWriteService", () => {
                 rollbackUpdatedAt: null,
                 lastMutationId: "mutation-begin",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101);
             const dateNowMock = vi.spyOn(Date, "now")
                 .mockReturnValueOnce(1_000)
@@ -4354,7 +4523,7 @@ describe("sessionWriteService", () => {
 
             const res = await (async () => {
                 try {
-                    return await applySessionTurnMutation({
+                    return await applySessionTurnMutation({ authentication,
                     actorUserId: "u1",
                     mutation: beginMutation,
                     });
@@ -4421,7 +4590,7 @@ describe("sessionWriteService", () => {
                 latestTurnStatus: "in_progress",
                 latestTurnStatusObservedAt: 100,
                 lastRuntimeIssue: null,
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
                 badgeAttentionChanged: false,
                 receipt: {
                     appliedAt: 2_000,
@@ -4486,10 +4655,10 @@ describe("sessionWriteService", () => {
                 rollbackUpdatedAt: null,
                 lastMutationId: "mutation-begin-anchored",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(101);
 
-            await applySessionTurnMutation({
+            await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -4565,10 +4734,10 @@ describe("sessionWriteService", () => {
                 lastRuntimeIssueJson: null,
                 lastMutationId: "mutation-touch",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(251);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -4611,7 +4780,7 @@ describe("sessionWriteService", () => {
                 latestTurnStatus: "in_progress",
                 latestTurnStatusObservedAt: 250,
                 lastRuntimeIssue: null,
-                participantCursors: [{ accountId: "u1", cursor: 251 }],
+                recipientCursors: [{ accountId: "u1", cursor: 251 }],
             });
         });
 
@@ -4698,10 +4867,10 @@ describe("sessionWriteService", () => {
                 }),
                 lastMutationId: "mutation-fail",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(251);
 
-            await applySessionTurnMutation({
+            await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -4793,10 +4962,10 @@ describe("sessionWriteService", () => {
                 lastRuntimeIssueJson: JSON.stringify(issue),
                 lastMutationId: "mutation-fail",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(251);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -4865,7 +5034,7 @@ describe("sessionWriteService", () => {
                 lastMutationId: "mutation-touch-newer",
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -4928,7 +5097,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.sessionTurnMutationReceipt.findUnique.mockResolvedValue({ id: "receipt-1" });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -4950,7 +5119,7 @@ describe("sessionWriteService", () => {
                 latestTurnStatus: "completed",
                 latestTurnStatusObservedAt: 200,
                 lastRuntimeIssue: null,
-                participantCursors: [],
+                recipientCursors: [],
                 badgeAttentionChanged: false,
             });
         });
@@ -4992,7 +5161,7 @@ describe("sessionWriteService", () => {
                 appliedAt: BigInt(222),
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5077,14 +5246,14 @@ describe("sessionWriteService", () => {
                 lastMutationId: "mutation-complete",
             });
             currentTx.session.update.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(102);
             admitSessionLifecycleAutomationRunsTx.mockResolvedValue([
                 { triggerId: "trigger-admitted", result: { kind: "admitted", run: { id: "run-1" } } },
                 { triggerId: "trigger-ineligible", result: { kind: "ineligible", reason: "definitionInvalid" } },
             ]);
 
-            await applySessionTurnMutation({
+            await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5172,7 +5341,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionTurnMutationReceipt.findUnique.mockResolvedValue(null);
             currentTx.sessionTurn.findUnique.mockResolvedValue(completedTurnRow);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5270,10 +5439,10 @@ describe("sessionWriteService", () => {
                 lastMutationId: "mutation-recovered-begin",
             });
             currentTx.session.update.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(103);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5364,10 +5533,10 @@ describe("sessionWriteService", () => {
                 lastMutationId: "mutation-recovered-complete",
             });
             currentTx.session.update.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(104);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5440,8 +5609,17 @@ describe("sessionWriteService", () => {
                     lastRuntimeIssue: null,
                     active: true,
                     archivedAt: null,
-                });
+                })
+                .mockResolvedValueOnce(hostedTranscriptPublication());
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
+            currentTx.session.findMany.mockResolvedValue([{
+                id: "s1",
+                accountId: "u1",
+                currentStorageState: "hosted",
+                account: { status: "active" },
+            }]);
+            currentTx.sessionShare.findMany.mockResolvedValue([]);
+            markAccountChanged.mockResolvedValue(101);
             currentTx.sessionTurnMutationReceipt.findUnique.mockResolvedValue(null);
             currentTx.sessionTurn.findUnique.mockResolvedValue({
                 ...completedTurnRow,
@@ -5455,8 +5633,12 @@ describe("sessionWriteService", () => {
                 rollbackUpdatedAt: BigInt(300),
                 lastMutationId: "mutation-rollback-eligible",
             });
+            currentTx.sessionTurn.findMany.mockResolvedValue([{
+                rollbackState: "eligible",
+                transcriptAnchorsJson: JSON.stringify({ startUserMessageSeq: 1 }),
+            }]);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5502,6 +5684,8 @@ describe("sessionWriteService", () => {
                 latestTurnId: "turn-1",
                 latestTurnStatus: "completed",
                 latestTurnStatusObservedAt: 200,
+                rollbackEligibleTurnStarts: [1],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
             });
         });
 
@@ -5539,7 +5723,7 @@ describe("sessionWriteService", () => {
                 transcriptAnchorsJson: null,
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5613,7 +5797,7 @@ describe("sessionWriteService", () => {
                 transcriptAnchorsJson: JSON.stringify({ startUserMessageSeq: 1, endSeqInclusive: 10 }),
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5688,7 +5872,7 @@ describe("sessionWriteService", () => {
                 return null;
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5780,7 +5964,7 @@ describe("sessionWriteService", () => {
                 lastMutationId: "mutation-anchors-2",
             }));
 
-            await applySessionTurnMutation({
+            await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5855,7 +6039,7 @@ describe("sessionWriteService", () => {
                 }),
             });
 
-            const result = await applySessionTurnMutation({
+            const result = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5912,10 +6096,10 @@ describe("sessionWriteService", () => {
                 }),
             });
             currentTx.session.update.mockResolvedValue({});
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(200);
 
-            const accepted = await applySessionTurnMutation({
+            const accepted = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -5978,7 +6162,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionTurn.findUnique.mockResolvedValue(completedTurnRow);
             currentTx.sessionTurnMutationReceipt.create.mockRejectedValue(Object.assign(new Error("duplicate"), { code: "P2002" }));
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -5995,7 +6179,7 @@ describe("sessionWriteService", () => {
                 latestTurnStatus: "completed",
                 latestTurnStatusObservedAt: 200,
                 lastRuntimeIssue: null,
-                participantCursors: [],
+                recipientCursors: [],
                 badgeAttentionChanged: false,
             });
         });
@@ -6032,7 +6216,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.sessionTurnMutationReceipt.findUnique.mockResolvedValue(null);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -6133,7 +6317,7 @@ describe("sessionWriteService", () => {
 
             const res = await (async () => {
                 try {
-                    return await applySessionTurnMutation({
+                    return await applySessionTurnMutation({ authentication,
                         actorUserId: "u1",
                         mutation: beginMutation,
                     });
@@ -6150,7 +6334,7 @@ describe("sessionWriteService", () => {
                 latestTurnStatus: "in_progress",
                 latestTurnStatusObservedAt: 100,
                 lastRuntimeIssue: null,
-                participantCursors: [],
+                recipientCursors: [],
                 badgeAttentionChanged: false,
                 receipt: {
                     sessionId: "s1",
@@ -6209,10 +6393,10 @@ describe("sessionWriteService", () => {
                 terminalAt: null,
                 lastMutationId: "mutation-next-begin",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(102);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     ...beginMutation,
@@ -6288,10 +6472,10 @@ describe("sessionWriteService", () => {
                 terminalAt: BigInt(400),
                 lastMutationId: "mutation-end",
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(103);
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -6358,7 +6542,7 @@ describe("sessionWriteService", () => {
                     status,
                 });
 
-                const res = await applySessionTurnMutation({
+                const res = await applySessionTurnMutation({ authentication,
                     actorUserId: "u1",
                     mutation: {
                         v: 1,
@@ -6398,7 +6582,7 @@ describe("sessionWriteService", () => {
                     latestTurnId: "turn-1",
                     latestTurnStatus: status,
                     latestTurnStatusObservedAt: 200,
-                    participantCursors: [],
+                    recipientCursors: [],
                     badgeAttentionChanged: false,
                 });
             },
@@ -6452,7 +6636,7 @@ describe("sessionWriteService", () => {
                 terminalAt: null,
             });
 
-            const res = await applySessionTurnMutation({
+            const res = await applySessionTurnMutation({ authentication,
                 actorUserId: "u1",
                 mutation: {
                     v: 1,
@@ -6489,702 +6673,179 @@ describe("sessionWriteService", () => {
         });
     });
 
-    describe("updateSessionReadCursor", () => {
-        it("applies a monotonic max update and marks participants", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    lastViewedSessionSeq: 3,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                    ...hostedTranscriptPublication(),
-                })
-                // `markSessionParticipantsChanged` loads the publication again through
-                // `loadSessionTranscriptPublication`; it is a second read, not the badge row.
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await updateSessionReadCursor({
-                actorUserId: "u1",
-                sessionId: "s1",
-                lastViewedSessionSeq: 9,
-            });
-
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 8 } }, { lastViewedSessionSeq: null }],
+    describe("private read cursor operations", () => {
+        function readTx(params: {
+            seq?: number;
+            cursor?: number;
+            owner?: string;
+            publication?: Record<string, unknown>;
+        } = {}) {
+            const row = {
+                id: "s1", ...hostedTranscriptPublication(params.owner ?? "u1"),
+                seq: params.seq ?? 8, latestReadyEventSeq: null, latestTurnStatus: "in_progress",
+                account: { status: "active" }, shares: [], teamGrants: [], groupGrants: [], ...params.publication,
+            };
+            const tx = {
+                ...currentTx,
+                account: { findUnique: vi.fn().mockResolvedValue({ status: "active" }), findMany: vi.fn() },
+                session: { ...currentTx.session, findUnique: vi.fn().mockResolvedValue(row) },
+                accountSessionReadState: {
+                    findUnique: vi.fn().mockResolvedValue({ lastViewedSessionSeq: params.cursor ?? 8, unreadSince: null }),
+                    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
                 },
-                data: { lastViewedSessionSeq: 8 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 8,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: true,
-            });
-        });
+            };
+            return { tx, row };
+        }
 
-        it("persists when the existing cursor is null", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    lastViewedSessionSeq: null,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                    ...hostedTranscriptPublication(),
-                })
-                // `markSessionParticipantsChanged` loads the publication again through
-                // `loadSessionTranscriptPublication`; it is a second read, not the badge row.
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await updateSessionReadCursor({
-                actorUserId: "u1",
-                sessionId: "s1",
-                lastViewedSessionSeq: 4,
+        it.each([
+            { incoming: 9, cursor: 3, seq: 8, expected: 8, didChange: true },
+            { incoming: 4, cursor: 5, seq: 8, expected: 5, didChange: false },
+            { incoming: 9, cursor: 0, seq: 0, expected: 0, didChange: false },
+        ])("updateSessionReadCursor clamps $incoming and never regresses cursor $cursor", async ({ incoming, cursor, seq, expected, didChange }) => {
+            const { tx } = readTx({ cursor, seq });
+            currentTx = tx;
+            markAccountChanged.mockResolvedValue(200);
+            const result = await updateSessionReadCursor({ authentication,  actorUserId: "u1", sessionId: "s1", lastViewedSessionSeq: incoming });
+            expect(result).toMatchObject({
+                ok: true, accountId: "u1", lastViewedSessionSeq: expected, visibleSessionSeq: seq,
+                didChange, actorChangeCursor: didChange ? 200 : null,
             });
-
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 4 } }, { lastViewedSessionSeq: null }],
-                },
-                data: { lastViewedSessionSeq: 4 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 4,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: false,
-            });
-        });
-
-        it("clamps advances to zero for empty sessions", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 0,
-                    lastViewedSessionSeq: null,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                    ...hostedTranscriptPublication(),
-                })
-                // `markSessionParticipantsChanged` loads the publication again through
-                // `loadSessionTranscriptPublication`; it is a second read, not the badge row.
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await updateSessionReadCursor({
-                actorUserId: "u1",
-                sessionId: "s1",
-                lastViewedSessionSeq: 9,
-            });
-
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 0 } }, { lastViewedSessionSeq: null }],
-                },
-                data: { lastViewedSessionSeq: 0 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 0,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: false,
-            });
-        });
-
-        it("returns ok without marking participants when the incoming cursor does not advance", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    lastViewedSessionSeq: 5,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                    ...hostedTranscriptPublication(),
+            expect(tx.session.updateMany).not.toHaveBeenCalled();
+            expect(currentTx.account.findMany).not.toHaveBeenCalled();
+            if (didChange) {
+                expect(tx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
+                    where: { accountId: "u1", sessionId: "s1", lastViewedSessionSeq: { lt: expected } },
+                    data: { lastViewedSessionSeq: expected, unreadSince: null },
                 });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-
-            const res = await updateSessionReadCursor({
-                actorUserId: "u1",
-                sessionId: "s1",
-                lastViewedSessionSeq: 4,
-            });
-
-            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
-            expect(markAccountChanged).not.toHaveBeenCalled();
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 5,
-                participantCursors: [],
-                badgeAttentionChanged: false,
-            });
+                expect(markAccountChanged).toHaveBeenCalledWith(tx, {
+                    accountId: "u1", kind: "session", entityId: "s1", hint: { lastViewedSessionSeq: expected },
+                });
+            } else {
+                expect(tx.accountSessionReadState.updateMany).not.toHaveBeenCalled();
+                expect(markAccountChanged).not.toHaveBeenCalled();
+            }
         });
-    });
 
-    describe("applySessionReadCursorOperation", () => {
-        it("does not scan transcript messages when the actor is unauthorized", async () => {
-            currentTx.session.findUnique.mockResolvedValueOnce({ accountId: "owner" });
-            currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "intruder",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(res).toEqual({ ok: false, error: "forbidden" });
+        it("applySessionReadCursorOperation does not scan transcript messages when unauthorized", async () => {
+            const { tx } = readTx({ owner: "owner" });
+            currentTx = tx;
+            expect(await applySessionReadCursorOperation({ authentication,  actorUserId: "intruder", sessionId: "s1", operation: { kind: "mark-unread" } }))
+                .toEqual({ ok: false, error: "forbidden" });
             expect(dbMocks.db.sessionMessage.findMany).not.toHaveBeenCalled();
-            expect(currentTx.sessionMessage.findMany).not.toHaveBeenCalled();
+            expect(tx.sessionMessage.findMany).not.toHaveBeenCalled();
+            expect(tx.accountSessionReadState.updateMany).not.toHaveBeenCalled();
         });
 
-        it("scans the published transcript outside transactions, then reauthorizes before lowering", async () => {
+        it("applySessionReadCursorOperation scans outside transactions and reauthorizes before lowering", async () => {
             const lifecycle: string[] = [];
-            const initialAuthorizationTx = {
-                session: {
-                    findUnique: vi.fn()
-                        .mockImplementationOnce(async () => {
-                            lifecycle.push("initial-authorization");
-                            return { accountId: "u1" };
-                        })
-                        .mockResolvedValueOnce({
-                            seq: 11,
-                            ...hostedTranscriptPublication(),
-                        }),
-                },
-                sessionShare: { findUnique: vi.fn() },
-                sessionMessage: {
-                    findMany: vi.fn(() => {
-                        throw new Error("transcript scan must not use the authorization transaction");
-                    }),
-                },
-            };
-            const finalTx = {
-                session: {
-                    findUnique: vi.fn()
-                        .mockImplementationOnce(async () => {
-                            lifecycle.push("final-authorization");
-                            return { accountId: "u1" };
-                        })
-                        .mockImplementationOnce(async () => {
-                            lifecycle.push("fresh-session");
-                            return {
-                                seq: 11,
-                                ...hostedTranscriptPublication(),
-                                lastViewedSessionSeq: 11,
-                                latestReadyEventSeq: null,
-                                latestTurnStatus: "in_progress",
-                                pendingCount: 0,
-                                pendingBlockedCount: 0,
-                                pendingPermissionRequestCount: 0,
-                                pendingUserActionRequestCount: 0,
-                                active: true,
-                                archivedAt: null,
-                            };
-                        })
-                        .mockResolvedValueOnce(hostedTranscriptPublication()),
-                    updateMany: vi.fn(async () => {
-                        lifecycle.push("lower-cursor");
-                        return { count: 1 };
-                    }),
-                },
-                sessionShare: { findUnique: vi.fn() },
-            };
-            transactionQueue.push(
-                initialAuthorizationTx as unknown as SessionWriteTxMock,
-                finalTx as unknown as SessionWriteTxMock,
-            );
+            const initial = readTx({ seq: 11, cursor: 11 });
+            const final = readTx({ seq: 11, cursor: 11 });
+            initial.tx.account.findUnique.mockImplementation(async () => {
+                lifecycle.push("initial-authorization");
+                return { status: "active" };
+            });
+            final.tx.account.findUnique.mockImplementation(async () => {
+                lifecycle.push("final-authorization");
+                return { status: "active" };
+            });
+            final.tx.accountSessionReadState.updateMany.mockImplementation(async () => {
+                lifecycle.push("lower-cursor");
+                return { count: 1 };
+            });
+            transactionQueue.push(initial.tx, final.tx);
             dbMocks.db.sessionMessage.findMany.mockImplementation(async (args) => {
                 if (args.select?.transcriptObservationProvenance) {
                     lifecycle.push("external-scan");
                     return [
-                        {
-                            id: "m11",
-                            seq: 11,
-                            transcriptObservationProvenance: { kind: "non_dependent", source: "history" },
-                        },
-                        {
-                            id: "m10",
-                            seq: 10,
-                            transcriptObservationProvenance: { kind: "non_dependent", source: "background" },
-                        },
-                        {
-                            id: "m9",
-                            seq: 9,
-                            transcriptObservationProvenance: { kind: "non_dependent", source: "external" },
-                        },
-                        {
-                            id: "m8",
-                            seq: 8,
-                            transcriptObservationProvenance: { kind: "non_dependent", source: "sidechain" },
-                        },
-                        {
-                            id: "m7",
-                            seq: 7,
-                            transcriptObservationProvenance: { kind: "non_dependent", source: "guessed" },
-                        },
+                        { id: "m11", seq: 11, transcriptObservationProvenance: { kind: "non_dependent", source: "history" } },
+                        { id: "m10", seq: 10, transcriptObservationProvenance: { kind: "non_dependent", source: "background" } },
+                        { id: "m7", seq: 7, transcriptObservationProvenance: { kind: "non_dependent", source: "guessed" } },
                     ];
                 }
-                const quietEvent = {
-                    t: "plain" as const,
-                    v: {
-                        role: "agent" as const,
-                        content: {
-                            type: "event" as const,
-                            id: "quota-wait-event",
-                            data: {
-                                type: "agent-quota-wait" as const,
-                                serviceId: "openai-codex",
-                                groupId: "main",
-                                resetAtMs: 1_900_000,
-                                reason: "connected_service_group_quota_exhausted" as const,
-                            },
-                        },
-                    },
-                };
                 return [
-                    { id: "m10", content: quietEvent },
-                    { id: "m9", content: quietEvent },
-                    { id: "m8", content: quietEvent },
+                    { id: "m10", content: { t: "plain", v: { role: "agent", content: { type: "event", id: "quota", data: {
+                        type: "agent-quota-wait", serviceId: "openai-codex", groupId: "main", resetAtMs: 1_900_000,
+                        reason: "connected_service_group_quota_exhausted",
+                    } } } } },
                     { id: "m7", content: { malformed: true } },
                 ];
             });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(lifecycle).toEqual([
-                "initial-authorization",
-                "external-scan",
-                "final-authorization",
-                "fresh-session",
-                "lower-cursor",
-            ]);
-            expect(initialAuthorizationTx.sessionMessage.findMany).not.toHaveBeenCalled();
+            markAccountChanged.mockResolvedValue(200);
+            const result = await applySessionReadCursorOperation({ authentication,  actorUserId: "u1", sessionId: "s1", operation: { kind: "mark-unread" } });
+            expect(lifecycle).toEqual(["initial-authorization", "external-scan", "final-authorization", "lower-cursor"]);
+            expect(initial.tx.sessionMessage.findMany).not.toHaveBeenCalled();
+            expect(final.tx.sessionMessage.findMany).not.toHaveBeenCalled();
             expect(dbMocks.db.sessionMessage.findMany).toHaveBeenNthCalledWith(2, {
-                where: {
-                    sessionId: "s1",
-                    sidechainId: null,
-                    id: { in: ["m10", "m9", "m8", "m7"] },
-                },
-                // The unread scan reads each row's localId so the divider attention
-                // exemption is answered by the reserved-localId namespace, not the sidecar alone.
+                where: { sessionId: "s1", sidechainId: null, id: { in: ["m10", "m7"] } },
                 select: { id: true, content: true, localId: true },
             });
-            expect(finalTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    lastViewedSessionSeq: { gt: 6 },
-                },
-                data: { lastViewedSessionSeq: 6 },
+            expect(final.tx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
+                where: { accountId: "u1", sessionId: "s1", lastViewedSessionSeq: { gt: 6 } },
+                data: { lastViewedSessionSeq: 6, unreadSince: expect.any(Date) },
             });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 6,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: true,
-                didChange: true,
-                readState: "unread",
-            });
+            expect(result).toMatchObject({ ok: true, accountId: "u1", lastViewedSessionSeq: 6, actorChangeCursor: 200, didChange: true, readState: "unread" });
         });
 
-        it("does not lower from a stale scan boundary when fresh published state is already unread", async () => {
-            const initialAuthorizationTx = {
-                session: {
-                    findUnique: vi.fn()
-                        .mockResolvedValueOnce({ accountId: "u1" })
-                        .mockResolvedValueOnce({ seq: 7, ...hostedTranscriptPublication() }),
-                },
-                sessionShare: { findUnique: vi.fn() },
-            };
-            const finalTx = {
-                session: {
-                    findUnique: vi.fn()
-                        .mockResolvedValueOnce({ accountId: "u1" })
-                        .mockResolvedValueOnce({
-                            seq: 9,
-                            ...hostedTranscriptPublication(),
-                            lastViewedSessionSeq: 7,
-                            latestReadyEventSeq: null,
-                            latestTurnStatus: "in_progress",
-                            pendingCount: 0,
-                            pendingBlockedCount: 0,
-                            pendingPermissionRequestCount: 0,
-                            pendingUserActionRequestCount: 0,
-                            active: true,
-                            archivedAt: null,
-                        }),
-                    updateMany: vi.fn(),
-                },
-                sessionShare: { findUnique: vi.fn() },
-            };
-            transactionQueue.push(
-                initialAuthorizationTx as unknown as SessionWriteTxMock,
-                finalTx as unknown as SessionWriteTxMock,
-            );
-            dbMocks.db.sessionMessage.findMany
-                .mockResolvedValueOnce([{
-                    id: "m7",
-                    seq: 7,
-                    transcriptObservationProvenance: null,
-                }])
-                .mockResolvedValueOnce([{
-                    id: "m7",
-                    content: { t: "encrypted", c: "ciphertext" },
-                }]);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(finalTx.session.updateMany).not.toHaveBeenCalled();
+        it("applySessionReadCursorOperation rejects access revoked during the external scan", async () => {
+            const initial = readTx();
+            const final = readTx({ owner: "other" });
+            transactionQueue.push(initial.tx, final.tx);
+            dbMocks.db.sessionMessage.findMany.mockResolvedValue([]);
+            expect(await applySessionReadCursorOperation({ authentication,  actorUserId: "u1", sessionId: "s1", operation: { kind: "mark-unread" } }))
+                .toEqual({ ok: false, error: "forbidden" });
+            expect(final.tx.accountSessionReadState.updateMany).not.toHaveBeenCalled();
             expect(markAccountChanged).not.toHaveBeenCalled();
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 7,
-                participantCursors: [],
-                badgeAttentionChanged: false,
-                didChange: false,
-                readState: "unread",
-            });
         });
 
-        it("marks unread by lowering the cursor with a lowering-aware write", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({ seq: 8, ...hostedTranscriptPublication() })
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    ...hostedTranscriptPublication(),
-                    lastViewedSessionSeq: 8,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                })
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            dbMocks.db.sessionMessage.findMany.mockResolvedValueOnce([]);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    lastViewedSessionSeq: { gt: 7 },
-                },
-                data: { lastViewedSessionSeq: 7 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 7,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: true,
-                didChange: true,
-                readState: "unread",
-            });
-        });
-
-        it("uses the published content scan when raw seq only has maintenance events", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({ seq: 742, ...hostedTranscriptPublication() })
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 742,
-                    ...hostedTranscriptPublication(),
-                    latestReadyEventSeq: 110,
-                    lastViewedSessionSeq: 742,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    latestTurnStatus: "completed",
-                    lastRuntimeIssue: null,
-                    active: true,
-                    archivedAt: null,
-                })
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
+        it("applySessionReadCursorOperation does not lower a stale scan when fresh state is already unread", async () => {
+            const initial = readTx({ seq: 7, cursor: 7 });
+            const final = readTx({ seq: 9, cursor: 7 });
+            transactionQueue.push(initial.tx, final.tx);
             dbMocks.db.sessionMessage.findMany
-                .mockResolvedValueOnce([{
-                    id: "m739",
-                    seq: 739,
-                    transcriptObservationProvenance: null,
-                }])
-                .mockResolvedValueOnce([{
-                    id: "m739",
-                    content: { t: "encrypted", c: "ciphertext" },
-                }]);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(dbMocks.db.sessionMessage.findMany).toHaveBeenNthCalledWith(1, {
-                where: {
-                    sessionId: "s1",
-                    sidechainId: null,
-                },
-                orderBy: { seq: "desc" },
-                take: 100,
-                select: {
-                    id: true,
-                    seq: true,
-                    transcriptObservationProvenance: true,
-                },
-            });
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    lastViewedSessionSeq: { gt: 738 },
-                },
-                data: { lastViewedSessionSeq: 738 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 738,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: true,
-                didChange: true,
-                readState: "unread",
-            });
-        });
-
-        it("excludes unpublished imported rows when deriving the manual-unread attention cursor", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 12,
-                    currentStorageState: "server_partial",
-                    acceptedThroughServerSeq: 8,
-                    materializationPublicationId: null,
-                    materializedThroughSourceAt: null,
-                    publishedThroughServerSeq: null,
-                })
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 12,
-                    currentStorageState: "server_partial",
-                    acceptedThroughServerSeq: 8,
-                    materializationPublicationId: null,
-                    materializedThroughSourceAt: null,
-                    publishedThroughServerSeq: null,
-                    latestReadyEventSeq: null,
-                    lastViewedSessionSeq: 12,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    latestTurnStatus: "completed",
-                    lastRuntimeIssue: null,
-                    active: true,
-                    archivedAt: null,
-                })
-                .mockResolvedValueOnce({
-                    accountId: "u1",
-                    currentStorageState: "server_partial",
-                    acceptedThroughServerSeq: 8,
-                    materializationPublicationId: null,
-                    materializedThroughSourceAt: null,
-                    publishedThroughServerSeq: null,
-                });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            dbMocks.db.sessionMessage.findMany
-                .mockResolvedValueOnce([{
-                    id: "published-agent-message",
-                    seq: 8,
-                    transcriptObservationProvenance: null,
-                }])
-                .mockResolvedValueOnce([{
-                    id: "published-agent-message",
-                    content: { t: "encrypted", c: "ciphertext" },
-                }]);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(dbMocks.db.sessionMessage.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
-                where: {
-                    sessionId: "s1",
-                    sidechainId: null,
-                    seq: { lte: 8 },
-                },
-            }));
-            expect(res).toEqual(expect.objectContaining({
-                ok: true,
-                lastViewedSessionSeq: 7,
-                readState: "unread",
-            }));
-        });
-
-        it("preserves null when marking unread is already represented by a missing cursor", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({ seq: 8, ...hostedTranscriptPublication() })
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    ...hostedTranscriptPublication(),
-                    lastViewedSessionSeq: null,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            dbMocks.db.sessionMessage.findMany.mockResolvedValueOnce([]);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
-            });
-
-            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+                .mockResolvedValueOnce([{ id: "m7", seq: 7, transcriptObservationProvenance: null }])
+                .mockResolvedValueOnce([{ id: "m7", content: { t: "encrypted", c: "ciphertext" } }]);
+            expect(await applySessionReadCursorOperation({ authentication,  actorUserId: "u1", sessionId: "s1", operation: { kind: "mark-unread" } }))
+                .toMatchObject({ ok: true, lastViewedSessionSeq: 7, didChange: false, actorChangeCursor: null, readState: "unread" });
+            expect(final.tx.accountSessionReadState.updateMany).not.toHaveBeenCalled();
             expect(markAccountChanged).not.toHaveBeenCalled();
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: null,
-                participantCursors: [],
-                badgeAttentionChanged: false,
-                didChange: false,
-                readState: "unread",
-            });
         });
 
-        it("does not make archived sessions contribute badge attention when marked unread", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({ seq: 8, ...hostedTranscriptPublication() })
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    ...hostedTranscriptPublication(),
-                    lastViewedSessionSeq: 8,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: new Date(123),
-                })
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            dbMocks.db.sessionMessage.findMany.mockResolvedValueOnce([]);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-unread" },
+        it.each([
+            { seq: 8, cursor: 8, messageSeq: null, expected: 7, publication: {} },
+            { seq: 742, cursor: 742, messageSeq: 739, expected: 738, publication: { latestReadyEventSeq: 110, latestTurnStatus: "completed" } },
+            { seq: 12, cursor: 12, messageSeq: 8, expected: 7, publication: { currentStorageState: "server_partial", acceptedThroughServerSeq: 8 } },
+        ])("applySessionReadCursorOperation marks unread at material published boundary $expected", async ({ seq, cursor, messageSeq, expected, publication }) => {
+            const { tx } = readTx({ seq, cursor, publication });
+            currentTx = tx;
+            if (messageSeq === null) dbMocks.db.sessionMessage.findMany.mockResolvedValue([]);
+            else dbMocks.db.sessionMessage.findMany
+                .mockResolvedValueOnce([{ id: "material", seq: messageSeq, transcriptObservationProvenance: null }])
+                .mockResolvedValueOnce([{ id: "material", content: { t: "encrypted", c: "ciphertext" } }]);
+            const result = await applySessionReadCursorOperation({ authentication,  actorUserId: "u1", sessionId: "s1", operation: { kind: "mark-unread" } });
+            expect(result).toMatchObject({ ok: true, lastViewedSessionSeq: expected, readState: "unread", didChange: true });
+            expect(tx.accountSessionReadState.updateMany).toHaveBeenCalledWith({
+                where: { accountId: "u1", sessionId: "s1", lastViewedSessionSeq: { gt: expected } },
+                data: { lastViewedSessionSeq: expected, unreadSince: expect.any(Date) },
             });
-
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 7,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: false,
-                didChange: true,
-                readState: "unread",
-            });
+            if (publication.currentStorageState === "server_partial") {
+                expect(dbMocks.db.sessionMessage.findMany).toHaveBeenNthCalledWith(1, expect.objectContaining({
+                    where: { sessionId: "s1", sidechainId: null, seq: { lte: 8 } },
+                }));
+            }
         });
 
-        it("marks read by advancing to the current sequence", async () => {
-            currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
-                    seq: 8,
-                    lastViewedSessionSeq: 3,
-                    pendingCount: 0,
-                    pendingPermissionRequestCount: 0,
-                    pendingUserActionRequestCount: 0,
-                    active: true,
-                    archivedAt: null,
-                    ...hostedTranscriptPublication(),
-                })
-                // `markSessionParticipantsChanged` loads the publication again through
-                // `loadSessionTranscriptPublication`; it is a second read, not the badge row.
-                .mockResolvedValueOnce(hostedTranscriptPublication());
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
-            markAccountChanged.mockResolvedValueOnce(200);
-
-            const res = await applySessionReadCursorOperation({
-                actorUserId: "u1",
-                sessionId: "s1",
-                operation: { kind: "mark-read" },
+        it("applySessionReadCursorOperation marks read without scanning and clears private unread time", async () => {
+            const { tx } = readTx({ cursor: 3 });
+            currentTx = tx;
+            markAccountChanged.mockResolvedValue(200);
+            const result = await applySessionReadCursorOperation({ authentication,  actorUserId: "u1", sessionId: "s1", operation: { kind: "mark-read" } });
+            expect(result).toMatchObject({
+                ok: true, accountId: "u1", lastViewedSessionSeq: 8, unreadSince: null,
+                actorChangeCursor: 200, didChange: true, readState: "read",
+                viewerReadState: { state: "tracking", lastViewedSessionSeq: 8, unreadSince: null },
             });
-
-            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
-                where: {
-                    id: "s1",
-                    OR: [{ lastViewedSessionSeq: { lt: 8 } }, { lastViewedSessionSeq: null }],
-                },
-                data: { lastViewedSessionSeq: 8 },
-            });
-            expect(res).toEqual({
-                ok: true,
-                lastViewedSessionSeq: 8,
-                participantCursors: [{ accountId: "u1", cursor: 200 }],
-                badgeAttentionChanged: true,
-                didChange: true,
-                readState: "read",
-            });
+            expect(dbMocks.db.sessionMessage.findMany).not.toHaveBeenCalled();
+            expect(tx.session.updateMany).not.toHaveBeenCalled();
         });
     });
 
@@ -7208,7 +6869,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
             markAccountChanged.mockResolvedValueOnce(10).mockResolvedValueOnce(11);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u2",
                 sessionId: "s1",
                 metadata: { ciphertext: "shared-editor-write", expectedVersion: 5 },
@@ -7229,7 +6890,7 @@ describe("sessionWriteService", () => {
                     encryptionMode: "e2ee",
                     shares: [],
                 })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({
                     active: false,
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
@@ -7243,7 +6904,7 @@ describe("sessionWriteService", () => {
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
             markAccountChanged.mockResolvedValueOnce(10);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7270,7 +6931,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: expect.any(Array),
+                recipientCursors: expect.any(Array),
                 metadata: {
                     version: 6,
                     value: "inactive-model-intent",
@@ -7285,7 +6946,7 @@ describe("sessionWriteService", () => {
                     encryptionMode: "e2ee",
                     shares: [],
                 })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({
                     active: true,
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
@@ -7297,7 +6958,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7335,6 +6996,17 @@ describe("sessionWriteService", () => {
                     agentState: "legacy-agent-state",
                 })
                 .mockResolvedValueOnce({
+                    active: false,
+                    metadataLayoutVersion: 0,
+                    ownerMetadata: null,
+                    metadataVersion: 5,
+                    metadata: "legacy-whole-bag",
+                    encryptionMode: "e2ee",
+                    agentStateVersion: 9,
+                    agentState: "legacy-agent-state",
+                })
+                .mockResolvedValue({
+                    accountId: "u1",
                     active: true,
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
@@ -7346,7 +7018,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 0 });
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7395,13 +7067,23 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 9,
                     agentState: "legacy-agent-state",
                 })
-                .mockResolvedValueOnce(hostedTranscriptPublication());
+                .mockResolvedValueOnce({
+                    active: true,
+                    metadataLayoutVersion: 0,
+                    ownerMetadata: null,
+                    metadataVersion: 5,
+                    metadata: "legacy-whole-bag",
+                    encryptionMode: "e2ee",
+                    agentStateVersion: 9,
+                    agentState: "legacy-agent-state",
+                })
+                .mockResolvedValue({ ...hostedTranscriptPublication(), accountId: "u1" });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7424,7 +7106,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [{ accountId: "u1", cursor: 10 }],
+                recipientCursors: [{ accountId: "u1", cursor: 10 }],
                 metadata: {
                     version: 6,
                     value: "ordinary-active-write",
@@ -7440,7 +7122,7 @@ describe("sessionWriteService", () => {
             });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce({ accessLevel: "view" });
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u2",
                 sessionId: "s1",
                 metadata: { ciphertext: "unauthorized-write", expectedVersion: 5 },
@@ -7452,17 +7134,18 @@ describe("sessionWriteService", () => {
 
         it("fences legacy writers after the privacy layout activates", async () => {
             currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({ accountId: "u1" })
+                .mockResolvedValue({
+                    accountId: "u1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
                     metadata: "shared-safe",
                     agentStateVersion: 9,
                     agentState: "owner-full-state",
                 });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
+            currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: { ciphertext: "legacy-whole-bag", expectedVersion: 5 },
@@ -7478,16 +7161,17 @@ describe("sessionWriteService", () => {
 
         it("fences before the legacy atomic patch version-mismatch path", async () => {
             currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({ accountId: "u1" })
+                .mockResolvedValue({
+                    accountId: "u1",
                     metadataVersion: 5,
                     metadata: "mCurrent",
                     agentStateVersion: 9,
                     agentState: "aCurrent",
                 });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
+            currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: { ciphertext: "mNew", expectedVersion: 4 },
@@ -7504,7 +7188,7 @@ describe("sessionWriteService", () => {
                     accountId: "u1",
                     shares: [{ sharedWithUserId: "u2" }],
                 })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({
                     metadataVersion: 1,
                     metadata: "m1",
                     agentStateVersion: 2,
@@ -7512,10 +7196,10 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10).mockResolvedValueOnce(11);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: { ciphertext: "mNew", expectedVersion: 1 },
@@ -7548,7 +7232,7 @@ describe("sessionWriteService", () => {
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
             currentTx.session.updateMany.mockResolvedValue({ count: 0 });
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: { ciphertext: "stale-metadata", expectedVersion: 1 },
@@ -7564,8 +7248,9 @@ describe("sessionWriteService", () => {
 
         it("keeps semantic metadata and exact Agent-state no-ops version-stable", async () => {
             currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({ accountId: "u1" })
+                .mockResolvedValue({
+                    accountId: "u1",
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
                     metadataVersion: 1,
@@ -7574,9 +7259,9 @@ describe("sessionWriteService", () => {
                     agentStateVersion: 2,
                     agentState: "same-state",
                 });
-            currentTx.sessionShare.findUnique.mockResolvedValue(null);
+            currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7591,7 +7276,7 @@ describe("sessionWriteService", () => {
 
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [],
+                recipientCursors: [],
                 metadata: { version: 1, value: "{\"a\":1,\"b\":2}" },
                 agentState: { version: 2, value: "same-state" },
             });
@@ -7600,8 +7285,8 @@ describe("sessionWriteService", () => {
 
         it("increments only the changed field while fencing every supplied version and the layout", async () => {
             currentTx.session.findUnique
-                .mockResolvedValueOnce({ accountId: "u1" })
-                .mockResolvedValueOnce({
+                .mockResolvedValue({
+                    accountId: "u1",
                     metadataLayoutVersion: 0,
                     ownerMetadata: null,
                     metadataVersion: 1,
@@ -7611,9 +7296,9 @@ describe("sessionWriteService", () => {
                     agentState: "before",
                 });
             currentTx.sessionShare.findUnique.mockResolvedValue(null);
-            currentTx.session.updateMany.mockResolvedValue({ count: 1 });
+            currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
 
-            const res = await patchSession({
+            const res = await patchSession({ authentication,
                 actorUserId: "u1",
                 sessionId: "s1",
                 metadata: {
@@ -7641,7 +7326,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: expect.any(Array),
+                recipientCursors: expect.any(Array),
                 metadata: { version: 1, value: "{\"a\":1}" },
                 agentState: { version: 3, value: "after" },
             });
@@ -7760,7 +7445,7 @@ describe("sessionWriteService", () => {
                     };
                 });
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1"]);
+            currentTx.account.findMany.mockResolvedValue(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValue(10);
 
             await updateSessionMetadataEnvelopeTuple({
@@ -7801,7 +7486,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
             const res = await updateSessionMetadataEnvelopeTuple({
@@ -7844,7 +7529,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [{ accountId: "u1", cursor: 10 }],
+                recipientCursors: [{ accountId: "u1", cursor: 10 }],
                 sessionOwnerId: "u1",
                 ownerAccountMode: "e2ee",
                 metadataLayoutVersion: 1,
@@ -7933,7 +7618,7 @@ describe("sessionWriteService", () => {
 
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [],
+                recipientCursors: [],
                 sessionOwnerId: "u1",
                 ownerAccountMode: "e2ee",
                 metadataLayoutVersion: 1,
@@ -8061,7 +7746,7 @@ describe("sessionWriteService", () => {
 
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [],
+                recipientCursors: [],
                 sessionOwnerId: "u1",
                 ownerAccountMode: "e2ee",
                 metadataLayoutVersion: 1,
@@ -8088,7 +7773,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce(null);
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValueOnce(["u1"]);
+            currentTx.account.findMany.mockResolvedValueOnce(["u1"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10);
 
             const res = await updateSessionMetadataEnvelopeTuple({
@@ -8127,7 +7812,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [{ accountId: "u1", cursor: 10 }],
+                recipientCursors: [{ accountId: "u1", cursor: 10 }],
                 sessionOwnerId: "u1",
                 ownerAccountMode: "e2ee",
                 metadataLayoutVersion: 1,
@@ -8156,10 +7841,10 @@ describe("sessionWriteService", () => {
                 accessLevel: "edit",
             });
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10).mockResolvedValueOnce(11);
 
-            await updateSessionMetadataEnvelopeTuple({
+            await updateSessionMetadataEnvelopeTuple({ authentication,
                 mode: "shared_editor",
                 actorUserId: "u2",
                 sessionId: "s1",
@@ -8257,7 +7942,7 @@ describe("sessionWriteService", () => {
 
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [],
+                recipientCursors: [],
                 sessionOwnerId: "u1",
                 ownerAccountMode: "e2ee",
                 metadataLayoutVersion: 1,
@@ -8418,10 +8103,10 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce({ accessLevel: "edit" });
             currentTx.session.updateMany.mockResolvedValue({ count: 1 });
-            getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
+            currentTx.account.findMany.mockResolvedValue(["u1", "u2"].map(id => ({ id })));
             markAccountChanged.mockResolvedValueOnce(10).mockResolvedValueOnce(11);
 
-            const res = await updateSessionMetadataEnvelopeTuple({
+            const res = await updateSessionMetadataEnvelopeTuple({ authentication,
                 mode: "shared_editor",
                 actorUserId: "u2",
                 sessionId: "s1",
@@ -8434,17 +8119,9 @@ describe("sessionWriteService", () => {
                     id: "s1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
-                    OR: [
-                        { accountId: "u2" },
-                        {
-                            shares: {
-                                some: {
-                                    sharedWithUserId: "u2",
-                                    accessLevel: { in: ["edit", "admin"] },
-                                },
-                            },
-                        },
-                    ],
+                    AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
+                        accountId: "u2", capability: "submitAgentInput", mode: "legacy_owner_or_direct",
+                    })],
                 },
                 data: {
                     metadata: "shared-new",
@@ -8453,7 +8130,7 @@ describe("sessionWriteService", () => {
             });
             expect(res).toEqual({
                 ok: true,
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 10 },
                     { accountId: "u2", cursor: 11 },
                 ],
@@ -8468,6 +8145,81 @@ describe("sessionWriteService", () => {
                     value: "owner-full-state",
                 },
             });
+        });
+
+        it("requires renameSession, not generic edit, for a rename-intent shared envelope write", async () => {
+            currentTx.session.findUnique.mockResolvedValueOnce({
+                accountId: "u1",
+                shares: [{ sharedWithUserId: "u2" }],
+            });
+            currentTx.sessionShare.findUnique.mockResolvedValueOnce({ accessLevel: "edit" });
+
+            const res = await updateSessionMetadataEnvelopeTuple({ authentication,
+                mode: "shared_editor",
+                actorUserId: "u2",
+                sessionId: "s1",
+                metadataLayoutVersion: 1,
+                mutationIntent: "rename_session",
+                sharedMetadata: { ciphertext: "shared-new", expectedVersion: 5 },
+            });
+
+            expect(res).toEqual({ ok: false, error: "forbidden" });
+            expect(currentTx.session.updateMany).not.toHaveBeenCalled();
+        });
+
+        it("fences renameSession transactionally when Admin access is downgraded before the CAS", async () => {
+            currentTx.session.findUnique
+                .mockResolvedValueOnce({
+                    accountId: "u1",
+                    shares: [{ sharedWithUserId: "u2" }],
+                })
+                .mockResolvedValueOnce({
+                    metadataLayoutVersion: 1,
+                    metadataVersion: 5,
+                    metadata: "shared-old",
+                    ownerMetadata: storedOwnerMetadata,
+                    agentStateVersion: 9,
+                    agentState: "owner-full-state",
+                })
+                .mockResolvedValueOnce({
+                    metadataLayoutVersion: 1,
+                    metadataVersion: 5,
+                    metadata: "shared-old",
+                    ownerMetadata: storedOwnerMetadata,
+                    agentStateVersion: 9,
+                    agentState: "owner-full-state",
+                })
+                .mockResolvedValueOnce({
+                    accountId: "u1",
+                    shares: [{ sharedWithUserId: "u2" }],
+                });
+            currentTx.sessionShare.findUnique
+                .mockResolvedValueOnce({ accessLevel: "admin" })
+                .mockResolvedValueOnce({ accessLevel: "edit" });
+            currentTx.session.updateMany.mockResolvedValueOnce({ count: 0 });
+
+            const res = await updateSessionMetadataEnvelopeTuple({ authentication,
+                mode: "shared_editor",
+                actorUserId: "u2",
+                sessionId: "s1",
+                metadataLayoutVersion: 1,
+                mutationIntent: "rename_session",
+                sharedMetadata: { ciphertext: "shared-new", expectedVersion: 5 },
+            });
+
+            expect(currentTx.session.updateMany).toHaveBeenCalledWith({
+                where: {
+                    id: "s1",
+                    metadataLayoutVersion: 1,
+                    metadataVersion: 5,
+                    AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
+                        accountId: "u2", capability: "renameSession", mode: "legacy_owner_or_direct",
+                    })],
+                },
+                data: { metadata: "shared-new", metadataVersion: 6 },
+            });
+            expect(res).toEqual({ ok: false, error: "forbidden" });
+            expect(markAccountChanged).not.toHaveBeenCalled();
         });
 
         it("fences a shared-editor write when edit access is revoked after the access read", async () => {
@@ -8501,7 +8253,7 @@ describe("sessionWriteService", () => {
                 .mockResolvedValueOnce({ accessLevel: "view" });
             currentTx.session.updateMany.mockResolvedValueOnce({ count: 0 });
 
-            const res = await updateSessionMetadataEnvelopeTuple({
+            const res = await updateSessionMetadataEnvelopeTuple({ authentication,
                 mode: "shared_editor",
                 actorUserId: "u2",
                 sessionId: "s1",
@@ -8514,17 +8266,9 @@ describe("sessionWriteService", () => {
                     id: "s1",
                     metadataLayoutVersion: 1,
                     metadataVersion: 5,
-                    OR: [
-                        { accountId: "u2" },
-                        {
-                            shares: {
-                                some: {
-                                    sharedWithUserId: "u2",
-                                    accessLevel: { in: ["edit", "admin"] },
-                                },
-                            },
-                        },
-                    ],
+                    AND: [(await import("@/app/session/access/sessionAccessWhere")).buildSessionAccessWhere({
+                        accountId: "u2", capability: "submitAgentInput", mode: "legacy_owner_or_direct",
+                    })],
                 },
                 data: {
                     metadata: "shared-new",
@@ -8551,7 +8295,7 @@ describe("sessionWriteService", () => {
                 });
             currentTx.sessionShare.findUnique.mockResolvedValueOnce({ accessLevel: "edit" });
 
-            const res = await updateSessionMetadataEnvelopeTuple({
+            const res = await updateSessionMetadataEnvelopeTuple({ authentication,
                 mode: "shared_editor",
                 actorUserId: "u2",
                 sessionId: "s1",

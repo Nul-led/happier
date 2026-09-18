@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseIrohEndpointDescriptorV1 } from '@happier-dev/protocol';
-import { IrohError } from '@happier-dev/iroh-native';
+import { IrohError } from '@happier-dev/iroh-native/node';
 
 vi.mock('@/utils/logging/log', () => ({ log: vi.fn() }));
 vi.mock('@/app/serverIdentity/serverIdentity', () => ({
@@ -145,7 +145,7 @@ describe('home Iroh endpoint composition', () => {
         await expect(readFile(continuityPathFor(dataDir), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
     });
 
-    it('materializes a fresh relocation endpoint above the source revision without starting Home ingress', async () => {
+    it('materializes fresh relocation endpoint facts without owning the outer descriptor revision', async () => {
         const owner = await loadOwnerModule();
         const native = createNativeFake({
             createEndpoint: vi.fn(async (request: { keyPath: string; relayPolicy: string; relayUrls: readonly string[] }) => {
@@ -163,13 +163,11 @@ describe('home Iroh endpoint composition', () => {
 
         const result = await owner.materializeHomeIrohEndpointDescriptor({
             env: envFor(dataDir),
-            sourceDescriptorRevision: 7,
             native,
         });
 
         expect(result).toEqual({
             status: 'ready',
-            minimumOuterRevisionExclusive: 7,
             endpoint: parseIrohEndpointDescriptorV1({
                 endpointId: VALID_ENDPOINT_ID,
                 directAddresses: [...DEFAULT_DIRECT_ADDRESSES],
@@ -180,7 +178,6 @@ describe('home Iroh endpoint composition', () => {
 
         const repeated = await owner.materializeHomeIrohEndpointDescriptor({
             env: envFor(dataDir),
-            sourceDescriptorRevision: 7,
             native,
         });
         expect(repeated).toEqual(result);
@@ -471,6 +468,53 @@ describe('home Iroh endpoint composition', () => {
         expect(advanced.snapshot?.endpoint.directAddresses).toEqual(['198.51.100.9:54321']);
     });
 
+    it('does not revive an endpoint when a pending status refresh completes after stop', async () => {
+        await writeKeyFixture(dataDir);
+        await writeContinuityFixture(dataDir, continuityFixture());
+        const owner = await loadOwnerModule();
+        let resolveRefreshStatus: ((value: Awaited<ReturnType<NativeLifecycle['getEndpointStatus']>>) => void) | null = null;
+        let statusReadCount = 0;
+        const native = createNativeFake({
+            getEndpointStatus: vi.fn(async () => {
+                statusReadCount += 1;
+                if (statusReadCount === 1) {
+                    return {
+                        endpointId: VALID_ENDPOINT_ID,
+                        directAddresses: [...DEFAULT_DIRECT_ADDRESSES],
+                        active: true,
+                    };
+                }
+                return await new Promise<Awaited<ReturnType<NativeLifecycle['getEndpointStatus']>>>((resolve) => {
+                    resolveRefreshStatus = resolve;
+                });
+            }),
+        });
+
+        expect((await owner.ensureHomeIrohEndpoint({ env: envFor(dataDir), apiPort: API_PORT, native })).status).toBe('active');
+
+        const refresh = owner.getHomeIrohEndpointState();
+        await vi.waitFor(() => expect(resolveRefreshStatus).toBeTypeOf('function'));
+        await owner.stopHomeIrohEndpoint();
+
+        resolveRefreshStatus!({
+            endpointId: VALID_ENDPOINT_ID,
+            directAddresses: ['198.51.100.9:54321'],
+            active: true,
+        });
+
+        await expect(refresh).resolves.toEqual({
+            status: 'stopping',
+            snapshot: null,
+            failureReason: null,
+        });
+        await expect(owner.getHomeIrohEndpointState()).resolves.toEqual({
+            status: 'stopping',
+            snapshot: null,
+            failureReason: null,
+        });
+        expect(native.shutdownEndpoint).toHaveBeenCalledTimes(1);
+    });
+
     it('fails a refresh closed when the live endpoint no longer matches the published identity', async () => {
         await writeKeyFixture(dataDir);
         await writeContinuityFixture(dataDir, continuityFixture());
@@ -660,7 +704,6 @@ describe('home Iroh endpoint composition', () => {
         expect(native.createEndpoint).toHaveBeenCalledTimes(1);
         await expect(owner.materializeHomeIrohEndpointDescriptor({
             env,
-            sourceDescriptorRevision: 7,
             native,
         })).resolves.toEqual({ status: 'failed', failureReason: 'endpoint_cleanup_pending' });
 

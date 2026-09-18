@@ -7,6 +7,7 @@ import { db } from '@/storage/db';
 import { randomKeyNaked } from '@/utils/keys/randomKeyNaked';
 import { log } from '@/utils/logging/log';
 import { mapPendingActivationAuthorization, type PendingActivationTarget } from './pendingActivationAuthorization';
+import type { ParticipantExecutionRunRecipientRoutingIdentityV1 } from '@happier-dev/protocol';
 
 export function buildPendingActivationRequestHint(
     activationTarget: PendingActivationTarget | undefined,
@@ -33,9 +34,10 @@ export async function emitPendingChanged(params: {
     changedByAccountId: string;
     pendingCount: number;
     pendingBlockedCount?: number;
+    recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
     pendingVersion: number;
     meaningfulActivityAt?: Date;
-    participantCursors: Array<{ accountId: string; cursor: number }>;
+    recipientCursors: Array<{ accountId: string; cursor: number }>;
     activationTarget?: PendingActivationTarget;
 }): Promise<void> {
     const [session, pendingActivationAuthorization] = await Promise.all([
@@ -46,12 +48,13 @@ export async function emitPendingChanged(params: {
     const rawProjection = {
         pendingCount: params.pendingCount,
         ...(typeof params.pendingBlockedCount === 'number' ? { pendingBlockedCount: params.pendingBlockedCount } : {}),
+        ...(params.recipient ? { recipient: params.recipient } : {}),
         pendingVersion: params.pendingVersion,
         changedByAccountId: params.changedByAccountId,
         ...(params.meaningfulActivityAt ? { meaningfulActivityAt: params.meaningfulActivityAt } : {}),
         pendingActivationAuthorization,
     };
-    const results = await Promise.allSettled(params.participantCursors.map(async ({ accountId, cursor }) => {
+    const results = await Promise.allSettled(params.recipientCursors.map(async ({ accountId, cursor }) => {
         const projection = projectSessionTranscriptPublicationPendingProjection(rawProjection, session, accountId);
         if (projection.kind === 'suppress') return;
         eventRouter.emitUpdate({
@@ -71,7 +74,7 @@ export async function emitPendingChanged(params: {
                 module: 'session-pending-publication',
                 level: 'warn',
                 sessionId: params.sessionId,
-                accountId: params.participantCursors[index]?.accountId ?? 'unknown',
+                accountId: params.recipientCursors[index]?.accountId ?? 'unknown',
             },
             'failed to emit pending-changed update',
             result.reason,
@@ -90,7 +93,7 @@ export async function emitPendingActivationHint(params: {
     pendingBlockedCount?: number;
     pendingVersion: number;
     meaningfulActivityAt?: Date;
-    participantCursors: Array<{ accountId: string; cursor: number }>;
+    recipientCursors: Array<{ accountId: string; cursor: number }>;
     activationTarget: PendingActivationTarget;
 }): Promise<void> {
     const authorization = await loadPendingActivationPublication(params.sessionId);
@@ -98,7 +101,7 @@ export async function emitPendingActivationHint(params: {
         authorization?.status !== 'waiting'
         || authorization.requestId !== params.activationTarget.requestId
     ) return;
-    const ownerCursor = params.participantCursors.find(
+    const ownerCursor = params.recipientCursors.find(
         ({ accountId }) => accountId === params.activationTarget.accountId,
     )?.cursor;
     if (typeof ownerCursor !== 'number') return;

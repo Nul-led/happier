@@ -13,14 +13,14 @@ vi.mock("@/storage/db", () => ({
 }));
 
 import {
+    findV2SessionListRows,
     isMissingAttentionProjectionColumnError,
-} from "./v2SessionListPage";
-import { createV2SessionListAttentionRowsWhere } from "./v2SessionListInitialPage";
+} from "@/app/session/listing/page";
 import {
     createV2SessionListLegacyRowSelect,
     createV2SessionListRowSelect,
     SESSION_LIST_PROJECTION_FALLBACK_COLUMNS,
-} from "./v2SessionListRows";
+} from "@/app/session/listing/rows";
 
 function createMissingColumnError(column: string): unknown {
     return {
@@ -30,6 +30,25 @@ function createMissingColumnError(column: string): unknown {
 }
 
 describe("session list projection fallback", () => {
+    it("does not apply a legacy projection fallback to a strict current query", async () => {
+        const missingCurrentProjection = createMissingColumnError("latestReadyEventSeq");
+        const findMany = vi.fn().mockRejectedValue(missingCurrentProjection);
+
+        await expect(findV2SessionListRows({
+            userId: "u1",
+            orderBy: { id: "desc" },
+            take: 1,
+            source: {
+                kind: "effective",
+                reader: { session: { findMany } } as never,
+                baseWhere: { accountId: "u1" },
+                accessMode: "effective_access_v1",
+                allowProjectionFallback: false,
+            },
+        })).rejects.toBe(missingCurrentProjection);
+        expect(findMany).toHaveBeenCalledTimes(1);
+    });
+
     it("derives all four activation columns into the established legacy projection gap", () => {
         const primary = createV2SessionListRowSelect({ userId: "u1" });
         const legacy = createV2SessionListLegacyRowSelect({ userId: "u1" });
@@ -74,12 +93,4 @@ describe("session list projection fallback", () => {
         ).toBe(false);
     });
 
-    it("keeps the ready-event attention predicate on shareable publication states", () => {
-        const primaryWhere = JSON.stringify(
-            createV2SessionListAttentionRowsWhere(),
-            (_key, value) => typeof value === "bigint" ? value.toString() : value,
-        );
-        expect(primaryWhere).toContain("latestReadyEventSeq");
-        expect(primaryWhere).not.toContain("server_partial");
-    });
 });

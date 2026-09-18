@@ -9,8 +9,12 @@ describe("resolveConnectedServicesFeature core contract", () => {
         expect(feature.features?.connectedServices).toEqual({
             enabled: true,
             quotas: { enabled: true },
+            subscription: { enabled: true },
             accountGroups: { enabled: true },
             accountFallback: { enabled: true },
+            autoQuotaReset: { enabled: true },
+            autoDisablePlanInvalid: { enabled: true },
+            poolQuotaLimitSelection: { enabled: true },
         });
         expect(feature.capabilities?.connectedServices).toEqual({
             credentialDelete: { revisionGuard: true },
@@ -27,8 +31,12 @@ describe("resolveConnectedServicesFeature core contract", () => {
         expect(feature.features?.connectedServices).toEqual({
             enabled: true,
             quotas: { enabled: true },
+            subscription: { enabled: true },
             accountGroups: { enabled: true },
             accountFallback: { enabled: true },
+            autoQuotaReset: { enabled: true },
+            autoDisablePlanInvalid: { enabled: true },
+            poolQuotaLimitSelection: { enabled: true },
         });
     });
 
@@ -40,8 +48,12 @@ describe("resolveConnectedServicesFeature core contract", () => {
         expect(feature.features?.connectedServices).toEqual({
             enabled: true,
             quotas: { enabled: false },
+            subscription: { enabled: true },
             accountGroups: { enabled: true },
             accountFallback: { enabled: true },
+            autoQuotaReset: { enabled: true },
+            autoDisablePlanInvalid: { enabled: true },
+            poolQuotaLimitSelection: { enabled: true },
         });
     });
 
@@ -54,8 +66,12 @@ describe("resolveConnectedServicesFeature core contract", () => {
         expect(feature.features?.connectedServices).toEqual({
             enabled: true,
             quotas: { enabled: true },
+            subscription: { enabled: true },
             accountGroups: { enabled: false },
             accountFallback: { enabled: false },
+            autoQuotaReset: { enabled: true },
+            autoDisablePlanInvalid: { enabled: true },
+            poolQuotaLimitSelection: { enabled: true },
         });
     });
 });

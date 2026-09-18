@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import tweetnacl from "tweetnacl";
 
 import {
+    signAccountContentKeyBindingV1,
     AUTOMATION_EVENT_STORED_DEFINITIONS_READ_HTTP_PATH_V1,
     AutomationEventActionHttpPathsV1,
     AutomationEventActionHttpRequestSchemasV1,
@@ -921,10 +922,7 @@ async function admitAutomationEventV1(params: Parameters<typeof admitAutomationE
 async function configureE2eeAccount() {
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const contentKeyBinding = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(content.publicKey),
-    ]);
+
     await db.account.update({
         where: { id: ACCOUNT_ID },
         data: {
@@ -932,7 +930,10 @@ async function configureE2eeAccount() {
             publicKey: Buffer.from(signing.publicKey).toString("hex"),
             contentPublicKey: new Uint8Array(content.publicKey),
             contentPublicKeySig: new Uint8Array(
-                tweetnacl.sign.detached(contentKeyBinding, signing.secretKey),
+                signAccountContentKeyBindingV1({
+                    accountSigningSecretKey: signing.secretKey,
+                    contentPublicKey: content.publicKey,
+                }),
             ),
         },
     });
@@ -1365,6 +1366,7 @@ describe("Automation Event admission", () => {
                 signingKeyFingerprint: null,
                 contentKeyFingerprint: null,
                 updatedAt: account.updatedAt.getTime(),
+                recipientEnvelopeReadiness: { status: "available" },
             };
         };
         const app = createAuthenticatedTestApp();
@@ -3973,6 +3975,7 @@ describe("Automation Event admission", () => {
                 signingKeyFingerprint: null,
                 contentKeyFingerprint: null,
                 updatedAt: account.updatedAt.getTime(),
+                recipientEnvelopeReadiness: { status: "available" },
             };
         };
 

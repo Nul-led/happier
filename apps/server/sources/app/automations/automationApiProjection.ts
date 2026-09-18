@@ -5,10 +5,13 @@ import {
     AutomationRunApiV2Schema,
     AutomationRunStateV2Schema,
     AutomationRunResultStoredV1Schema,
+    AutomationV2ScheduleSchema,
     AutomationV3RunDetailSchema,
     AutomationV3RunListItemSchema,
+    createCanonicalJsonSigningInput,
     normalizeAutomationTemplateEnvelopeStoredRead,
     parseAutomationStoredDefinitionExecutionRecipeV1,
+    parseAutomationStoredWorkflowDefinitionRecipeV2,
     parseAutomationRunFailureDetailStoredEnvelopeV1,
     validateAutomationReplyHandoffStoredEnvelopeOuterForModeV1,
     validateAutomationStoredDefinitionExecutionRecipeOuterV1,
@@ -58,7 +61,8 @@ function parseStoredContentEnvelope(raw: string): unknown {
     try { return JSON.parse(raw); } catch { throw new AutomationStoredContentReadError("contentInvalid"); }
 }
 
-function targetTypeV3(targetType: AutomationTargetType) {
+function targetTypeV3(targetType: AutomationTargetType | null) {
+    if (targetType === null) return null;
     return targetType === "new_session" ? "newSession" as const
         : targetType === "existing_session" ? "existingSession" as const
             : "executionRun" as const;
@@ -68,7 +72,7 @@ function hasRetainedV2TemplateEnvelope(raw: string): boolean {
     try { return normalizeAutomationTemplateEnvelopeStoredRead(JSON.parse(raw)) !== null; } catch { return false; }
 }
 
-/** Released V2 represents exactly one retained schedule and nothing else. */
+/** Released V2 represents one retained schedule or a manual-only zero-trigger definition. */
 type AutomationV2RepresentabilityFacts = Pick<AutomationListItem, "targetType" | "templateCiphertext"> & Readonly<{
     // Prisma's physical enum can contain unreleased values while this adapter
     // remains intentionally constrained to the released V2 schedule shape.
@@ -81,9 +85,12 @@ export function isAutomationDefinitionRepresentableInV2<T extends AutomationV2Re
     item: T,
 ): item is T & Readonly<{ targetType: AutomationLegacyTargetType }> {
     const trigger = item.triggers.length === 1 ? item.triggers[0] : undefined;
-    return trigger?.kind === "schedule"
-        && trigger.enabled
-        && trigger.scheduleKind !== null
+    const hasRepresentableSchedule = item.triggers.length === 0
+        || (trigger?.kind === "schedule"
+            && trigger.enabled
+            && (trigger.scheduleKind === "cron" || trigger.scheduleKind === "interval"));
+    return hasRepresentableSchedule
+        && item.targetType !== null
         && item.targetType !== "execution_run"
         && parseAutomationStoredDefinitionExecutionRecipeV1(item.templateCiphertext).kind !== "available"
         && hasRetainedV2TemplateEnvelope(item.templateCiphertext);
@@ -131,21 +138,45 @@ export function isAutomationRunV2HistoryRepresentable(
         && AutomationRunStateV2Schema.safeParse(item.state).success;
 }
 
+type AutomationV2ScheduleProjectionTrigger = Readonly<{
+    scheduleKind: string | null;
+    scheduleExpr: string | null;
+    everyMs: number | null;
+    timezone: string | null;
+}>;
+
+/** One released-V2 schedule projection; absence is the canonical manual shape. */
+export function toAutomationV2ScheduleDto(
+    trigger: AutomationV2ScheduleProjectionTrigger | undefined,
+) {
+    if (trigger && trigger.scheduleKind !== "cron" && trigger.scheduleKind !== "interval") {
+        throw new Error("Automation schedule trigger has no representable schedule kind");
+    }
+    return AutomationV2ScheduleSchema.parse(trigger ? {
+        kind: trigger.scheduleKind,
+        scheduleExpr: trigger.scheduleExpr,
+        everyMs: trigger.everyMs,
+        timezone: trigger.timezone,
+    } : {
+        kind: "manual",
+        scheduleExpr: null,
+        everyMs: null,
+        timezone: null,
+    });
+}
+
 export function toAutomationV2ApiDto(item: AutomationListItem) {
     if (!isAutomationDefinitionRepresentableInV2(item)) {
         throw new Error("Automation is not representable by the V2 contract");
     }
-    const trigger = required(item.triggers[0], "sole schedule trigger");
+    const trigger = item.triggers[0];
     return AutomationApiV2Schema.parse({
         id: item.id, name: item.name, description: item.description, enabled: item.enabled,
-        schedule: {
-            kind: required(trigger.scheduleKind, "scheduleKind"),
-            scheduleExpr: trigger.scheduleExpr, everyMs: trigger.everyMs, timezone: trigger.timezone,
-        },
+        schedule: toAutomationV2ScheduleDto(trigger),
         targetType: item.targetType,
         templateCiphertext: item.templateCiphertext,
         templateVersion: item.templateVersion,
-        nextRunAt: trigger.nextRunAt?.getTime() ?? null,
+        nextRunAt: trigger?.nextRunAt?.getTime() ?? null,
         lastRunAt: item.lastRunAt?.getTime() ?? null,
         createdAt: item.createdAt.getTime(), updatedAt: item.updatedAt.getTime(),
         assignments: item.assignments.map((assignment) => ({
@@ -317,7 +348,24 @@ export function toAutomationDefinitionDetailApiDto(
         if (outer.kind !== "available") throw new AutomationStoredContentReadError("modeMismatch");
         content = { executionRecipe: outer.recipe };
     } else {
-        if (item.targetType === "execution_run") throw new AutomationStoredContentReadError("contentInvalid");
+        const workflow = parseAutomationStoredWorkflowDefinitionRecipeV2(item.templateCiphertext);
+        if (workflow.kind === "available") {
+            if (item.targetType !== null || workflow.recipe.templateVersion !== item.templateVersion) {
+                throw new AutomationStoredContentReadError("contentInvalid");
+            }
+            assertAutomationStoredContentEnvelopeOuterForMode({
+                raw: createCanonicalJsonSigningInput(workflow.recipe.workflow),
+                mode: accountCurrentness.mode,
+            });
+            content = { executionRecipe: workflow.recipe };
+            return AutomationDefinitionDetailSchema.parse({
+                ...definitionCommon(item, statuses, lifecycleStatuses, true),
+                ...content,
+            });
+        }
+        if (item.targetType === null || item.targetType === "execution_run") {
+            throw new AutomationStoredContentReadError("contentInvalid");
+        }
         try {
             assertAutomationTemplateEnvelopeForAccountMode(
                 item.templateCiphertext, accountCurrentness.mode, item.targetType,

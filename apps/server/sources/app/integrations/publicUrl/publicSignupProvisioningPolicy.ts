@@ -1,6 +1,7 @@
 import type { FeaturesResponse } from "@happier-dev/protocol";
 
 import { classifyRequestIp, type RequestIpClassification } from "@/app/net/requestOrigin";
+import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFeature';
 
 export type PublicProvisioningActionMode = "keyed" | "keyless";
 
@@ -26,12 +27,6 @@ function normalizeMode(raw: string): PublicProvisioningActionMode | null {
     const value = raw.trim().toLowerCase();
     if (value === "keyed" || value === "keyless") return value;
     return null;
-}
-
-function resolveSignupMethodProvisioningMethodId(rawMethodId: string): string {
-    const normalized = normalizeMethodId(rawMethodId);
-    if (normalized === "anonymous") return "key_challenge";
-    return normalized;
 }
 
 function normalizeIpClass(raw: string): RequestIpClassification | null {
@@ -123,22 +118,10 @@ export function applyPublicSignupProvisioningRestrictionsToFeaturesPayload(param
     }));
 
     const signup = auth.signup;
-    const signupMethods = Array.isArray(signup?.methods) ? signup.methods : [];
-    const nextSignupMethods = signupMethods.map((method) => {
-        const methodId = resolveSignupMethodProvisioningMethodId(String(method?.id ?? ""));
-        if (
-            !methodId ||
-            !shouldDenyPublicSignupProvisioningAction({
-                env: params.env,
-                requestIp: params.requestIp,
-                methodId,
-                mode: "keyed",
-            })
-        ) {
-            return method;
-        }
-        return { ...method, enabled: false };
-    });
+    const nextSignupMethods = deriveLegacySignupMethodsFromAuthMethods(
+        nextMethods,
+        auth.signup.methods.map((method) => method.id),
+    );
 
     return {
         ...params.payload,

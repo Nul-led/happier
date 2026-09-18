@@ -1,5 +1,11 @@
 import { parseBooleanEnv, parseIntEnv, parseOptionalBooleanEnv } from "@/config/env";
-import { resolveAuthProviderInstancesFromEnv } from "@/app/auth/providers/oidc/oidcProviderConfig";
+import { resolveDeploymentProviderSnapshot } from "@/app/auth/providers/providerModules";
+import {
+    AccountServicePresentationV1Schema,
+    HomeSignInServicePolicyV1Schema,
+    type AccountServicePresentationV1,
+    type HomeSignInServicePolicyV1,
+} from "@happier-dev/protocol";
 
 export type AuthOffboardingMode = "per-request-cache";
 
@@ -26,6 +32,9 @@ export type AuthPolicy = Readonly<{
     anonymousSignupEnabled: boolean;
     signupProviders: readonly string[];
     requiredLoginProviders: readonly string[];
+    signInService?: HomeSignInServicePolicyV1 | null;
+    accountServicePresentation?: AccountServicePresentationV1 | null;
+    configurationErrors?: readonly string[];
 
     offboarding: Readonly<{
         enabled: boolean;
@@ -34,6 +43,53 @@ export type AuthPolicy = Readonly<{
         mode: AuthOffboardingMode;
     }>;
 }>;
+
+function readTrimmedEnv(env: NodeJS.ProcessEnv, key: string): string {
+    return String(env[key] ?? "").trim();
+}
+
+function resolveSignInServicePolicy(env: NodeJS.ProcessEnv, errors: string[]): HomeSignInServicePolicyV1 | null {
+    const mode = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_MODE").toLowerCase() || "disabled";
+    const endpoint = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_URL");
+    const expectedServerIdentityId = readTrimmedEnv(env, "HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID");
+    const hasExternalFields = Boolean(endpoint || expectedServerIdentityId);
+    if ((mode === "disabled" || mode === "self") && hasExternalFields) {
+        errors.push(`${mode} sign-in service mode cannot use HAPPIER_AUTH_SIGN_IN_SERVICE_URL or HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID`);
+        return null;
+    }
+    const candidate: unknown = mode === "external"
+        ? {
+            v: 1,
+            mode,
+            endpoint,
+            ...(expectedServerIdentityId ? { expectedServerIdentityId } : {}),
+        }
+        : { v: 1, mode };
+    const parsed = HomeSignInServicePolicyV1Schema.safeParse(candidate);
+    if (!parsed.success) {
+        errors.push(`Invalid HAPPIER_AUTH_SIGN_IN_SERVICE_MODE configuration: ${parsed.error.issues[0]?.message ?? "invalid policy"}`);
+        return null;
+    }
+    return parsed.data;
+}
+
+function resolveAccountServicePresentation(env: NodeJS.ProcessEnv, errors: string[]): AccountServicePresentationV1 | null {
+    const displayName = readTrimmedEnv(env, "HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME");
+    if (!displayName) return null;
+    const parsed = AccountServicePresentationV1Schema.safeParse({ v: 1, displayName });
+    if (!parsed.success) {
+        errors.push(`Invalid HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME: ${parsed.error.issues[0]?.message ?? "invalid display name"}`);
+        return null;
+    }
+    return parsed.data;
+}
+
+export function narrowAuthSignInServicePolicy(
+    policy: HomeSignInServicePolicyV1 | null,
+    narrowing: Readonly<{ mode: "disabled" }> | null | undefined,
+): HomeSignInServicePolicyV1 | null {
+    return narrowing?.mode === "disabled" ? { v: 1, mode: "disabled" } : policy;
+}
 
 /**
  * Returns true only for a recognized, explicitly disabled anonymous-signup
@@ -65,18 +121,7 @@ function hasAnyGitHubOrgAllowlistConfigured(env: NodeJS.ProcessEnv): boolean {
 }
 
 function hasAnyOidcAllowlistsConfigured(env: NodeJS.ProcessEnv): boolean {
-    const result = resolveAuthProviderInstancesFromEnv(env);
-    for (const instance of result.instances) {
-        if (
-            instance.allow.usersAllowlist.length > 0 ||
-            instance.allow.emailDomains.length > 0 ||
-            instance.allow.groupsAny.length > 0 ||
-            instance.allow.groupsAll.length > 0
-        ) {
-            return true;
-        }
-    }
-    return false;
+    return resolveDeploymentProviderSnapshot(env).hasOidcAllowlistsConfigured;
 }
 
 /**
@@ -111,6 +156,7 @@ export function isAuthSignupProviderEnabled(
 }
 
 export function resolveAuthPolicyFromEnv(env: NodeJS.ProcessEnv): AuthPolicy {
+    const configurationErrors: string[] = [];
     const anonymousSignupEnabled = parseBooleanEnv(env.AUTH_ANONYMOUS_SIGNUP_ENABLED, true);
     const signupProviders = Object.freeze(parseProvidersList(env.AUTH_SIGNUP_PROVIDERS));
     const requiredLoginProviders = Object.freeze(parseProvidersList(env.AUTH_REQUIRED_LOGIN_PROVIDERS));
@@ -121,11 +167,16 @@ export function resolveAuthPolicyFromEnv(env: NodeJS.ProcessEnv): AuthPolicy {
     const offboardingStrict = parseBooleanEnv(env.AUTH_OFFBOARDING_STRICT, false);
     const intervalSeconds = parseIntEnv(env.AUTH_OFFBOARDING_INTERVAL_SECONDS, 86400, { min: 60, max: 86400 });
     const mode: AuthOffboardingMode = "per-request-cache";
+    const signInService = resolveSignInServicePolicy(env, configurationErrors);
+    const accountServicePresentation = resolveAccountServicePresentation(env, configurationErrors);
 
     return Object.freeze({
         anonymousSignupEnabled,
         signupProviders,
         requiredLoginProviders,
+        signInService,
+        accountServicePresentation,
+        configurationErrors: Object.freeze(configurationErrors),
         offboarding: Object.freeze({
             enabled: offboardingEnabled,
             strict: offboardingStrict,

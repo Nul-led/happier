@@ -143,13 +143,32 @@ describe("authRoutes (pairing auth) (integration)", () => {
         });
         expect(malformed.statusCode).toBe(400);
 
+        const expiredSentinel = await db.authPairingSession.create({
+            data: {
+                accountId: account.id,
+                secretHash: "released-v1-refusal-must-not-clean-up",
+                expiresAt: new Date(Date.now() - 1_000),
+                flow: "direct_qr",
+            },
+            select: { id: true },
+        });
+        const rowsBeforeReleasedV1 = await db.authPairingSession.count();
+        // Golden request vector from immutable server-v0.2.11
+        // (98ea8fb76733b1dd785d38c31360179cafa84824): the released client sent
+        // exactly `{ secretHash }` to this route.
+        const releasedV1Start = Object.freeze({
+            secretHash: "3xIu03WT5jsxt8icsUBCZIDRy8ctvUvaNl83J5xQB3U",
+        });
         const missingDirection = await app.inject({
             method: "POST",
             url: "/v1/auth/pairing/start",
             headers: { authorization: `Bearer ${token}` },
-            payload: { secretHash: randomBase64Url32Bytes() },
+            payload: releasedV1Start,
         });
-        expect(missingDirection.statusCode).toBe(400);
+        expect(missingDirection.statusCode).toBe(426);
+        expect(missingDirection.json()).toEqual({ error: "client_update_required" });
+        expect(await db.authPairingSession.count()).toBe(rowsBeforeReleasedV1);
+        expect(await db.authPairingSession.findUnique({ where: { id: expiredSentinel.id } })).not.toBeNull();
     });
 
     it("keeps independently issued direct-QR invitations live for the same account", async () => {
@@ -199,7 +218,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
             createPresentUserToken(other.id),
             auth.createToken(owner.id, undefined, { kind: "account_directory", authority: "present_user" }),
             auth.createToken(owner.id, { session: "pairing-admission-terminal" }, { kind: "terminal", authority: "account_automation" }),
-            auth.createApiToken({ accountId: owner.id, label: "Pairing admission PAT" }),
+            auth.createApiToken({ accountId: owner.id, tokenId: crypto.randomUUID(), label: "Pairing admission PAT" }),
         ]);
         const restrictedTokens = [directoryToken, terminalToken, apiToken.token];
         const app = createTestApp();
@@ -884,7 +903,7 @@ describe("authRoutes (pairing auth) (integration)", () => {
         const [directoryToken, terminalToken, apiToken] = await Promise.all([
             auth.createToken(account.id, undefined, { kind: "account_directory", authority: "present_user" }),
             auth.createToken(account.id, { session: "reverse-start-terminal" }, { kind: "terminal", authority: "account_automation" }),
-            auth.createApiToken({ accountId: account.id, label: "Reverse start PAT" }),
+            auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "Reverse start PAT" }),
         ]);
         for (const restricted of [directoryToken, terminalToken, apiToken.token]) {
             const response = await app.inject({

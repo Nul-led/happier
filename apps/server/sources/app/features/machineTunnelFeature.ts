@@ -33,7 +33,6 @@ export function resolveMachineTunnelFeature(env: NodeJS.ProcessEnv): FeaturesPay
                         maxFrameBytes: featureConfig.serverRoutedMaxFrameBytes,
                         supportedEncodings: featureConfig.serverRoutedSupportedEncodings,
                         preferredEncoding: featureConfig.serverRoutedPreferredEncoding,
-                        allowV1Fallback: featureConfig.serverRoutedAllowV1Fallback,
                         maxBinaryHeaderBytes: featureConfig.serverRoutedMaxBinaryHeaderBytes,
                         maxRawPayloadBytes: featureConfig.serverRoutedMaxRawPayloadBytes,
                         maxFramedMessageBytes: featureConfig.serverRoutedMaxFramedMessageBytes,

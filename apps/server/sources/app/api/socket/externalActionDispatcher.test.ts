@@ -1,18 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
+import { Server } from 'socket.io';
 
 import {
+    createExternalActionDaemonDispatchResponse,
     createExternalActionDaemonDispatchResponseV1,
     createExternalActionResultTooLargeExecutionV1,
     prepareExternalActionResponseEnvelopeV1,
+    prepareExternalActionResponseV2,
+    sealExternalActionRequestV2,
     type ExternalActionRequestEnvelopeV1,
 } from "@happier-dev/protocol/actions";
 import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 
 import {
     EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
-    createExternalActionDaemonDispatcher,
+    createExternalActionDaemonDispatcher as createProductionExternalActionDaemonDispatcher,
     type ExternalActionForwardRpcCall,
 } from "./externalActionDispatcher";
+
+function createExternalActionDaemonDispatcher(
+    params: Parameters<typeof createProductionExternalActionDaemonDispatcher>[0],
+) {
+    return createProductionExternalActionDaemonDispatcher({
+        ...params,
+        getServerIdentityId: async () => "server-1",
+        mintExecutionAuthorization: async (binding) => ({ v: 1, token: "test-authorization", binding }),
+    });
+}
 
 const principal = {
     accountId: "account-1",
@@ -20,6 +34,13 @@ const principal = {
     credentialId: "credential-1",
     authority: "account_automation" as const,
 };
+
+const protectedMaterial = {
+    type: "dataKey" as const,
+    machineKey: new Uint8Array(32).fill(9),
+};
+
+const protectedRandomBytes = (length: number) => new Uint8Array(length).fill(2);
 
 function response(actionId: string, envelope: ExternalActionRequestEnvelopeV1) {
     return {
@@ -50,6 +71,53 @@ function dispatchedResponse(value: unknown) {
 }
 
 describe("createExternalActionDaemonDispatcher", () => {
+    it("returns operation-scoped update required before sending an authorized invocation to an old daemon", async () => {
+        const forwardRpc = vi.fn();
+        const resolveMachine = vi.fn(async (input: Readonly<{
+            accountId: string;
+            machineId: string;
+            requiredExternalActionExecutionAuthorization?: true;
+        }>) => input.requiredExternalActionExecutionAuthorization === true
+            ? "external_action_update_required" as const
+            : "available" as const);
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "action.spec.get",
+            principal,
+            envelope: {
+                v: 1,
+                requestId: "request-old-daemon",
+                target: { kind: "machine", machineId: "machine-1" },
+                input: { actionId: "action.spec.get" },
+            },
+        })).resolves.toEqual({
+            kind: "placement_error",
+            code: "encrypted_action_unsupported",
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+        });
+        expect(forwardRpc).not.toHaveBeenCalled();
+    });
+
+    it('rejects a raw response to a protected request as transport ambiguity', async () => {
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: new Server(),
+            resolveMachine: async () => 'available',
+            forwardRpc: async () => ({ ok: true, result: relayResponse('action.spec.get', { v: 1, requestId: 'request-1', input: {} }) }),
+        });
+        await expect(dispatch({ actionId: 'action.spec.get', principal,
+            envelope: { v: 2, requestId: 'request-1', target: { kind: 'machine', machineId: 'machine-1' },
+                payload: { t: 'encrypted', c: 'AAAA' } },
+        })).resolves.toEqual({ kind: 'submitted_unknown' });
+    });
     it("forwards the opaque envelope with server-stamped provenance and exact machine placement", async () => {
         const envelope: ExternalActionRequestEnvelopeV1 = {
             v: 1,
@@ -80,20 +148,261 @@ describe("createExternalActionDaemonDispatcher", () => {
         expect(forwardRpc).toHaveBeenCalledWith(expect.objectContaining({
             targetUserId: "account-1",
             method: `machine-1:${EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1}`,
-            callParams: {
+            callParams: expect.objectContaining({
                 actionId: "session.spawn_new",
                 envelope,
                 principal,
+                executionAuthorization: {
+                    v: 1,
+                    token: "test-authorization",
+                    binding: expect.objectContaining({
+                        serverIdentityId: "server-1",
+                        machineId: "machine-1",
+                        actionId: "session.spawn_new",
+                        requestId: "request-1",
+                    }),
+                },
                 placement: {
                     machineId: "machine-1",
                     target: { kind: "machine", machineId: "machine-1" },
                 },
-            },
+            }),
         }));
         expect(resolveMachine).toHaveBeenCalledWith({
             accountId: "account-1",
             machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
         });
+    });
+
+    it("rejects targeted Session input before relay when the exact Machine lacks targeted admission", async () => {
+        const envelope: ExternalActionRequestEnvelopeV1 = {
+            v: 1,
+            requestId: "request-targeted",
+            target: { kind: "machine", machineId: "machine-1" },
+            input: {
+                sessionId: "session-1",
+                message: "Continue the attached Run",
+                recipient: { kind: "execution_run", runId: "run-1" },
+            },
+        };
+        const forwardRpc = vi.fn();
+        const resolveMachine = vi.fn(async (input: Readonly<{
+            accountId: string;
+            machineId: string;
+            requiredSessionInputAdmissionProtocolVersion?: 2;
+        }>) => input.requiredSessionInputAdmissionProtocolVersion === 2
+            ? "session_input_update_required" as const
+            : "available" as const);
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual({
+            kind: "placement_error",
+            code: "session_input_target_update_required",
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+            requiredSessionInputAdmissionProtocolVersion: 2,
+        });
+        expect(forwardRpc).not.toHaveBeenCalled();
+    });
+
+    it("requires Session input admission v2 before relaying an opaque V2 Session send", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "request-encrypted-session-send",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque-ciphertext" },
+        };
+        const forwardRpc = vi.fn();
+        const resolveMachine = vi.fn(async (input: Readonly<{
+            accountId: string;
+            machineId: string;
+            requiredSessionInputAdmissionProtocolVersion?: 2;
+        }>) => input.requiredSessionInputAdmissionProtocolVersion === 2
+            ? "session_input_update_required" as const
+            : "available" as const);
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual({
+            kind: "placement_error",
+            code: "session_input_target_update_required",
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+            requiredSessionInputAdmissionProtocolVersion: 2,
+        });
+        expect(forwardRpc).not.toHaveBeenCalled();
+    });
+
+    it("relays an opaque V2 Session send when both daemon capabilities are current", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "request-current-encrypted-session-send",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque-ciphertext" },
+        };
+        const resolveMachine = vi.fn(async () => "available" as const);
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: {
+                kind: "invalid_request" as const,
+                errorCode: "invalid_action" as const,
+                requestId: envelope.requestId,
+            },
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual({
+            kind: "invalid_request",
+            errorCode: "invalid_action",
+            requestId: envelope.requestId,
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+            requiredSessionInputAdmissionProtocolVersion: 2,
+        });
+        expect(forwardRpc).toHaveBeenCalledTimes(1);
+    });
+
+    it("retains plaintext V1 main-send compatibility without requiring targeted admission", async () => {
+        const envelope: ExternalActionRequestEnvelopeV1 = {
+            v: 1,
+            requestId: "request-v1-main-send",
+            target: { kind: "machine", machineId: "machine-1" },
+            input: { sessionId: "session-1", message: "Continue" },
+        };
+        const resolveMachine = vi.fn(async () => "available" as const);
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: relayResponse("session.message.send", envelope),
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual(dispatchedResponse(response("session.message.send", envelope)));
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+        });
+        expect(forwardRpc).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not require Session input admission v2 for another opaque V2 Action", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "request-encrypted-spec-get",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque-ciphertext" },
+        };
+        const resolveMachine = vi.fn(async () => "available" as const);
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: {
+                kind: "invalid_request" as const,
+                errorCode: "invalid_action" as const,
+                requestId: envelope.requestId,
+            },
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "action.spec.get",
+            envelope,
+            principal,
+        })).resolves.toEqual({
+            kind: "invalid_request",
+            errorCode: "invalid_action",
+            requestId: envelope.requestId,
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+        });
+        expect(forwardRpc).toHaveBeenCalledTimes(1);
+    });
+
+    it("relays an opaque V2 Session send when the exact Machine publishes both required capabilities", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "request-encrypted-session-send-current",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque-ciphertext" },
+        };
+        const resolveMachine = vi.fn(async () => "available" as const);
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: {
+                kind: "invalid_request" as const,
+                errorCode: "invalid_action" as const,
+                requestId: envelope.requestId,
+            },
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine,
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual({
+            kind: "invalid_request",
+            errorCode: "invalid_action",
+            requestId: envelope.requestId,
+        });
+        expect(resolveMachine).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-1",
+            requiredExternalActionExecutionAuthorization: true,
+            requiredSessionInputAdmissionProtocolVersion: 2,
+        });
+        expect(forwardRpc).toHaveBeenCalledTimes(1);
     });
 
     it("preserves a daemon admission failure outside the admitted Action response", async () => {
@@ -123,6 +432,34 @@ describe("createExternalActionDaemonDispatcher", () => {
             kind: "invalid_request",
             errorCode: "invalid_action",
         });
+    });
+
+    it("rejects a protected daemon admission failure correlated to another request", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "protected-request",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque" },
+        };
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: {
+                kind: "invalid_request" as const,
+                errorCode: "target_not_local" as const,
+                requestId: "different-request",
+            },
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine: async () => "available",
+        });
+
+        await expect(dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        })).resolves.toEqual({ kind: "submitted_unknown" });
     });
 
     it("preserves the daemon's canonical prepared Action failure through the relay", async () => {
@@ -371,6 +708,7 @@ describe("createExternalActionDaemonDispatcher", () => {
         const target = {
             id: "machine-socket",
             data: {
+                userId: "account-1",
                 clientType: "machine-scoped",
                 machineId: "machine-1",
                 verifiedMachineInstallationId: "installation-1",
@@ -450,6 +788,98 @@ describe("createExternalActionDaemonDispatcher", () => {
         expect(emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CANCEL, {
             requestId: expect.any(String),
         });
+    });
+
+    it("preserves the daemon's authenticated V2 cancellation outcome after submission", async () => {
+        const controller = new AbortController();
+        const binding = {
+            serverIdentityId: "srv_server-1",
+            accountId: "account-1",
+            credentialId: "00000000-0000-4000-8000-000000000001",
+            actionId: "action.spec.get",
+            requestId: "protected-cancellation",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+        };
+        const envelope = sealExternalActionRequestV2({
+            binding,
+            input: { actionId: "session.message.send" },
+            material: protectedMaterial,
+            randomBytes: protectedRandomBytes,
+        });
+        const prepared = prepareExternalActionResponseV2({
+            binding,
+            request: envelope,
+            executedMachineId: "machine-1",
+            execution: {
+                ok: false,
+                errorCode: "cancelled",
+                error: "cancelled",
+                details: { outcomeUnknown: false },
+            },
+            material: protectedMaterial,
+            randomBytes: protectedRandomBytes,
+        });
+        const emit = vi.fn();
+        const io = { to: vi.fn(() => ({ emit })) };
+        const forwardRpc = vi.fn(async (params: Readonly<{
+            cancellation?: Readonly<{
+                onTargetSelected: (target: Readonly<{ id: string }>) => void;
+            }>;
+        }>) => {
+            if (!params.cancellation) throw new Error("expected cancellation");
+            params.cancellation.onTargetSelected({ id: "machine-socket" });
+            controller.abort();
+            return {
+                ok: true as const,
+                result: createExternalActionDaemonDispatchResponse(prepared),
+            };
+        });
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: io as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine: async () => "available",
+        });
+
+        await expect(dispatch({
+            actionId: "action.spec.get",
+            envelope,
+            principal,
+        }, { signal: controller.signal })).resolves.toEqual({
+            kind: "response",
+            prepared,
+        });
+        expect(emit).toHaveBeenCalledWith(SOCKET_RPC_EVENTS.CANCEL, {
+            requestId: expect.any(String),
+        });
+    });
+
+    it("preserves post-submission response loss as transport ambiguity", async () => {
+        const envelope = {
+            v: 2 as const,
+            requestId: "protected-submitted-unknown",
+            target: { kind: "machine" as const, machineId: "machine-1" },
+            payload: { t: "encrypted" as const, c: "opaque" },
+        };
+        const forwardRpc = vi.fn(async (params: Readonly<{
+            onSubmittedUnknown?: () => void;
+        }>) => {
+            params.onSubmittedUnknown?.();
+            return { ok: false as const, error: "acknowledgement lost" };
+        });
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: {} as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine: async () => "available",
+        });
+
+        await expect(dispatch({
+            actionId: "action.spec.get",
+            envelope,
+            principal,
+        })).resolves.toEqual({ kind: "submitted_unknown" });
+        expect(forwardRpc).toHaveBeenCalledWith(expect.objectContaining({
+            onSubmittedUnknown: expect.any(Function),
+        }));
     });
 
     it("returns target_required when the server has no exact target", async () => {

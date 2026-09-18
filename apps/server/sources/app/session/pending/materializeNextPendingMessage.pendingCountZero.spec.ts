@@ -2,11 +2,6 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDbMocks, installDbModuleMock } from "../../api/testkit/dbMocks";
 
-const resolveSessionPendingOwnerAccess = vi.fn(async () => ({ ok: true as const }));
-vi.mock("@/app/session/pending/resolveSessionPendingAccess", () => ({
-    resolveSessionPendingOwnerAccess,
-}));
-
 const fenceExactCurrentPublisherAuthorityInTx = vi.fn(async () => true);
 vi.mock("@/app/session/pending/hasExactCurrentPublisherAuthorityInTx", () => ({
     fenceExactCurrentPublisherAuthorityInTx,
@@ -109,7 +104,7 @@ describe("materializeNextPendingMessage (pendingCount fast path)", () => {
         expect(txSessionFindUnique).toHaveBeenCalledTimes(1);
         expect(txSessionPendingMessageFindFirst).toHaveBeenCalledTimes(1);
         expect(txSessionPendingMessageCount).toHaveBeenCalledWith({
-            where: { sessionId: "s1", status: "queued" },
+            where: { sessionId: "s1", status: "queued", targetExecutionRunId: null },
         });
         expect(inTx).toHaveBeenCalledTimes(1);
         expect(result).toEqual({

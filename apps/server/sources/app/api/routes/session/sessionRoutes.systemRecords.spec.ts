@@ -10,10 +10,10 @@ import {
 import { createEnvPatcher } from "@/testkit/env";
 
 import {
+    createSessionAccessProjectionRelations,
     createSessionRouteTestBuilder,
     createSessionMessage,
-    checkSessionAccess,
-    createSessionRouteAccessFixture,
+    sessionFindUnique,
     emitUpdate,
     markAccountChanged,
     resetSessionRouteMocks,
@@ -67,6 +67,24 @@ function persistedHostAddress(namespace: "memory" | "activity", localId: string)
     };
 }
 
+function activeOwnerSessionWhere(sessionId: string, accountId: string) {
+    return {
+        is: expect.objectContaining({
+            AND: expect.arrayContaining([
+                { id: sessionId },
+                expect.objectContaining({
+                    OR: expect.arrayContaining([
+                        expect.objectContaining({
+                            accountId,
+                            account: { status: "active" },
+                        }),
+                    ]),
+                }),
+            ]),
+        }),
+    };
+}
+
 describe("sessionRoutes system records", () => {
     const storagePolicyEnv = createEnvPatcher(["HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY"]);
 
@@ -103,8 +121,10 @@ describe("sessionRoutes system records", () => {
             "x-happier-session-system-records-protocol": "1",
             "x-happier-plugin-id": "acme.notes",
         };
-        checkSessionAccess.mockResolvedValue(createSessionRouteAccessFixture("view"));
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "session-owner" });
+        const accessRelations = createSessionAccessProjectionRelations();
+        const shares = [{ id: "view-share", sharedWithUserId: "u1", accessLevel: "view", canApprovePermissions: false }] as const;
+        sessionFindUnique.mockResolvedValue({ ...accessRelations, id: "s1", accountId: "session-owner", currentStorageState: "hosted", shares });
+        txSessionFindUnique.mockResolvedValue({ ...accessRelations, id: "s1", encryptionMode: "plain", accountId: "session-owner", currentStorageState: "hosted", shares });
         txSessionSystemRecordFindMany.mockResolvedValue([]);
         const { reply, response } = await (
             await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId/system-records")
@@ -135,8 +155,9 @@ describe("sessionRoutes system records", () => {
         const requestId = "permission-request-1";
         const turnId = "permission-turn-1";
         const locator = deriveSessionPermissionMediationRecordLocatorV1({ sessionId: "s1", turnId, requestId });
-        checkSessionAccess.mockResolvedValue(createSessionRouteAccessFixture("owner"));
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "u1" });
+        const accessRelations = createSessionAccessProjectionRelations();
+        sessionFindUnique.mockResolvedValue({ ...accessRelations, id: "s1", accountId: "u1", currentStorageState: "hosted" });
+        txSessionFindUnique.mockResolvedValue({ ...accessRelations, id: "s1", encryptionMode: "plain", accountId: "u1", currentStorageState: "hosted" });
         txSessionSystemRecordCreate.mockResolvedValue({
             id: "permission-record-1",
             accountId: "u1",
@@ -313,7 +334,7 @@ describe("sessionRoutes system records", () => {
     });
 
     it("continues accepting genuine released legacy GET list and read shapes without a protocol header", async () => {
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "u1" });
+        txSessionFindUnique.mockResolvedValue({ id: "s1", encryptionMode: "plain", accountId: "u1", currentStorageState: "hosted", shares: [] });
         txSessionSystemRecordFindMany.mockResolvedValue([]);
         txSessionSystemRecordFindFirst.mockResolvedValue(null);
 
@@ -334,10 +355,10 @@ describe("sessionRoutes system records", () => {
         expect(read.response).toEqual({ record: null });
     });
 
-    it("rejects every v1 route before persistence when the host-stamped plugin id is absent", async () => {
+    it("rejects every plugin v1 route before persistence when the host-stamped plugin id is absent", async () => {
         const headers = { "x-happier-session-system-records-protocol": "1" };
         const address = {
-            owner: "host" as const,
+            owner: "plugin" as const,
             namespace: "activity" as const,
             kind: "workflow_run.v1" as const,
             localId: "workflow:run:wf-1",
@@ -349,7 +370,7 @@ describe("sessionRoutes system records", () => {
             )).invoke({
                 params: { sessionId: "s1" },
                 headers,
-                query: { owner: "host", namespace: "activity" },
+                query: { owner: "plugin", namespace: "activity" },
             }),
             await (await createSessionRouteTestBuilder(
                 "GET",
@@ -401,7 +422,7 @@ describe("sessionRoutes system records", () => {
             namespace: address.namespace,
             localId: address.localId,
         });
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "session-owner" });
+        txSessionFindUnique.mockResolvedValue({ id: "s1", encryptionMode: "plain", accountId: "session-owner", currentStorageState: "hosted", shares: [{ id: "view-share", accessLevel: "view", canApprovePermissions: false }] });
         txSessionSystemRecordFindFirst.mockResolvedValue(null);
         txSessionSystemRecordCreate.mockResolvedValue({
             id: "plugin-record-1",
@@ -527,7 +548,7 @@ describe("sessionRoutes system records", () => {
         const createdAt = new Date("2026-05-19T10:00:00.000Z");
         const paddedLocalId = "  memory:synopsis:v1:padded  ";
         const trimmedLocalId = paddedLocalId.trim();
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "u1" });
+        txSessionFindUnique.mockResolvedValue({ id: "s1", encryptionMode: "plain", accountId: "u1", currentStorageState: "hosted", shares: [] });
         txSessionSystemRecordCreate.mockResolvedValue({
             id: "rec-padded",
             accountId: "u1",
@@ -711,12 +732,12 @@ describe("sessionRoutes system records", () => {
         });
 
         expect(txSessionSystemRecordFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: {
+            where: expect.objectContaining({
                 accountId: "u1",
                 sessionId: "s1",
                 recordAddressKey: persistedHostAddress("memory", "memory:synopsis:v1:2").recordAddressKey,
-                session: { is: expect.objectContaining({ id: "s1" }) },
-            },
+                session: activeOwnerSessionWhere("s1", "u1"),
+            }),
         }));
         expect(res).toEqual({
             record: expect.objectContaining({
@@ -729,7 +750,7 @@ describe("sessionRoutes system records", () => {
     it("decodes a canonical stored row whose local id predates the author-v1 bound", async () => {
         const createdAt = new Date("2026-05-19T10:00:00.000Z");
         const longLocalId = `legacy:${"x".repeat(300)}`;
-        txSessionFindUnique.mockResolvedValue({ encryptionMode: "plain", accountId: "u1" });
+        txSessionFindUnique.mockResolvedValue({ id: "s1", encryptionMode: "plain", accountId: "u1", currentStorageState: "hosted", shares: [] });
         txSessionSystemRecordFindFirst.mockResolvedValueOnce({
             id: "rec-long",
             accountId: "u1",
@@ -751,12 +772,12 @@ describe("sessionRoutes system records", () => {
 
         expect(txSessionSystemRecordFindFirst).toHaveBeenCalledTimes(1);
         expect(txSessionSystemRecordFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: {
+            where: expect.objectContaining({
                 accountId: "u1",
                 sessionId: "s1",
                 recordAddressKey: persistedHostAddress("memory", longLocalId).recordAddressKey,
-                session: { is: expect.objectContaining({ id: "s1" }) },
-            },
+                session: activeOwnerSessionWhere("s1", "u1"),
+            }),
         }));
         expect(res).toEqual({
             record: expect.objectContaining({
@@ -789,7 +810,7 @@ describe("sessionRoutes system records", () => {
         });
 
         expect(txSessionSystemRecordFindFirst).toHaveBeenCalledWith(expect.objectContaining({
-            where: {
+            where: expect.objectContaining({
                 accountId: "u1",
                 sessionId: "s1",
                 kind: "synopsis.v1",
@@ -797,8 +818,8 @@ describe("sessionRoutes system records", () => {
                     "memory",
                     "memory:synopsis:v1:2",
                 ).namespaceAddressKey,
-                session: { is: expect.objectContaining({ id: "s1" }) },
-            },
+                session: activeOwnerSessionWhere("s1", "u1"),
+            }),
             orderBy: [{ updatedAt: "desc" }, { id: "desc" }],
         }));
         expect(res).toEqual({

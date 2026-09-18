@@ -8,7 +8,25 @@ import {
     type UpdatePayload,
     type EphemeralPayload,
 } from "./eventPayloadTypes";
-import type { SocketRoomBroadcastOperator, SocketRoomEmitter } from "./socketRoomEmitter";
+import {
+    parseCredentialQualifiedSessionDelivery,
+    type CredentialQualifiedSessionDeliveryV1,
+    type LocalSocketRoomEmitter,
+    type SocketRoomBroadcastOperator,
+    type SocketRoomEmitter,
+    type SocketRoomEventName,
+} from "./socketRoomEmitter";
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromSocket } from "@/app/session/access/sessionAccessAuthentication";
+import { inTx } from "@/storage/inTx";
+import { db } from "@/storage/db";
+import type { SessionBroadcastContainer } from "@happier-dev/protocol";
+import {
+    getAccountRevocationSocketRoom,
+    getAccountSessionSocketRoom,
+    getMachineBoundSessionSocketRoom,
+    getMachineSocketRoom,
+} from "@/app/api/socketRooms";
 
 const MAX_EVENT_FANOUT_METRIC_LABEL_LENGTH = 80;
 const SAFE_EVENT_FANOUT_METRIC_LABEL_PATTERN = /^[a-zA-Z0-9_.:-]+$/;
@@ -78,6 +96,52 @@ class EventRouter {
         this.io = null;
     }
 
+    disconnectAccountSockets(accountId: string): void {
+        if (this.io) {
+            this.io.to([
+                getAccountRevocationSocketRoom(accountId),
+                `user:${accountId}`,
+                `user-machines:${accountId}`,
+            ]).disconnectSockets(true);
+            return;
+        }
+        for (const connection of this.userConnections.get(accountId) ?? []) {
+            connection.socket.disconnect(true);
+        }
+    }
+
+    /** Disconnects exact-resource sockets through the configured cross-node adapter. */
+    disconnectMachineAndSessionSockets(params: Readonly<{
+        accountId: string;
+        machineId: string;
+        sessionIds: readonly string[];
+    }>): void {
+        const sessionIds = [...new Set(params.sessionIds)];
+        if (this.io) {
+            this.io.to([
+                getMachineSocketRoom(params.accountId, params.machineId),
+                ...sessionIds.map((sessionId) => getMachineBoundSessionSocketRoom(
+                    params.accountId,
+                    sessionId,
+                    params.machineId,
+                )),
+            ]).disconnectSockets(true);
+            return;
+        }
+        for (const connection of this.userConnections.get(params.accountId) ?? []) {
+            if (
+                (connection.connectionType === "machine-scoped" && connection.machineId === params.machineId)
+                || (
+                    connection.connectionType === "session-scoped"
+                    && connection.machineId === params.machineId
+                    && sessionIds.includes(connection.sessionId)
+                )
+            ) {
+                connection.socket.disconnect(true);
+            }
+        }
+    }
+
     // === EVENT EMISSION METHODS ===
 
     emitUpdate(params: {
@@ -85,8 +149,8 @@ class EventRouter {
         payload: UpdatePayload;
         recipientFilter?: RecipientFilter;
         skipSenderConnection?: ClientConnection;
-    }): void {
-        this.emit({
+    }): void | Promise<void> {
+        return this.emit({
             userId: params.userId,
             eventName: 'update',
             payload: params.payload,
@@ -100,13 +164,26 @@ class EventRouter {
         payload: EphemeralPayload;
         recipientFilter?: RecipientFilter;
         skipSenderConnection?: ClientConnection;
-    }): void {
-        this.emit({
+    }): void | Promise<void> {
+        return this.emit({
             userId: params.userId,
             eventName: 'ephemeral',
             payload: params.payload,
             recipientFilter: params.recipientFilter || { type: 'all-user-authenticated-connections' },
             skipSenderConnection: params.skipSenderConnection
+        });
+    }
+
+    emitSessionBroadcast(params: {
+        userId: string;
+        sessionId: string;
+        payload: SessionBroadcastContainer;
+    }): void | Promise<void> {
+        return this.emit({
+            userId: params.userId,
+            eventName: "session",
+            payload: params.payload,
+            recipientFilter: { type: "all-interested-in-session", sessionId: params.sessionId },
         });
     }
 
@@ -162,11 +239,17 @@ class EventRouter {
 
     private emit(params: {
         userId: string;
-        eventName: 'update' | 'ephemeral';
+        eventName: SocketRoomEventName;
         payload: any;
         recipientFilter: RecipientFilter;
         skipSenderConnection?: ClientConnection;
-    }): void {
+    }): void | Promise<void> {
+        if (params.recipientFilter.type === "all-interested-in-session") {
+            return this.emitToCredentialQualifiedSessionConnections({
+                ...params,
+                sessionId: params.recipientFilter.sessionId,
+            });
+        }
         const payloadType = resolveEventFanoutPayloadType(params.payload);
         const shouldSamplePayloadBytes = shouldSampleEventFanoutPayloadBytes();
         const payloadBytes = shouldSamplePayloadBytes ? estimateEventFanoutPayloadBytes(params.payload) : undefined;
@@ -244,6 +327,191 @@ class EventRouter {
             targetCount: deliveredCount,
             payloadType,
             ...(payloadBytes !== undefined ? { payloadBytes } : {}),
+        });
+    }
+
+    /**
+     * Session content/effects are authorized per admitted socket credential. Account rooms are
+     * deliberately not an authorization boundary: one Account may hold two differently-qualified
+     * credentials. The Lane 03 owner re-evaluates current provider/link/connection state here.
+     */
+    private async emitToCredentialQualifiedSessionConnections(params: {
+        userId: string;
+        sessionId: string;
+        eventName: SocketRoomEventName;
+        payload: unknown;
+        skipSenderConnection?: ClientConnection;
+    }): Promise<void> {
+        const payloadType = resolveEventFanoutPayloadType(params.payload);
+        const payloadBytes = shouldSampleEventFanoutPayloadBytes()
+            ? estimateEventFanoutPayloadBytes(params.payload)
+            : undefined;
+        const skipSocketId = params.skipSenderConnection?.socket.id;
+        try {
+            // Protected Session delivery requires a live Session authority. The real
+            // deletion owner pre-resolves its recipients before deletion and publishes
+            // the typed content-free `delete-session` hint through `user-scoped-only`;
+            // an arbitrary all-interested payload must never inherit that exception.
+            if (!await db.session.findUnique({ where: { id: params.sessionId }, select: { id: true } })) {
+                recordEventFanoutDrop({
+                    eventName: params.eventName,
+                    reason: "no_matching_connections",
+                });
+                return;
+            }
+            if (this.io?.sessionDeliveryMode === "forward_only") {
+                if (!this.io.forwardCredentialQualifiedSessionDelivery) {
+                    throw new Error("Protected Session forwarding is unavailable");
+                }
+                await this.io.forwardCredentialQualifiedSessionDelivery({
+                    v: 1,
+                    accountId: params.userId,
+                    sessionId: params.sessionId,
+                    eventName: params.eventName,
+                    payload: params.payload,
+                    ...(skipSocketId ? { skipSocketId } : {}),
+                });
+                return;
+            }
+            if (this.io?.in) {
+                const sockets = await this.io.in([
+                    `session:${params.sessionId}:${params.userId}`,
+                    `user-scoped:${params.userId}`,
+                ]).fetchSockets();
+                let deliveredCount = 0;
+                await inTx(async tx => {
+                    for (const socket of sockets) {
+                        if (socket.id === skipSocketId || socket.data.userId !== params.userId) continue;
+                        if (socket.data.clientType === "machine-scoped") continue;
+                        if (socket.data.clientType === "session-scoped"
+                            && socket.data.sessionId !== params.sessionId
+                            && socket.data.sessionScopedBinding?.sessionId !== params.sessionId) continue;
+                        let decision: Awaited<ReturnType<typeof resolveSessionAccessForOperation>>;
+                        try {
+                            decision = await resolveSessionAccessForOperation(tx, {
+                                accountId: params.userId,
+                                sessionId: params.sessionId,
+                                authentication: readSessionAccessAuthenticationFromSocket(socket),
+                            });
+                        } catch {
+                            continue;
+                        }
+                        if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
+                        this.io!.to(socket.id).emit(params.eventName, params.payload);
+                        deliveredCount += 1;
+                    }
+                });
+                recordEventFanoutEmit({
+                    eventName: params.eventName,
+                    filterType: "all-interested-in-session",
+                    dispatchMode: "room",
+                    targetKind: "connection",
+                    targetCount: deliveredCount,
+                    payloadType,
+                    ...(payloadBytes !== undefined ? { payloadBytes } : {}),
+                });
+                return;
+            }
+
+            let deliveredCount = 0;
+            await inTx(async tx => {
+                for (const connection of this.userConnections.get(params.userId) ?? []) {
+                    if (connection === params.skipSenderConnection || !this.shouldSendToConnection(connection, {
+                        type: "all-interested-in-session",
+                        sessionId: params.sessionId,
+                    })) continue;
+                    let decision: Awaited<ReturnType<typeof resolveSessionAccessForOperation>>;
+                    try {
+                        decision = await resolveSessionAccessForOperation(tx, {
+                            accountId: params.userId,
+                            sessionId: params.sessionId,
+                            authentication: readSessionAccessAuthenticationFromSocket(connection.socket),
+                        });
+                    } catch {
+                        continue;
+                    }
+                    if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
+                    connection.socket.emit(params.eventName, params.payload);
+                    deliveredCount += 1;
+                }
+            });
+            recordEventFanoutEmit({
+                eventName: params.eventName,
+                filterType: "all-interested-in-session",
+                dispatchMode: "local",
+                targetKind: "connection",
+                targetCount: deliveredCount,
+                payloadType,
+                ...(payloadBytes !== undefined ? { payloadBytes } : {}),
+            });
+        } catch (error) {
+            recordEventFanoutDrop({ eventName: params.eventName, reason: "no_matching_connections" });
+            log({ module: "websocket", level: "warn", sessionId: params.sessionId, error }, "Credential-qualified Session event delivery unavailable");
+        }
+    }
+
+    /**
+     * Re-enters the canonical per-socket access decision on one receiving API node.
+     * The forwarded envelope carries routing intent only; socket authentication data
+     * and current Session authority are read locally and cannot be supplied by a worker.
+     */
+    async receiveCredentialQualifiedSessionDelivery(
+        localIo: LocalSocketRoomEmitter,
+        rawDelivery: unknown,
+    ): Promise<void> {
+        const delivery = parseCredentialQualifiedSessionDelivery(rawDelivery);
+        if (!delivery) {
+            recordEventFanoutDrop({ eventName: "update", reason: "no_matching_connections" });
+            return;
+        }
+        try {
+            await this.emitToQualifiedSocketsOnReceivingNode(localIo, delivery);
+        } catch (error) {
+            recordEventFanoutDrop({ eventName: delivery.eventName, reason: "no_matching_connections" });
+            log(
+                { module: "websocket", level: "warn", sessionId: delivery.sessionId, error },
+                "Receiving-node credential-qualified Session delivery unavailable",
+            );
+        }
+    }
+
+    private async emitToQualifiedSocketsOnReceivingNode(
+        localIo: LocalSocketRoomEmitter,
+        delivery: CredentialQualifiedSessionDeliveryV1,
+    ): Promise<void> {
+        const sockets = await localIo.in([
+            `session:${delivery.sessionId}:${delivery.accountId}`,
+            `user-scoped:${delivery.accountId}`,
+        ]).fetchSockets();
+        let deliveredCount = 0;
+        await inTx(async tx => {
+            for (const socket of sockets) {
+                if (socket.id === delivery.skipSocketId || socket.data.userId !== delivery.accountId) continue;
+                if (socket.data.clientType === "machine-scoped") continue;
+                if (socket.data.clientType === "session-scoped"
+                    && socket.data.sessionId !== delivery.sessionId
+                    && socket.data.sessionScopedBinding?.sessionId !== delivery.sessionId) continue;
+                try {
+                    const decision = await resolveSessionAccessForOperation(tx, {
+                        accountId: delivery.accountId,
+                        sessionId: delivery.sessionId,
+                        authentication: readSessionAccessAuthenticationFromSocket(socket),
+                    });
+                    if (decision.status !== "allowed" || !decision.access.capabilities.readTranscript) continue;
+                    localIo.to(socket.id).emit(delivery.eventName, delivery.payload);
+                    deliveredCount += 1;
+                } catch {
+                    // One malformed or stale socket cannot suppress another socket's delivery.
+                }
+            }
+        });
+        recordEventFanoutEmit({
+            eventName: delivery.eventName,
+            filterType: "all-interested-in-session",
+            dispatchMode: "room",
+            targetKind: "connection",
+            targetCount: deliveredCount,
+            payloadType: resolveEventFanoutPayloadType(delivery.payload),
         });
     }
 

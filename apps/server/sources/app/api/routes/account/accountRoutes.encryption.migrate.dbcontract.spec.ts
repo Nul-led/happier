@@ -19,6 +19,7 @@ import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_ENCRYPTION_MIGRATE_REQUEST_MAX_UTF8_BYTES,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
     attachAccountEncryptionMigrateProofSignatureV1,
@@ -538,13 +539,10 @@ async function createMigrationFixture() {
     const unique = randomUUID().split("-").join("");
     const signing = tweetnacl.sign.keyPair();
     const content = tweetnacl.box.keyPair();
-    const contentPublicKeySig = tweetnacl.sign.detached(
-        Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(content.publicKey),
-        ]),
-        signing.secretKey,
-    );
+    const contentPublicKeySig = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signing.secretKey,
+        contentPublicKey: content.publicKey,
+    });
     const account = await db.account.create({
         data: {
             publicKey: Buffer.from(
@@ -1686,18 +1684,10 @@ describe(
                     tweetnacl.sign.keyPair();
                 const content = tweetnacl.box.keyPair();
                 const contentBinding =
-                    tweetnacl.sign.detached(
-                        Buffer.concat([
-                            Buffer.from(
-                                "Happy content key v1\u0000",
-                                "utf8",
-                            ),
-                            Buffer.from(
-                                content.publicKey,
-                            ),
-                        ]),
-                        signing.secretKey,
-                    );
+                    signAccountContentKeyBindingV1({
+                        accountSigningSecretKey: signing.secretKey,
+                        contentPublicKey: content.publicKey,
+                    });
                 const unsigned:
                     AccountEncryptionMigrateUnsignedRequest =
                     {

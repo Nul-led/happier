@@ -7,7 +7,13 @@ const mocks = vi.hoisted(() => ({
     inTx: vi.fn(),
     afterTx: vi.fn(),
     automationFindFirst: vi.fn(),
+    automationFindMany: vi.fn(),
+    automationFindUnique: vi.fn(),
     automationUpdateMany: vi.fn(),
+    automationTriggerCreate: vi.fn(),
+    automationTriggerUpdateMany: vi.fn(),
+    accountUpdate: vi.fn(),
+    accountChangeUpsert: vi.fn(),
     acquireAccountEncryptionTransitionFenceInTx: vi.fn(),
 }));
 
@@ -15,13 +21,16 @@ vi.mock("@/storage/inTx", () => ({
     inTx: mocks.inTx,
     afterTx: mocks.afterTx,
 }));
-vi.mock("@/storage/db", () => ({ db: {} }));
+vi.mock("@/storage/db", () => ({
+    db: { automation: { findMany: mocks.automationFindMany } },
+}));
 vi.mock("@/app/encryption/accountEncryptionTransition", () => ({
     acquireAccountEncryptionTransitionFenceInTx:
         mocks.acquireAccountEncryptionTransitionFenceInTx,
 }));
 
-import { getAutomation, updateAutomation } from "./automationCrudService";
+import { getAutomation, listAutomations, updateAutomation } from "./automationCrudService";
+import { toAutomationV2ApiDto } from "./automationApiProjection";
 
 const strictRecipe = serializeAutomationStoredDefinitionExecutionRecipeV1({
     v: 1,
@@ -101,20 +110,53 @@ function scheduleTrigger(automationId: string, id: string) {
     };
 }
 
+const releasedV2TemplateEnvelope = JSON.stringify({
+    kind: "happier_automation_template_plain_v1",
+    payload: { prompt: "released V2" },
+});
+
+/** One retained released-V2 manual definition: zero automatic trigger rows. */
+function releasedV2ManualDefinition() {
+    return {
+        ...strictScheduleDefinition(),
+        id: "automation-1",
+        name: "Released V2 manual",
+        templateCiphertext: releasedV2TemplateEnvelope,
+        assignments: [{ machineId: "machine-1", enabled: true, priority: 0, updatedAt: null }],
+        triggers: [],
+    };
+}
+
 function createTransaction(): Tx {
     return {
         automation: {
             findFirst: mocks.automationFindFirst,
+            findUnique: mocks.automationFindUnique,
             updateMany: mocks.automationUpdateMany,
+        },
+        automationTrigger: {
+            create: mocks.automationTriggerCreate,
+            updateMany: mocks.automationTriggerUpdateMany,
+        },
+        account: {
+            update: mocks.accountUpdate,
+        },
+        accountChange: {
+            upsert: mocks.accountChangeUpsert,
         },
     } as unknown as Tx;
 }
 
-describe("V2 Automation exact-one-schedule compatibility", () => {
+describe("V2 Automation released-V2 manual representability", () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.automationFindFirst.mockResolvedValue(null);
+        mocks.automationFindMany.mockResolvedValue([]);
+        mocks.automationFindUnique.mockResolvedValue(null);
         mocks.automationUpdateMany.mockResolvedValue({ count: 0 });
+        mocks.automationTriggerUpdateMany.mockResolvedValue({ count: 0 });
+        mocks.accountUpdate.mockResolvedValue({ seq: 1 });
+        mocks.accountChangeUpsert.mockResolvedValue({});
         mocks.acquireAccountEncryptionTransitionFenceInTx.mockResolvedValue({
             status: "ready",
         });
@@ -124,17 +166,11 @@ describe("V2 Automation exact-one-schedule compatibility", () => {
     });
 
     it.each([
-        ["zero triggers", []],
         ["multiple schedules", [scheduleTrigger("automation-1", "schedule-1"), scheduleTrigger("automation-1", "schedule-2")]],
         ["a non-schedule trigger", [{ ...scheduleTrigger("automation-1", "event-1"), kind: "pluginEvent" as const }]],
     ] as const)("does not expose or mutate a definition with %s", async (_label, triggers) => {
         mocks.automationFindFirst.mockResolvedValue({
-            ...strictScheduleDefinition(),
-            id: "automation-1",
-            templateCiphertext: JSON.stringify({
-                kind: "happier_automation_template_plain_v1",
-                payload: { prompt: "released V2" },
-            }),
+            ...releasedV2ManualDefinition(),
             triggers,
         });
 
@@ -151,6 +187,71 @@ describe("V2 Automation exact-one-schedule compatibility", () => {
         })).resolves.toBeNull();
 
         expect(mocks.automationUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("exposes and updates a zero-trigger definition as released V2 manual", async () => {
+        const definition = releasedV2ManualDefinition();
+        mocks.automationFindFirst.mockResolvedValue(definition);
+        mocks.automationFindMany.mockResolvedValue([definition]);
+        mocks.automationUpdateMany.mockResolvedValue({ count: 1 });
+        mocks.automationFindUnique.mockResolvedValue({
+            id: "automation-1",
+            accountId: "account-1",
+            enabled: true,
+            deletedAt: null,
+            triggers: [],
+        });
+
+        const loaded = await getAutomation({
+            accountId: "account-1",
+            automationId: "automation-1",
+            requireV2DefinitionRepresentability: true,
+        });
+        expect(loaded).not.toBeNull();
+        expect(loaded?.triggers).toEqual([]);
+        expect(toAutomationV2ApiDto(loaded!).schedule).toEqual({
+            kind: "manual",
+            scheduleExpr: null,
+            everyMs: null,
+            timezone: null,
+        });
+
+        await expect(listAutomations({
+            accountId: "account-1",
+            requireV2DefinitionRepresentability: true,
+        })).resolves.toEqual([
+            expect.objectContaining({ id: "automation-1", triggers: [] }),
+        ]);
+
+        const updated = await updateAutomation({
+            accountId: "account-1",
+            automationId: "automation-1",
+            input: { name: "Renamed through V2" },
+            requireV2DefinitionRepresentability: true,
+        });
+        expect(updated).not.toBeNull();
+        expect(updated?.triggers).toEqual([]);
+        expect(toAutomationV2ApiDto(updated!).schedule).toEqual({
+            kind: "manual",
+            scheduleExpr: null,
+            everyMs: null,
+            timezone: null,
+        });
+
+        // The V2 write follows the representability-guarded definition
+        // mutation, never an unguarded bypass, and keeps zero trigger rows.
+        expect(mocks.automationUpdateMany).toHaveBeenCalledTimes(1);
+        expect(mocks.automationUpdateMany.mock.calls[0][0].where).toMatchObject({
+            id: "automation-1",
+            accountId: "account-1",
+            targetType: "new_session",
+            templateCiphertext: releasedV2TemplateEnvelope,
+        });
+        expect(mocks.automationUpdateMany.mock.calls[0][0].data).toMatchObject({
+            name: "Renamed through V2",
+        });
+        expect(mocks.automationTriggerCreate).not.toHaveBeenCalled();
+        expect(mocks.automationTriggerUpdateMany).not.toHaveBeenCalled();
     });
 
     it("does not expose or mutate a strict V3 schedule definition through the V2 service boundary", async () => {

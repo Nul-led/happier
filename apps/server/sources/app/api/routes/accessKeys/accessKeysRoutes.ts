@@ -1,30 +1,13 @@
 import { Fastify } from "../../types";
 import { z } from "zod";
-import { db, isPrismaErrorCode } from "@/storage/db";
+import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
-import { readMachineAvailabilityState } from "@/app/machines/machineStateGuards";
-
-async function findOwnedSessionAndMachine(params: Readonly<{
-    userId: string;
-    sessionId: string;
-    machineId: string;
-}>): Promise<Readonly<{ sessionExists: boolean; machineExists: boolean }>> {
-    const [session, machine] = await Promise.all([
-        db.session.findFirst({
-            where: { id: params.sessionId, accountId: params.userId },
-            select: { id: true },
-        }),
-        readMachineAvailabilityState({
-            accountId: params.userId,
-            machineId: params.machineId,
-        }),
-    ]);
-
-    return {
-        sessionExists: session !== null,
-        machineExists: machine === "available",
-    };
-}
+import {
+    createSessionMachineAccessKeyInTx,
+    readSessionMachineAccessKeyInTx,
+    readSessionMachineBindingStateInTx,
+    updateSessionMachineAccessKeyDataInTx,
+} from "@/app/accessKeys/sessionMachineAccessKeyMutations";
 
 export function accessKeysRoutes(app: Fastify) {
     // Get Access Key API
@@ -55,25 +38,14 @@ export function accessKeysRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId, machineId } = request.params;
+        const binding = { accountId: userId, machineId, sessionId };
 
         try {
-            // Verify session and machine belong to user
-            const ownership = await findOwnedSessionAndMachine({ userId, sessionId, machineId });
-
-            if (!ownership.sessionExists || !ownership.machineExists) {
+            if (await readSessionMachineBindingStateInTx(db, binding) !== "available") {
                 return reply.code(404).send({ error: 'Session or machine not found' });
             }
 
-            // Get access key
-            const accessKey = await db.accessKey.findUnique({
-                where: {
-                    accountId_machineId_sessionId: {
-                        accountId: userId,
-                        machineId,
-                        sessionId
-                    }
-                }
-            });
+            const accessKey = await readSessionMachineAccessKeyInTx(db, binding);
 
             if (!accessKey) {
                 return reply.send({ accessKey: null });
@@ -132,78 +104,30 @@ export function accessKeysRoutes(app: Fastify) {
         const { data } = request.body;
 
         try {
-            // Verify session and machine belong to user
-            const ownership = await findOwnedSessionAndMachine({ userId, sessionId, machineId });
-
-            if (!ownership.sessionExists || !ownership.machineExists) {
-                return reply.code(404).send({ error: 'Session or machine not found' });
-            }
-
-            // Check if access key already exists
-            const existing = await db.accessKey.findUnique({
-                where: {
-                    accountId_machineId_sessionId: {
-                        accountId: userId,
-                        machineId,
-                        sessionId
-                    }
-                }
+            const created = await createSessionMachineAccessKeyInTx(db, {
+                accountId: userId,
+                machineId,
+                sessionId,
+                data,
             });
 
-            if (existing) {
-                return reply.code(409).send({ error: 'Access key already exists' });
+            if (!created.ok) {
+                return created.reason === "binding-not-found"
+                    ? reply.code(404).send({ error: 'Session or machine not found' })
+                    : reply.code(409).send({ error: 'Access key already exists' });
             }
 
-            // Create access key
-            let accessKey;
-            try {
-                accessKey = await db.accessKey.create({
-                    data: {
-                        accountId: userId,
-                        machineId,
-                        sessionId,
-                        data,
-                        dataVersion: 1
-                    }
-                });
-            } catch (error) {
-                if (isPrismaErrorCode(error, 'P2002')) {
-                    const winningAccessKey = await db.accessKey.findUnique({
-                        where: {
-                            accountId_machineId_sessionId: {
-                                accountId: userId,
-                                machineId,
-                                sessionId
-                            }
-                        }
-                    });
-
-                    if (winningAccessKey) {
-                        return reply.send({
-                            success: true,
-                            accessKey: {
-                                data: winningAccessKey.data,
-                                dataVersion: winningAccessKey.dataVersion,
-                                createdAt: winningAccessKey.createdAt.getTime(),
-                                updatedAt: winningAccessKey.updatedAt.getTime()
-                            }
-                        });
-                    }
-
-                    return reply.code(409).send({ error: 'Access key already exists' });
-                }
-                throw error;
+            if (created.created) {
+                log({ module: 'access-keys', userId, sessionId, machineId }, 'Created new access key');
             }
-
-            log({ module: 'access-keys', userId, sessionId, machineId }, 'Created new access key');
 
             return reply.send({
                 success: true,
                 accessKey: {
-                    data: accessKey.data,
-                    dataVersion: accessKey.dataVersion,
-                    createdAt: accessKey.createdAt.getTime(),
-                    updatedAt: accessKey.updatedAt.getTime()
+                    data: created.accessKey.data,
+                    dataVersion: created.accessKey.dataVersion,
+                    createdAt: created.accessKey.createdAt.getTime(),
+                    updatedAt: created.accessKey.updatedAt.getTime()
                 }
             });
         } catch (error) {
@@ -252,81 +176,31 @@ export function accessKeysRoutes(app: Fastify) {
         const { data, expectedVersion } = request.body;
 
         try {
-            const machineState = await readMachineAvailabilityState({
+            const updated = await updateSessionMachineAccessKeyDataInTx(db, {
                 accountId: userId,
                 machineId,
-            });
-            if (machineState !== "available") {
-                return reply.code(404).send({ error: 'Access key not found' });
-            }
-
-            // Get current access key for version check
-            const currentAccessKey = await db.accessKey.findUnique({
-                where: {
-                    accountId_machineId_sessionId: {
-                        accountId: userId,
-                        machineId,
-                        sessionId
-                    }
-                }
+                sessionId,
+                data,
+                expectedVersion,
             });
 
-            if (!currentAccessKey) {
-                return reply.code(404).send({ error: 'Access key not found' });
-            }
-
-            // Check version
-            if (currentAccessKey.dataVersion !== expectedVersion) {
-                return reply.code(200).send({
-                    success: false,
-                    error: 'version-mismatch',
-                    currentVersion: currentAccessKey.dataVersion,
-                    currentData: currentAccessKey.data
-                });
-            }
-
-            // Update with version check
-            const { count } = await db.accessKey.updateMany({
-                where: {
-                    accountId: userId,
-                    machineId,
-                    sessionId,
-                    dataVersion: expectedVersion
-                },
-                data: {
-                    data,
-                    dataVersion: expectedVersion + 1,
-                    updatedAt: new Date()
-                }
-            });
-
-            if (count === 0) {
-                // Re-fetch to get current version
-                const accessKey = await db.accessKey.findUnique({
-                    where: {
-                        accountId_machineId_sessionId: {
-                            accountId: userId,
-                            machineId,
-                            sessionId
-                        }
-                    }
-                });
-                if (!accessKey) {
+            if (!updated.ok) {
+                if (updated.reason === "not-found") {
                     return reply.code(404).send({ error: 'Access key not found' });
                 }
                 return reply.code(200).send({
                     success: false,
                     error: 'version-mismatch',
-                    currentVersion: accessKey.dataVersion,
-                    currentData: accessKey.data
+                    currentVersion: updated.currentVersion,
+                    currentData: updated.currentData
                 });
             }
 
-            log({ module: 'access-keys', userId, sessionId, machineId }, `Updated access key to version ${expectedVersion + 1}`);
+            log({ module: 'access-keys', userId, sessionId, machineId }, `Updated access key to version ${updated.version}`);
 
             return reply.send({
                 success: true,
-                version: expectedVersion + 1
+                version: updated.version
             });
         } catch (error) {
             log({ module: 'api', level: 'error' }, `Failed to update access key: ${error}`);

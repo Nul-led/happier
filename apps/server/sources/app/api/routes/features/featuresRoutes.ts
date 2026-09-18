@@ -21,6 +21,10 @@ import {
     readHomeConnectionDescriptor,
 } from '@/app/features/homeConnectionDescriptorPublication';
 import type { HomeConnectionDescriptorContinuityStore } from '@/app/features/homeConnectionDescriptorContinuity';
+import { resolveEffectiveHomeAuthMethods } from '@/app/auth/methods/effectiveHomeAuthMethods';
+import { toOldClientSafeAuthMethods } from '@/app/auth/methods/effectiveAuthMethods';
+import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFeature';
+import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
 
 export function featuresRoutes(app: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => HomeSearchCapabilities | undefined;
@@ -35,7 +39,81 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
         reply: FastifyReply,
         descriptorVisibility: 'public' | 'authenticated',
     ) => {
-        const payload = resolveFeaturesFromEnv(process.env);
+        const environmentPayload = resolveFeaturesFromEnv(process.env);
+        const effectiveHomeMethods = await resolveEffectiveHomeAuthMethods({
+            env: process.env,
+            emailDeliveryReady: isAuthEmailDeliveryReady(process.env),
+        });
+        const effectiveDecisions = effectiveHomeMethods.status === 'ready'
+            ? effectiveHomeMethods.decisions
+            : [];
+        // The synchronous assembler only knows the deployment sign-in service;
+        // this route publishes the Home's effective value — the same persisted
+        // narrowing it already resolves for the method catalog — and withholds
+        // the service while the Home policy is unreadable, exactly like auth entry.
+        const signInService = effectiveHomeMethods.status === 'ready'
+            ? effectiveHomeMethods.signInService ?? undefined
+            : undefined;
+        const payload = (() => {
+                const methods = toOldClientSafeAuthMethods(effectiveDecisions);
+                const isEnabled = (methodId: string, actionId: 'login' | 'provision'): boolean =>
+                    effectiveDecisions.some((decision) =>
+                        decision.id === methodId && decision.actions.some((action) =>
+                            action.id === actionId && action.enabled));
+                const priorAuth = environmentPayload.capabilities.auth;
+                const autoRedirect = priorAuth.ui?.autoRedirect;
+                const autoRedirectMethodId = String(autoRedirect?.providerId ?? '').trim().toLowerCase();
+                const autoRedirectStillEnabled = autoRedirect?.enabled === true
+                    && methods.some((method) => method.id === autoRedirectMethodId
+                        && method.actions.some((action) => action.enabled
+                            && (action.id === 'login' || action.id === 'provision')));
+                return {
+                    ...environmentPayload,
+                    signInService,
+                    features: {
+                        ...environmentPayload.features,
+                        auth: {
+                            ...environmentPayload.features.auth,
+                            mtls: { enabled: isEnabled('mtls', 'login') },
+                            login: {
+                                ...environmentPayload.features.auth.login,
+                                keyChallenge: { enabled: isEnabled('key_challenge', 'login') },
+                            },
+                        },
+                    },
+                    capabilities: {
+                        ...environmentPayload.capabilities,
+                        auth: {
+                            ...priorAuth,
+                            methods,
+                            signup: {
+                                ...priorAuth.signup,
+                                methods: deriveLegacySignupMethodsFromAuthMethods(
+                                    methods,
+                                    priorAuth.signup?.methods?.map(({ id }) => id),
+                                ),
+                            },
+                            login: {
+                                ...priorAuth.login,
+                                methods: priorAuth.login?.methods?.map(({ id }) => ({
+                                    id,
+                                    enabled: isEnabled(id, 'login'),
+                                })),
+                            },
+                            ...(autoRedirect ? {
+                                ui: {
+                                    ...priorAuth.ui,
+                                    autoRedirect: {
+                                        ...autoRedirect,
+                                        enabled: autoRedirectStillEnabled,
+                                        providerId: autoRedirectStillEnabled ? autoRedirect.providerId : null,
+                                    },
+                                },
+                            } : {}),
+                        },
+                    },
+                };
+            })();
         const serverIdentityId = readCachedServerIdentityIdForHotPath(process.env);
         const homeSearch = params.resolveHomeSearchCapability?.();
         // Request-time read: the descriptor always reflects the current
@@ -117,6 +195,8 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
                 },
             },
             config: {
+                allowApiToken: true,
+                ephemeralSessionRunnerOperation: "runtime_features",
                 rateLimit: featuresRateLimit,
             },
         },

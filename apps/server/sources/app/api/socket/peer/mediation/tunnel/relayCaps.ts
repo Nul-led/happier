@@ -1,5 +1,4 @@
 import {
-    DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_ALLOW_V1_FALLBACK,
     DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_AGGREGATE_BYTES,
     DEFAULT_MACHINE_TUNNEL_MAX_DURATION_MS,
     DEFAULT_MACHINE_TUNNEL_MAX_IDLE_MS,
@@ -34,7 +33,6 @@ export type PeerTcpTunnelRelayCaps = Readonly<{
     maxFrameBytes: number;
     supportedEncodings: readonly PeerTcpTunnelEncoding[];
     preferredEncoding: PeerTcpTunnelEncoding;
-    allowV1Fallback: boolean;
     maxBinaryHeaderBytes: number;
     maxRawPayloadBytes: number;
     maxFramedMessageBytes: number;
@@ -68,7 +66,6 @@ export function resolvePeerTcpTunnelRelayCaps(input: Partial<PeerTcpTunnelRelayC
             input.preferredEncoding ?? DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_PREFERRED_ENCODING,
             supportedEncodings,
         ),
-        allowV1Fallback: input.allowV1Fallback ?? DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_ALLOW_V1_FALLBACK,
         maxBinaryHeaderBytes: normalizeMachineTunnelPositiveInt(
             input.maxBinaryHeaderBytes,
             DEFAULT_MACHINE_TUNNEL_SERVER_ROUTED_MAX_BINARY_HEADER_BYTES,

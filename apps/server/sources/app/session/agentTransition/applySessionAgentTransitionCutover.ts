@@ -75,7 +75,7 @@ type CommittedCurrentView = Extract<
  */
 type CommittedCurrentViewPublication = Pick<
     CommittedCurrentView,
-    "currentView" | "participantCursors" | "publication"
+    "currentView" | "recipientCursors" | "publication"
 >;
 
 type SuccessfulCreateSessionMessageResult = Extract<
@@ -174,7 +174,7 @@ export async function applySessionAgentTransitionCutover(
     // or failure — announces the same thing.
     const committedCurrentView: CommittedCurrentViewPublication = {
         currentView: committed.currentView,
-        participantCursors: committed.participantCursors,
+        recipientCursors: committed.recipientCursors,
         publication: committed.publication,
     };
 
@@ -220,6 +220,7 @@ export async function applySessionAgentTransitionCutover(
     // the shared `agentEventAttentionImpact` owner recognizes the
     // `sessionAgentTransitionV1` sidecar on every re-read.
     const written = await createSessionMessage({
+        inputAdmission: "transcriptOnly",
         actorUserId: params.actorUserId,
         sessionId: params.sessionId,
         content: params.divider.content,

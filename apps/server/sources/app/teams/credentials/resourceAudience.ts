@@ -1,0 +1,303 @@
+import { TeamCredentialDeliveryModeV1Schema, TeamCredentialDisclosureCeilingV1Schema, TeamCredentialSourceBindingV1Schema, type TeamCredentialBrokerPlacementV1, type TeamCredentialDeliveryModeV1, type TeamCredentialDisclosureCeilingV1 } from "@happier-dev/protocol/teams";
+import type { Tx } from "@/storage/inTx";
+import { AccountStatus } from "@/storage/enums.generated";
+import { resolveTeamActorContextInTx, type TeamOperationAuthenticationContext } from "../actorContext";
+import { resolveTeamCredentialCapabilities } from "../capabilities";
+import { resolveTeamMembershipContextInTx } from "../memberships/effectiveMembership";
+import { publishTeamChangedInTx } from "../teamChanges";
+import { recordTeamCredentialActivityInTx, type TeamCredentialActivityActor } from "./resourceActivity";
+import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
+import { readTeamCredentialBrokerPlacement, resolveTeamCredentialBrokerPoolForSaveInTx } from "./brokerPlacementResolver";
+import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
+import { acquireMachinePoolMutationFenceInTx } from "@/app/machines/pools/machinePoolMutationFence";
+import { resolveTeamCredentialResourceSourceInTx } from "./resourceSourceResolver";
+
+export type TeamCredentialAudienceInput = Readonly<{
+    resourceId: string;
+    expectedRevision: number;
+    allMembersDeliveryMode: TeamCredentialDeliveryModeV1 | null;
+    groupGrants: readonly Readonly<{ teamGroupId: string; deliveryMode: TeamCredentialDeliveryModeV1 }>[];
+    memberGrants: readonly Readonly<{ teamMembershipId: string; deliveryMode: TeamCredentialDeliveryModeV1 }>[];
+}>;
+
+export type TeamCredentialAudienceResult =
+    | Readonly<{ ok: true; resourceId: string; revision: number }>
+    | Readonly<{ ok: false; error: "resource_not_found" | "resource_forbidden" | "resource_changed" | "invalid_audience" | "disclosure_not_allowed" | "broker_unavailable" | "update_required" | "resource_corrupt" | "team_authentication_required" | "team_authentication_policy_unavailable" }>;
+
+export async function validateTeamCredentialAudienceDraftInTx(
+    tx: Tx,
+    input: Readonly<{
+        teamId: string;
+        custodianAccountId: string;
+        disclosureCeiling: TeamCredentialDisclosureCeilingV1;
+        brokerPlacement: TeamCredentialBrokerPlacementV1 | null;
+        audience: Omit<TeamCredentialAudienceInput, 'resourceId' | 'expectedRevision'>;
+    }>,
+): Promise<Readonly<{ ok: true }> | Readonly<{ ok: false; error: 'invalid_audience' | 'disclosure_not_allowed' | 'broker_unavailable' | 'update_required' }>> {
+    const { audience } = input;
+    const modes = [
+        ...(audience.allMembersDeliveryMode === null ? [] : [audience.allMembersDeliveryMode]),
+        ...audience.groupGrants.map(grant => grant.deliveryMode),
+        ...audience.memberGrants.map(grant => grant.deliveryMode),
+    ];
+    if (modes.some(mode => !TeamCredentialDeliveryModeV1Schema.safeParse(mode).success)
+        || new Set(audience.groupGrants.map(grant => grant.teamGroupId)).size !== audience.groupGrants.length
+        || new Set(audience.memberGrants.map(grant => grant.teamMembershipId)).size !== audience.memberGrants.length) {
+        return { ok: false, error: 'invalid_audience' };
+    }
+    if (input.disclosureCeiling === 'brokered_only' && modes.some(mode => mode !== 'brokered')) {
+        return { ok: false, error: 'disclosure_not_allowed' };
+    }
+    if (modes.some(mode => mode !== 'direct')) {
+        if (input.brokerPlacement?.kind === 'machine') {
+            const broker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
+                custodianAccountId: input.custodianAccountId,
+                brokerMachineId: input.brokerPlacement.machineId,
+            });
+            if (!broker.ok) return broker;
+        } else if (input.brokerPlacement?.kind === 'machine_pool') {
+            const poolExists = await acquireMachinePoolMutationFenceInTx({
+                tx,
+                accountId: input.custodianAccountId,
+                poolId: input.brokerPlacement.poolId,
+            });
+            if (!poolExists) return { ok: false, error: 'broker_unavailable' };
+            const pool = await resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
+                custodianAccountId: input.custodianAccountId,
+                poolId: input.brokerPlacement.poolId,
+            });
+            if (!pool.ok) return pool;
+        } else {
+            return { ok: false, error: 'broker_unavailable' };
+        }
+    }
+    const groups = await tx.teamGroup.findMany({
+        where: { id: { in: audience.groupGrants.map(grant => grant.teamGroupId) }, teamId: input.teamId, archivedAt: null },
+        select: { id: true },
+    });
+    if (groups.length !== audience.groupGrants.length) return { ok: false, error: 'invalid_audience' };
+    for (const grant of audience.memberGrants) {
+        const membership = await tx.teamMembership.findUnique({ where: { id: grant.teamMembershipId }, select: { accountId: true } });
+        if (!membership) return { ok: false, error: 'invalid_audience' };
+        const current = await resolveTeamMembershipContextInTx(tx, {
+            teamId: input.teamId,
+            teamMembershipId: grant.teamMembershipId,
+            expectedAccountId: membership.accountId,
+        });
+        if (!current.ok || !current.membership.effective) return { ok: false, error: 'invalid_audience' };
+    }
+    return { ok: true };
+}
+
+/**
+ * Ends membership-lifetime credential authority before the membership row is
+ * removed. This is deliberately owned beside the ordinary audience writer:
+ * membership deletion must not rely on foreign-key cascade as its only
+ * authorization mutation, and recipient material must disappear in the same
+ * transaction as the lifetime that made it readable.
+ */
+export async function revokeTeamCredentialAudienceForMembershipInTx(
+    tx: Tx,
+    input: Readonly<{
+        teamId: string;
+        teamMembershipId: string;
+        accountId: string;
+        actor: TeamCredentialActivityActor;
+    }>,
+): Promise<void> {
+    const [grantedResources, materializedResources] = await Promise.all([
+        tx.teamCredentialResource.findMany({
+            where: {
+                teamId: input.teamId,
+                memberGrants: { some: { teamMembershipId: input.teamMembershipId } },
+            },
+            select: { id: true, displayName: true },
+        }),
+        tx.teamCredentialResource.findMany({
+            where: {
+                teamId: input.teamId,
+                directRecipientMaterials: { some: { recipientAccountId: input.accountId } },
+            },
+            select: { id: true, displayName: true },
+        }),
+    ]);
+    const affectedResources = new Map(
+        [...grantedResources, ...materializedResources].map(resource => [resource.id, resource]),
+    );
+    if (affectedResources.size === 0) return;
+
+    await tx.teamCredentialMemberGrant.deleteMany({
+        where: {
+            teamMembershipId: input.teamMembershipId,
+            resource: { teamId: input.teamId },
+        },
+    });
+    await tx.teamCredentialRecipientMaterial.deleteMany({
+        where: {
+            recipientAccountId: input.accountId,
+            resource: { teamId: input.teamId },
+        },
+    });
+    if (grantedResources.length > 0) {
+        await tx.teamCredentialResource.updateMany({
+            where: { id: { in: grantedResources.map(resource => resource.id) } },
+            data: { revision: { increment: 1 } },
+        });
+    }
+    for (const resource of affectedResources.values()) {
+        await recordTeamCredentialActivityInTx(tx, {
+            teamId: input.teamId,
+            resourceId: resource.id,
+            kind: "audience_changed",
+            actor: input.actor,
+            subjectDisplayName: resource.displayName,
+        });
+    }
+}
+
+function deliveryCapabilities(mode: TeamCredentialDeliveryModeV1 | null): ReadonlySet<"brokered" | "direct"> {
+    if (mode === null) return new Set();
+    if (mode === "both") return new Set(["brokered", "direct"]);
+    return new Set([mode]);
+}
+
+function isDeliveryNarrowing(
+    current: TeamCredentialDeliveryModeV1 | null,
+    next: TeamCredentialDeliveryModeV1 | null,
+): boolean {
+    const currentCapabilities = deliveryCapabilities(current);
+    return [...deliveryCapabilities(next)].every(capability => currentCapabilities.has(capability));
+}
+
+function grantsBySubject<T extends string>(
+    grants: readonly Readonly<{ deliveryMode: TeamCredentialDeliveryModeV1 } & Record<T, string>>[],
+    subject: T,
+): ReadonlyMap<string, TeamCredentialDeliveryModeV1> {
+    return new Map(grants.map(grant => [grant[subject], grant.deliveryMode]));
+}
+
+/** Replace the complete audience at the resource's one revision boundary. */
+export async function setTeamCredentialAudienceInTx(
+    tx: Tx,
+    params: Readonly<{ actorAccountId: string; input: TeamCredentialAudienceInput; authentication: TeamOperationAuthenticationContext }>,
+): Promise<TeamCredentialAudienceResult> {
+    const { input } = params;
+    const resource = await tx.teamCredentialResource.findUnique({ where: { id: input.resourceId } });
+    if (!resource) return { ok: false, error: "resource_not_found" };
+    const actor = await resolveTeamActorContextInTx(tx, { teamId: resource.teamId, actorAccountId: params.actorAccountId });
+    const canManageStructurally = actor !== null
+        && resolveTeamCredentialCapabilities({ ...actor, teamArchivedAt: actor.team.archivedAt }).manageCredentials;
+    const isCustodian = resource.custodianAccountId === params.actorAccountId;
+    const custodianAccount = isCustodian
+        ? await tx.account.findUnique({ where: { id: params.actorAccountId }, select: { status: true } })
+        : null;
+    const isActiveCustodian = custodianAccount?.status === AccountStatus.active;
+    if (!canManageStructurally && !isActiveCustodian) return { ok: false, error: "resource_forbidden" };
+    const qualification = canManageStructurally && actor
+        ? await qualifyTeamCredentialOperationInTx(tx, actor, params.authentication)
+        : { ok: false as const, error: "team_authentication_required" as const };
+    if (!isActiveCustodian && !qualification.ok) return qualification;
+    const canManage = canManageStructurally && qualification.ok;
+    if (resource.revision !== input.expectedRevision) return { ok: false, error: "resource_changed" };
+    const ceiling = TeamCredentialDisclosureCeilingV1Schema.safeParse(resource.disclosureCeiling);
+    if (!ceiling.success) return { ok: false, error: "resource_corrupt" };
+    const modes = [
+        ...(input.allMembersDeliveryMode === null ? [] : [input.allMembersDeliveryMode]),
+        ...input.groupGrants.map(grant => grant.deliveryMode),
+        ...input.memberGrants.map(grant => grant.deliveryMode),
+    ];
+    if (modes.some(mode => mode === "direct" || mode === "both")) {
+        let sourceValue: unknown;
+        try {
+            sourceValue = JSON.parse(resource.sourceBindingJson);
+        } catch {
+            return { ok: false, error: "resource_corrupt" };
+        }
+        const source = TeamCredentialSourceBindingV1Schema.safeParse(sourceValue);
+        if (!source.success) return { ok: false, error: "resource_corrupt" };
+        const currentSource = await resolveTeamCredentialResourceSourceInTx(tx, {
+            custodianAccountId: resource.custodianAccountId,
+            source: source.data,
+        });
+        if (currentSource.status !== "current") {
+            return { ok: false, error: "resource_changed" };
+        }
+        if (currentSource.directExportSupport === "unsupported") {
+            return { ok: false, error: "disclosure_not_allowed" };
+        }
+    }
+    if (!canManage) {
+        const [currentGroupGrants, currentMemberGrants] = await Promise.all([
+            tx.teamCredentialGroupGrant.findMany({
+                where: { resourceId: resource.id },
+                select: { teamGroupId: true, deliveryMode: true },
+            }),
+            tx.teamCredentialMemberGrant.findMany({
+                where: { resourceId: resource.id },
+                select: { teamMembershipId: true, deliveryMode: true },
+            }),
+        ]);
+        const currentGroups = grantsBySubject(currentGroupGrants.flatMap((grant) => {
+            const deliveryMode = TeamCredentialDeliveryModeV1Schema.safeParse(grant.deliveryMode);
+            return deliveryMode.success ? [{ ...grant, deliveryMode: deliveryMode.data }] : [];
+        }), "teamGroupId");
+        const currentMembers = grantsBySubject(currentMemberGrants.flatMap((grant) => {
+            const deliveryMode = TeamCredentialDeliveryModeV1Schema.safeParse(grant.deliveryMode);
+            return deliveryMode.success ? [{ ...grant, deliveryMode: deliveryMode.data }] : [];
+        }), "teamMembershipId");
+        if (currentGroups.size !== currentGroupGrants.length || currentMembers.size !== currentMemberGrants.length) {
+            return { ok: false, error: "resource_corrupt" };
+        }
+        const currentAllMembers = TeamCredentialDeliveryModeV1Schema.nullable().safeParse(resource.allMembersDeliveryMode);
+        if (!currentAllMembers.success) return { ok: false, error: "resource_corrupt" };
+        const narrowsAudience = isDeliveryNarrowing(
+            currentAllMembers.data,
+            input.allMembersDeliveryMode,
+        ) && input.groupGrants.every(grant => isDeliveryNarrowing(
+            currentGroups.get(grant.teamGroupId) ?? null,
+            grant.deliveryMode,
+        )) && input.memberGrants.every(grant => isDeliveryNarrowing(
+            currentMembers.get(grant.teamMembershipId) ?? null,
+            grant.deliveryMode,
+        ));
+        if (!narrowsAudience) return { ok: false, error: "resource_forbidden" };
+    }
+    const storedPlacement = readTeamCredentialBrokerPlacement(resource);
+    if (!storedPlacement.ok) return { ok: false, error: "resource_corrupt" };
+    const validation = await validateTeamCredentialAudienceDraftInTx(tx, {
+        teamId: resource.teamId,
+        custodianAccountId: resource.custodianAccountId,
+        disclosureCeiling: ceiling.data,
+        brokerPlacement: storedPlacement.placement,
+        audience: input,
+    });
+    if (!validation.ok) return validation;
+    const updated = await tx.teamCredentialResource.updateMany({
+        where: { id: resource.id, revision: input.expectedRevision },
+        data: { allMembersDeliveryMode: input.allMembersDeliveryMode, revision: { increment: 1 } },
+    });
+    if (updated.count !== 1) return { ok: false, error: "resource_changed" };
+    await tx.teamCredentialGroupGrant.deleteMany({ where: { resourceId: resource.id } });
+    await tx.teamCredentialMemberGrant.deleteMany({ where: { resourceId: resource.id } });
+    if (input.groupGrants.length > 0) {
+        await tx.teamCredentialGroupGrant.createMany({ data: input.groupGrants.map(grant => ({ resourceId: resource.id, ...grant })) });
+    }
+    if (input.memberGrants.length > 0) {
+        await tx.teamCredentialMemberGrant.createMany({ data: input.memberGrants.map(grant => ({ resourceId: resource.id, ...grant })) });
+    }
+    // Recipient material is a derived projection of the complete audience.
+    // Replacing that audience must erase the old projection in the same
+    // transaction; the source custodian can rebuild only the newly entitled
+    // recipients from the canonical source after this revision commits.
+    await tx.teamCredentialRecipientMaterial.deleteMany({ where: { resourceId: resource.id } });
+    await tx.teamCredentialResource.update({
+        where: { id: resource.id },
+        data: { directSourceVersionsJson: null },
+    });
+    await recordTeamCredentialActivityInTx(tx, {
+        teamId: resource.teamId, resourceId: resource.id, kind: "audience_changed",
+        actor: { kind: "account", accountId: params.actorAccountId }, subjectDisplayName: resource.displayName,
+    });
+    await publishTeamChangedInTx(tx, { teamId: resource.teamId, additionalAccountIds: [resource.custodianAccountId] });
+    return { ok: true, resourceId: resource.id, revision: resource.revision + 1 };
+}

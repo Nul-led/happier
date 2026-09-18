@@ -4010,4 +4010,56 @@ describe("automationRunService (integration)", () => {
             select: { producedSessionId: true },
         })).resolves.toEqual({ producedSessionId: null });
     });
+
+    it("does not derive an Automation Session identity for a direct Workflow Run", async () => {
+        const seeded = await createAccountMachineAutomation({
+            publicKey: "pk-direct-workflow-run-retention",
+            machineId: "machine-direct-workflow-run-retention",
+            automationName: "Unrelated Automation",
+        });
+        const runId = "run-direct-workflow-retention";
+        await db.automationRun.create({
+            data: {
+                id: runId,
+                originKind: "direct",
+                automationId: null,
+                accountId: seeded.accountId,
+                state: "running",
+                causeKind: null,
+                scheduledAt: new Date(Date.now() - 60_000),
+                dueAt: new Date(Date.now() - 30_000),
+                startedAt: new Date(Date.now() - 20_000),
+                claimedByMachineId: seeded.machineId,
+                leaseExpiresAt: new Date(Date.now() + 30_000),
+                attempt: 1,
+                executionInputEnvelope: TEST_STRICT_PLAIN_RECIPE,
+                workflowAcceptedSnapshotEnvelope: "{}",
+                workflowCustodyState: "pending",
+            },
+        });
+        const fabricatedIdentitySession = await db.session.create({
+            data: {
+                id: "session-direct-workflow-retention",
+                accountId: seeded.accountId,
+                tag: deriveSessionCreationTagV1({
+                    callerCreationNamespace: "automation:null",
+                    creationKey: `automation-run:${runId}`,
+                }),
+                metadata: "{}",
+            },
+            select: { id: true },
+        });
+
+        await expect(retainAutomationRunProducedSession({
+            accountId: seeded.accountId,
+            machineId: seeded.machineId,
+            runId,
+            attempt: 1,
+            result: sessionStartSuccess(fabricatedIdentitySession.id),
+        })).resolves.toBeNull();
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: runId },
+            select: { producedSessionId: true },
+        })).resolves.toEqual({ producedSessionId: null });
+    });
 });

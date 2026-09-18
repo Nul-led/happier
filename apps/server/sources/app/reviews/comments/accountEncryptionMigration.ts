@@ -89,6 +89,7 @@ export function classifyReviewCommentAccountEncryptionMigrationError(
 
 export interface ReviewCommentAccountEncryptionMigrationPersistence {
     readInventory(accountId: string): Promise<readonly ReviewCommentAccountEncryptionMigrationStoredComment[]>;
+    readPublicationCorrelationCount(accountId: string): Promise<number>;
     rewriteCommentSensitiveEnvelope(params: Readonly<{
         accountId: string;
         commentId: string;
@@ -126,6 +127,15 @@ export async function migrateReviewCommentAccountEncryptionInTx(_params: Readonl
     persistence: ReviewCommentAccountEncryptionMigrationPersistence;
 }>): Promise<ReviewCommentAccountEncryptionMigrationPostState> {
     const params = _params;
+    // Publication correlation ids are derived from the Account encryption identity, so a
+    // mode/key transition would strand every duplicate-suppression claim this Account
+    // already made. Rows are retained after settlement, so pending and settled claims
+    // count alike until the Reviews transition owner can relocate them.
+    const publicationCorrelationCount =
+        await params.persistence.readPublicationCorrelationCount(params.accountId);
+    if (publicationCorrelationCount > 0) {
+        throw new Error("review_comment_migration_inventory_not_empty");
+    }
     const inventory = await readValidatedInventory(params.persistence, params.accountId);
     if (params.directive.action === "assert_empty") {
         if (inventory.length !== 0) {

@@ -241,8 +241,24 @@ export function registerPluginWebhookDaemonRoutes(
 
     app.post("/v1/daemon/plugins/webhooks/claim", {
         preHandler: authenticatedWebhookPreHandler,
-        onRequest: async (request) => {
-            claimAbortControllers.set(request, new AbortController());
+        onRequest: async (request, reply) => {
+            const controller = new AbortController();
+            claimAbortControllers.set(request, controller);
+            const cleanup = () => {
+                reply.raw.removeListener("close", onClose);
+                reply.raw.removeListener("finish", cleanup);
+                claimAbortControllers.delete(request);
+            };
+            const onClose = () => {
+                // A fully uploaded long poll disconnects on the response side;
+                // Fastify's request-abort hook only covers an interrupted body.
+                if (!reply.raw.writableFinished) {
+                    controller.abort(new Error("plugin_webhook_claim_client_aborted"));
+                }
+                cleanup();
+            };
+            reply.raw.once("close", onClose);
+            reply.raw.once("finish", cleanup);
         },
         onRequestAbort: async (request) => {
             claimAbortControllers.get(request)?.abort(new Error("plugin_webhook_claim_client_aborted"));

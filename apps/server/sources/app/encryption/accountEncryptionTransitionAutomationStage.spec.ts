@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
     AutomationOccurrenceKeyV1Schema,
+    AutomationTriggerIdSchema,
     MAX_AUTOMATION_STORED_ENVELOPE_UTF8_BYTES,
 } from "@happier-dev/protocol";
 import { describe, expect, it } from "vitest";
@@ -21,6 +22,7 @@ import {
 const TRANSITION_ID = randomUUID();
 const RUN_ID = "automation-run-near-maximum-envelope";
 const AUTOMATION_ID = "automation-near-maximum-envelope";
+const INVOCATION_RECORD_ID = "workflow-invocation-near-maximum-envelope";
 
 /**
  * A retained envelope only a little under the released Protocol ceiling. The
@@ -42,7 +44,7 @@ function runSourceItem(
     return {
         kind: "run",
         runId: RUN_ID,
-        automationId: AUTOMATION_ID,
+        origin: { kind: "automation", automationId: AUTOMATION_ID },
         revision: 4,
         cause: {
             kind: "conversation",
@@ -53,6 +55,8 @@ function runSourceItem(
             triggerEvidenceEnvelope: null,
             occurrenceEvidenceEqualityTag: null,
             executionInputEnvelope: null,
+            workflowAcceptedSnapshotEnvelope: null,
+            workflowCheckpointEnvelope: null,
             resultEnvelope: null,
             replyContextEnvelope,
             failureDetailEnvelope: null,
@@ -83,6 +87,40 @@ function storedStageForSource(
 }
 
 describe("accountEncryptionTransitionAutomationStage stored content bounds", () => {
+    it("round-trips a workflow invocation with exact Run and invocation-record identity", () => {
+        const source: AutomationAccountEncryptionTransitionInventoryItem = {
+            kind: "workflow_invocation",
+            runId: RUN_ID,
+            invocationRecordId: INVOCATION_RECORD_ID,
+            source: {
+                contentEnvelope: JSON.stringify({ t: "encrypted", c: "source-invocation" }),
+            },
+        };
+        const target: AutomationAccountEncryptionTransitionStageItem = {
+            ...source,
+            target: {
+                contentEnvelope: JSON.stringify({ t: "plain", v: { target: true } }),
+            },
+        };
+        const stage: AccountEncryptionTransitionAutomationStoredStage = {
+            id: randomUUID(),
+            transitionId: TRANSITION_ID,
+            participantKind: "workflow_invocation",
+            participantId: INVOCATION_RECORD_ID,
+            automationId: null,
+            sourceRevision: null,
+            sourceContent: JSON.stringify(source),
+            targetContent: JSON.stringify(target),
+            sourceEncodedBytes:
+                measureAccountEncryptionTransitionAutomationSourceItemBytes(source),
+            targetEncodedBytes:
+                measureAccountEncryptionTransitionAutomationStageItemBytes(target),
+        };
+
+        expect(sourceItemFromAccountEncryptionTransitionAutomationStage(stage)).toEqual(source);
+        expect(targetItemFromAccountEncryptionTransitionAutomationStage(stage)).toEqual(target);
+    });
+
     it("round-trips every Event trigger definition without inventing a per-Automation trigger ceiling", () => {
         const source: AutomationAccountEncryptionTransitionInventoryItem = {
             kind: "definition",
@@ -91,7 +129,7 @@ describe("accountEncryptionTransitionAutomationStage stored content bounds", () 
             source: {
                 templateCiphertext: JSON.stringify({ t: "plain", v: {} }),
                 triggerDefinitionEnvelopes: Array.from({ length: 51 }, (_, index) => ({
-                    triggerId: `automation-trigger-${index}`,
+                    triggerId: AutomationTriggerIdSchema.parse(`automation-trigger-${index}`),
                     triggerRevision: index,
                     envelope: JSON.stringify({ t: "plain", v: { index } }),
                 })),
@@ -103,7 +141,7 @@ describe("accountEncryptionTransitionAutomationStage stored content bounds", () 
             participantKind: "definition",
             participantId: AUTOMATION_ID,
             automationId: AUTOMATION_ID,
-            sourceRevision: source.revision,
+            sourceRevision: 4,
             sourceContent: JSON.stringify(source),
             targetContent: null,
             sourceEncodedBytes:
@@ -129,7 +167,7 @@ describe("accountEncryptionTransitionAutomationStage stored content bounds", () 
         const target: AutomationAccountEncryptionTransitionStageItem = {
             kind: "run",
             runId: RUN_ID,
-            automationId: AUTOMATION_ID,
+            origin: { kind: "automation", automationId: AUTOMATION_ID },
             expectedRevision: 4,
             cause: {
                 kind: "conversation",
@@ -143,9 +181,12 @@ describe("accountEncryptionTransitionAutomationStage stored content bounds", () 
                 triggerEvidenceEnvelope: null,
                 occurrenceEvidenceEqualityTag: null,
                 executionInputEnvelope: null,
+                workflowAcceptedSnapshotEnvelope: null,
+                workflowCheckpointEnvelope: null,
                 resultEnvelope: null,
                 replyContextEnvelope: nearMaximumStoredEnvelope("target"),
                 failureDetailEnvelope: null,
+                summaryCiphertext: null,
             },
         };
         const stage = storedStageForSource(source, target);

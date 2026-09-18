@@ -1,10 +1,13 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { applySessionTurnMutation } from "@/app/session/sessionWriteService";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { sessionRoutes } from "./sessionRoutes";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 describe("sessionRoutes session turns (integration)", () => {
     let harness: LightSqliteHarness;
@@ -177,6 +180,7 @@ describe("sessionRoutes session turns (integration)", () => {
 
         await expect(applySessionTurnMutation({
             actorUserId: account.id,
+            authentication,
             mutation: {
                 v: 1,
                 sessionId: session.id,
@@ -245,6 +249,7 @@ describe("sessionRoutes session turns (integration)", () => {
 
         await expect(applySessionTurnMutation({
             actorUserId: account.id,
+            authentication,
             mutation,
         })).resolves.toMatchObject({ ok: true, didApply: true });
         await db.session.update({
@@ -260,6 +265,7 @@ describe("sessionRoutes session turns (integration)", () => {
 
         await expect(applySessionTurnMutation({
             actorUserId: account.id,
+            authentication,
             mutation,
         })).resolves.toEqual({
             ok: false,

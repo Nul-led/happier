@@ -1,11 +1,15 @@
+import { randomUUID } from "node:crypto";
 import {
     ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS,
     AccountEncryptionMigrateAutomationsDirectiveSchema,
+    AutomationOccurrenceEvidenceEqualityTagV1Schema,
     AutomationTriggerIdSchema,
     deriveAutomationOccurrenceKeyV1,
     AutomationSourceSelectorIdV1Schema,
     sealAutomationTriggerDefinitionStoredEnvelopeV1,
+    sealAutomationConversationReplyContextStoredEnvelopeV1,
     sealAutomationRunFailureDetailStoredEnvelopeV1,
+    sealAccountScopedBlobCiphertext,
     serializeAutomationRunExecutionRecipeV1,
     type PluginJsonValueV2,
 } from "@happier-dev/protocol";
@@ -25,6 +29,7 @@ import {
     matchAutomationAccountEncryptionMigrationPostStateInTx,
     migrateAutomationAccountEncryptionInTx,
     validateAutomationAccountEncryptionTransitionStageInTx,
+    type AutomationAccountEncryptionTransitionStageItem,
 } from "./automationCrudService";
 import { claimAutomationRun, heartbeatAutomationRun } from "./automationClaimService";
 import { cancelAutomationRun } from "./automationRunService";
@@ -33,7 +38,9 @@ import { assertAllCauseAutomationRunMigrationToE2ee } from "./automationAccountE
 const SOURCE_SELECTOR_ID = AutomationSourceSelectorIdV1Schema.parse(
     "8a2e26d2-5b2b-4e9b-a57f-68ca5e575dc7",
 );
-const E2EE_TAG = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const E2EE_TAG = AutomationOccurrenceEvidenceEqualityTagV1Schema.parse(
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+);
 const TRIGGER_DEFINITION_MATERIAL = {
     type: "dataKey" as const,
     machineKey: new Uint8Array(32).fill(9),
@@ -225,6 +232,184 @@ function buildPlainReplyContextEnvelope(params: Readonly<{
             },
         },
     });
+}
+
+const WORKFLOW_TRANSITION_MATERIAL = {
+    type: "dataKey" as const,
+    machineKey: new Uint8Array(32).fill(23),
+};
+const workflowTransitionRandomBytes = (length: number) =>
+    new Uint8Array(length).fill(29);
+const workflowTransitionDefinition = {
+    version: 1 as const,
+    inputs: [],
+    defaults: {},
+    blocks: [{
+        kind: "step" as const,
+        id: "step-1",
+        document: { text: "Run the transition fixture", references: [], attachments: [] },
+        input: [],
+        result: { kind: "text" as const },
+    }],
+};
+
+function workflowTransitionSealMode(mode: "plain" | "e2ee") {
+    return mode === "plain"
+        ? { mode } as const
+        : {
+            mode,
+            material: WORKFLOW_TRANSITION_MATERIAL,
+            randomBytes: workflowTransitionRandomBytes,
+        } as const;
+}
+
+function buildWorkflowStoredEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    kind:
+        | "workflow_accepted_snapshot"
+        | "workflow_checkpoint"
+        | "workflow_final_result";
+    binding: Readonly<Record<string, unknown>>;
+    content: unknown;
+}>): string {
+    const payload = { v: 1, binding: params.binding, content: params.content };
+    return params.mode === "plain"
+        ? JSON.stringify({ t: "plain", v: payload })
+        : JSON.stringify({
+            t: "encrypted",
+            c: sealAccountScopedBlobCiphertext({
+                kind: params.kind,
+                material: WORKFLOW_TRANSITION_MATERIAL,
+                payload,
+                randomBytes: workflowTransitionRandomBytes,
+            }),
+        });
+}
+
+function buildWorkflowAcceptedSnapshotEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    accountId: string;
+    runId: string;
+    machineId: string;
+    origin: { kind: "direct" } | { kind: "automation"; automationId: string };
+}>): string {
+    const binding = {
+                v: 1,
+                purpose: "accepted_snapshot",
+                accountId: params.accountId,
+                runId: params.runId,
+            } as const;
+    return buildWorkflowStoredEnvelope({
+        mode: params.mode,
+        kind: "workflow_accepted_snapshot",
+        binding,
+        content: {
+                definition: workflowTransitionDefinition,
+                source: params.origin.kind === "automation"
+                    ? { kind: "automation", automationId: params.origin.automationId }
+                    : { kind: "inline" },
+                inputs: {},
+                machineId: params.machineId,
+                executionTarget: { kind: "session" },
+                workspaceTarget: {
+                    project: {
+                        machineId: params.machineId,
+                        directory: "/repo",
+                        checkoutRootPath: "/repo",
+                    },
+                },
+                ...(params.origin.kind === "direct"
+                    ? { origin: params.origin }
+                    : {}),
+                authorization: {
+                    admittedPermissionCeiling: "default",
+                    principal: { kind: "host" },
+                },
+        },
+    });
+}
+
+function buildWorkflowCheckpointEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    accountId: string;
+    runId: string;
+}>): string {
+    const binding = {
+                v: 1,
+                purpose: "checkpoint",
+                accountId: params.accountId,
+                runId: params.runId,
+            } as const;
+    return buildWorkflowStoredEnvelope({
+        mode: params.mode,
+        kind: "workflow_checkpoint",
+        binding,
+        content: {
+                kind: "happier.workflow-checkpoint.v1",
+                rootRecordId: `root-${params.runId}`,
+                nextSequence: "1",
+                frontier: { nextBlockOrdinal: 1, paused: false },
+        },
+    });
+}
+
+function buildWorkflowFinalResultEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    accountId: string;
+    runId: string;
+}>): string {
+    const binding = {
+                v: 1,
+                purpose: "final_result",
+                accountId: params.accountId,
+                runId: params.runId,
+            } as const;
+    return buildWorkflowStoredEnvelope({
+        mode: params.mode,
+        kind: "workflow_final_result",
+        binding,
+        content: {
+                kind: "happier.workflow-final-result.v1",
+                result: { kind: "text", value: "transition complete" },
+                producerInvocation: { recordId: "workflow-final-producer" },
+        },
+    });
+}
+
+function buildWorkflowDefinitionEnvelope(mode: "plain" | "e2ee"): string {
+    return mode === "plain"
+        ? JSON.stringify({ t: "plain", v: { definition: workflowTransitionDefinition } })
+        : JSON.stringify({ t: "encrypted", c: "workflow-definition-ciphertext" });
+}
+
+function buildWorkflowTransitionReplyContextEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    automationId: string;
+    occurrenceKey: ReturnType<typeof deriveAutomationOccurrenceKeyV1>;
+}>): string {
+    return JSON.stringify(sealAutomationConversationReplyContextStoredEnvelopeV1({
+        ...workflowTransitionSealMode(params.mode),
+        correspondence: {
+            automationId: params.automationId,
+            occurrenceKey: params.occurrenceKey,
+        },
+        opaqueContext: { conversationId: "workflow-transition-conversation" },
+    }));
+}
+
+function buildWorkflowTransitionFailureDetailEnvelope(params: Readonly<{
+    mode: "plain" | "e2ee";
+    automationId: string;
+    runId: string;
+}>): string {
+    return JSON.stringify(sealAutomationRunFailureDetailStoredEnvelopeV1({
+        ...workflowTransitionSealMode(params.mode),
+        correspondence: {
+            automationId: params.automationId,
+            runId: params.runId,
+        },
+        detail: "workflow transition failure detail",
+    }));
 }
 
 const migrationRunContentSelect = {
@@ -757,6 +942,331 @@ describe("Automation account-encryption Run migration (integration)", () => {
             () => db.machine.deleteMany(),
             () => db.account.deleteMany(),
         ]);
+    });
+
+    it("rejects mode-incompatible inherited Workflow Run content before mutating either origin", async () => {
+        const results: Array<{ status: string }> = [];
+        for (const [fromMode, toMode] of [
+            ["plain", "e2ee"],
+            ["e2ee", "plain"],
+        ] as const) {
+            const account = await db.account.create({
+                data: fromMode === "plain"
+                    ? { encryptionMode: "plain" }
+                    : { ...createSignedAccountContentBinding(), encryptionMode: "e2ee" },
+                select: { id: true },
+            });
+            const automation = await db.automation.create({
+                data: {
+                    accountId: account.id,
+                    name: `Workflow transition ${fromMode}`,
+                    enabled: false,
+                    targetType: "new_session",
+                    templateCiphertext: fromMode === "plain"
+                        ? buildPlainTemplate("workflow transition")
+                        : buildEncryptedTemplate("workflow-transition-template"),
+                    templateVersion: 1,
+                },
+                select: { id: true },
+            });
+            const baseEvidence = buildPlainConversationEvidence();
+            const evidenceFor = (index: number) => ({
+                ...baseEvidence,
+                occurrenceId: `${baseEvidence.occurrenceId}-${index}`,
+            });
+            const machineId = `machine-workflow-transition-${fromMode}`;
+            const automationCases = [
+                "triggerEvidenceEnvelope",
+                "occurrenceEvidenceEqualityTag",
+                "executionInputEnvelope",
+                "replyContextEnvelope",
+                "failureDetailEnvelope",
+            ] as const;
+            const runIds = [
+                ...automationCases.map(() => randomUUID()),
+                randomUUID(),
+            ];
+            const sourceAutomationContent = (runId: string, index: number) => {
+                const evidence = evidenceFor(index);
+                const occurrenceKey = deriveAutomationOccurrenceKeyV1(evidence);
+                return {
+                triggerEvidenceEnvelope: fromMode === "plain"
+                    ? JSON.stringify({ t: "plain", v: evidence })
+                    : JSON.stringify({ t: "encrypted", c: "workflow-trigger-evidence" }),
+                occurrenceEvidenceEqualityTag: fromMode === "plain" ? null : E2EE_TAG,
+                executionInputEnvelope: buildWorkflowDefinitionEnvelope(fromMode),
+                workflowAcceptedSnapshotEnvelope: buildWorkflowAcceptedSnapshotEnvelope({
+                    mode: fromMode,
+                    accountId: account.id,
+                    runId,
+                    machineId,
+                    origin: { kind: "automation", automationId: automation.id },
+                }),
+                workflowCheckpointEnvelope: buildWorkflowCheckpointEnvelope({
+                    mode: fromMode,
+                    accountId: account.id,
+                    runId,
+                }),
+                resultEnvelope: buildWorkflowFinalResultEnvelope({
+                    mode: fromMode,
+                    accountId: account.id,
+                    runId,
+                }),
+                replyContextEnvelope: buildWorkflowTransitionReplyContextEnvelope({
+                    mode: fromMode,
+                    automationId: automation.id,
+                    occurrenceKey,
+                }),
+                failureDetailEnvelope: buildWorkflowTransitionFailureDetailEnvelope({
+                    mode: fromMode,
+                    automationId: automation.id,
+                    runId,
+                }),
+                summaryCiphertext: null,
+                };
+            };
+            for (const [index, field] of automationCases.entries()) {
+                const runId = runIds[index]!;
+                const evidence = evidenceFor(index);
+                const occurrenceKey = deriveAutomationOccurrenceKeyV1(evidence);
+                const source = sourceAutomationContent(runId, index);
+                await db.automationRun.create({
+                    data: {
+                        id: runId,
+                        accountId: account.id,
+                        automationId: automation.id,
+                        originKind: "automation",
+                        state: "running",
+                        causeKind: "conversation",
+                        causeOccurredAt: new Date(evidence.occurredAt),
+                        occurrenceKey,
+                        triggerEvidenceEnvelope: source.triggerEvidenceEnvelope,
+                        occurrenceEvidenceEqualityTag: source.occurrenceEvidenceEqualityTag,
+                        executionInputEnvelope: source.executionInputEnvelope,
+                        workflowAcceptedSnapshotEnvelope:
+                            source.workflowAcceptedSnapshotEnvelope,
+                        workflowCheckpointEnvelope: source.workflowCheckpointEnvelope,
+                        workflowCustodyState: "pending",
+                        resultEnvelope: source.resultEnvelope,
+                        replyContextEnvelope: source.replyContextEnvelope,
+                        replyHandoffActionPluginId: "happier.channels",
+                        replyHandoffActionLocalId: "automation/result-deliver-v1",
+                        replyHandoffTargetMachineId: machineId,
+                        replyHandoffTargetMachineInstallationId:
+                            `installation-workflow-transition-${fromMode}`,
+                        replyHandoffTargetMaterializationId:
+                            `materialization-workflow-transition-${fromMode}`,
+                        replyHandoffId: `handoff-${runId}`,
+                        replyHandoffState: "awaitingResult",
+                        errorMessage: source.failureDetailEnvelope,
+                        scheduledAt: new Date(evidence.occurredAt),
+                        dueAt: new Date(evidence.occurredAt),
+                    },
+                });
+            }
+            const directRunId = runIds.at(-1)!;
+            const directAcceptedSource = buildWorkflowAcceptedSnapshotEnvelope({
+                mode: fromMode,
+                accountId: account.id,
+                runId: directRunId,
+                machineId,
+                origin: { kind: "direct" },
+            });
+            await db.automationRun.create({
+                data: {
+                    id: directRunId,
+                    accountId: account.id,
+                    automationId: null,
+                    originKind: "direct",
+                    causeKind: null,
+                    state: "running",
+                    executionInputEnvelope: directAcceptedSource,
+                    workflowAcceptedSnapshotEnvelope: directAcceptedSource,
+                    workflowCheckpointEnvelope: buildWorkflowCheckpointEnvelope({
+                        mode: fromMode,
+                        accountId: account.id,
+                        runId: directRunId,
+                    }),
+                    workflowCustodyState: "pending",
+                    resultEnvelope: buildWorkflowFinalResultEnvelope({
+                        mode: fromMode,
+                        accountId: account.id,
+                        runId: directRunId,
+                    }),
+                    scheduledAt: new Date(baseEvidence.occurredAt),
+                    dueAt: new Date(baseEvidence.occurredAt),
+                },
+            });
+            const before = await db.automationRun.findMany({
+                where: { id: { in: runIds } },
+                orderBy: { id: "asc" },
+                select: {
+                    id: true,
+                    revision: true,
+                    triggerEvidenceEnvelope: true,
+                    occurrenceEvidenceEqualityTag: true,
+                    executionInputEnvelope: true,
+                    workflowAcceptedSnapshotEnvelope: true,
+                    workflowCheckpointEnvelope: true,
+                    resultEnvelope: true,
+                    replyContextEnvelope: true,
+                    errorMessage: true,
+                },
+            });
+            const inspected = await inTx(async (tx) =>
+                await inspectAutomationAccountEncryptionTransitionInTx({
+                    tx,
+                    accountId: account.id,
+                    sourceMode: fromMode,
+                }),
+            );
+            expect(inspected.status).toBe("complete");
+            if (inspected.status !== "complete") {
+                throw new Error("Expected a complete Workflow Run transition census");
+            }
+            const runItems = new Map(inspected.page.items
+                .filter((item) => item.kind === "run")
+                .map((item) => [item.runId, item]));
+            for (const [index, field] of automationCases.entries()) {
+                const runId = runIds[index]!;
+                const evidence = evidenceFor(index);
+                const occurrenceKey = deriveAutomationOccurrenceKeyV1(evidence);
+                const item = runItems.get(runId);
+                if (
+                    !item
+                    || item.kind !== "run"
+                    || item.origin.kind !== "automation"
+                    || !("cause" in item)
+                ) {
+                    throw new Error(`Missing Automation Workflow Run ${runId}`);
+                }
+                const target = sourceAutomationContent(runId, index);
+                const targetModeContent = {
+                    ...target,
+                    triggerEvidenceEnvelope: toMode === "plain"
+                        ? JSON.stringify({ t: "plain", v: evidence })
+                        : JSON.stringify({ t: "encrypted", c: "target-workflow-trigger-evidence" }),
+                    occurrenceEvidenceEqualityTag: toMode === "plain" ? null : E2EE_TAG,
+                    executionInputEnvelope: buildWorkflowDefinitionEnvelope(toMode),
+                    workflowAcceptedSnapshotEnvelope: buildWorkflowAcceptedSnapshotEnvelope({
+                        mode: toMode,
+                        accountId: account.id,
+                        runId,
+                        machineId,
+                        origin: { kind: "automation", automationId: automation.id },
+                    }),
+                    workflowCheckpointEnvelope: buildWorkflowCheckpointEnvelope({
+                        mode: toMode,
+                        accountId: account.id,
+                        runId,
+                    }),
+                    resultEnvelope: buildWorkflowFinalResultEnvelope({
+                        mode: toMode,
+                        accountId: account.id,
+                        runId,
+                    }),
+                    replyContextEnvelope: buildWorkflowTransitionReplyContextEnvelope({
+                        mode: toMode,
+                        automationId: automation.id,
+                        occurrenceKey,
+                    }),
+                    failureDetailEnvelope: buildWorkflowTransitionFailureDetailEnvelope({
+                        mode: toMode,
+                        automationId: automation.id,
+                        runId,
+                    }),
+                };
+                const invalidTarget = { ...targetModeContent, [field]: target[field] };
+                results.push(await inTx(async (tx) =>
+                    await applyAutomationAccountEncryptionTransitionStageInTx({
+                        tx,
+                        accountId: account.id,
+                        fromMode,
+                        toMode,
+                        items: [{
+                            kind: "run",
+                            runId,
+                            origin: item.origin,
+                            expectedRevision: item.revision,
+                            cause: item.cause,
+                            source: item.source,
+                            target: invalidTarget,
+                        }],
+                    }),
+                ).catch(() => ({ status: "threw" })));
+            }
+            const directItem = runItems.get(directRunId);
+            if (
+                !directItem
+                || directItem.kind !== "run"
+                || directItem.origin.kind !== "direct"
+                || "cause" in directItem
+            ) {
+                throw new Error(`Missing direct Workflow Run ${directRunId}`);
+            }
+            const directAcceptedTarget = buildWorkflowAcceptedSnapshotEnvelope({
+                mode: toMode,
+                accountId: account.id,
+                runId: directRunId,
+                machineId,
+                origin: { kind: "direct" },
+            });
+            results.push(await inTx(async (tx) =>
+                await applyAutomationAccountEncryptionTransitionStageInTx({
+                    tx,
+                    accountId: account.id,
+                    fromMode,
+                    toMode,
+                    items: [{
+                        kind: "run",
+                        runId: directRunId,
+                        origin: directItem.origin,
+                        expectedRevision: directItem.revision,
+                        source: directItem.source,
+                        target: {
+                            triggerEvidenceEnvelope: null,
+                            occurrenceEvidenceEqualityTag: null,
+                            // Direct Runs bind this inherited physical field to
+                            // the accepted-snapshot purpose, not a generic blob.
+                            executionInputEnvelope: directAcceptedSource,
+                            workflowAcceptedSnapshotEnvelope: directAcceptedTarget,
+                            workflowCheckpointEnvelope: buildWorkflowCheckpointEnvelope({
+                                mode: toMode,
+                                accountId: account.id,
+                                runId: directRunId,
+                            }),
+                            resultEnvelope: buildWorkflowFinalResultEnvelope({
+                                mode: toMode,
+                                accountId: account.id,
+                                runId: directRunId,
+                            }),
+                            replyContextEnvelope: null,
+                            failureDetailEnvelope: null,
+                            summaryCiphertext: null,
+                        },
+                    }],
+                }),
+            ).catch(() => ({ status: "threw" })));
+            await expect(db.automationRun.findMany({
+                where: { id: { in: runIds } },
+                orderBy: { id: "asc" },
+                select: {
+                    id: true,
+                    revision: true,
+                    triggerEvidenceEnvelope: true,
+                    occurrenceEvidenceEqualityTag: true,
+                    executionInputEnvelope: true,
+                    workflowAcceptedSnapshotEnvelope: true,
+                    workflowCheckpointEnvelope: true,
+                    resultEnvelope: true,
+                    replyContextEnvelope: true,
+                    errorMessage: true,
+                },
+            })).resolves.toEqual(before);
+        }
+        expect(results).toEqual(Array.from({ length: 12 }, () => ({
+            status: "invalid_content",
+        })));
     });
 
     it("fails closed before clearing Automations for an inconsistent E2EE Account", async () => {
@@ -2140,6 +2650,14 @@ describe("Automation account-encryption Run migration (integration)", () => {
         if (!eventWitness || !conversationWitness) {
             throw new Error("Expected both retained Event and Conversation witnesses");
         }
+        if (
+            eventWitness.origin.kind !== "automation"
+            || conversationWitness.origin.kind !== "automation"
+            || !("cause" in eventWitness)
+            || !("cause" in conversationWitness)
+        ) {
+            throw new Error("Expected Automation-origin retained Run witnesses");
+        }
         expect(eventWitness.source).toMatchObject({
             triggerEvidenceEnvelope: eventEvidence,
             occurrenceEvidenceEqualityTag: E2EE_TAG,
@@ -2164,7 +2682,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
         const stageItems = [eventWitness, conversationWitness].map((item) => ({
             kind: "run" as const,
             runId: item.runId,
-            automationId: item.automationId,
+            origin: item.origin,
             expectedRevision: item.revision,
             cause: item.cause,
             source: item.source,
@@ -2173,12 +2691,17 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 occurrenceEvidenceEqualityTag:
                     item.source.occurrenceEvidenceEqualityTag,
                 executionInputEnvelope: item.source.executionInputEnvelope,
+                workflowAcceptedSnapshotEnvelope:
+                    item.source.workflowAcceptedSnapshotEnvelope,
+                workflowCheckpointEnvelope:
+                    item.source.workflowCheckpointEnvelope,
                 resultEnvelope: item.source.resultEnvelope,
                 replyContextEnvelope: item.source.replyContextEnvelope,
                 failureDetailEnvelope:
                     item.runId === eventWitness.runId
                         ? rekeyedEventFailureDetail
                         : item.source.failureDetailEnvelope,
+                summaryCiphertext: null,
             },
         }));
         await expect(inTx(async (tx) => (
@@ -2257,7 +2780,7 @@ describe("Automation account-encryption Run migration (integration)", () => {
         const toPlainStageItem = {
             kind: "run" as const,
             runId: eventWitness.runId,
-            automationId: eventWitness.automationId,
+            origin: eventWitness.origin,
             expectedRevision: eventWitness.revision + 1,
             cause: eventWitness.cause,
             source: {
@@ -2268,11 +2791,14 @@ describe("Automation account-encryption Run migration (integration)", () => {
                 triggerEvidenceEnvelope: plainEventEvidence,
                 occurrenceEvidenceEqualityTag: null,
                 executionInputEnvelope: plainEventExecutionInput,
+                workflowAcceptedSnapshotEnvelope: null,
+                workflowCheckpointEnvelope: null,
                 resultEnvelope: null,
                 replyContextEnvelope: null,
                 failureDetailEnvelope: plainEventFailureDetail,
+                summaryCiphertext: null,
             },
-        };
+        } satisfies AutomationAccountEncryptionTransitionStageItem;
         await expect(inTx(async (tx) => (
             await validateAutomationAccountEncryptionTransitionStageInTx({
                 tx,

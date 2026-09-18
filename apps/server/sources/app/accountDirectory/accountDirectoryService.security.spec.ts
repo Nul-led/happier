@@ -16,6 +16,7 @@ const { createToken, linkFindUnique, linkFindFirst } = vi.hoisted(() => ({
 }));
 vi.mock("@/storage/db", () => ({
     db: {
+        repeatKey: { findUnique: vi.fn(async () => null) },
         account: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
         accountDirectoryLink: { findUnique: linkFindUnique, findFirst: linkFindFirst },
         accountHomeDirectoryEntry: { findUnique: vi.fn() },
@@ -23,6 +24,8 @@ vi.mock("@/storage/db", () => ({
 }));
 vi.mock("@/storage/inTx", () => ({
     inTx: async (fn: (tx: unknown) => Promise<unknown>) => fn({
+        repeatKey: { findUnique: vi.fn(async () => null) },
+        account: { findUniqueOrThrow: vi.fn(async () => ({ status: "active" })) },
         accountDirectoryLink: { findUnique: linkFindUnique, findFirst: linkFindFirst },
     }),
 }));
@@ -46,7 +49,10 @@ const HOME_DESCRIPTOR: HomeConnectionDescriptorV1 = {
 const resolveHomeConnectionDescriptor = async () => HOME_DESCRIPTOR;
 
 describe("Account Directory Home redemption security", () => {
-    beforeEach(() => createToken.mockReset());
+    beforeEach(() => {
+        createToken.mockReset();
+        vi.mocked(db.account.findUnique).mockResolvedValue({ id: "account-1", status: "active" } as never);
+    });
 
     it("never issues an Account token from the Account Service redemption path", async () => {
         const keyPair = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(4));

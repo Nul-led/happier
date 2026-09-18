@@ -120,3 +120,15 @@ export function createInTxHarness<TTx extends object>(createTxState: () => TTx) 
 
     return { inTx, afterTx };
 }
+
+/**
+ * Minimal real transaction surface for callers that run Session deletion
+ * without authored Follow edges. Keeping this in the transaction testkit
+ * makes those fixtures follow the canonical deletion composition instead of
+ * mocking the Follow invalidation owner away.
+ */
+export function createEmptySessionFollowEdgeTransactionModel() {
+    return {
+        findMany: async (): Promise<never[]> => [],
+    };
+}

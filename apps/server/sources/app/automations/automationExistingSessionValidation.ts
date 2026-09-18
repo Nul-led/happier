@@ -132,7 +132,7 @@ async function readSessionOwnerMetadataAccountModeTx(params: {
 export async function validateExistingSessionAutomationTargetTx(params: {
     tx: Tx;
     accountId: string;
-    targetType: AutomationTargetType;
+    targetType: AutomationTargetType | null;
     /**
      * Retained raw-template admission. Current strict recipes supply the
      * already schema-owned target identity below instead of reparsing a

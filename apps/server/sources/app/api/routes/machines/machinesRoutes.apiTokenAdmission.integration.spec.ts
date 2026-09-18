@@ -6,7 +6,10 @@ import { auth } from "@/app/auth/auth";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
-import { MACHINE_PLAIN_DATA_KEY_MARKER } from "@happier-dev/protocol";
+import {
+    ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER,
+    MACHINE_PLAIN_DATA_KEY_MARKER,
+} from "@happier-dev/protocol";
 
 import { machinesRoutes } from "./machinesRoutes";
 
@@ -30,7 +33,6 @@ describe("machinesRoutes API-token admission (integration)", () => {
             env: {
                 AUTH_REQUIRED_LOGIN_PROVIDERS: "",
                 AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-                AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS: "0",
             },
         });
     }, 120_000);
@@ -43,6 +45,30 @@ describe("machinesRoutes API-token admission (integration)", () => {
 
     afterAll(async () => {
         await harness.close();
+    });
+
+    it("omits temporary computers from ordinary discovery but retains exact Account detail", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "e2ee" },
+        });
+        await db.machine.createMany({ data: [
+            { id: "persistent", accountId: account.id, metadata: "encrypted" },
+            { id: "temporary", accountId: account.id, metadata: "encrypted", kind: "ephemeral_session_runner" },
+        ] });
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const app = createTestApp();
+        await app.ready();
+        try {
+            const headers = { authorization: `Bearer ${token}` };
+            const list = await app.inject({ method: "GET", url: "/v1/machines", headers });
+            expect(list.statusCode).toBe(200);
+            expect(list.json()).toEqual([expect.objectContaining({ id: "persistent", kind: "persistent" })]);
+            const exact = await app.inject({ method: "GET", url: "/v1/machines/temporary", headers });
+            expect(exact.statusCode).toBe(200);
+            expect(exact.json()).toMatchObject({ machine: { id: "temporary", kind: "ephemeral_session_runner" } });
+        } finally {
+            await app.close();
+        }
     });
 
     it("returns PAT callers only the strict machine-selection bootstrap projection", async () => {
@@ -69,6 +95,7 @@ describe("machinesRoutes API-token admission (integration)", () => {
         });
         const pat = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Machine discovery",
         });
         const app = createTestApp();
@@ -88,6 +115,58 @@ describe("machinesRoutes API-token admission (integration)", () => {
                 revokedAt: 1234,
                 replacedByMachineId: "machine-2",
             }]);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("projects the placement-origin capability from the Machine list only to V4 readers", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+        await db.machine.create({
+            data: {
+                id: "machine-1",
+                accountId: account.id,
+                metadata: "encrypted-metadata",
+                dataEncryptionKey: new Uint8Array(32).fill(1),
+                operationProtocolCapabilities: {
+                    sessionSpawn: { protocolVersions: [1] },
+                    sessionSpawnPlacementOrigin: { protocolVersions: [1] },
+                },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const token = await auth.createToken(
+            account.id,
+            undefined,
+            { kind: "account", authority: "present_user" },
+        );
+        const app = createTestApp();
+        await app.ready();
+
+        try {
+            const readMachines = async (protocolVersion: 3 | 4) => app.inject({
+                method: "GET",
+                url: "/v1/machines",
+                headers: {
+                    authorization: `Bearer ${token}`,
+                    [ACCOUNT_STORED_CONTENT_COMPATIBILITY_HTTP_HEADER]: String(protocolVersion),
+                },
+            });
+            const preV4 = await readMachines(3);
+            const v4 = await readMachines(4);
+
+            expect(preV4.statusCode).toBe(200);
+            expect(preV4.json()[0].operationProtocolCapabilities).toEqual({
+                sessionSpawn: { protocolVersions: [1] },
+            });
+            expect(v4.statusCode).toBe(200);
+            expect(v4.json()[0].operationProtocolCapabilities).toEqual({
+                sessionSpawn: { protocolVersions: [1] },
+                sessionSpawnPlacementOrigin: { protocolVersions: [1] },
+            });
         } finally {
             await app.close();
         }

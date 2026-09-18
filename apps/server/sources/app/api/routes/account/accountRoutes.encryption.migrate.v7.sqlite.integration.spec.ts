@@ -16,7 +16,7 @@ import {
     ZodTypeProvider,
 } from "fastify-type-provider-zod";
 import {
-    ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS,
+    signAccountContentKeyBindingV1,
     attachAccountEncryptionMigrateProofSignatureV1,
     buildAccountStoredContentCompatibilityHttpHeadersV1,
     createPlainSessionOwnerMetadataEnvelopeV1,
@@ -40,6 +40,7 @@ import {
     deriveAccountEncryptionMigrationKeyFingerprints,
 } from "@/app/encryption/accountEncryptionTransition";
 import { db } from "@/storage/db";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import { inTx } from "@/storage/inTx";
 import {
     updateSessionMetadataEnvelopeTupleInTx,
@@ -70,13 +71,10 @@ function createSignedContentKeyBinding(
     contentPublicKeySig: string;
 }> {
     const contentKey = tweetnacl.box.keyPair();
-    const signature = tweetnacl.sign.detached(
-        Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]),
-        signingSecretKey,
-    );
+    const signature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signingSecretKey,
+        contentPublicKey: contentKey.publicKey,
+    });
     return {
         contentPublicKey: privacyKit.encodeBase64(
             new Uint8Array(contentKey.publicKey),
@@ -136,6 +134,10 @@ function createTestApp() {
             return reply.code(401).send({ error: "Unauthorized" });
         }
         request.userId = userId;
+        // Authentication is the genuine boundary replaced by this route
+        // harness; these migration cases exercise an admitted Account owner.
+        request.authAuthority = "present_user";
+        request.authTokenKind = "account";
         captureAccountStoredContentCompatibilityForHttpRequest(request);
     });
     enableErrorHandlers(typed);
@@ -475,6 +477,21 @@ describe("account encryption migration .7 SQLite matrix", () => {
                 },
             })
         ));
+        const ownerSocketId = "migration-owner-socket";
+        eventRouter.setIo({
+            to: ioTo,
+            in: vi.fn().mockReturnValue({
+                fetchSockets: async () => [{
+                    id: ownerSocketId,
+                    data: {
+                        userId: account.id,
+                        clientType: "user-scoped",
+                        authAuthority: "present_user",
+                        authTokenAuthenticationEvidence: undefined,
+                    },
+                }],
+            }),
+        } as unknown as Parameters<typeof eventRouter.setIo>[0]);
         const app = createTestApp();
         await app.ready();
 
@@ -607,6 +624,12 @@ describe("account encryption migration .7 SQLite matrix", () => {
                     accountId: sharedRecipient.id,
                 },
             })).resolves.toBe(0);
+            await vi.waitFor(() => {
+                const deliveredSessionUpdates = socketEmit.mock.calls.filter(
+                    ([, payload]) => payload?.body?.t === "update-session",
+                );
+                expect(deliveredSessionUpdates).toHaveLength(sessions.length);
+            });
             const emissions = socketEmit.mock.calls.map(
                 ([eventName, payload], index) => {
                     const body =
@@ -646,23 +669,92 @@ describe("account encryption migration .7 SQLite matrix", () => {
                 });
                 expect(wake.body).toEqual({ t: "account-change" });
             }
-            const roomTargets = sessionEmissions.map(
+            const connectionTargets = sessionEmissions.map(
                 ({ roomTarget }) => roomTarget,
             );
-            for (const session of sessions) {
-                expect(roomTargets).toContainEqual([
-                    `session:${session.id}:${account.id}`,
-                    `user-scoped:${account.id}`,
-                ]);
-            }
-            expect(
-                roomTargets.flatMap((target) =>
-                    Array.isArray(target)
-                        ? target
-                        : [target]),
-            ).not.toContain(
+            expect(connectionTargets).toEqual(
+                sessions.map(() => ownerSocketId),
+            );
+            expect(connectionTargets).not.toContain(
                 `user-scoped:${sharedRecipient.id}`,
             );
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("completes the real Account migration entry point beyond the former 500-Session ceiling", async () => {
+        harness.resetEnv({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
+            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST:
+                "none",
+        });
+        const fixture = await createE2eeSessionInventoryFixture();
+        const encodedSource = encodeSessionOwnerMetadataEnvelopeV1(
+            fixture.sourceOwnerMetadata,
+        );
+        await db.session.createMany({
+            data: Array.from({ length: 499 }, (_, index) => ({
+                accountId: fixture.account.id,
+                tag: `overflow-layout-1-${index}`,
+                metadata: "overflow-source-metadata",
+                metadataVersion: 1,
+                metadataLayoutVersion: 1,
+                ownerMetadata: encodedSource,
+                agentState: null,
+                agentStateVersion: 1,
+                archivedAt: null,
+            })),
+        });
+        const overflowSessions = await db.session.findMany({
+            where: {
+                accountId: fixture.account.id,
+                tag: { startsWith: "overflow-layout-1-" },
+            },
+            select: {
+                id: true,
+                metadataVersion: true,
+                agentStateVersion: true,
+            },
+        });
+        fixture.request.sessions.items.push(
+            ...overflowSessions.map((session) => ({
+                sessionId: session.id,
+                expectedMetadataLayoutVersion: 1 as const,
+                expectedMetadataVersion: session.metadataVersion,
+                expectedAgentStateVersion: session.agentStateVersion,
+                expectedOwnerMetadata: fixture.sourceOwnerMetadata,
+                ownerMetadata: fixture.targetOwnerMetadata,
+            })),
+        );
+        const app = createTestApp();
+        await app.ready();
+
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/v1/account/encryption/migrate",
+                headers: {
+                    "content-type": "application/json",
+                    "x-test-user-id": fixture.account.id,
+                    ...currentCompatibilityHeaders(),
+                },
+                payload: fixture.request,
+            });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(response.json()).toMatchObject({
+                success: true,
+                mode: "plain",
+            });
+            await expect(db.session.count({
+                where: {
+                    accountId: fixture.account.id,
+                    ownerMetadata: encodeSessionOwnerMetadataEnvelopeV1(
+                        fixture.targetOwnerMetadata,
+                    ),
+                },
+            })).resolves.toBe(501);
         } finally {
             await app.close();
         }
@@ -1026,6 +1118,9 @@ describe("account encryption migration .7 SQLite matrix", () => {
 
     it("consumes a fresh external-auth proof exactly once for first-key enrollment and recognizes only the exact read-only replay", async () => {
         harness.resetEnv({
+            GITHUB_CLIENT_ID: "client",
+            GITHUB_CLIENT_SECRET: "secret",
+            GITHUB_REDIRECT_URL: "https://api.example.test/v1/oauth/github/callback",
             HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
         });
@@ -1089,6 +1184,12 @@ describe("account encryption migration .7 SQLite matrix", () => {
                     purpose:
                         "account_encryption_first_key",
                     provider: "github",
+                    securityBinding: {
+                        provider: (await resolveOAuthRuntimeById(process.env, "github"))!.reference,
+                        connection: null,
+                        admission: null,
+                        purpose: "account_encryption_first_key",
+                    },
                     userId: account.id,
                     providerUserId,
                     proofHash: createHash("sha256")
@@ -1252,54 +1353,6 @@ describe("account encryption migration .7 SQLite matrix", () => {
         ).resolves.toEqual(before);
     });
 
-    it("rejects a Session inventory above the canonical bound before any database mutation", async () => {
-        harness.resetEnv({
-            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
-            HAPPIER_FEATURE_ENCRYPTION__ALLOW_ACCOUNT_OPTOUT: "1",
-            HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_SETTINGS_AT_REST:
-                "none",
-        });
-        const fixture =
-            await createE2eeSessionInventoryFixture();
-        const before =
-            await readSessionMigrationState(fixture.account.id);
-        fixture.request.sessions.items = Array.from(
-            {
-                length:
-                    ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS
-                    + 1,
-            },
-            (_, index) => ({
-                ...fixture.request.sessions.items[0]!,
-                sessionId: `session-overflow-${index}`,
-            }),
-        );
-        const app = createTestApp();
-        await app.ready();
-
-        try {
-            const response = await app.inject({
-                method: "POST",
-                url: "/v1/account/encryption/migrate",
-                headers: {
-                    "content-type": "application/json",
-                    "x-test-user-id": fixture.account.id,
-                    ...currentCompatibilityHeaders(),
-                },
-                payload: fixture.request,
-            });
-            expect(response.statusCode, response.body).toBe(400);
-            expect(response.json()).toEqual({
-                error: "invalid-params",
-            });
-            await expect(
-                readSessionMigrationState(fixture.account.id),
-            ).resolves.toEqual(before);
-        } finally {
-            await app.close();
-        }
-    });
-
     it.each([
         "owner",
         "shared_editor",
@@ -1371,6 +1424,11 @@ describe("account encryption migration .7 SQLite matrix", () => {
                             mode: "shared_editor",
                             actorUserId: editor!.id,
                             sessionId: active.id,
+                            authentication: {
+                                env: process.env,
+                                authority: "present_user",
+                                authenticationEvidence: undefined,
+                            },
                             metadataLayoutVersion: 1,
                             sharedMetadata: {
                                 ciphertext:

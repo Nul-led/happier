@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES } from "@happier-dev/protocol";
+import {
+    ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES,
+    ACCOUNT_SETTINGS_V2_UPDATE_REQUEST_MAX_UTF8_BYTES,
+} from "@happier-dev/protocol";
 import { currentAccountStoredContentCompatibilityHeaders } from "../../testkit/accountStoredContentCompatibility";
 import { createFakeRouteApp, getRouteEntry } from "../../testkit/routeHarness";
 import { createAuthenticatedTestApp } from "../../testkit/sqliteFastify";
@@ -40,11 +43,11 @@ describe("Account Settings V2 request body limit", () => {
                 // Whitespace is not part of the parsed ciphertext. Its byte
                 // count must still be bounded before JSON/schema processing.
                 payload: `{"content":{"t":"encrypted","c":"ciphertext"}${" ".repeat(
-                    ACCOUNT_SETTINGS_MAX_ENCRYPTED_CIPHERTEXT_UTF8_BYTES + 1024,
-                )},"expectedVersion":0.5}`,
+                    ACCOUNT_SETTINGS_V2_UPDATE_REQUEST_MAX_UTF8_BYTES,
+                )},"expectedVersion":0}`,
             });
 
-            expect(response.statusCode).toBe(413);
+            expect(response.statusCode, response.body).toBe(413);
         } finally {
             await app.close();
         }

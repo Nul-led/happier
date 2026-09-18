@@ -6,6 +6,7 @@ import {
     PluginCollectionQueryResultV1Schema,
     PluginCollectionRowV1Schema,
     PluginCollectionUiQueryResultV1Schema,
+    PluginCollectionUiQueryTransportResultV1Schema,
     PLUGIN_COLLECTION_INDEX_SORT_KEY_MAX_BYTES_V1,
     assertPluginCollectionContentEnvelopeForModeV1,
     comparePluginCollectionIndexSortKeysV1,
@@ -34,7 +35,7 @@ import {
     type PluginCollectionReadErrorCodeV1,
     type PluginCollectionRowV1,
     type PluginCollectionUiQueryRequestV1,
-    type PluginCollectionUiQueryResultV1,
+    type PluginCollectionUiQueryTransportResultV1,
 } from "@happier-dev/protocol";
 import { z } from "zod";
 
@@ -1018,7 +1019,7 @@ export async function queryPluginCollection(input: Readonly<{
 export async function queryPluginCollectionUiQuery(input: Readonly<{
     accountId: string;
     request: PluginCollectionUiQueryRequestV1;
-}>): Promise<PluginCollectionUiQueryResultV1> {
+}>): Promise<PluginCollectionUiQueryTransportResultV1> {
     const snapshot = await inTx(async (tx) => {
         const current = await resolveCurrentContract(input, tx);
         const descriptor = current.contract.uiQueries.find((candidate) => candidate.id === input.request.uiQueryId);
@@ -1029,7 +1030,12 @@ export async function queryPluginCollectionUiQuery(input: Readonly<{
             descriptor,
             request: input.request,
         });
-        const fields = descriptor.projectedFields.map((field) => field.field);
+        const hasPrivateProjectedFields = descriptor.projectedFields.some(
+            (field) => !current.contract.serverReadable.includes(field.field),
+        );
+        const fields = hasPrivateProjectedFields
+            ? current.contract.serverReadable
+            : descriptor.projectedFields.map((field) => field.field);
         const page = await readCollectionIndexPageInTx({
             tx,
             accountId: input.accountId,
@@ -1050,7 +1056,9 @@ export async function queryPluginCollectionUiQuery(input: Readonly<{
             assertContentEnvelopeMode(row.contentEnvelope, current.account.encryptionMode);
             const projections = new Map(row.projections.map((projection) => [projection.fieldId, projection]));
             const projectedFields: Record<string, null | boolean | string | number> = {};
-            for (const field of descriptor.projectedFields) {
+            for (const field of descriptor.projectedFields.filter((candidate) => (
+                current.contract.serverReadable.includes(candidate.field)
+            ))) {
                 const projection = projections.get(field.field);
                 if (!projection || projection.rowRevision !== row.revision) {
                     throw new PluginCollectionUiQueryOperationError("collection_index_not_ready");
@@ -1070,15 +1078,42 @@ export async function queryPluginCollectionUiQuery(input: Readonly<{
                     revision: row.revision,
                 },
                 fields: projectedFields,
+                ...(hasPrivateProjectedFields
+                    ? {
+                        logicalRow: {
+                            content: row.contentEnvelope,
+                            projection: Object.fromEntries(current.contract.serverReadable.map((field) => {
+                                const projection = projections.get(field);
+                                if (!projection || projection.rowRevision !== row.revision) {
+                                    throw new PluginCollectionUiQueryOperationError("collection_index_not_ready");
+                                }
+                                return [field, projectionValue({
+                                    encoded: projection.typedEncodedValue,
+                                    kind: getPluginCollectionScalarKindV1({
+                                        schema: current.contract.schema,
+                                        field,
+                                    }),
+                                })];
+                            })),
+                        },
+                    }
+                    : {}),
             };
         });
-        const result = PluginCollectionUiQueryResultV1Schema.parse({
+        const transportResult = PluginCollectionUiQueryTransportResultV1Schema.parse({
             rows: resultRows,
             ...(page.nextCursor ? { nextCursor: page.nextCursor } : {}),
             // The static adapter consumes the direct reader's same snapshot
             // contract; it is not an independent cursor owner.
             changeCursor: current.account.changeCursor,
         });
+        if (hasPrivateProjectedFields) {
+            return {
+                result: transportResult,
+                expectedMode: current.account.encryptionMode,
+            };
+        }
+        const result = PluginCollectionUiQueryResultV1Schema.parse(transportResult);
         try {
             return {
                 result: validatePluginCollectionUiQueryResultV1(descriptor, result),

@@ -7,9 +7,8 @@ const buildNewMessageUpdate = vi.fn(() => ({ type: "new-message" }));
 const buildMessageUpdatedUpdate = vi.fn(() => ({ type: "message-updated" }));
 const buildPendingChangedUpdate = vi.fn(() => ({ type: "pending-changed" }));
 const buildUpdateSessionUpdate = vi.fn(() => ({ type: "update-session" }));
-const getSessionParticipantUserIds = vi.fn(async () => ["u1"]);
 const markAccountChanged = vi.fn(async () => 10);
-const refreshSessionParticipantBadgePushes = vi.fn(async () => {});
+const refreshTrackedSessionAccountBadgePushes = vi.fn(async () => {});
 const sessionFindUnique = vi.fn();
 
 const HOSTED_RECIPIENT_PROJECTION = {
@@ -44,9 +43,8 @@ vi.mock("@/app/events/eventRouter", () => ({
 }));
 
 vi.mock("@/utils/keys/randomKeyNaked", () => ({ randomKeyNaked: () => "k" }));
-vi.mock("@/app/share/sessionParticipants", () => ({ getSessionParticipantUserIds }));
 vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
-vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshSessionParticipantBadgePushes }));
+vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({ refreshTrackedSessionAccountBadgePushes }));
 vi.mock("@/storage/inTx", () => ({
     inTx: vi.fn(async (fn: (tx: unknown) => unknown) => await fn({})),
 }));
@@ -76,11 +74,9 @@ describe("sessionPendingRoutes (materialize-next)", () => {
         buildMessageUpdatedUpdate.mockClear();
         buildPendingChangedUpdate.mockClear();
         buildUpdateSessionUpdate.mockClear();
-        getSessionParticipantUserIds.mockReset();
-        getSessionParticipantUserIds.mockResolvedValue(["u1"]);
         markAccountChanged.mockReset();
         markAccountChanged.mockResolvedValue(10);
-        refreshSessionParticipantBadgePushes.mockReset();
+        refreshTrackedSessionAccountBadgePushes.mockReset();
         sessionFindUnique.mockReset();
         sessionFindUnique.mockResolvedValue(HOSTED_RECIPIENT_PROJECTION);
         materializeNextPendingMessage.mockReset();
@@ -257,7 +253,7 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             pendingCount: 1,
             pendingBlockedCount: 1,
             pendingVersion: 4,
-            participantCursors: [{ accountId: "u1", cursor: 40 }],
+            recipientCursors: [{ accountId: "u1", cursor: 40 }],
             badgeAttentionChanged: true,
             didUpdate: true,
         });
@@ -266,7 +262,7 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 5,
-            participantCursors: [{ accountId: "u1", cursor: 50 }],
+            recipientCursors: [{ accountId: "u1", cursor: 50 }],
             badgeAttentionChanged: true,
             didWrite: true,
             newLocalId: "l-provider-new",
@@ -276,7 +272,7 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             pendingCount: 0,
             pendingBlockedCount: 0,
             pendingVersion: 6,
-            participantCursors: [{ accountId: "u1", cursor: 60 }],
+            recipientCursors: [{ accountId: "u1", cursor: 60 }],
             badgeAttentionChanged: true,
             didResolve: true,
         });
@@ -329,16 +325,23 @@ describe("sessionPendingRoutes (materialize-next)", () => {
 
         expect(blockPendingDelivery).toHaveBeenCalledWith({
             actorUserId: "actor",
+            authentication: expect.objectContaining({ authority: "present_user" }),
             sessionId: "s1",
             localId: "l-provider",
             reason: "terminal_composer_draft",
         });
         expect(sendPendingDeliveryAsNew).toHaveBeenCalledWith({
             actorUserId: "actor",
+            authentication: expect.objectContaining({ authority: "present_user" }),
             sessionId: "s1",
             localId: "l-provider",
         });
-        expect(markPendingDeliveryHandled).toHaveBeenCalledWith({ actorUserId: "actor", sessionId: "s1", localId: "l-provider" });
+        expect(markPendingDeliveryHandled).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            authentication: expect.objectContaining({ authority: "present_user" }),
+            sessionId: "s1",
+            localId: "l-provider",
+        });
         expect(buildPendingChangedUpdate).toHaveBeenCalledTimes(3);
         expect(buildNewMessageUpdate).not.toHaveBeenCalled();
         expect(emitUpdate).toHaveBeenCalledTimes(3);
@@ -351,7 +354,7 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             pendingCount: 0,
             pendingBlockedCount: 0,
             pendingVersion: 5,
-            participantCursors: [{ accountId: "u1", cursor: 50 }],
+            recipientCursors: [{ accountId: "u1", cursor: 50 }],
             badgeAttentionChanged: true,
         });
 
@@ -370,7 +373,12 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             response: { ok: true, didDismiss: true, pendingCount: 0, pendingBlockedCount: 0, pendingVersion: 5 },
         });
 
-        expect(dismissPendingDelivery).toHaveBeenCalledWith({ actorUserId: "actor", sessionId: "s1", localId: "l-provider" });
+        expect(dismissPendingDelivery).toHaveBeenCalledWith({
+            actorUserId: "actor",
+            authentication: expect.objectContaining({ authority: "present_user" }),
+            sessionId: "s1",
+            localId: "l-provider",
+        });
         expect(buildPendingChangedUpdate).toHaveBeenCalledTimes(1);
         expect(buildNewMessageUpdate).not.toHaveBeenCalled();
         expect(emitUpdate).toHaveBeenCalledTimes(1);
@@ -400,12 +408,13 @@ describe("sessionPendingRoutes (materialize-next)", () => {
         expect(response).toEqual({ error: "delivery-settlement-conflict" });
         expect(sendPendingDeliveryAsNew).toHaveBeenCalledWith({
             actorUserId: "actor",
+            authentication: expect.objectContaining({ authority: "present_user" }),
             sessionId: "s1",
             localId: "effect-possible",
         });
         expect(buildPendingChangedUpdate).not.toHaveBeenCalled();
         expect(emitUpdate).not.toHaveBeenCalled();
-        expect(refreshSessionParticipantBadgePushes).not.toHaveBeenCalled();
+        expect(refreshTrackedSessionAccountBadgePushes).not.toHaveBeenCalled();
     });
 
     it("emits pending-changed when handled provider delivery blocks on transcript conflict", async () => {
@@ -416,7 +425,7 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             pendingCount: 1,
             pendingBlockedCount: 1,
             pendingVersion: 9,
-            participantCursors: [{ accountId: "u1", cursor: 63 }],
+            recipientCursors: [{ accountId: "u1", cursor: 63 }],
             badgeAttentionChanged: true,
         });
 
@@ -446,9 +455,9 @@ describe("sessionPendingRoutes (materialize-next)", () => {
             "k",
         );
         expect(emitUpdate).toHaveBeenCalledTimes(1);
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledWith({
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledWith({
             badgeAttentionChanged: true,
-            participantCursors: [{ accountId: "u1", cursor: 63 }],
+            sessionId: "s1",
         });
     });
 

@@ -5,6 +5,7 @@ import {
     buildUpdateSessionUpdate,
     createSessionRouteTestBuilder,
     emitUpdate,
+    flattenSessionWhereConjuncts,
     resetSessionRouteMocks,
     txSessionFindFirst,
     txSessionTurnFindMany,
@@ -33,7 +34,7 @@ describe("sessionRoutes session turns", () => {
             latestTurnStatus: "completed",
             latestTurnStatusObservedAt: 123,
             lastRuntimeIssue: null,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 10 },
                 { accountId: "u2", cursor: 11 },
             ],
@@ -55,7 +56,7 @@ describe("sessionRoutes session turns", () => {
             },
         });
 
-        expect(applySessionTurnMutation).toHaveBeenCalledWith({
+        expect(applySessionTurnMutation).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             mutation: {
                 v: 1,
@@ -67,7 +68,7 @@ describe("sessionRoutes session turns", () => {
                 agentTurnId: "provider-turn-1",
                 observedAt: 123,
             },
-        });
+        }));
         expect(buildUpdateSessionUpdate).toHaveBeenNthCalledWith(1, "s1", 10, expect.any(String), undefined, undefined, {
             latestTurnId: "turn-1",
             latestTurnStatus: "completed",
@@ -148,12 +149,14 @@ describe("sessionRoutes session turns", () => {
         });
 
         expect(txSessionTurnFindMany).toHaveBeenCalledWith({
-            where: expect.objectContaining({
-                sessionId: "s1",
-                session: expect.objectContaining({ id: "s1" }),
-            }),
+            where: expect.objectContaining({ sessionId: "s1", session: expect.anything() }),
             orderBy: [{ updatedAt: "asc" }, { createdAt: "asc" }],
         });
+        // The Session predicate is the canonical access owner's conjunction, so
+        // read the target-Session conjunct rather than a top-level `id` field.
+        expect(flattenSessionWhereConjuncts(
+            txSessionTurnFindMany.mock.calls[0]?.[0]?.where?.session,
+        )).toContainEqual({ id: "s1" });
         expect(res).toEqual({
             v: 1,
             sessionId: "s1",

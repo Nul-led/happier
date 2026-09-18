@@ -169,6 +169,8 @@ function txFixture(params: Readonly<{
             create: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
                 const run = {
                     id: `run-${created.length + 1}`,
+                    originKind: "automation",
+                    originSessionId: null,
                     ...data,
                     createdAt: new Date("2026-08-27T12:00:00.000Z"),
                     updatedAt: new Date("2026-08-27T12:00:00.000Z"),

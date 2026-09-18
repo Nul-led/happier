@@ -7,6 +7,8 @@ import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { AUTOMATION_SESSION_LIFECYCLE_TERMINAL_NO_RUN_ACTIONS } from "./automationSessionLifecycleTerminalTruth";
 import { decodeAutomationSessionLifecycleConfiguration } from "./automationSessionLifecycleConfigurationCodec";
 import {
+    AUTOMATION_RUN_STATES,
+    isAutomationRunState,
     isTerminalAutomationRunState,
     type AutomationListItem,
     type AutomationRunState,
@@ -98,6 +100,7 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
                 where: {
                     causeKind: "trigger",
                     causeTriggerKind: "sessionLifecycle",
+                    state: { in: [...AUTOMATION_RUN_STATES] },
                     OR: page.map(({ trigger, stored }) => (
                         stored.definition.policy.kind === "currentTurn"
                             ? {
@@ -125,10 +128,18 @@ export async function loadAutomationSessionLifecycleStatusProjections(params: Re
         sourceKey(turn.sessionId, turn.turnId),
         turn.status,
     ]));
-    const latestRunByTrigger = new Map<string, (typeof runPages)[number][number]>();
+    type LegacyLifecycleRun = Omit<(typeof runPages)[number][number], "state"> & Readonly<{
+        state: AutomationRunState;
+    }>;
+    const latestRunByTrigger = new Map<string, LegacyLifecycleRun>();
     for (const run of runPages.flat()) {
-        if (run.triggerId !== null && !latestRunByTrigger.has(run.triggerId)) {
-            latestRunByTrigger.set(run.triggerId, run);
+        const state = run.state;
+        if (
+            isAutomationRunState(state)
+            && run.triggerId !== null
+            && !latestRunByTrigger.has(run.triggerId)
+        ) {
+            latestRunByTrigger.set(run.triggerId, { ...run, state });
         }
     }
     const receiptStatusBySource = new Map<string, AutomationSessionLifecycleTriggerStatus>();

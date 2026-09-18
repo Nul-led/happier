@@ -56,9 +56,7 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             io,
             config: {
                 mode: "redis",
-                redis: {
-                    duplicate: vi.fn(() => relayAdmissionRedis),
-                } as unknown as Pick<Redis, "duplicate">,
+                createRelayAdmissionRedis: () => relayAdmissionRedis as unknown as Redis,
             },
         });
         const nowMs = Date.now();
@@ -102,16 +100,18 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
         expect(relayAdmissionRedis.listenerCount("end")).toBe(0);
     });
 
-    it("gives relay admission its own bounded reconnect policy", async () => {
+    it("acquires one canonical relay-admission connection and closes it exactly once", async () => {
         const disconnect = vi.fn();
         const off = vi.fn();
         const on = vi.fn();
-        const duplicate = vi.fn((_options?: unknown) => ({
+        const relayAdmissionRedis = {
             disconnect,
             off,
             on,
             set: vi.fn(),
-        }));
+        };
+        // Redis is the external boundary; this focused fake implements only the lifecycle used here.
+        const createRelayAdmissionRedis = vi.fn(() => relayAdmissionRedis as unknown as Redis);
         const io = {
             sockets: {
                 sockets: new Map(),
@@ -124,28 +124,14 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             io,
             config: {
                 mode: "redis",
-                redis: { duplicate } as unknown as Pick<Redis, "duplicate">,
+                createRelayAdmissionRedis,
             },
         });
 
-        try {
-            const options = duplicate.mock.calls[0]?.[0] as Readonly<{
-                enableOfflineQueue?: boolean;
-                maxRetriesPerRequest?: number;
-                retryStrategy?: (attempt: number) => number;
-                socketTimeout?: number;
-            }>;
-            expect(options).toMatchObject({
-                enableOfflineQueue: false,
-                maxRetriesPerRequest: 0,
-                retryStrategy: expect.any(Function),
-                socketTimeout: 2_000,
-            });
-            expect(options.retryStrategy?.(1)).toBe(50);
-            expect(options.retryStrategy?.(100)).toBe(2_000);
-        } finally {
-            await coordinator.close();
-        }
+        expect(createRelayAdmissionRedis).toHaveBeenCalledOnce();
+        await coordinator.close();
+        await coordinator.close();
+        expect(disconnect).toHaveBeenCalledTimes(1);
     });
 
     it("shares one disconnect listener across active attachments on the exact machine socket", async () => {
@@ -287,7 +273,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
         const clusterFetchSockets = vi.fn(async () => {
             throw new Error("peer replica acknowledgement timed out");
         });
-        const localFetchSockets = vi.fn(async () => [machineSocket]);
         const io = {
             sockets: {
                 sockets: new Map([[machineSocketId, machineSocket]]),
@@ -295,9 +280,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             on: vi.fn(),
             off: vi.fn(),
             in: vi.fn(() => ({
-                local: {
-                    fetchSockets: localFetchSockets,
-                },
                 timeout: vi.fn(() => ({
                     fetchSockets: clusterFetchSockets,
                 })),
@@ -337,7 +319,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
                 onMachineEnvelope: vi.fn(),
                 onMachineDisconnect: vi.fn(),
             })).resolves.toEqual({ status: "attached" });
-            expect(localFetchSockets).toHaveBeenCalledOnce();
             expect(clusterFetchSockets).not.toHaveBeenCalled();
             expect(coordinator.routeMachineEnvelope({
                 tunnelKey: `${accountId}:machine:${machineId}:user:tunnel-local-survivor`,
@@ -357,8 +338,11 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             clientType: "machine-scoped",
             machineId,
         }));
+        let machineAttached = false;
         const machineSocket = {
-            connected: true,
+            get connected() {
+                return machineAttached;
+            },
             id: machineSocketId,
             data: {
                 userId: accountId,
@@ -369,8 +353,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             once: vi.fn(),
             off: vi.fn(),
         } as unknown as Socket;
-        // The machine is briefly absent from the room (reconnecting), then present.
-        let machineAttached = false;
         const io = {
             sockets: {
                 sockets: new Map([[machineSocketId, machineSocket]]),
@@ -378,9 +360,6 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             on: vi.fn(),
             off: vi.fn(),
             in: vi.fn(() => ({
-                local: {
-                    fetchSockets: vi.fn(async () => (machineAttached ? [machineSocket] : [])),
-                },
                 timeout: vi.fn(() => ({
                     fetchSockets: vi.fn(async () => (machineAttached ? [machineSocket] : [])),
                 })),
@@ -494,9 +473,7 @@ describe("createPeerTcpTunnelRelayCoordinator", () => {
             io,
             config: {
                 mode: "redis",
-                redis: {
-                    duplicate: vi.fn(() => relayAdmissionRedis),
-                } as unknown as Pick<Redis, "duplicate">,
+                createRelayAdmissionRedis: () => relayAdmissionRedis as unknown as Redis,
             },
         });
         const nowMs = Date.now();

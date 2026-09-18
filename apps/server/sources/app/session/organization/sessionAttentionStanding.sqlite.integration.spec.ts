@@ -1,16 +1,21 @@
 import { randomUUID } from "node:crypto";
 
-import {
-    SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS,
-    SessionOrganizationSnapshotResponseSchema,
-} from "@happier-dev/protocol";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { SessionOrganizationSnapshotResponseSchema } from "@happier-dev/protocol";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+
+const scheduleAccountActivityBadgeRefresh = vi.hoisted(() => vi.fn());
+vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
+    scheduleAccountActivityBadgeRefresh,
+}));
 
 import { registerSessionOrganizationRoutes } from "@/app/api/routes/session/registerSessionOrganizationRoutes";
 import { createRouteTestBuilder } from "@/app/api/testkit/routeTestBuilder";
 import type { Fastify } from "@/app/api/types";
 import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+
+import { setSessionAttentionStandingInTx } from "./organizationMutations";
 
 type OrganizationAccount = Readonly<{ accountId: string; sessionId: string }>;
 
@@ -46,6 +51,9 @@ async function createSession(accountId: string): Promise<string> {
         },
         select: { id: true },
     });
+    await db.accountSessionReadState.create({
+        data: { accountId, sessionId: session.id, lastViewedSessionSeq: 0, unreadSince: null },
+    });
     return session.id;
 }
 
@@ -71,6 +79,7 @@ describe("session attention standings on SQLite", () => {
 
     beforeEach(() => {
         harness.resetEnv();
+        scheduleAccountActivityBadgeRefresh.mockClear();
     });
 
     afterAll(async () => {
@@ -107,6 +116,178 @@ describe("session attention standings on SQLite", () => {
         await expect(
             db.sessionAttentionStanding.count({ where: { accountId } }),
         ).resolves.toBe(0);
+    });
+
+    it("sets a reminder for an unfollowed reader with an inert retained cursor without re-enrolling tracking", async () => {
+        const owner = await db.account.create({
+            data: { publicKey: `pk-${randomUUID()}` },
+            select: { id: true },
+        });
+        const reader = await db.account.create({
+            data: { publicKey: `pk-${randomUUID()}` },
+            select: { id: true },
+        });
+        const sessionId = await createSession(owner.id);
+        await db.sessionShare.create({
+            data: {
+                sessionId,
+                sharedByUserId: owner.id,
+                sharedWithUserId: reader.id,
+                accessLevel: "view",
+            },
+        });
+        await db.accountSessionReadState.create({
+            data: {
+                accountId: reader.id,
+                sessionId,
+                lastViewedSessionSeq: 0,
+                unreadSince: new Date(1_000),
+            },
+        });
+
+        const remindAt = Date.now() + 60_000;
+        const response = await createStandingRouteBuilder().invoke({
+            userId: reader.id,
+            params: { sessionId },
+            body: { remindAt },
+        });
+
+        expect(response.reply.statusCode).toBe(200);
+        expect(response.response).toEqual({
+            standing: { sessionId, standing: false, remindAt, updatedAt: expect.any(Number) },
+        });
+        await expect(db.accountSessionReadState.findUnique({
+            where: { accountId_sessionId: { accountId: reader.id, sessionId } },
+            select: { lastViewedSessionSeq: true, unreadSince: true },
+        })).resolves.toEqual({ lastViewedSessionSeq: 0, unreadSince: new Date(1_000) });
+        await expect(db.accountSessionFollow.count({ where: { accountId: reader.id, sessionId } })).resolves.toBe(0);
+    });
+
+    it("atomically acknowledges current Discussion frontiers when scheduling a tracked Session reminder", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+        const discussion = await db.sessionDiscussion.create({
+            data: {
+                sessionId,
+                creationLocalId: randomUUID(),
+                creationEqualityEvidenceV1: { kind: "plainDigest", digest: randomUUID() },
+                createdByAccountId: accountId,
+                titleContent: { t: "plain", v: { v: 1, title: "Reminder baseline" } },
+                messageSeq: 4,
+                lastMessageAt: new Date(),
+                readStates: { create: { accountId, lastReadSeq: 1 } },
+            },
+        });
+
+        const remindAt = Date.now() + 60_000;
+        const response = await createStandingRouteBuilder().invoke({
+            userId: accountId,
+            params: { sessionId },
+            body: { remindAt },
+        });
+
+        expect(response.reply.statusCode).toBe(200);
+        await expect(db.sessionDiscussionReadState.findUnique({
+            where: { discussionId_accountId: { discussionId: discussion.id, accountId } },
+            select: { lastReadSeq: true },
+        })).resolves.toEqual({ lastReadSeq: 4 });
+    });
+
+    it("does not commit a reminder when the tracked owner's read lifecycle row is missing", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+        await db.accountSessionReadState.delete({
+            where: { accountId_sessionId: { accountId, sessionId } },
+        });
+
+        const response = await createStandingRouteBuilder().invoke({
+            userId: accountId,
+            params: { sessionId },
+            body: { remindAt: Date.now() + 60_000 },
+        });
+
+        expect(response.reply.statusCode).toBe(404);
+        await expect(db.sessionAttentionStanding.count({
+            where: { accountId, sessionId },
+        })).resolves.toBe(0);
+        await expect(db.sessionOrganizationCheckpoint.count({ where: { accountId } })).resolves.toBe(0);
+    });
+
+    it("keeps a future reminder quiet for predecessor snapshots while current snapshots retain its deadline", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+        const remindAt = Date.now() + 60_000;
+        await createStandingRouteBuilder().invoke({
+            userId: accountId,
+            params: { sessionId },
+            body: { remindAt },
+        });
+        const snapshotRoute = createSnapshotRouteBuilder();
+
+        const predecessor = SessionOrganizationSnapshotResponseSchema.parse((await snapshotRoute.invoke({
+            userId: accountId,
+            query: { includeAttentionStandings: "true" },
+        })).response);
+        expect(predecessor.snapshot.attentionStandings).toEqual([
+            { sessionId, standing: false, updatedAt: expect.any(Number) },
+        ]);
+
+        const current = SessionOrganizationSnapshotResponseSchema.parse((await snapshotRoute.invoke({
+            userId: accountId,
+            query: {
+                includeAttentionStandings: "true",
+                includeAttentionReminderTimes: "true",
+            },
+        })).response);
+        expect(current.snapshot.attentionStandings).toEqual([
+            { sessionId, standing: false, remindAt, updatedAt: expect.any(Number) },
+        ]);
+    });
+
+    it("restores the exact prior standing override when a reminder is removed", async () => {
+        const route = createStandingRouteBuilder();
+        const kept = await createAccountWithSession();
+        const suppressed = await createAccountWithSession();
+        const reminderOnly = await createAccountWithSession();
+        const remindAt = Date.now() + 60_000;
+
+        await route.invoke({ userId: kept.accountId, params: { sessionId: kept.sessionId }, body: { standing: true } });
+        await route.invoke({ userId: kept.accountId, params: { sessionId: kept.sessionId }, body: { remindAt } });
+        const restored = await route.invoke({
+            userId: kept.accountId,
+            params: { sessionId: kept.sessionId },
+            body: { remindAt: null },
+        });
+        expect(restored.response).toEqual({
+            standing: { sessionId: kept.sessionId, standing: true, updatedAt: expect.any(Number) },
+        });
+        scheduleAccountActivityBadgeRefresh.mockClear();
+        const repeatedRemoval = await route.invoke({
+            userId: kept.accountId,
+            params: { sessionId: kept.sessionId },
+            body: { remindAt: null },
+        });
+        expect(repeatedRemoval.response).toEqual({
+            standing: { sessionId: kept.sessionId, standing: true, updatedAt: expect.any(Number) },
+        });
+        // Removing an already-removed reminder changes nothing, so it owes no badge refresh.
+        expect(scheduleAccountActivityBadgeRefresh).not.toHaveBeenCalled();
+
+        await route.invoke({ userId: suppressed.accountId, params: { sessionId: suppressed.sessionId }, body: { standing: false } });
+        await route.invoke({ userId: suppressed.accountId, params: { sessionId: suppressed.sessionId }, body: { remindAt } });
+        const restoredSuppression = await route.invoke({
+            userId: suppressed.accountId,
+            params: { sessionId: suppressed.sessionId },
+            body: { remindAt: null },
+        });
+        expect(restoredSuppression.response).toEqual({
+            standing: { sessionId: suppressed.sessionId, standing: false, updatedAt: expect.any(Number) },
+        });
+
+        await route.invoke({ userId: reminderOnly.accountId, params: { sessionId: reminderOnly.sessionId }, body: { remindAt } });
+        const cleared = await route.invoke({
+            userId: reminderOnly.accountId,
+            params: { sessionId: reminderOnly.sessionId },
+            body: { remindAt: null },
+        });
+        expect(cleared.response).toEqual({ standing: null });
     });
 
     it("returns standings in the snapshot only when the include flag is requested", async () => {
@@ -157,16 +338,74 @@ describe("session attention standings on SQLite", () => {
         ).resolves.toEqual({
             hint: { sessionOrganization: true, scope: "attentionStandings", sessionIds: [sessionId] },
         });
+        expect(scheduleAccountActivityBadgeRefresh).toHaveBeenCalledOnce();
+        expect(scheduleAccountActivityBadgeRefresh).toHaveBeenCalledWith({
+            badgeAttentionChanged: true,
+            accountIds: [accountId],
+        });
     });
 
-    it("refuses a new standing past the product maximum but still lets an existing one flip", async () => {
+    it("does not schedule a badge refresh when the enclosing transaction rolls back", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+
+        await expect(inTx(async (tx) => {
+            await setSessionAttentionStandingInTx(tx, {
+                accountId,
+                sessionId,
+                request: { standing: true },
+                authentication: {
+                    env: process.env,
+                    authority: "present_user",
+                    authenticationEvidence: undefined,
+                },
+            });
+            throw new Error("rolled back after the attention write");
+        })).rejects.toThrow("rolled back after the attention write");
+
+        await expect(db.sessionAttentionStanding.count({ where: { accountId } })).resolves.toBe(0);
+        expect(scheduleAccountActivityBadgeRefresh).not.toHaveBeenCalled();
+    });
+
+    it("does not schedule a badge refresh for a standing write that changes nothing", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+        const route = createStandingRouteBuilder();
+
+        await route.invoke({ userId: accountId, params: { sessionId }, body: { standing: true } });
+        expect(scheduleAccountActivityBadgeRefresh).toHaveBeenCalledOnce();
+        scheduleAccountActivityBadgeRefresh.mockClear();
+
+        const repeated = await route.invoke({ userId: accountId, params: { sessionId }, body: { standing: true } });
+        expect(repeated.reply.statusCode).toBe(200);
+        expect(repeated.response).toEqual({
+            standing: { sessionId, standing: true, updatedAt: expect.any(Number) },
+        });
+        expect(scheduleAccountActivityBadgeRefresh).not.toHaveBeenCalled();
+        await expect(
+            db.sessionOrganizationCheckpoint.findUnique({ where: { accountId }, select: { version: true } }),
+        ).resolves.toEqual({ version: 1 });
+    });
+
+    it("does not schedule a badge refresh when clearing a standing the account never declared", async () => {
+        const { accountId, sessionId } = await createAccountWithSession();
+
+        const cleared = await createStandingRouteBuilder().invoke({
+            userId: accountId,
+            params: { sessionId },
+            body: { standing: null },
+        });
+
+        expect(cleared.reply.statusCode).toBe(200);
+        expect(cleared.response).toEqual({ standing: null });
+        expect(scheduleAccountActivityBadgeRefresh).not.toHaveBeenCalled();
+        await expect(db.sessionOrganizationCheckpoint.count({ where: { accountId } })).resolves.toBe(0);
+    });
+
+    it("does not impose an arbitrary standing-row ceiling", async () => {
         const { accountId, sessionId } = await createAccountWithSession();
         const route = createStandingRouteBuilder();
         await route.invoke({ userId: accountId, params: { sessionId }, body: { standing: true } });
 
-        // Fill the account to the bound. The response schema caps the collection, so a writer that
-        // let the account past the bound would make its own snapshot unparseable.
-        for (let index = 0; index < SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS - 1; index += 1) {
+        for (let index = 0; index < 500; index += 1) {
             await db.sessionAttentionStanding.create({
                 data: { accountId, sessionId: await createSession(accountId), standing: true },
                 select: { sessionId: true },
@@ -174,15 +413,13 @@ describe("session attention standings on SQLite", () => {
         }
 
         const overflowSessionId = await createSession(accountId);
-        const rejected = await route.invoke({
+        const added = await route.invoke({
             userId: accountId,
             params: { sessionId: overflowSessionId },
             body: { standing: true },
         });
-        expect(rejected.reply.statusCode).toBe(409);
-        expect(rejected.response).toEqual({ error: "session-attention-standing-limit-exceeded" });
+        expect(added.reply.statusCode).toBe(200);
 
-        // The bound rejects growth, never a change to a standing the account already declared.
         const flipped = await route.invoke({ userId: accountId, params: { sessionId }, body: { standing: false } });
         expect(flipped.reply.statusCode).toBe(200);
         expect(flipped.response).toEqual({
@@ -190,7 +427,14 @@ describe("session attention standings on SQLite", () => {
         });
         await expect(
             db.sessionAttentionStanding.count({ where: { accountId } }),
-        ).resolves.toBe(SESSION_ORGANIZATION_MAX_ATTENTION_STANDINGS);
+        ).resolves.toBe(502);
+
+        const snapshot = await createSnapshotRouteBuilder().invoke({
+            userId: accountId,
+            query: { includeAttentionStandings: "true" },
+        });
+        expect(SessionOrganizationSnapshotResponseSchema.parse(snapshot.response).snapshot.attentionStandings)
+            .toHaveLength(502);
     });
 
     it("clears a standing for an archived session but refuses to set one", async () => {

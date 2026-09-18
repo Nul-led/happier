@@ -10,10 +10,12 @@ import {
 } from "@/app/features/catalog/serverFeatureGate";
 import { readLocalServicesFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import {
-    checkSessionAccess,
-    requireAccessLevel,
-    type AccessLevel,
-} from "@/app/share/accessControl";
+    resolveEffectiveSessionAccess,
+    type SessionAccessLevel,
+    type SessionCapability,
+} from "@/app/session/access/sessionAccess";
+import { db } from "@/storage/db";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import {
     normalizeHttpUrl,
     resolveConfiguredPublicServerUrl,
@@ -35,8 +37,8 @@ import {
 import type { OpenLocalServicePreviewTunnel } from "@/app/local/services/preview/httpAdapter";
 import {
     createLocalServicePreviewTunnelOpener,
-    type PeerTcpTunnelRelayTransportFactory,
 } from "@/app/local/services/preview/tunnel";
+import type { PeerTcpTunnelRelayTransportFactory } from "@/app/machines/peer/mediation/tunnel/peerRelayStreamTransport";
 import type { PeerMediationObservabilityEmitter } from "@/app/api/socket/peer/mediation/observability/events";
 import {
     localServicePublicTokenCookiePath,
@@ -85,6 +87,7 @@ export type LocalServiceRouteSessionAccessAuthorizer = (input: Readonly<{
     userId: string;
     sessionId: string;
     purpose: LocalServiceRouteSessionAccessPurpose;
+    authentication: SessionAccessAuthentication;
 }>) => boolean | Promise<boolean>;
 
 function firstNonEmpty(...values: readonly (string | undefined)[]): string | null {
@@ -162,7 +165,7 @@ export function createLocalServiceRouteRuntimes(env: NodeJS.ProcessEnv): LocalSe
 
 export function resolveLocalServiceRouteRequiredAccessLevel(
     purpose: LocalServiceRouteSessionAccessPurpose,
-): AccessLevel {
+): Exclude<SessionAccessLevel, "owner"> {
     if (purpose === "proxy") return "view";
     // S-2: reaching an `authenticated` exposure is a read of someone's session-bound service, so
     // it needs the same level as the private preview data plane — not the `admin` level that
@@ -173,10 +176,21 @@ export function resolveLocalServiceRouteRequiredAccessLevel(
 }
 
 export function createLocalServiceRouteSessionAccessAuthorizer(): LocalServiceRouteSessionAccessAuthorizer {
-    return async ({ userId, sessionId, purpose }) => {
-        const access = await checkSessionAccess(userId, sessionId);
+    return async ({ userId, sessionId, purpose, authentication }) => {
+        const access = await resolveEffectiveSessionAccess(db, { accountId: userId, sessionId, authentication });
         if (!access) return false;
-        return requireAccessLevel(access, resolveLocalServiceRouteRequiredAccessLevel(purpose));
+        // Local-service purpose policy remains here; capability rules belong to Session access.
+        const capabilityByLevel = {
+            view: "readTranscript",
+            edit: "submitAgentInput",
+            admin: "manageAccess",
+        } as const satisfies Record<Exclude<SessionAccessLevel, "owner">, SessionCapability>;
+        const level = resolveLocalServiceRouteRequiredAccessLevel(purpose);
+        const capability = authentication.sessionRuntimePrincipal
+            && (purpose === "public_exposure" || purpose === "public_revoke" || purpose === "public_status")
+            ? "editSessionRecords"
+            : capabilityByLevel[level];
+        return access.capabilities[capability];
     };
 }
 

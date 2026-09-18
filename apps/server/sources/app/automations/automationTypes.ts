@@ -2,8 +2,10 @@ import {
     parseAutomationRunExecutionRecipeV1,
     type AutomationRunExecutionRecipeV1,
     type AutomationStoredDefinitionExecutionRecipeV1,
+    type AutomationStoredWorkflowDefinitionRecipeV2,
     type AutomationReplyHandoffStateV1,
     type AutomationExecutionDispatchStateV3,
+    AutomationRunStateV3Schema,
     type AutomationRunStateV3,
     type AutomationPluginEventDefinitionTriggerInput,
     type AutomationTriggerCreateRequest,
@@ -20,6 +22,12 @@ export type AutomationLegacyTargetType = Exclude<
 >;
 /** The canonical Run-state vocabulary; the Protocol schema is its one owner. */
 export type AutomationRunState = AutomationRunStateV3;
+export const AUTOMATION_RUN_STATES = AutomationRunStateV3Schema.options;
+
+/** Narrows the shared physical Run enum to the retained Automation contract. */
+export function isAutomationRunState(state: string): state is AutomationRunState {
+    return AutomationRunStateV3Schema.safeParse(state).success;
+}
 
 /** States whose lifecycle is complete and therefore cannot hold Run capacity. */
 export const AUTOMATION_RUN_TERMINAL_STATES = [
@@ -106,6 +114,14 @@ export type AutomationScheduleInput = Readonly<{
     timezone?: string | null;
 }>;
 
+/** Exact released V2 schedule input; manual means no automatic trigger. */
+export type AutomationLegacyScheduleInput = AutomationScheduleInput | Readonly<{
+    kind: 'manual';
+    everyMs?: undefined;
+    scheduleExpr?: undefined;
+    timezone?: undefined;
+}>;
+
 /**
  * Server-trusted evidence that an authenticated legacy HTTP request supplied
  * the one released encrypted outer target shape. This is never projected to
@@ -128,7 +144,7 @@ type AutomationDefinitionInputCommon = Readonly<{
 
 /** Retained release-compatible definition bytes. Current V3 routes never construct this arm. */
 export type AutomationLegacyDefinitionInput = AutomationDefinitionInputCommon & Readonly<{
-    schedule: AutomationScheduleInput;
+    schedule: AutomationLegacyScheduleInput;
     targetType: AutomationLegacyTargetType;
     templateCiphertext: string;
     legacyTemplateEnvelopeAdmission?: AutomationLegacyTemplateEnvelopeAdmission;
@@ -138,7 +154,7 @@ export type AutomationLegacyDefinitionInput = AutomationDefinitionInputCommon & 
 /** One current definition writer: a strict Protocol recipe persisted in templateCiphertext. */
 export type AutomationCurrentDefinitionInput = AutomationDefinitionInputCommon & Readonly<{
     automationId: string;
-    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1;
+    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1 | AutomationStoredWorkflowDefinitionRecipeV2;
     triggers: ReadonlyArray<AutomationTriggerCreateRequest>;
     targetType?: never;
     templateCiphertext?: never;
@@ -158,14 +174,14 @@ type AutomationPatchCommon = Readonly<{
 }>;
 
 export type AutomationCurrentPatchInput = AutomationPatchCommon & Readonly<{
-    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1;
+    executionRecipe: AutomationStoredDefinitionExecutionRecipeV1 | AutomationStoredWorkflowDefinitionRecipeV2;
     targetType?: never;
     templateCiphertext?: never;
     legacyTemplateEnvelopeAdmission?: never;
 }>;
 
 export type AutomationLegacyPatchInput = AutomationPatchCommon & Readonly<{
-    schedule?: AutomationScheduleInput;
+    schedule?: AutomationLegacyScheduleInput;
     executionRecipe?: never;
     targetType?: AutomationLegacyTargetType;
     templateCiphertext?: string;
@@ -191,9 +207,9 @@ export function isAutomationCurrentPatchInput(
 }
 
 export function isAutomationLegacyTargetType(
-    targetType: AutomationTargetType,
+    targetType: AutomationTargetType | null,
 ): targetType is AutomationLegacyTargetType {
-    return targetType !== 'execution_run';
+    return targetType !== null && targetType !== 'execution_run';
 }
 
 export type AutomationListItem = Readonly<{
@@ -202,7 +218,7 @@ export type AutomationListItem = Readonly<{
     name: string;
     description: string | null;
     enabled: boolean;
-    targetType: AutomationTargetType;
+    targetType: AutomationTargetType | null;
     templateCiphertext: string;
     templateVersion: number;
     lastRunAt: Date | null;
@@ -263,7 +279,9 @@ export type AutomationTriggerItem = Readonly<{
 
 export type AutomationRunItem = Readonly<{
     id: string;
+    originKind: 'automation';
     automationId: string;
+    originSessionId: null;
     accountId: string;
     state: AutomationRunState;
     triggerId: string | null;
@@ -294,6 +312,7 @@ export type AutomationRunItem = Readonly<{
     causeSourceSelectorId: string | null;
     triggerEvidenceEnvelope: string | null;
     executionInputEnvelope: string | null;
+    workflowCustodyState?: 'pending' | 'settled' | null;
     executionDispatchState: AutomationExecutionDispatchState | null;
     executionAttempt: number;
     executionDispatchCommittedAt: Date | null;
@@ -334,6 +353,7 @@ export type AutomationRunV3ListItem =
     Pick<
         AutomationRunItem,
         | 'id'
+        | 'originKind'
         | 'automationId'
         | 'state'
         | 'triggerId'
@@ -398,7 +418,7 @@ export type AutomationRunWithAutomation = AutomationRunItem & Readonly<{
         id: string;
         name: string;
         enabled: boolean;
-        targetType: AutomationTargetType;
+        targetType: AutomationTargetType | null;
         templateCiphertext: string;
     };
 }>;

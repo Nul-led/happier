@@ -15,6 +15,7 @@ import {
     buildAccountStoredContentSocketUpgradeError,
     readAccountStoredContentCompatibilityForSocket,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
+import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 
 function readMarkedArtifactSocketUpgradeRequired(
     socket: Socket,
@@ -59,18 +60,31 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             }
 
             // Fetch artifact
-            const artifact = await db.artifact.findFirst({
-                where: {
-                    id: artifactId,
-                    accountId: userId,
-                    ...artifactOrdinaryWhere,
-                },
-            });
+            const [artifact, account] = await Promise.all([
+                db.artifact.findFirst({
+                    where: {
+                        id: artifactId,
+                        accountId: userId,
+                        ...artifactOrdinaryWhere,
+                    },
+                }),
+                db.account.findUnique({
+                    where: { id: userId },
+                    select: { encryptionMode: true },
+                }),
+            ]);
 
             if (!artifact) {
                 if (callback) {
                     callback({ result: 'error', message: 'Artifact not found' });
                 }
+                return;
+            }
+            const accountMode = account
+                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
+                : null;
+            if (accountMode?.status !== "ready") {
+                callback?.({ result: 'error', message: 'Internal error' });
                 return;
             }
             const upgradeRequired = readMarkedArtifactSocketUpgradeRequired(
@@ -84,6 +98,7 @@ export function artifactUpdateHandler(userId: string, socket: Socket) {
             const opened = openArtifactStoredContentPair({
                 accountId: userId,
                 artifactId: artifact.id,
+                mode: accountMode.mode,
                 dataEncryptionKey: artifact.dataEncryptionKey,
                 header: artifact.header,
                 body: artifact.body,

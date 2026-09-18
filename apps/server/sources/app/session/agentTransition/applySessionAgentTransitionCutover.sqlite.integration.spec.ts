@@ -17,6 +17,9 @@ import {
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 /**
  * Lets the archive route win the one window the transition owner's own pre-read
@@ -439,7 +442,7 @@ describe("applySessionAgentTransitionCutover (sqlite)", () => {
         expect(retry.dividerWrite).toBeNull();
         // Nothing was committed a second time, so there is nothing to announce.
         expect(retry.currentView.publication).toBeNull();
-        expect(retry.currentView.participantCursors).toEqual([]);
+        expect(retry.currentView.recipientCursors).toEqual([]);
 
         const after = await db.session.findUniqueOrThrow({
             where: { id: session.id },
@@ -521,6 +524,8 @@ describe("applySessionAgentTransitionCutover (sqlite)", () => {
             localId,
             content: stale,
             messageRole: "event",
+            inputAdmission: "authenticatedAccount",
+            authentication,
         });
         expect(seeded.ok).toBe(true);
 
@@ -551,7 +556,7 @@ describe("applySessionAgentTransitionCutover (sqlite)", () => {
         // announce the Agent change that really happened instead of leaving
         // every other client on the old Agent until a change-cursor catch-up.
         expect(result).toHaveProperty("currentView.publication.kind", "legacy_v0");
-        expect((result as { currentView: { participantCursors: unknown[] } }).currentView.participantCursors)
+        expect((result as { currentView: { recipientCursors: unknown[] } }).currentView.recipientCursors)
             .not.toHaveLength(0);
 
         const rows = await db.sessionMessage.findMany({
@@ -592,6 +597,8 @@ describe("applySessionAgentTransitionCutover (sqlite)", () => {
                 localId,
                 content: stale,
                 messageRole: "event",
+                inputAdmission: "authenticatedAccount",
+                authentication,
             });
             expect(seeded.ok, label).toBe(true);
 
@@ -660,6 +667,8 @@ describe("applySessionAgentTransitionCutover (sqlite)", () => {
             localId,
             content: { t: "encrypted", c: "cGxhbnRlZC1vcGFxdWUtZGl2aWRlcg==" },
             messageRole: "event",
+            inputAdmission: "authenticatedAccount",
+            authentication,
         });
         expect(planted.ok).toBe(true);
 

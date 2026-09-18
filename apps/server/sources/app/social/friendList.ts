@@ -1,5 +1,5 @@
 import { Context } from "@/context";
-import { buildUserProfile, toSocialIdentities, UserProfile } from "./type";
+import { buildUserProfile, describeIdentityPresentation, toSocialIdentities, UserProfile } from "./type";
 import { db } from "@/storage/db";
 import { RelationshipStatus } from "@/storage/prisma";
 
@@ -25,13 +25,18 @@ export async function friendList(ctx: Context): Promise<UserProfile[]> {
     });
 
     // Build UserProfile objects
+    const identitiesByRelationship = relationships.map((relationship) =>
+        toSocialIdentities(relationship.toUser.AccountIdentity));
+    // One provider presentation load for the whole list.
+    const presentation = await describeIdentityPresentation(identitiesByRelationship.flat());
+
     const profiles: UserProfile[] = [];
-    for (const relationship of relationships) {
-        const identities = toSocialIdentities(relationship.toUser.AccountIdentity);
+    for (const [index, relationship] of relationships.entries()) {
         profiles.push(buildUserProfile(
             relationship.toUser as any,
             relationship.status,
-            identities,
+            identitiesByRelationship[index]!,
+            presentation,
         ));
     }
 

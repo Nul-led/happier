@@ -1,10 +1,11 @@
+import type { Tx } from "@/storage/inTx";
 import type { Prisma } from "@prisma/client";
 
-import { createV2SessionListVisibilityWhere } from "@/app/api/routes/session/v2SessionListRows";
+import { buildSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
-export function createVisibleUnarchivedOrganizationSessionWhere(accountId: string): Prisma.SessionWhereInput {
+export async function createVisibleUnarchivedOrganizationSessionWhere(tx: Tx, accountId: string, authentication: SessionAccessAuthentication): Promise<Prisma.SessionWhereInput> {
     return {
-        ...createV2SessionListVisibilityWhere({ userId: accountId }),
-        archivedAt: null,
+        AND: [await buildSessionAccessWhere({ tx, accountId, capability: 'readTranscript', mode: 'effective_access_v1', authentication }), { archivedAt: null }],
     };
 }

@@ -6,11 +6,23 @@ import { LegacyUsageReportRouteBodySchema } from "@/app/usage/legacyUsageReportS
 import type { ClientConnection } from "@/app/events/eventPayloadTypes";
 import { canTargetSessionFromSocket } from "./sessionScopedBinding";
 
-export function usageHandler(userId: string, socket: Socket, connection: ClientConnection) {
+export function usageHandler(
+    userId: string,
+    socket: Socket,
+    connection: ClientConnection,
+    restrictedSessionRuntime = false,
+) {
     const receiveUsageLock = new AsyncLock();
     socket.on('usage-report', async (data: unknown, callback?: (response: any) => void) => {
         await receiveUsageLock.inLock(async () => {
             try {
+                // Runner usage is authored by the scoped v2 UsageEvent path.
+                // This released compatibility event carries only Account/session
+                // targeting and cannot preserve the restricted runtime principal.
+                if (restrictedSessionRuntime) {
+                    callback?.({ success: false, error: 'Forbidden' });
+                    return;
+                }
                 const parsed = LegacyUsageReportRouteBodySchema.safeParse(data);
                 if (!parsed.success) {
                     if (callback) callback({ success: false, error: 'Invalid parameters' });

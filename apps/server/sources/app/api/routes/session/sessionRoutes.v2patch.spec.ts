@@ -25,10 +25,76 @@ describe("sessionRoutes v2 patch", () => {
         resetSessionRouteMocks();
     });
 
+    it("admits the restricted runtime only through the exact-Session guard", async () => {
+        const route = await createSessionRouteTestBuilder("PATCH", "/v2/sessions/:sessionId");
+        const entry = route.app.routes.get("PATCH /v2/sessions/:sessionId");
+        expect(entry?.opts.config).toMatchObject({ ephemeralSessionRunnerOperation: "session_shared_editor" });
+        expect(entry?.opts.preHandler).toBe(route.app.authenticate);
+    });
+
+    it("handles the strict shared-editor tuple after central Runner admission", async () => {
+        const route = await createSessionRouteTestBuilder(
+            "PATCH",
+            "/v2/sessions/:sessionId",
+        );
+        updateSessionMetadataEnvelopeTuple.mockResolvedValue({
+            ok: true,
+            recipientCursors: [],
+            sessionOwnerId: "u1",
+            ownerAccountMode: "e2ee",
+            metadataLayoutVersion: 1,
+            sharedMetadata: { version: 2, value: "shared-runner" },
+            agentStateVersion: 3,
+            ownerMetadata: { value: STORED_OWNER_METADATA_ENVELOPE },
+            agentState: { version: 3, value: "owner-state" },
+        });
+        const allowed = await route.invoke({
+            userId: "u1",
+            authTokenKind: "ephemeral_session_runner",
+            authAuthority: "account_automation",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "u1",
+                activationId: "00000000-0000-4000-8000-000000000001",
+                sessionId: "s1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "installation-public-key",
+                creatorTokenEpoch: 1,
+            },
+            params: { sessionId: "s1" },
+            body: {
+                mode: "shared_editor",
+                metadataLayoutVersion: 1,
+                sharedMetadata: {
+                    ciphertext: "shared-runner",
+                    expectedVersion: 1,
+                },
+            },
+        });
+
+        expect(allowed.reply.statusCode).toBe(200);
+        expect(allowed.response).toEqual({
+            success: true,
+            metadataLayoutVersion: 1,
+            sharedMetadata: { version: 2 },
+        });
+        expect(updateSessionMetadataEnvelopeTuple).toHaveBeenCalledOnce();
+        expect(updateSessionMetadataEnvelopeTuple).toHaveBeenCalledWith(
+            expect.objectContaining({
+                mode: "shared_editor",
+                actorUserId: "u1",
+                sessionId: "s1",
+            }),
+        );
+        expect(patchSession).not.toHaveBeenCalled();
+    });
+
     it("emits update-session using returned per-recipient cursors", async () => {
         patchSession.mockResolvedValue({
             ok: true,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 10 },
                 { accountId: "u2", cursor: 11 },
             ],
@@ -45,12 +111,12 @@ describe("sessionRoutes v2 patch", () => {
             },
         });
 
-        expect(patchSession).toHaveBeenCalledWith({
+        expect(patchSession).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             metadata: { ciphertext: "mNew", expectedVersion: 1 },
             agentState: { ciphertext: null, expectedVersion: 2 },
-        });
+        }));
 
         expect(buildUpdateSessionUpdate).toHaveBeenCalledWith(
             "s1",
@@ -94,7 +160,7 @@ describe("sessionRoutes v2 patch", () => {
             },
         });
 
-        expect(patchSession).toHaveBeenCalledWith({
+        expect(patchSession).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "u1",
             sessionId: "s1",
             metadata: {
@@ -105,7 +171,7 @@ describe("sessionRoutes v2 patch", () => {
             sessionExpectation: {
                 kind: "inactive_model_intent",
             },
-        });
+        }));
         expect(reply.code).toHaveBeenCalledWith(409);
         expect(response).toEqual({
             code: "session_active",
@@ -117,7 +183,7 @@ describe("sessionRoutes v2 patch", () => {
     it("returns the strict inactive-model-intent success shape", async () => {
         patchSession.mockResolvedValue({
             ok: true,
-            participantCursors: [],
+            recipientCursors: [],
             metadata: {
                 version: 2,
                 value: "inactive-model-intent",
@@ -311,7 +377,7 @@ describe("sessionRoutes v2 patch", () => {
     it("commits an owner tuple once and returns its complete version vector", async () => {
         updateSessionMetadataEnvelopeTuple.mockResolvedValue({
             ok: true,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 10 },
                 { accountId: "u2", cursor: 11 },
             ],
@@ -519,7 +585,7 @@ describe("sessionRoutes v2 patch", () => {
     it("publishes a shared-editor tuple to every participant without owner-only fields", async () => {
         updateSessionMetadataEnvelopeTuple.mockResolvedValue({
             ok: true,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 10 },
                 { accountId: "u2", cursor: 11 },
             ],
@@ -634,7 +700,7 @@ describe("sessionRoutes v2 patch", () => {
     it("fails closed before publication when tuple success carries a future layout", async () => {
         updateSessionMetadataEnvelopeTuple.mockResolvedValue({
             ok: true,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 10 },
                 { accountId: "u2", cursor: 11 },
             ],

@@ -60,12 +60,13 @@ describe("sessionPendingRoutes requested action", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 8,
-            participantCursors: [],
+            recipientCursors: [],
         });
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "POST",
             path: "/v2/sessions/:sessionId/pending/activation/fail",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -96,13 +97,14 @@ describe("sessionPendingRoutes requested action", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 7,
-            participantCursors: [{ accountId: "u1", cursor: 10 }],
+            recipientCursors: [{ accountId: "u1", cursor: 10 }],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "PATCH",
             path: "/v2/sessions/:sessionId/pending/:localId/action",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -127,6 +129,44 @@ describe("sessionPendingRoutes requested action", () => {
         expect(emitUpdate).not.toHaveBeenCalled();
     });
 
+    it("forwards the main-conversation resume authorization command", async () => {
+        updatePendingRequestedAction.mockResolvedValueOnce({
+            ok: true,
+            didUpdate: false,
+            requestedAction: { v: 1, kind: "enqueue" },
+            pendingCount: 1,
+            pendingBlockedCount: 0,
+            pendingVersion: 7,
+            recipientCursors: [],
+        });
+        const { sessionPendingRoutes } = await import("./pendingRoutes");
+        const route = createRouteTestBuilder({
+            method: "PATCH",
+            path: "/v2/sessions/:sessionId/pending/:localId/action",
+            defaultRequest: { authAuthority: "present_user" },
+            registerRoutes(app) {
+                sessionPendingRoutes(app as any);
+            },
+        });
+
+        await route.invoke({
+            userId: "actor",
+            params: { sessionId: "s1", localId: "l1" },
+            body: {
+                requestedAction: { v: 1, kind: "enqueue" },
+                resumeWhenAvailable: true,
+            },
+        });
+
+        expect(updatePendingRequestedAction).toHaveBeenCalledWith(expect.objectContaining({
+            actorUserId: "actor",
+            sessionId: "s1",
+            localId: "l1",
+            requestedAction: { v: 1, kind: "enqueue" },
+            resumeWhenAvailable: true,
+        }));
+    });
+
     it("publishes a changed action exactly once per returned participant cursor", async () => {
         updatePendingRequestedAction.mockResolvedValueOnce({
             ok: true,
@@ -135,13 +175,14 @@ describe("sessionPendingRoutes requested action", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 8,
-            participantCursors: [{ accountId: "u1", cursor: 11 }],
+            recipientCursors: [{ accountId: "u1", cursor: 11 }],
         });
 
         const { sessionPendingRoutes } = await import("./pendingRoutes");
         const route = createRouteTestBuilder({
             method: "PATCH",
             path: "/v2/sessions/:sessionId/pending/:localId/action",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },
@@ -173,7 +214,7 @@ describe("sessionPendingRoutes requested action", () => {
             pendingCount: 1,
             pendingBlockedCount: 0,
             pendingVersion: 8,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "u1", cursor: 11 },
                 { accountId: "u2", cursor: 12 },
             ],
@@ -183,6 +224,7 @@ describe("sessionPendingRoutes requested action", () => {
         const route = createRouteTestBuilder({
             method: "PATCH",
             path: "/v2/sessions/:sessionId/pending/:localId/action",
+            defaultRequest: { authAuthority: "present_user" },
             registerRoutes(app) {
                 sessionPendingRoutes(app as any);
             },

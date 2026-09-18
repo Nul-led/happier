@@ -214,7 +214,7 @@ describe("rpcHandler", () => {
         } as const);
         dbMocks.db.session.findUnique.mockResolvedValue({ accountId: "owner-1" });
         installDbModuleMock({ db: dbMocks.db });
-        vi.doMock("@/app/share/accessControl", () => ({
+        vi.doMock("@/app/session/access/sessionAccess", () => ({
             canApprovePermissions: vi.fn().mockResolvedValue(true),
         }));
 
@@ -250,7 +250,7 @@ describe("rpcHandler", () => {
             });
         } finally {
             vi.doUnmock("@/storage/db");
-            vi.doUnmock("@/app/share/accessControl");
+            vi.doUnmock("@/app/session/access/sessionAccess");
         }
     });
 
@@ -262,7 +262,7 @@ describe("rpcHandler", () => {
         } as const);
         dbMocks.db.session.findUnique.mockResolvedValue({ accountId: "owner-1" });
         installDbModuleMock({ db: dbMocks.db });
-        vi.doMock("@/app/share/accessControl", () => ({
+        vi.doMock("@/app/session/access/sessionAccess", () => ({
             canApprovePermissions: vi.fn().mockResolvedValue(false),
         }));
 
@@ -291,7 +291,7 @@ describe("rpcHandler", () => {
             });
         } finally {
             vi.doUnmock("@/storage/db");
-            vi.doUnmock("@/app/share/accessControl");
+            vi.doUnmock("@/app/session/access/sessionAccess");
         }
     });
 

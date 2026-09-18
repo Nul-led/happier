@@ -1,7 +1,7 @@
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { dirname, isAbsolute } from 'node:path';
-import type { PersonalHomeAuthenticatedReadiness } from '@happier-dev/cli-common/firstPartyRuntime';
+import type { PersonalHomeAuthenticatedReadiness } from '@happier-dev/cli-common/firstPartyRuntime/server';
 
 export const SERVER_STARTUP_RECEIPT_PATH_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_PATH';
 export const SERVER_STARTUP_RECEIPT_NONCE_ENV = 'HAPPIER_SERVER_STARTUP_RECEIPT_NONCE';

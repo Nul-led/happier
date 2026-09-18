@@ -1,7 +1,7 @@
-import { markPendingStateChangedParticipants } from "@/app/session/pending/markPendingStateChangedParticipants";
-import type { SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import { markPendingStateChangedRecipients } from "@/app/session/pending/markPendingStateChangedRecipients";
+import type { SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import type { Tx } from "@/storage/inTx";
-import { didSessionActivityBadgeContributionChange } from "@/app/activity/accountActivityBadge";
+import { didSessionActivityBadgeSignalChange } from "@/app/activity/accountActivityBadge";
 import { SESSION_TRANSCRIPT_PUBLICATION_SELECT } from "@/app/session/sessionTranscriptPublicationPolicy";
 
 export async function applyPendingSessionStateChange(params: {
@@ -15,7 +15,7 @@ export async function applyPendingSessionStateChange(params: {
     pendingCount: number;
     pendingBlockedCount: number;
     pendingVersion: number;
-    participantCursors: SessionParticipantCursor[];
+    recipientCursors: SessionRecipientCursor[];
     badgeAttentionChanged: boolean;
     meaningfulActivityAt?: Date;
 }> {
@@ -33,7 +33,6 @@ export async function applyPendingSessionStateChange(params: {
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
-            lastViewedSessionSeq: true,
             pendingPermissionRequestCount: true,
             pendingUserActionRequestCount: true,
             active: true,
@@ -63,7 +62,7 @@ export async function applyPendingSessionStateChange(params: {
         },
     });
 
-    const participantCursors = await markPendingStateChangedParticipants({
+    const recipientCursors = await markPendingStateChangedRecipients({
         tx,
         sessionId,
         pendingVersion: session.pendingVersion,
@@ -77,8 +76,8 @@ export async function applyPendingSessionStateChange(params: {
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingVersion: session.pendingVersion,
-        participantCursors,
-        badgeAttentionChanged: didSessionActivityBadgeContributionChange(before, {
+        recipientCursors,
+        badgeAttentionChanged: didSessionActivityBadgeSignalChange(before, {
             ...before,
             pendingCount: session.pendingCount,
             pendingBlockedCount: session.pendingBlockedCount,

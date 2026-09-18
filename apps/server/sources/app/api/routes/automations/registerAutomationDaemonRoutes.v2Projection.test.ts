@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
+import releasedV2Wire from "../../../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json";
 
-const listDaemonAssignments = vi.hoisted(() => vi.fn());
+const { claimAutomationRun, listDaemonAssignments } = vi.hoisted(() => ({
+    claimAutomationRun: vi.fn(),
+    listDaemonAssignments: vi.fn(),
+}));
 
 vi.mock("@/app/automations/automationAssignmentService", () => ({
     listDaemonAssignments,
 }));
 vi.mock("@/app/automations/automationClaimService", () => ({
-    claimAutomationRun: vi.fn(),
+    claimAutomationRun,
     heartbeatAutomationRun: vi.fn(),
 }));
 
@@ -21,6 +25,7 @@ const TEMPLATE = JSON.stringify({
 describe("released V2 daemon assignment projection", () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        claimAutomationRun.mockResolvedValue({ run: null, accountCurrentness: null });
         listDaemonAssignments.mockResolvedValue([{
             id: "assignment-1",
             machineId: "machine-1",
@@ -28,17 +33,13 @@ describe("released V2 daemon assignment projection", () => {
             priority: 7,
             updatedAt: DATE,
             nextClaimAt: new Date(DATE.getTime() + 30_000),
-            // This may point at a soft-deleted frozen Run trigger rather than
-            // the first mutable Definition trigger.
-            v2ScheduleTrigger: {
-                id: "trigger-frozen-run",
-                kind: "schedule",
-                enabled: false,
-                scheduleKind: "interval",
+            // The assignment owner resolves mutable/frozen trigger identity;
+            // this adapter receives only the exact released wire projection.
+            v2Schedule: {
+                kind: "interval",
                 scheduleExpr: null,
                 everyMs: 120_000,
                 timezone: "UTC",
-                nextRunAt: null,
             },
             automation: {
                 id: "automation-1",
@@ -97,6 +98,38 @@ describe("released V2 daemon assignment projection", () => {
         }]);
     });
 
+    it("accepts the provenance-pinned v0.2.11 worker claim request at the filtered compatibility seam", async () => {
+        const { registerAutomationDaemonRoutes } = await import("./registerAutomationDaemonRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v2/automations/runs/claim",
+            defaultRequest: { authAuthority: "account_automation" },
+            registerRoutes(app) {
+                registerAutomationDaemonRoutes(app as never, {
+                    verifyPublisher: vi.fn(async () => ({
+                        machineId: releasedV2Wire.claimRequest.machineId,
+                        installationId: "installation-v2",
+                        requestNonce: "worker-request-v2",
+                        proofExpiresAt: new Date("2026-08-28T12:05:00.000Z"),
+                    })),
+                });
+            },
+        });
+
+        const { response } = await route.invoke({
+            userId: "account-1",
+            body: releasedV2Wire.claimRequest,
+        });
+
+        expect(claimAutomationRun).toHaveBeenCalledWith({
+            accountId: "account-1",
+            machineId: "machine-v2",
+            leaseDurationMs: 30_000,
+            requireV2RunRepresentability: true,
+        });
+        expect(response).toEqual({ run: null, automation: null });
+    });
+
     it("projects the sole canonical schedule trigger and the worker wake cursor", async () => {
         const { registerAutomationDaemonRoutes } = await import("./registerAutomationDaemonRoutes");
         const route = createRouteTestBuilder({
@@ -125,23 +158,6 @@ describe("released V2 daemon assignment projection", () => {
             machineId: "machine-1",
             requireV2DefinitionRepresentability: true,
         });
-        expect(response).toEqual({
-            assignments: [{
-                machineId: "machine-1",
-                enabled: true,
-                priority: 7,
-                updatedAt: DATE.getTime(),
-                automation: expect.objectContaining({
-                    id: "automation-1",
-                    schedule: {
-                        kind: "interval",
-                        scheduleExpr: null,
-                        everyMs: 120_000,
-                        timezone: "UTC",
-                    },
-                    nextRunAt: DATE.getTime() + 30_000,
-                }),
-            }],
-        });
+        expect(response).toEqual(releasedV2Wire.assignmentResponse);
     });
 });

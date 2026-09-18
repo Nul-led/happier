@@ -2,9 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
 
-type CheckSessionAccessFn = typeof import("@/app/share/accessControl").checkSessionAccess;
-type RequireAccessLevelFn = typeof import("@/app/share/accessControl").requireAccessLevel;
-type GetSessionParticipantUserIdsFn = typeof import("@/app/share/sessionParticipants").getSessionParticipantUserIds;
 
 const emitEphemeral = vi.fn();
 const websocketEventsCounterInc = vi.fn();
@@ -40,24 +37,14 @@ vi.mock("@/app/presence/presenceRecorder", () => ({
 }));
 
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
-    refreshSessionParticipantBadgePushes: vi.fn(async () => {}),
+    refreshTrackedSessionAccountBadgePushes: vi.fn(async () => {}),
 }));
 
 vi.mock("@/app/activity/accountActivityBadge", () => ({
-    didSessionActivityBadgeContributionChange: vi.fn(() => false),
+    didSessionActivityBadgeSignalChange: vi.fn(() => false),
 }));
 
-const checkSessionAccess = vi.fn<CheckSessionAccessFn>();
-const requireAccessLevel = vi.fn<RequireAccessLevelFn>();
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess,
-    requireAccessLevel,
-}));
 
-const getSessionParticipantUserIds = vi.fn<GetSessionParticipantUserIdsFn>();
-vi.mock("@/app/share/sessionParticipants", () => ({
-    getSessionParticipantUserIds,
-}));
 
 const sessionFindUnique = vi.hoisted(() => vi.fn());
 vi.mock("@/storage/db", () => ({
@@ -74,6 +61,7 @@ vi.mock("@/storage/db", () => ({
 function buildPublicationRow(overrides: Record<string, unknown> = {}) {
     return {
         accountId: "u1",
+        shares: [],
         seq: 5,
         currentStorageState: "hosted",
         acceptedThroughServerSeq: null,
@@ -134,21 +122,10 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
     beforeEach(() => {
         emitEphemeral.mockReset();
         websocketEventsCounterInc.mockReset();
-        checkSessionAccess.mockReset();
-        requireAccessLevel.mockReset();
-        getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
         accessKeyFindUnique.mockResolvedValue(activeAccessKey);
         sessionFindUnique.mockReset();
         sessionFindUnique.mockResolvedValue(buildPublicationRow());
-        checkSessionAccess.mockImplementation(async (userId, sessionId) => ({
-            userId,
-            sessionId,
-            level: "view",
-            isOwner: false,
-        }));
-        requireAccessLevel.mockReturnValue(true);
-        getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
     });
 
     it("suppresses execution-run-updated for a finite collaborator once the transcript publication is finite", async () => {
@@ -156,12 +133,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             currentStorageState: "server_partial",
             acceptedThroughServerSeq: 7,
         }));
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -211,12 +182,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             currentStorageState: "machine_only",
             acceptedThroughServerSeq: null,
         }));
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -259,12 +224,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
 
     it("fails closed without any execution-run-updated delivery when the publication row is unavailable", async () => {
         sessionFindUnique.mockResolvedValue(null);
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -305,12 +264,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
     });
 
     it("broadcasts execution-run-updated ephemeral updates from a daemon session socket to all session participants", async () => {
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -348,8 +301,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             },
         });
 
-        expect(checkSessionAccess).toHaveBeenCalledWith("u1", "s1");
-        expect(getSessionParticipantUserIds).toHaveBeenCalledWith({ sessionId: "s1" });
 
         expect(emitEphemeral).toHaveBeenCalledTimes(2);
         expect(emitEphemeral).toHaveBeenCalledWith(expect.objectContaining({
@@ -384,12 +335,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
 
     it("does not broadcast execution-run-updated when the machine access key binding has been revoked", async () => {
         accessKeyFindUnique.mockResolvedValueOnce(null);
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -439,18 +384,10 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
                 machine: { select: { revokedAt: true, replacedByMachineId: true } },
             },
         });
-        expect(checkSessionAccess).not.toHaveBeenCalled();
-        expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
         expect(emitEphemeral).not.toHaveBeenCalled();
     });
 
     it("does not broadcast execution-run-updated without machine-bound session proof even when the sender owns the session", async () => {
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -486,8 +423,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             },
         });
 
-        expect(checkSessionAccess).not.toHaveBeenCalled();
-        expect(getSessionParticipantUserIds).not.toHaveBeenCalled();
         expect(emitEphemeral).not.toHaveBeenCalled();
     });
 
@@ -565,12 +500,11 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             },
         });
 
-        expect(checkSessionAccess).not.toHaveBeenCalled();
         expect(emitEphemeral).not.toHaveBeenCalled();
     });
 
-    it("requires edit access before broadcasting execution-run-updated", async () => {
-        requireAccessLevel.mockReturnValue(false);
+    it("rejects a shared admin before broadcasting execution-run-updated", async () => {
+        sessionFindUnique.mockResolvedValue(buildPublicationRow({ accountId: "another-owner", shares: [{ id: "share-1", accessLevel: "admin", canApprovePermissions: true }] }));
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -607,10 +541,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
             },
         });
 
-        expect(requireAccessLevel).toHaveBeenCalledWith(
-            expect.objectContaining({ level: "view" }),
-            "edit",
-        );
         expect(emitEphemeral).not.toHaveBeenCalled();
     });
 
@@ -654,12 +584,6 @@ describe("sessionUpdateHandler (execution-run-updated)", () => {
     });
 
     it("strips untrusted extra execution-run fields before rebroadcasting", async () => {
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
 
         const { sessionUpdateHandler } = await import("./sessionUpdateHandler");
 
@@ -710,21 +634,10 @@ describe("sessionUpdateHandler (transcript-stream-segment)", () => {
     beforeEach(() => {
         emitEphemeral.mockReset();
         websocketEventsCounterInc.mockReset();
-        checkSessionAccess.mockReset();
-        requireAccessLevel.mockReset();
-        getSessionParticipantUserIds.mockReset();
         accessKeyFindUnique.mockReset();
         accessKeyFindUnique.mockResolvedValue(activeAccessKey);
         sessionFindUnique.mockReset();
         sessionFindUnique.mockResolvedValue(buildPublicationRow());
-        checkSessionAccess.mockResolvedValue({
-            userId: "u1",
-            sessionId: "s1",
-            level: "edit",
-            isOwner: true,
-        } as any);
-        requireAccessLevel.mockReturnValue(true);
-        getSessionParticipantUserIds.mockResolvedValue(["u1", "u2"]);
     });
 
     it("broadcasts transcript stream segment ephemerals to all session participants", async () => {
@@ -774,7 +687,6 @@ describe("sessionUpdateHandler (transcript-stream-segment)", () => {
             },
         });
 
-        expect(getSessionParticipantUserIds).toHaveBeenCalledWith({ sessionId: "s1" });
         expect(emitEphemeral).toHaveBeenCalledTimes(2);
         expect(emitEphemeral).toHaveBeenCalledWith(expect.objectContaining({
             userId: "u1",

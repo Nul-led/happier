@@ -3,6 +3,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { Tx } from "@/storage/inTx";
 import { applyPendingSessionStateChange } from "./applyPendingSessionStateChange";
 
+vi.mock("@/storage/inTx", async (importOriginal) => ({
+    ...await importOriginal<typeof import("@/storage/inTx")>(),
+    // This focused transaction-boundary fake calls the owner with an in-memory Tx.
+    afterTx: (_tx: Tx, callback: () => void) => callback(),
+}));
+
 type SessionState = {
     pendingCount: number;
     pendingBlockedCount: number;
@@ -59,6 +65,17 @@ function createConcurrentDecrementTx() {
 
     const tx = {
         session: {
+            findMany: vi.fn(async () => [{
+                id: "s1",
+                accountId: "owner",
+                seq: 0,
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
+                account: { status: "active" },
+            }]),
             findUniqueOrThrow: vi.fn(async () => ({
                 seq: 0,
                 pendingCount: state.pendingCount,
@@ -100,6 +117,10 @@ function createConcurrentDecrementTx() {
                 shares: [],
             })),
         },
+        sessionShare: { findMany: vi.fn(async () => []) },
+        sessionTeamGrant: { findMany: vi.fn(async () => []) },
+        sessionGroupGrant: { findMany: vi.fn(async () => []) },
+        sessionFollowEdge: { findMany: vi.fn(async () => []) },
         account: {
             update: vi.fn(async () => {
                 state.accountSeq += 1;
@@ -140,6 +161,17 @@ function createConcurrentEnqueueAfterFailedDecrementTx() {
     const accountChangeUpsert = vi.fn(async () => ({}));
     const tx = {
         session: {
+            findMany: vi.fn(async () => [{
+                id: "s1",
+                accountId: "owner",
+                seq: 0,
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
+                account: { status: "active" },
+            }]),
             findUniqueOrThrow: vi.fn(async () => ({
                 seq: 0,
                 pendingCount: state.pendingCount,
@@ -184,6 +216,10 @@ function createConcurrentEnqueueAfterFailedDecrementTx() {
                 shares: [],
             })),
         },
+        sessionShare: { findMany: vi.fn(async () => []) },
+        sessionTeamGrant: { findMany: vi.fn(async () => []) },
+        sessionGroupGrant: { findMany: vi.fn(async () => []) },
+        sessionFollowEdge: { findMany: vi.fn(async () => []) },
         account: {
             update: vi.fn(async () => {
                 state.accountSeq += 1;

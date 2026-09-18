@@ -1,3 +1,4 @@
+import { InactiveAccountError } from "@/app/auth/accountStatus";
 import { type Fastify } from "../../types";
 import { z } from "zod";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
@@ -6,6 +7,8 @@ import {
     AccountEncryptionMigrateRequestSchema,
     AccountEncryptionMigrateSuccessResponseSchema,
     AccountEncryptionMigratePredecessorSuccessResponseSchema,
+    AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema,
+    AccountEncryptionMigratePredecessorDraftConflictResponseSchema,
     AccountEncryptionMigrateBadRequestResponseSchema,
     AccountEncryptionMigrateForbiddenResponseSchema,
     AccountEncryptionMigrateNotFoundResponseSchema,
@@ -33,6 +36,8 @@ import {
     createAccountEncryptionMigrateProofSigningInputV1,
     createAccountEncryptionMigrateRequestBindingDigestV1,
     createAccountEncryptionMigrateTransitionAuthorizationBindingDigestV1,
+    createPasswordCredentialTargetDigestV1,
+    parseAccountPasswordCredentialV1,
     createAccountEncryptionMigrateTransitionAuthorizationProofSigningInputV1,
     type AccountEncryptionMigrateKeyProof,
     type AccountEncryptionMigrateRequest,
@@ -111,6 +116,7 @@ import {
     accountEncryptionMigrationReplayBindingsEqualV1,
     createAccountEncryptionMigrationReplayBindingV1,
 } from "@/app/encryption/accountEncryptionMigrationReplayBindingV1";
+import { consumePasswordMutationKeyChallengeInTx } from "@/app/auth/keyChallengeV2";
 import {
     consumeAccountEncryptionFirstKeyExternalAuthProofInTx,
 } from "@/app/auth/accountEncryptionFirstKeyExternalAuthProof";
@@ -147,6 +153,7 @@ import {
 import {
     matchNewSessionDraftsAccountMigrationPostStateInTx,
     migrateNewSessionDraftsForAccountModeInTx,
+    type SessionDraftAccountMigrationResult,
 } from "@/app/account/sessionDrafts/sessionDraftService";
 
 const AccountEncryptionMigrateIngressRequestSchema = z.union([
@@ -281,13 +288,8 @@ class AccountEncryptionMigrationSessionRejectedError extends Error {
 }
 
 class AccountEncryptionMigrationSessionDraftRejectedError extends Error {
-    constructor(
-        readonly status:
-            | "requires_upgrade"
-            | "migration_incomplete"
-            | "source_mismatch",
-    ) {
-        super(`Session draft migration rejected: ${status}`);
+    constructor(readonly result: Exclude<SessionDraftAccountMigrationResult, { status: "applied" }>) {
+        super(`Session draft migration rejected: ${result.status}`);
         this.name = "AccountEncryptionMigrationSessionDraftRejectedError";
     }
 }
@@ -309,7 +311,8 @@ class AccountEncryptionMigrationDomainRejectedError extends Error {
             | "not_empty"
             | "migration_incomplete"
             | "invalid_content"
-            | "migration_too_large",
+            | "migration_too_large"
+            | "unsupported_machine_kind",
     ) {
         super(`Account encryption migration rejected by ${domain}: ${status}`);
         this.name = "AccountEncryptionMigrationDomainRejectedError";
@@ -405,12 +408,43 @@ async function authorizeAccountEncryptionTransitionFromHttpRequestInTx(
         request: AccountEncryptionMigrateTransitionAuthorizeRequest;
     }>,
 ) {
+    const passwordCredential = params.request.passwordCredential;
     if (params.request.authorization.kind === "present_user_confirmation") {
+        // Leaving E2EE replaces the envelope credential with a prepared Plain
+        // one. That is a password-material mutation, so it needs the proof this
+        // Account's current state can supply — the purpose-bound Key Challenge
+        // its own signing key answers — not just the bearer that reached here.
+        if (passwordCredential) {
+            const emailIdentity = await params.tx.accountIdentity.findUnique({
+                where: { accountId_provider: { accountId: params.accountId, provider: "email" } },
+                select: { providerUserId: true },
+            });
+            if (!passwordCredential.proof) return { status: "invalid_authorization" as const };
+            const consumed = await consumePasswordMutationKeyChallengeInTx(params.tx, {
+                mutation: {
+                    v: 1, action: "change", accountId: params.accountId,
+                    expectedCredentialRevision: passwordCredential.expectedRevision,
+                    normalizedNativeEmail: emailIdentity?.providerUserId ?? null,
+                    newCredentialDigest: createPasswordCredentialTargetDigestV1(passwordCredential.credential),
+                },
+                proof: passwordCredential.proof,
+                env: process.env,
+            });
+            if (!consumed) return { status: "invalid_authorization" as const };
+        }
         return await authorizeAccountEncryptionTransitionCoordinatorInTx({
             tx: params.tx,
             accountId: params.accountId,
             transitionId: params.request.transitionId,
-            authorization: { kind: "present_user_confirmation" },
+            authorization: {
+                kind: "present_user_confirmation",
+                ...(passwordCredential
+                    ? { passwordCredential: {
+                        expectedRevision: passwordCredential.expectedRevision,
+                        credential: passwordCredential.credential,
+                    } }
+                    : {}),
+            },
         });
     }
 
@@ -471,6 +505,16 @@ async function authorizeAccountEncryptionTransitionFromHttpRequestInTx(
             accountPublicKeyHex: verifiedKeyProof.publicKeyHex,
             binding: verifiedKeyProof.contentKeyBinding,
             signingKeyFingerprint: verifiedKeyProof.signingKeyFingerprint,
+            // Entering E2EE from a password-only Plain Account: the same
+            // `email_password` external-auth proof consumed above verified the
+            // current password, and `requestDigest` covers this prepared
+            // envelope, so no second proof is needed here.
+            ...(passwordCredential
+                ? { passwordCredential: {
+                    expectedRevision: passwordCredential.expectedRevision,
+                    credential: passwordCredential.credential,
+                } }
+                : {}),
         },
     });
 }
@@ -509,7 +553,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         inventory,
                     ),
                 );
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({
                     error: "internal",
                 });
@@ -545,7 +590,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         accountId: request.userId,
                     })
                 ));
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({
                     error: "internal",
                 });
@@ -561,7 +607,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateTransitionPrepareRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateTransitionPrepareResponseSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     403: z.union([
                         AccountEncryptionMigrateForbiddenResponseSchema,
                         PresentUserRequiredResponseSchema,
@@ -598,7 +644,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     return reply.code(failure.statusCode).send(failure.body);
                 }
                 return reply.send(result.transition);
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -612,7 +659,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateTransitionAuthorizeRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateTransitionAuthorizeResponseSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     403: PresentUserRequiredResponseSchema,
                     404: AccountEncryptionMigrateNotFoundResponseSchema,
                     426: AccountStoredContentUpgradeRequiredV1Schema,
@@ -640,7 +687,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     return reply.code(failure.statusCode).send(failure.body);
                 }
                 return reply.send({ success: true });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -654,7 +702,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateCollectionInventoryPageRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateCollectionInventoryPageSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     404: AccountEncryptionMigrateNotFoundResponseSchema,
                     426: AccountStoredContentUpgradeRequiredV1Schema,
                     500: AccountEncryptionMigrateInternalResponseSchema,
@@ -689,7 +737,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         ? { nextCursor: result.nextCursor }
                         : {}),
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -703,7 +752,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateCollectionStageBatchRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateCollectionStageBatchResponseSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     403: PresentUserRequiredResponseSchema,
                     404: AccountEncryptionMigrateNotFoundResponseSchema,
                     426: AccountStoredContentUpgradeRequiredV1Schema,
@@ -737,7 +786,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     stagedSourceBytes: Number(result.stagedSourceBytes),
                     stagedTargetBytes: Number(result.stagedTargetBytes),
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -751,7 +801,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateTransitionCancelRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateTransitionCancelResponseSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     403: PresentUserRequiredResponseSchema,
                     404: AccountEncryptionMigrateNotFoundResponseSchema,
                     426: AccountStoredContentUpgradeRequiredV1Schema,
@@ -777,7 +827,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     return reply.code(failure.statusCode).send(failure.body);
                 }
                 return reply.send({ success: true });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -791,7 +842,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                 body: AccountEncryptionMigrateTransitionActivateRequestSchema,
                 response: {
                     200: AccountEncryptionMigrateTransitionActivateResponseSchema,
-                    400: AccountEncryptionMigrateBadRequestResponseSchema,
+                    400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                     403: PresentUserRequiredResponseSchema,
                     404: AccountEncryptionMigrateNotFoundResponseSchema,
                     426: AccountStoredContentUpgradeRequiredV1Schema,
@@ -824,7 +875,8 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     accountVersion: result.version,
                     updatedAt: result.updatedAt,
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -839,13 +891,13 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     AccountEncryptionMigrateSuccessResponseSchema,
                     AccountEncryptionMigratePredecessorSuccessResponseSchema,
                 ]),
-                400: AccountEncryptionMigrateBadRequestResponseSchema,
+                400: z.union([AccountEncryptionMigrateBadRequestResponseSchema, AccountEncryptionMigratePredecessorDraftBadRequestResponseSchema]),
                 403: z.union([
                     AccountEncryptionMigrateForbiddenResponseSchema,
                     PresentUserRequiredResponseSchema,
                 ]),
                 404: AccountEncryptionMigrateNotFoundResponseSchema,
-                409: AccountEncryptionMigrateConflictResponseSchema,
+                409: z.union([AccountEncryptionMigrateConflictResponseSchema, AccountEncryptionMigratePredecessorDraftConflictResponseSchema]),
                 426: AccountStoredContentUpgradeRequiredV1Schema,
                 500: AccountEncryptionMigrateInternalResponseSchema,
             },
@@ -1523,6 +1575,55 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                         });
                 }
 
+                const currentPasswordCredential = await tx.accountPasswordCredential.findUnique({
+                    where: { accountId: userId },
+                    select: { revision: true, credential: true },
+                });
+                const requestedPasswordCredential = currentRequest.success
+                    ? currentRequest.data.passwordCredential
+                    : undefined;
+                if (Boolean(currentPasswordCredential) !== Boolean(requestedPasswordCredential)) {
+                    return { type: "invalid-params" as const };
+                }
+                if (currentPasswordCredential && requestedPasswordCredential) {
+                    if (currentPasswordCredential.revision !== requestedPasswordCredential.expectedRevision
+                        || !parseAccountPasswordCredentialV1(currentMode, currentPasswordCredential.credential).ok
+                        || !parseAccountPasswordCredentialV1(toMode, requestedPasswordCredential.credential).ok) {
+                        return { type: "migration-inventory-changed" as const };
+                    }
+                    if (currentMode === "e2ee") {
+                        if (!requestedPasswordCredential.proof || !currentRequest.success) {
+                            return { type: "invalid-params" as const };
+                        }
+                        const { passwordCredential: _passwordCredential, ...requestWithoutPasswordCredential } = currentRequest.data;
+                        const transitionRequestDigest = createAccountEncryptionMigrateRequestBindingDigestV1({
+                            request: requestWithoutPasswordCredential,
+                            accountId: userId,
+                            sourceMode: currentMode,
+                        });
+                        const identity = await tx.accountIdentity.findUnique({
+                            where: { accountId_provider: { accountId: userId, provider: "email" } },
+                            select: { providerUserId: true },
+                        });
+                        const accepted = await consumePasswordMutationKeyChallengeInTx(tx, {
+                            mutation: {
+                                v: 1,
+                                action: "change",
+                                accountId: userId,
+                                expectedCredentialRevision: requestedPasswordCredential.expectedRevision,
+                                normalizedNativeEmail: identity?.providerUserId ?? null,
+                                newCredentialDigest: createPasswordCredentialTargetDigestV1(
+                                    requestedPasswordCredential.credential,
+                                    transitionRequestDigest,
+                                ),
+                            },
+                            proof: requestedPasswordCredential.proof,
+                            env: process.env,
+                        });
+                        if (!accepted) return { type: "invalid-params" as const };
+                    }
+                }
+
                 if (isFirstKeyEnrollment) {
                     if (
                         !currentRequest.success
@@ -1551,6 +1652,12 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                                     .enum.key_proof_required,
                         };
                     }
+                    if (currentPasswordCredential && externalAuth.provider !== "email_password") {
+                        return {
+                            type: "invalid-params" as const,
+                            reason: AccountEncryptionMigrateInvalidParamsReasonSchema.enum.key_proof_required,
+                        };
+                    }
                 }
 
                 const sessionDraftMigration =
@@ -1561,7 +1668,7 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     });
                 if (sessionDraftMigration.status !== "applied") {
                     throw new AccountEncryptionMigrationSessionDraftRejectedError(
-                        sessionDraftMigration.status,
+                        sessionDraftMigration,
                     );
                 }
 
@@ -1624,9 +1731,9 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                             projection,
                         };
                     });
-                afterTx(tx, () => {
+                afterTx(tx, async () => {
                     for (const publication of sessionPublications) {
-                        eventRouter.emitUpdate({
+                        await eventRouter.emitUpdate({
                             userId: publication.accountId,
                             payload:
                                 buildSessionMetadataRecipientUpdate(
@@ -1828,6 +1935,12 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                                     binding: contentKeyBinding,
                                 }
                                 : { kind: "preserve" },
+                        ...(requestedPasswordCredential
+                            ? { passwordCredential: {
+                                expectedRevision: requestedPasswordCredential.expectedRevision,
+                                credential: requestedPasswordCredential.credential,
+                            } }
+                            : {}),
                         accountChangeHint,
                     });
                 if (
@@ -1928,29 +2041,51 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     },
                 );
             }
-            return reply.send(
-                isPredecessorRequest
-                    ? {
-                        success: true,
-                        mode: result.mode,
-                        settingsVersion: result.settingsVersion,
-                    }
-                    : {
-                        success: true,
-                        mode: result.mode,
-                        accountVersion: result.accountVersion,
-                        settingsVersion: result.settingsVersion,
-                        ...(result.sessionDraftRecords
-                            ? { sessionDrafts: { records: result.sessionDraftRecords } }
-                            : {}),
-                    },
-            );
+            if (isPredecessorRequest) {
+                return reply.send(AccountEncryptionMigratePredecessorSuccessResponseSchema.parse({
+                    success: true,
+                    mode: result.mode,
+                    settingsVersion: result.settingsVersion,
+                    ...(result.sessionDraftRecords
+                        ? { sessionDrafts: { records: result.sessionDraftRecords } }
+                        : {}),
+                }));
+            }
+            return reply.send(AccountEncryptionMigrateSuccessResponseSchema.parse({
+                success: true,
+                mode: result.mode,
+                accountVersion: result.accountVersion,
+                settingsVersion: result.settingsVersion,
+                ...(result.sessionDraftRecords
+                    ? { sessionDrafts: {
+                        ...(sessionDrafts && "v" in sessionDrafts ? { v: sessionDrafts.v } : {}),
+                        records: result.sessionDraftRecords,
+                    } }
+                    : {}),
+            }));
         } catch (error) {
+            if (error instanceof InactiveAccountError) throw error;
             if (
                 error
                 instanceof AccountEncryptionMigrationSessionDraftRejectedError
             ) {
-                if (error.status === "requires_upgrade") {
+                const rejection = error.result;
+                if (isPredecessorRequest) {
+                    if (rejection.status === "source_mismatch" && rejection.address
+                        && rejection.currentRevision !== undefined) {
+                        return reply.code(409).send({
+                            error: "session_drafts_version_mismatch",
+                            address: rejection.address,
+                            currentRevision: rejection.currentRevision,
+                        });
+                    }
+                    return reply.code(400).send({
+                        error: rejection.status === "requires_upgrade"
+                            ? "session_drafts_require_upgrade"
+                            : "session_drafts_migration_incomplete",
+                    });
+                }
+                if (rejection.status === "requires_upgrade") {
                     return reply.code(400).send({
                         error: "metadata_privacy_upgrade_required",
                     });
@@ -2045,6 +2180,11 @@ export function registerAccountEncryptionMigrateRoutes(app: Fastify): void {
                     );
                 }
                 if (error.status === "invalid_content") {
+                    return reply.code(400).send({
+                        error: "invalid-params",
+                    });
+                }
+                if (error.status === "unsupported_machine_kind") {
                     return reply.code(400).send({
                         error: "invalid-params",
                     });

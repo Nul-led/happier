@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 
 import type { Prisma } from "@prisma/client";
 import {
+    CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
     ConnectedServiceCredentialHealthV1Schema,
     StoredJsonContentEnvelopeSchema,
     isStoredJsonContentEnvelopeModeCompatible,
@@ -434,6 +435,8 @@ type QualifiedCredentialMutationCommonParams = Readonly<{
     authenticationModeId: string;
     content: StoredJsonContentEnvelope;
     metadata: QualifiedConnectedAccountCredentialMetadataV4;
+    directExportContract?: typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 | null;
+    contributionContractVersion?: string;
     reconnect?: Readonly<{ allowProviderIdentityChange?: boolean }>;
     refreshLeaseOwnerId?: string;
     legacyIdentity?: Readonly<{ serviceId: string; profileId: string }>;
@@ -543,6 +546,166 @@ export async function resolveQualifiedConnectedAccountHostReferenceInTx(
         : Object.freeze({ status: "unavailable" as const });
 }
 
+/** Reads the existing source lifetime without disclosing credential material. */
+export type QualifiedConnectedAccountSourceIdentity = Readonly<{
+    incarnation: string;
+    credentialRevision: string;
+    configurationRevision: string | null;
+    authenticationModeId: string;
+    directExportContract:
+        | typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+        | null;
+    contributionContractVersion: string | null;
+}>;
+
+function projectQualifiedConnectedAccountSourceIdentity(
+    current: NonNullable<Awaited<ReturnType<typeof readCurrentByQualifiedRef>>>,
+): QualifiedConnectedAccountSourceIdentity | null {
+    const projection = resolveQualifiedConnectedAccountStoredMetadata({
+        rowId: current.id,
+        metadata: current.metadata,
+    });
+    const credentialRevision = projection.credentialRevision;
+    if (!credentialRevision) return null;
+    return {
+        incarnation: current.id,
+        credentialRevision,
+        configurationRevision: current.configurationRevision,
+        authenticationModeId: current.authenticationModeId,
+        directExportContract: projection.directExportContract,
+        contributionContractVersion: projection.contributionContractVersion,
+    };
+}
+
+function connectedAccountSourceLookupKey(
+    accountId: string,
+    ref: QualifiedConnectedAccountRef,
+): string {
+    return JSON.stringify([
+        accountId,
+        ref.service.pluginId,
+        ref.service.localId,
+        ref.accountId,
+    ]);
+}
+
+/**
+ * Reads an administration page's qualified Connected Account source facts in
+ * one normal persistence query. The exceptional second query preserves the
+ * single-read owner's legacy digest-mismatch diagnosis for missing canonical
+ * keys; its count is independent of the number of requested resources.
+ */
+export async function readQualifiedConnectedAccountSourceIdentitiesInTx(
+    tx: Tx,
+    params: readonly Readonly<{
+        accountId: string;
+        ref: QualifiedConnectedAccountRef;
+    }>[],
+): Promise<readonly (QualifiedConnectedAccountSourceIdentity | null)[]> {
+    if (params.length === 0) return [];
+    const prepared = params.map((input) => {
+        const ref = QualifiedConnectedAccountRefSchema.parse(input.ref);
+        return {
+            accountId: input.accountId,
+            ref,
+            qualifiedIdentityDigest:
+                createQualifiedConnectedAccountIdentityDigest(ref),
+            qualifiedServiceDigest:
+                createQualifiedConnectedAccountServiceDigest(ref.service),
+            lookupKey: connectedAccountSourceLookupKey(input.accountId, ref),
+        };
+    });
+    const uniqueCanonical = [...new Map(prepared.map((input) => [
+        `${input.accountId}\u0000${input.qualifiedIdentityDigest}`,
+        input,
+    ])).values()];
+    const rows = await tx.serviceAccountToken.findMany({
+        where: {
+            OR: uniqueCanonical.map((input) => ({
+                accountId: input.accountId,
+                qualifiedIdentityDigest: input.qualifiedIdentityDigest,
+            })),
+        },
+    });
+    const rowByCanonicalKey = new Map(rows.map((row) => [
+        `${row.accountId}\u0000${row.qualifiedIdentityDigest}`,
+        row,
+    ]));
+    const missing = uniqueCanonical.filter((input) => !rowByCanonicalKey.has(
+        `${input.accountId}\u0000${input.qualifiedIdentityDigest}`,
+    ));
+    const fallbackRows = missing.length === 0
+        ? []
+        : await tx.serviceAccountToken.findMany({
+            where: {
+                OR: missing.map((input) => ({
+                    accountId: input.accountId,
+                    servicePluginId: input.ref.service.pluginId,
+                    serviceLocalId: input.ref.service.localId,
+                    connectedAccountId: input.ref.accountId,
+                })),
+            },
+        });
+    const fallbackByLookupKey = new Map<string, typeof fallbackRows>();
+    for (const row of fallbackRows) {
+        const key = connectedAccountSourceLookupKey(row.accountId, {
+            service: {
+                pluginId: row.servicePluginId,
+                localId: row.serviceLocalId,
+            },
+            accountId: row.connectedAccountId,
+        });
+        const matches = fallbackByLookupKey.get(key) ?? [];
+        matches.push(row);
+        fallbackByLookupKey.set(key, matches);
+    }
+
+    return prepared.map((input) => {
+        const canonicalKey = `${input.accountId}\u0000${input.qualifiedIdentityDigest}`;
+        const current = rowByCanonicalKey.get(canonicalKey) ?? null;
+        if (!current) {
+            const candidates = fallbackByLookupKey.get(input.lookupKey) ?? [];
+            if (candidates.length > 1) {
+                throw new Error("Ambiguous qualified Connected Account identity");
+            }
+            if (candidates.length === 1) {
+                throw new Error("Qualified Connected Account digest mismatch");
+            }
+            return null;
+        }
+        if (
+            current.qualifiedServiceDigest !== input.qualifiedServiceDigest
+            || current.qualifiedIdentityDigest !== input.qualifiedIdentityDigest
+        ) {
+            throw new Error("Qualified Connected Account identity digest collision");
+        }
+        const storedRef = parseStoredQualifiedConnectedAccountRef(current);
+        if (
+            storedRef.service.pluginId !== input.ref.service.pluginId
+            || storedRef.service.localId !== input.ref.service.localId
+            || storedRef.accountId !== input.ref.accountId
+        ) {
+            throw new Error("Qualified Connected Account identity digest collision");
+        }
+        return projectQualifiedConnectedAccountSourceIdentity(current);
+    });
+}
+
+/** Reads one existing source lifetime without disclosing credential material. */
+export async function readQualifiedConnectedAccountSourceIdentityInTx(
+    tx: Tx,
+    params: Readonly<{ accountId: string; ref: QualifiedConnectedAccountRef }>,
+): Promise<QualifiedConnectedAccountSourceIdentity | null> {
+    const ref = QualifiedConnectedAccountRefSchema.parse(params.ref);
+    const current = await readCurrentByQualifiedRef(
+        tx,
+        params.accountId,
+        ref,
+    );
+    if (!current) return null;
+    return projectQualifiedConnectedAccountSourceIdentity(current);
+}
+
 export async function readQualifiedConnectedServiceCredentialMutationBasisInTx(
     tx: Tx,
     params: Readonly<{
@@ -585,6 +748,8 @@ function prepareQualifiedConnectedAccountCredentialCreate(params: Readonly<{
     accountMode: "plain" | "e2ee";
     content: StoredJsonContentEnvelope;
     metadata: QualifiedConnectedAccountCredentialMetadataV4;
+    directExportContract?: typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1 | null;
+    contributionContractVersion?: string;
     initialConfiguration?: Readonly<{
         replacementContentEnvelope: StoredJsonContentEnvelope;
     }>;
@@ -607,6 +772,12 @@ function prepareQualifiedConnectedAccountCredentialCreate(params: Readonly<{
             v: 4,
             storage: "stored_envelope_v1",
             credentialRevision,
+            ...(params.directExportContract
+                ? { directExportContract: params.directExportContract }
+                : {}),
+            ...(params.contributionContractVersion
+                ? { contributionContractVersion: params.contributionContractVersion }
+                : {}),
             values: params.metadata,
         },
         configurationRevision,
@@ -757,6 +928,12 @@ async function mutateQualifiedConnectedServiceCredentialWithPreparedInTx(
             accountMode,
             content: params.content,
             metadata: metadataSettlement.metadata,
+            ...(params.directExportContract
+                ? { directExportContract: params.directExportContract }
+                : {}),
+            ...(params.contributionContractVersion
+                ? { contributionContractVersion: params.contributionContractVersion }
+                : {}),
             ...(params.initialConfiguration
                 ? { initialConfiguration: params.initialConfiguration }
                 : {}),
@@ -764,12 +941,29 @@ async function mutateQualifiedConnectedServiceCredentialWithPreparedInTx(
         : null;
     const credentialRevision = effectivePreparedCreate?.credentialRevision
         ?? createConnectedServiceCredentialRevision();
+    const authenticationModeUnchanged = current?.authenticationModeId
+        === params.authenticationModeId;
+    const retainedDirectExportContract = params.directExportContract === undefined
+        ? authenticationModeUnchanged
+            ? currentProjection?.directExportContract ?? null
+            : null
+        : params.directExportContract;
+    const retainedContributionContractVersion = params.contributionContractVersion
+        ?? (authenticationModeUnchanged
+            ? currentProjection?.contributionContractVersion ?? null
+            : null);
     const metadata: QualifiedConnectedServiceCredentialStoredMetadataV4 =
         effectivePreparedCreate?.metadata ?? {
             v: 4,
             storage: "stored_envelope_v1",
             values: metadataSettlement.metadata,
             credentialRevision,
+            ...(retainedDirectExportContract === CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+                ? { directExportContract: retainedDirectExportContract }
+                : {}),
+            ...(retainedContributionContractVersion
+                ? { contributionContractVersion: retainedContributionContractVersion }
+                : {}),
             ...(currentProjection?.health
                 ? { health: currentProjection.health }
                 : {}),
@@ -905,6 +1099,12 @@ function canonicalizeQualifiedCredentialMutation(
             ),
         content: StoredJsonContentEnvelopeSchema.parse(params.content),
         ...(params.reconnect ? { reconnect: params.reconnect } : {}),
+        ...(params.directExportContract
+            ? { directExportContract: params.directExportContract }
+            : {}),
+        ...(params.contributionContractVersion
+            ? { contributionContractVersion: params.contributionContractVersion }
+            : {}),
         ...(params.refreshLeaseOwnerId
             ? { refreshLeaseOwnerId: params.refreshLeaseOwnerId }
             : {}),
@@ -1010,6 +1210,12 @@ export async function prepareQualifiedConnectedServiceCredentialCreate(
                 accountMode,
                 content: canonicalParams.content,
                 metadata: canonicalParams.metadata,
+                ...(canonicalParams.directExportContract
+                    ? { directExportContract: canonicalParams.directExportContract }
+                    : {}),
+                ...(canonicalParams.contributionContractVersion
+                    ? { contributionContractVersion: canonicalParams.contributionContractVersion }
+                    : {}),
                 ...(canonicalParams.initialConfiguration
                     ? {
                         initialConfiguration:
@@ -1496,13 +1702,17 @@ export async function isQualifiedConnectedAccountMigrationInventoryCompleteInTx(
     return rows.length === expectedRowCount;
 }
 
-async function listQualifiedConnectedAccountsByFilterInTx(
+async function listQualifiedConnectedAccountEntriesByFilterInTx(
     tx: QualifiedConnectedAccountListStorage,
     params: Readonly<{
         accountId: string;
         service?: QualifiedConnectedAccountServiceRef;
     }>,
-): Promise<QualifiedConnectedAccountProfileV4[]> {
+): Promise<Array<Readonly<{
+    profile: QualifiedConnectedAccountProfileV4;
+    incarnation: string;
+    directExportSupport: "supported" | "unsupported";
+}>>> {
     const service = params.service
         ? QualifiedConnectedAccountServiceRefSchema.parse(params.service)
         : null;
@@ -1570,25 +1780,77 @@ async function listQualifiedConnectedAccountsByFilterInTx(
                 service: rowService,
                 authenticationModeId: row.authenticationModeId,
             });
-        return QualifiedConnectedAccountProfileV4Schema.parse({
-            ref,
-            status: legacyMode?.support === "unsupported"
-                ? "needs_reauth"
-                : metadata.status,
-            authenticationModeId:
-                projectQualifiedConnectedAccountPublicAuthenticationModeId({
-                    service: rowService,
-                    authenticationModeId: row.authenticationModeId,
-                }),
-            revisionSemantics: metadata.revisionSemantics,
-            credentialRevision: metadata.credentialRevision,
-            configurationReady: row.configurationRevision !== null,
-            configurationRevision: row.configurationRevision,
-            kind: metadata.kind,
-            expiresAt: row.expiresAt?.getTime() ?? null,
-            lastUsedAt: row.lastUsedAt?.getTime() ?? null,
-            ...metadata.presentation,
-        });
+        return {
+            incarnation: row.id,
+            directExportSupport: metadata.directExportContract === null
+                || metadata.contributionContractVersion === null
+                ? "unsupported"
+                : "supported",
+            profile: QualifiedConnectedAccountProfileV4Schema.parse({
+                ref,
+                status: legacyMode?.support === "unsupported"
+                    ? "needs_reauth"
+                    : metadata.status,
+                authenticationModeId:
+                    projectQualifiedConnectedAccountPublicAuthenticationModeId({
+                        service: rowService,
+                        authenticationModeId: row.authenticationModeId,
+                    }),
+                revisionSemantics: metadata.revisionSemantics,
+                credentialRevision: metadata.credentialRevision,
+                configurationReady: row.configurationRevision !== null,
+                configurationRevision: row.configurationRevision,
+                kind: metadata.kind,
+                expiresAt: row.expiresAt?.getTime() ?? null,
+                lastUsedAt: row.lastUsedAt?.getTime() ?? null,
+                ...metadata.presentation,
+            }),
+        };
+    });
+}
+
+async function listQualifiedConnectedAccountsByFilterInTx(
+    tx: QualifiedConnectedAccountListStorage,
+    params: Readonly<{
+        accountId: string;
+        service?: QualifiedConnectedAccountServiceRef;
+    }>,
+): Promise<QualifiedConnectedAccountProfileV4[]> {
+    return (await listQualifiedConnectedAccountEntriesByFilterInTx(tx, params))
+        .map((entry) => entry.profile);
+}
+
+/**
+ * Projects only the source-owned facts needed to offer a Connected Account as
+ * a Team credential source. The immutable row id stays paired with the same
+ * canonical presentation read as the ordinary Account list; no credential or
+ * configuration content crosses this boundary.
+ */
+export async function listQualifiedConnectedAccountSourceOffersInTx(
+    tx: QualifiedConnectedAccountListStorage,
+    params: Readonly<{ accountId: string }>,
+): Promise<Array<Readonly<{
+    ref: QualifiedConnectedAccountRef;
+    credentialIncarnation: string;
+    label: string;
+    directExportSupport: "supported" | "unsupported";
+}>>> {
+    const entries = await listQualifiedConnectedAccountEntriesByFilterInTx(
+        tx,
+        params,
+    );
+    return entries.flatMap(({ profile, incarnation, directExportSupport }) => {
+        const label = profile.displayName?.trim()
+            || profile.providerIdentity?.email?.trim()
+            || null;
+        return label
+            ? [{
+                ref: profile.ref,
+                credentialIncarnation: incarnation,
+                label,
+                directExportSupport,
+            }]
+            : [];
     });
 }
 

@@ -89,7 +89,13 @@ export function registerMachineReplacementRoutes(app: Fastify): void {
             return reply.code(404).send({ error: "machine_not_found" });
         }
 
-        return reply.send({ machine: serializeMachineRow(result.machine) });
+        return reply.send({
+            machine: serializeMachineRow(result.machine, {
+                recipientAccountStoredContentProtocolVersion:
+                    readAccountStoredContentCompatibilityForHttpRequest(request)
+                        .declaration?.protocolVersion,
+            }),
+        });
     });
 
     app.delete('/v1/machines/:oldMachineId/replacement', {
@@ -137,6 +143,12 @@ export function registerMachineReplacementRoutes(app: Fastify): void {
             return reply.code(404).send({ error: "machine_not_found" });
         }
 
-        return reply.send({ machine: serializeMachineRow(result.machine) });
+        return reply.send({
+            machine: serializeMachineRow(result.machine, {
+                recipientAccountStoredContentProtocolVersion:
+                    readAccountStoredContentCompatibilityForHttpRequest(request)
+                        .declaration?.protocolVersion,
+            }),
+        });
     });
 }

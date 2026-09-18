@@ -20,7 +20,15 @@ const publishSnapshot = vi.fn(async (): Promise<unknown> => ({ status: "rejected
 const touchPublisher = vi.fn(async (): Promise<unknown> => ({ status: "unregistered" }));
 const registerPublisher = vi.fn(async (): Promise<unknown> => ({ status: "rejected", reason: "unauthorized" }));
 const closePublisher = vi.fn(async (): Promise<unknown> => ({ status: "superseded" }));
-const getSessionParticipantUserIds = vi.fn(async () => ["user-1"]);
+const publisherAuthority = {
+    accountId: "user-1",
+    machineId: "machine-1",
+    sessionId: "s-1",
+    committedFence: new Date(123),
+};
+const runAsCurrentPublisher = vi.fn(async (params: {
+    operation: (authority: typeof publisherAuthority) => Promise<unknown>;
+}) => await params.operation(publisherAuthority));
 const markAccountChanged = vi.fn(async () => 101);
 const sessionFindUnique = vi.fn();
 const sessionUpdate = vi.fn();
@@ -29,7 +37,13 @@ const emitUpdate = vi.fn();
 const activityCacheIsSessionValid = vi.fn(async () => true);
 const activityCacheMarkSessionInactive = vi.fn();
 const recordSessionAlive = vi.fn(async () => {});
+const publishSessionTurnMutationUpdate = vi.fn(async () => {});
 const buildPendingChangedUpdate = vi.fn();
+const buildPendingResolvedMessageUpdate = vi.fn(() => ({
+    id: "message-update-1",
+    seq: 101,
+    body: { t: "new-message" },
+}));
 const buildUpdateSessionUpdate = vi.fn(
     (_sessionId: string, seq: number, updateId: string, _metadata: unknown, _agentState: unknown, projection?: unknown) => ({
         id: updateId,
@@ -38,6 +52,11 @@ const buildUpdateSessionUpdate = vi.fn(
     }),
 );
 const HOSTED_RECIPIENT_PROJECTION = {
+    id: "s-1",
+    accountId: "user-1",
+    shares: [],
+    teamGrants: [],
+    groupGrants: [],
     currentStorageState: "hosted",
     acceptedThroughServerSeq: null,
     materializationPublicationId: null,
@@ -70,6 +89,9 @@ vi.mock("@/app/presence/sessionCache", () => ({
 vi.mock("@/app/presence/presenceRecorder", () => ({
     recordSessionAlive,
 }));
+vi.mock("@/app/session/turns/publishSessionTurnMutationUpdate", () => ({
+    publishSessionTurnMutationUpdate,
+}));
 vi.mock("@/app/session/pending/pendingMessageService", () => ({
     enqueuePendingMessage,
     materializeNextPendingMessage,
@@ -94,29 +116,16 @@ vi.mock("@/app/events/eventRouter", () => ({
     },
     buildMessageUpdatedUpdate: vi.fn(),
     buildNewMessageUpdate: vi.fn(),
+    buildPendingResolvedMessageUpdate,
     buildPendingChangedUpdate,
     buildSessionActivityEphemeral: vi.fn(),
     buildUpdateSessionUpdate,
 }));
 
-const checkSessionAccess = vi.fn(async () => ({
-    userId: "user-1",
-    sessionId: "s-1",
-    level: "owner",
-    isOwner: true,
-}));
-const requireAccessLevel = vi.fn(() => true);
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess,
-    requireAccessLevel,
-}));
 
-vi.mock("@/app/share/sessionParticipants", () => ({
-    getSessionParticipantUserIds,
-}));
-const markSessionParticipantsChanged = vi.fn(async () => [{ accountId: "user-1", cursor: 101 }]);
-vi.mock("@/app/session/changeTracking/markSessionParticipantsChanged", () => ({
-    markSessionParticipantsChanged,
+const markSessionProjectionRecipientsChanged = vi.fn(async () => [{ accountId: "user-1", cursor: 101 }]);
+vi.mock("@/app/session/changeTracking/markSessionProjectionRecipientsChanged", () => ({
+    markSessionProjectionRecipientsChanged,
 }));
 vi.mock("@/app/changes/markAccountChanged", () => ({
     markAccountChanged,
@@ -126,20 +135,34 @@ vi.mock("@/storage/inTx", () => ({
     isTransactionAcquisitionUnavailableError: () => false,
     isTransactionDeadlineExceededError: () => false,
 }));
-const refreshSessionParticipantBadgePushes = vi.fn(async () => {});
+const refreshTrackedSessionAccountBadgePushes = vi.fn(async () => {});
 vi.mock("@/app/activity/refreshAccountActivityBadgePushes", () => ({
-    refreshSessionParticipantBadgePushes,
+    refreshTrackedSessionAccountBadgePushes,
 }));
 const logInfo = vi.fn();
 const logDebug = vi.fn();
 const logError = vi.fn();
 vi.mock("@/utils/logging/log", () => ({ log: logInfo, debug: logDebug, error: logError }));
 
+function createAuthenticatedSessionScopedSocket(sessionId = "s-1") {
+    return createFakeSocket({
+        data: {
+            authAuthority: "present_user",
+            clientType: "session-scoped",
+            sessionScopedBinding: { sessionId, machineId: null, proof: "owner-session" },
+        },
+    });
+}
+
+function createAuthenticatedUserScopedSocket() {
+    return createFakeSocket({ data: { authAuthority: "present_user" } });
+}
+
 describe("sessionUpdateHandler", () => {
     let registerSessionUpdateHandler: (userId: string, socket: any, connection: any, publisher?: any) => void;
 
     const trustedPublisher = {
-        presence: { publishSnapshot, touchPublisher, registerPublisher, closePublisher },
+        presence: { publishSnapshot, touchPublisher, registerPublisher, closePublisher, runAsCurrentPublisher },
         binding: { accountId: "user-1", machineId: "machine-1", sessionId: "s-1" },
     };
 
@@ -183,15 +206,13 @@ describe("sessionUpdateHandler", () => {
         recordSessionAlive.mockClear();
         buildUpdateSessionUpdate.mockClear();
         buildPendingChangedUpdate.mockClear();
-        checkSessionAccess.mockClear();
-        requireAccessLevel.mockClear();
-        getSessionParticipantUserIds.mockClear();
-        getSessionParticipantUserIds.mockResolvedValue(["user-1"]);
-        markSessionParticipantsChanged.mockReset();
-        markSessionParticipantsChanged.mockResolvedValue([{ accountId: "user-1", cursor: 101 }]);
+        buildPendingResolvedMessageUpdate.mockClear();
+        publishSessionTurnMutationUpdate.mockClear();
+        markSessionProjectionRecipientsChanged.mockReset();
+        markSessionProjectionRecipientsChanged.mockResolvedValue([{ accountId: "user-1", cursor: 101 }]);
         markAccountChanged.mockReset();
         markAccountChanged.mockResolvedValue(101);
-        refreshSessionParticipantBadgePushes.mockClear();
+        refreshTrackedSessionAccountBadgePushes.mockClear();
         logInfo.mockClear();
         logDebug.mockClear();
         logError.mockClear();
@@ -206,9 +227,9 @@ describe("sessionUpdateHandler", () => {
             pendingCount: 0,
             pendingBlockedCount: 0,
             pendingVersion: 9,
-            participantCursors: [],
-            participantCursorsPending: [],
-            participantCursorsMessage: [],
+            recipientCursors: [],
+            recipientCursorsPending: [],
+            recipientCursorsMessage: [],
             badgeAttentionChanged: false,
             message: {
                 id: "message-1",
@@ -265,6 +286,66 @@ describe("sessionUpdateHandler", () => {
         }));
     });
 
+    it("waits for credential-qualified accepted-message publication before acknowledging settlement", async () => {
+        resolveAcceptedPendingDelivery.mockResolvedValueOnce({
+            ok: true,
+            didResolve: true,
+            didWrite: true,
+            pendingCount: 0,
+            pendingBlockedCount: 0,
+            pendingVersion: 9,
+            recipientCursors: [],
+            recipientCursorsPending: [],
+            recipientCursorsMessage: [{ accountId: "user-2", cursor: 101 }],
+            badgeAttentionChanged: false,
+            message: {
+                id: "message-1",
+                seq: 43,
+                localId: "pending-1",
+                messageRole: "user",
+                content: { t: "plain", v: { role: "user", content: { type: "text", text: "accepted" } } },
+                createdAt: new Date(1_000),
+                updatedAt: new Date(1_000),
+            },
+        });
+        let releasePublication!: () => void;
+        const publication = new Promise<void>((resolve) => {
+            releasePublication = resolve;
+        });
+        emitUpdate.mockReturnValueOnce(publication);
+        const socket = createFakeSocket();
+        const authority = {
+            accountId: "user-1",
+            machineId: "machine-1",
+            sessionId: "s-1",
+            committedFence: new Date(1_000),
+        };
+        const runAsCurrentPublisher = vi.fn(async (params: { operation: (value: typeof authority) => Promise<unknown> }) =>
+            await params.operation(authority));
+        registerSessionUpdateHandler(
+            "user-1",
+            socket as any,
+            { connectionType: "session-scoped", socket: socket as any, userId: "user-1", sessionId: "s-1" } as any,
+            {
+                presence: { runAsCurrentPublisher },
+                binding: { accountId: "user-1", machineId: "machine-1", sessionId: "s-1" },
+            } as any,
+        );
+        const callback = vi.fn();
+
+        const operation = getSocketHandler(socket, "pending-delivery-accepted-v1")({
+            v: 1,
+            sessionId: "s-1",
+            localId: "pending-1",
+        }, callback);
+        await vi.waitFor(() => expect(emitUpdate).toHaveBeenCalled());
+        expect(callback).not.toHaveBeenCalled();
+
+        releasePublication();
+        await operation;
+        expect(callback).toHaveBeenCalledWith(expect.objectContaining({ ok: true, didResolve: true }));
+    });
+
     it("settles protected input authority only through the exact current target publisher", async () => {
         settlePendingInputAdmission.mockResolvedValueOnce({
             ok: true,
@@ -272,9 +353,9 @@ describe("sessionUpdateHandler", () => {
             pendingCount: 0,
             pendingBlockedCount: 0,
             pendingVersion: 9,
-            participantCursors: [],
-            participantCursorsPending: [],
-            participantCursorsMessage: [],
+            recipientCursors: [],
+            recipientCursorsPending: [],
+            recipientCursorsMessage: [],
             badgeAttentionChanged: false,
             message: {
                 id: "message-1",
@@ -584,7 +665,7 @@ describe("sessionUpdateHandler", () => {
         writeResult,
     }) => {
         write.mockResolvedValueOnce(writeResult);
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
         registerSessionUpdateHandler(
             "editor",
             socket as any,
@@ -616,13 +697,13 @@ describe("sessionUpdateHandler", () => {
             ok: true,
             version: 6,
             metadata: "legacy-whole-bag",
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "owner", cursor: 10 },
                 { accountId: "shared-recipient", cursor: 11 },
             ],
             badgeAttentionChanged: false,
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
         registerSessionUpdateHandler(
             "owner",
             socket as any,
@@ -721,7 +802,7 @@ describe("sessionUpdateHandler", () => {
             status: "touched",
             committedFence: new Date(observedAt),
             activeAt: new Date(observedAt),
-            participantCursors: [],
+            recipientCursors: [],
             badgeAttentionChanged: false,
         });
         await getSocketHandler(socket, "session-alive")({
@@ -756,7 +837,7 @@ describe("sessionUpdateHandler", () => {
             status: "touched",
             committedFence: new Date(observedAt),
             activeAt: new Date(observedAt),
-            participantCursors: [],
+            recipientCursors: [],
             badgeAttentionChanged: false,
         };
         let resolveFirstTouch!: (value: typeof touched) => void;
@@ -896,7 +977,7 @@ describe("sessionUpdateHandler", () => {
                 status: "touched",
                 committedFence: new Date(observedAt + 4_001),
                 activeAt: new Date(observedAt + 4_001),
-                participantCursors: [],
+                recipientCursors: [],
                 badgeAttentionChanged: false,
             });
             now.mockReturnValue(observedAt + 4_001);
@@ -930,7 +1011,7 @@ describe("sessionUpdateHandler", () => {
             status: "touched",
             committedFence: new Date(observedAt),
             activeAt: new Date(observedAt),
-            participantCursors: [],
+            recipientCursors: [],
             badgeAttentionChanged: false,
         });
         const alive = getSocketHandler(socket, "session-alive");
@@ -982,7 +1063,7 @@ describe("sessionUpdateHandler", () => {
             committedFence: new Date(observedAt),
             activeAt: new Date(observedAt),
             activity: { status: "unchanged", projection: {} },
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "user-1", cursor: 101 },
                 { accountId: "user-2", cursor: 102 },
             ],
@@ -991,13 +1072,10 @@ describe("sessionUpdateHandler", () => {
 
         await getSocketHandler(socket, "session-alive")({ sid: "s-1", time: observedAt });
 
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledTimes(1);
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledWith({
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledTimes(1);
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledWith({
             badgeAttentionChanged: true,
-            participantCursors: [
-                { accountId: "user-1", cursor: 101 },
-                { accountId: "user-2", cursor: 102 },
-            ],
+            sessionId: "s-1",
         });
     });
 
@@ -1044,7 +1122,7 @@ describe("sessionUpdateHandler", () => {
                 runtimeActivityObservedAt: 1_000,
                 runtimeActivityRevision: 2,
             },
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "user-1", cursor: 10 },
                 { accountId: "user-2", cursor: 11 },
             ],
@@ -1107,7 +1185,7 @@ describe("sessionUpdateHandler", () => {
                 runtimeActivityObservedAt: 2_000,
                 runtimeActivityRevision: 3,
             },
-            participantCursors: [{ accountId: "user-1", cursor: 12 }],
+            recipientCursors: [{ accountId: "user-1", cursor: 12 }],
         });
         readSessionPendingState.mockResolvedValueOnce({
             ok: true,
@@ -1115,7 +1193,7 @@ describe("sessionUpdateHandler", () => {
             pendingBlockedCount: 0,
             pendingVersion: 8,
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket("s-idle");
         const connection = { connectionType: "session-scoped", socket, userId: "user-1", sessionId: "s-idle" } as any;
         registerSessionUpdateHandler("user-1", socket as any, connection, {
             ...trustedPublisher,
@@ -1135,19 +1213,23 @@ describe("sessionUpdateHandler", () => {
             sessionId: "s-idle",
             mutationId: "runtime-activity-snapshot:s-idle",
         }));
-        expect(readSessionPendingState).toHaveBeenCalledWith({ actorUserId: "user-1", sessionId: "s-idle" });
+        expect(readSessionPendingState).toHaveBeenCalledWith(expect.objectContaining({
+            actorUserId: "user-1",
+            sessionId: "s-idle",
+        }));
         expect(buildPendingChangedUpdate).toHaveBeenCalledWith({
             sessionId: "s-idle",
             pendingCount: 2,
             pendingBlockedCount: 0,
             pendingVersion: 8,
             changedByAccountId: "user-1",
+            pendingActivationAuthorization: null,
         }, 12, expect.any(String));
         expect(emitUpdate).toHaveBeenCalledTimes(2);
     });
 
     it("rejects runtime activity updates from mismatched session-scoped sockets", async () => {
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
         registerSessionUpdateHandler(
             "user-1",
             socket as any,
@@ -1169,7 +1251,7 @@ describe("sessionUpdateHandler", () => {
     });
 
     it("acks invalid runtime activity payloads without touching session state", async () => {
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
         registerSessionUpdateHandler(
             "user-1",
             socket as any,
@@ -1189,18 +1271,20 @@ describe("sessionUpdateHandler", () => {
         expect(updateSessionRuntimeActivityProjection).not.toHaveBeenCalled();
     });
 
-    it("publishes a successful released layout-zero Agent-state update only to its owner", async () => {
+    it.each([undefined, "rich_sender"] as const)(
+      "publishes a successful released layout-zero Agent-state update with sender availability %s only to its owner",
+      async (ownerActivityDelivery) => {
         updateSessionAgentState.mockResolvedValueOnce({
             ok: true,
             version: 2,
             agentState: "encrypted-state",
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "user-1", cursor: 10 },
                 { accountId: "shared-recipient", cursor: 11 },
             ],
             badgeAttentionChanged: false,
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1215,6 +1299,7 @@ describe("sessionUpdateHandler", () => {
             agentState: "encrypted-state",
             expectedVersion: 1,
             activitySummaryV1: {
+                ...(ownerActivityDelivery ? { ownerActivityDelivery } : {}),
                 pendingPermissionRequestCount: 1,
                 pendingUserActionRequestCount: 1,
                 pendingRequestNewestCreatedAt: 123,
@@ -1254,6 +1339,10 @@ describe("sessionUpdateHandler", () => {
                 requestKind: "user_action",
                 occurredAt: 123,
             }],
+            ...(ownerActivityDelivery ? { runtimeComposition: {
+                publisherAuthority,
+                ownerActivityDelivery,
+            } } : {}),
         });
         expect(buildUpdateSessionUpdate).toHaveBeenCalledTimes(1);
         expect(buildUpdateSessionUpdate.mock.calls[0]?.[1]).toBe(10);
@@ -1266,10 +1355,11 @@ describe("sessionUpdateHandler", () => {
             version: 2,
             agentState: "encrypted-state",
         });
-    });
+      },
+    );
 
     it("does not crash on invalid message payloads and acks with invalid-params when callback is provided", async () => {
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1292,7 +1382,7 @@ describe("sessionUpdateHandler", () => {
     });
 
     it("does not crash on invalid message payloads when callback is missing (old clients)", async () => {
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1494,7 +1584,7 @@ describe("sessionUpdateHandler", () => {
     });
 
     it("does not crash when plain message envelopes contain unserializable payloads", async () => {
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1509,19 +1599,21 @@ describe("sessionUpdateHandler", () => {
         const callback = vi.fn();
         await handler({ sid: "s-1", message: { t: "plain", v: circular } }, callback);
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "user-1",
             sessionId: "s-1",
             content: { t: "plain", v: circular },
             localId: null,
+            inputAdmission: "transcriptOnly",
+            messageRole: undefined,
             sidechainId: null,
-        });
+        }));
         expect(callback).toHaveBeenCalledWith(expect.objectContaining({ ok: false, error: "invalid-params" }));
     });
 
     it("writes the inbound message trace through debug logging instead of info logging when diagnostics are enabled", async () => {
         process.env.HAPPIER_SOCKET_MESSAGE_DIAGNOSTIC_LOGS = "1";
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1548,7 +1640,7 @@ describe("sessionUpdateHandler", () => {
         const firstRefresh = new Promise<void>((resolve) => {
             resolveFirstRefresh = () => resolve();
         });
-        refreshSessionParticipantBadgePushes
+        refreshTrackedSessionAccountBadgePushes
             .mockImplementationOnce(() => firstRefresh)
             .mockResolvedValueOnce(undefined);
         createSessionMessage
@@ -1566,7 +1658,7 @@ describe("sessionUpdateHandler", () => {
                     createdAt: new Date(1),
                     updatedAt: new Date(1),
                 },
-                participantCursors: [{ accountId: "user-1", cursor: 1 }],
+                recipientCursors: [{ accountId: "user-1", cursor: 1 }],
             })
             .mockResolvedValueOnce({
                 ok: true,
@@ -1582,7 +1674,7 @@ describe("sessionUpdateHandler", () => {
                     createdAt: new Date(2),
                     updatedAt: new Date(2),
                 },
-                participantCursors: [{ accountId: "user-1", cursor: 2 }],
+                recipientCursors: [{ accountId: "user-1", cursor: 2 }],
             });
 
         const socket = createFakeSocket();
@@ -1630,7 +1722,7 @@ describe("sessionUpdateHandler", () => {
                 createdAt,
                 updatedAt: createdAt,
             },
-            participantCursors: [{ accountId: "user-1", cursor: 10 }],
+            recipientCursors: [{ accountId: "user-1", cursor: 10 }],
         });
         const socket = createFakeSocket();
 
@@ -1680,9 +1772,9 @@ describe("sessionUpdateHandler", () => {
                 createdAt: new Date(1),
                 updatedAt: new Date(1),
             },
-            participantCursors: [],
+            recipientCursors: [],
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1702,13 +1794,15 @@ describe("sessionUpdateHandler", () => {
             affectsUnread: false,
         }, vi.fn());
 
-        expect(createSessionMessage).toHaveBeenCalledWith({
+        expect(createSessionMessage).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "user-1",
             sessionId: "s-1",
             content: { t: "encrypted", c: "enc" },
             localId: "local-user-1",
+            inputAdmission: "transcriptOnly",
+            messageRole: undefined,
             sidechainId: null,
-        });
+        }));
     });
 
     it("applies session turn socket mutations and fans out updates", async () => {
@@ -1729,13 +1823,13 @@ describe("sessionUpdateHandler", () => {
             latestTurnStatus: "completed",
             latestTurnStatusObservedAt: 123,
             lastRuntimeIssue: null,
-            participantCursors: [
+            recipientCursors: [
                 { accountId: "user-1", cursor: 10 },
                 { accountId: "user-2", cursor: 11 },
             ],
             badgeAttentionChanged: false,
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedSessionScopedSocket();
 
         registerSessionUpdateHandler(
             "user-1",
@@ -1756,7 +1850,7 @@ describe("sessionUpdateHandler", () => {
             observedAt: 123,
         }, callback);
 
-        expect(applySessionTurnMutation).toHaveBeenCalledWith({
+        expect(applySessionTurnMutation).toHaveBeenCalledWith(expect.objectContaining({
             actorUserId: "user-1",
             mutation: {
                 v: 1,
@@ -1768,20 +1862,13 @@ describe("sessionUpdateHandler", () => {
                 agentTurnId: "provider-turn-1",
                 observedAt: 123,
             },
-        });
-        expect(buildUpdateSessionUpdate).toHaveBeenNthCalledWith(1, "s-1", 10, expect.any(String), undefined, undefined, {
-            latestTurnId: "turn-1",
-            latestTurnStatus: "completed",
-            latestTurnStatusObservedAt: 123,
-            lastRuntimeIssue: null,
-        });
-        expect(buildUpdateSessionUpdate).toHaveBeenNthCalledWith(2, "s-1", 11, expect.any(String), undefined, undefined, {
-            latestTurnId: "turn-1",
-            latestTurnStatus: "completed",
-            latestTurnStatusObservedAt: 123,
-            lastRuntimeIssue: null,
-        });
-        expect(emitUpdate).toHaveBeenCalledTimes(2);
+            authentication: expect.objectContaining({ authority: "present_user" }),
+        }));
+        expect(publishSessionTurnMutationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "s-1",
+            actorUserId: "user-1",
+            connection: expect.objectContaining({ connectionType: "session-scoped", sessionId: "s-1" }),
+        }));
         expect(callback).toHaveBeenCalledWith({
             result: "success",
             applied: true,
@@ -1796,6 +1883,85 @@ describe("sessionUpdateHandler", () => {
                 appliedAt: 124,
             },
         });
+    });
+
+    it.each([
+        [undefined, "rich_sender"],
+        ["home_required", "home_required"],
+    ] as const)("carries publisher owner-delivery declaration %s into turn settlement as %s", async (
+        reportedOwnerActivityDelivery,
+        expectedOwnerActivityDelivery,
+    ) => {
+        updateSessionAgentState.mockResolvedValueOnce({
+            ok: true,
+            version: 2,
+            agentState: "encrypted-state",
+            recipientCursors: [{ accountId: "user-1", cursor: 10 }],
+            badgeAttentionChanged: false,
+        });
+        applySessionTurnMutation.mockResolvedValueOnce({
+            ok: true,
+            didApply: true,
+            receipt: {
+                v: 1,
+                sessionId: "s-1",
+                mutationId: "mutation-failed",
+                turnId: "turn-1",
+                action: "fail",
+                decision: "applied",
+                observedAt: 124,
+                appliedAt: 125,
+            },
+            latestTurnId: "turn-1",
+            latestTurnStatus: "failed",
+            latestTurnStatusObservedAt: 124,
+            lastRuntimeIssue: null,
+            recipientCursors: [{ accountId: "user-1", cursor: 11 }],
+            badgeAttentionChanged: false,
+        });
+        const socket = createAuthenticatedSessionScopedSocket();
+        registerSessionUpdateHandler(
+            "user-1",
+            socket as any,
+            { connectionType: "session-scoped", socket: socket as any, userId: "user-1", sessionId: "s-1" } as any,
+            trustedPublisher,
+        );
+
+        await getSocketHandler(socket, "update-state")({
+            sid: "s-1",
+            agentState: "encrypted-state",
+            expectedVersion: 1,
+            activitySummaryV1: {
+                ...(reportedOwnerActivityDelivery
+                    ? { ownerActivityDelivery: reportedOwnerActivityDelivery }
+                    : {}),
+            },
+        }, vi.fn());
+        await getSocketHandler(socket, "session-turn-mutation")({
+            v: 1,
+            sessionId: "s-1",
+            mutationId: "mutation-failed",
+            turnId: "turn-1",
+            action: "fail",
+            observedAt: 124,
+            issue: {
+                v: 1,
+                scope: "primary_session",
+                status: "failed",
+                code: "agent_status_error",
+                source: "agent_status_error",
+                occurredAt: 124,
+                provider: "codex",
+                sanitizedPreview: "Provider reported an error",
+            },
+        }, vi.fn());
+
+        expect(applySessionTurnMutation).toHaveBeenLastCalledWith(expect.objectContaining({
+            runtimeComposition: {
+                publisherAuthority,
+                ownerActivityDelivery: expectedOwnerActivityDelivery,
+            },
+        }));
     });
 
     it("does not skip the user-scoped socket that reports a session turn mutation", async () => {
@@ -1816,10 +1982,10 @@ describe("sessionUpdateHandler", () => {
             latestTurnStatus: "in_progress",
             latestTurnStatusObservedAt: 123,
             lastRuntimeIssue: null,
-            participantCursors: [{ accountId: "user-1", cursor: 10 }],
+            recipientCursors: [{ accountId: "user-1", cursor: 10 }],
             badgeAttentionChanged: false,
         });
-        const socket = createFakeSocket();
+        const socket = createAuthenticatedUserScopedSocket();
         const connection = { connectionType: "user-scoped", socket: socket as any, userId: "user-1" } as any;
 
         registerSessionUpdateHandler("user-1", socket as any, connection);
@@ -1837,12 +2003,11 @@ describe("sessionUpdateHandler", () => {
             observedAt: 123,
         }, callback);
 
-        expect(emitUpdate).toHaveBeenCalledTimes(1);
-        expect(emitUpdate.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
-            userId: "user-1",
-            recipientFilter: { type: "all-interested-in-session", sessionId: "s-1" },
+        expect(publishSessionTurnMutationUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            sessionId: "s-1",
+            actorUserId: "user-1",
+            connection,
         }));
-        expect(emitUpdate.mock.calls[0]?.[0]?.skipSenderConnection).toBeUndefined();
         expect(callback).toHaveBeenCalledWith(expect.objectContaining({ result: "success", applied: true }));
     });
 
@@ -1892,7 +2057,7 @@ describe("sessionUpdateHandler", () => {
             pendingBlockedCount: 1,
             pendingVersion: 8,
             pendingStateChanged: true,
-            participantCursorsPending: [{ accountId: "user-1", cursor: 30 }],
+            recipientCursorsPending: [{ accountId: "user-1", cursor: 30 }],
             badgeAttentionChanged: false,
             deliveryState: { mode: "provider", unresolved: false },
         });
@@ -2062,6 +2227,8 @@ describe("sessionUpdateHandler", () => {
         expect(materializeNextPendingMessage).toHaveBeenCalledWith({
             actorUserId: "user-1",
             sessionId: "s-provider-idle",
+            targetExecutionRunId: null,
+            expectedSidechainId: null,
             deliveryState: "provider",
             deliveryTiming: "after_runtime_idle",
             foregroundState: "ready",
@@ -2186,7 +2353,7 @@ describe("sessionUpdateHandler", () => {
         closePublisher.mockResolvedValueOnce({
             status: "closed",
             activeAt: new Date(now),
-            participantCursors: [{ accountId: "user-1", cursor: 101 }],
+            recipientCursors: [{ accountId: "user-1", cursor: 101 }],
             badgeAttentionChanged: true,
             projection: {
                 runtimeActivityState: "unknown",
@@ -2221,10 +2388,10 @@ describe("sessionUpdateHandler", () => {
             latestTurnStatusObservedAt: now + 2,
             lastRuntimeIssue: null,
         });
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledTimes(1);
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledWith({
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledTimes(1);
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledWith({
             badgeAttentionChanged: true,
-            participantCursors: [{ accountId: "user-1", cursor: 101 }],
+            sessionId: "s-1",
         });
         expect(callback).toHaveBeenCalledWith({
             ok: true,
@@ -2248,7 +2415,7 @@ describe("sessionUpdateHandler", () => {
             .mockResolvedValueOnce({
                 status: "closed",
                 activeAt: new Date(now),
-                participantCursors: [{ accountId: "user-1", cursor: 101 }],
+                recipientCursors: [{ accountId: "user-1", cursor: 101 }],
                 badgeAttentionChanged: true,
             })
             .mockResolvedValueOnce({ status: "closed_replay", activeAt: new Date(now) });
@@ -2260,7 +2427,7 @@ describe("sessionUpdateHandler", () => {
         await handler({ sid: "s-1", time: now }, replayCallback);
 
         expect(emitUpdate).toHaveBeenCalledTimes(1);
-        expect(refreshSessionParticipantBadgePushes).toHaveBeenCalledTimes(1);
+        expect(refreshTrackedSessionAccountBadgePushes).toHaveBeenCalledTimes(1);
         expect(firstCallback).toHaveBeenCalledWith(expect.objectContaining({ ok: true, applied: true, active: false, activeAt: now }));
         expect(replayCallback).toHaveBeenCalledWith({
             ok: true,

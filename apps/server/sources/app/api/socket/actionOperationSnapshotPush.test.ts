@@ -15,15 +15,37 @@ describe('Action operation snapshot push ingress', () => {
         expect(projectActionOperationSnapshotPush({
             v: 1, machineId: 'machine-1', ciphertext,
         }, 'machine-1')).toEqual({
-            type: 'action-operation-snapshot',
+            type: 'action-operation-updated',
             machineId: 'machine-1',
-            ciphertext,
+            content: { t: 'encrypted', c: ciphertext },
         });
         expect(projectActionOperationSnapshotPush({
             v: 1, machineId: 'machine-2', ciphertext,
         }, 'machine-1')).toBeNull();
         expect(projectActionOperationSnapshotPush({
             v: 1, machineId: 'machine-1', ciphertext: 'not-an-envelope',
+        }, 'machine-1')).toBeNull();
+    });
+
+    it('preserves the immutable released 0.2.11 producer and outward envelope', () => {
+        expect(projectActionOperationSnapshotPush({
+            type: 'action-operation-updated',
+            machineId: 'machine-1',
+            content: { t: 'encrypted', c: ciphertext },
+        }, 'machine-1')).toEqual({
+            type: 'action-operation-updated',
+            machineId: 'machine-1',
+            content: { t: 'encrypted', c: ciphertext },
+        });
+        expect(projectActionOperationSnapshotPush({
+            type: 'action-operation-updated',
+            machineId: 'machine-2',
+            content: { t: 'encrypted', c: ciphertext },
+        }, 'machine-1')).toBeNull();
+        expect(projectActionOperationSnapshotPush({
+            type: 'action-operation-updated',
+            machineId: 'machine-1',
+            content: { t: 'plain', v: 'secret' },
         }, 'machine-1')).toBeNull();
     });
 });

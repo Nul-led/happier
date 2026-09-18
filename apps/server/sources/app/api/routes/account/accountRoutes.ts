@@ -14,12 +14,14 @@ import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverF
 import { registerAccountPetLibraryRoutes } from "@/app/pets/accountPetLibraryRoutes";
 import { registerSessionDraftRoutes } from "@/app/account/sessionDrafts/registerSessionDraftRoutes";
 import { registerAccountDirectoryLinkRoutes, registerAccountDirectoryRoutes } from "@/app/accountDirectory/accountDirectoryRoutes";
+import { registerSavedSecretResourceRoutes } from "./registerSavedSecretResourceRoutes";
 
 export function accountRoutes(app: Fastify): void {
     registerAccountProfileRoute(app);
     registerAccountIdentityVisibilityRoute(app);
     registerAccountUsernameRoute(app);
     registerAccountSettingsRoutes(app);
+    registerSavedSecretResourceRoutes(app);
     registerAccountSettingsHistoryRoutes(app);
     registerAccountEncryptionRoutes(app);
     registerAccountEncryptionMigrateRoutes(app);

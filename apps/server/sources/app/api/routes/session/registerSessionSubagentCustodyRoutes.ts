@@ -1,3 +1,4 @@
+import { db } from "@/storage/db";
 import { z } from 'zod';
 
 import {
@@ -18,7 +19,8 @@ import {
     mutateSessionSubagentCustody,
     retireSessionSubagentCustodyGeneration,
 } from '@/app/session/subagents/sessionSubagentCustodyService';
-import { checkSessionAccess } from '@/app/share/accessControl';
+import { resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 import type { Fastify } from '../../types';
 
 const ParamsSchema = z.object({ sessionId: z.string().trim().min(1) }).strict();
@@ -39,7 +41,12 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
             response: { 200: SessionSubagentCustodyCapabilityV1Schema, 404: ErrorSchema },
         },
     }, async (request, reply) => {
-        if (!await checkSessionAccess(request.userId, request.params.sessionId)) {
+        const admission = await resolveSessionAccessForOperation(db, {
+            accountId: request.userId,
+            sessionId: request.params.sessionId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
+        });
+        if (admission.status !== "allowed" || !admission.access.capabilities.readTranscript) {
             return reply.code(404).send({ error: 'Session not found' });
         }
         return reply.send({
@@ -64,6 +71,7 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
             actorUserId: request.userId,
             sessionId: request.params.sessionId,
             query: parsed.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) {
             const status = result.error === 'invalid-params' ? 400 : result.error === 'session-not-found' ? 404 : result.error === 'generation-retired' ? 409 : 500;
@@ -86,6 +94,7 @@ export function registerSessionSubagentCustodyRoutes(app: Fastify) {
             actorUserId: request.userId,
             sessionId: request.params.sessionId,
             request: parsed.data,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
         });
         if (!result.ok) {
             return reply.code(mutationErrorStatus(result.error)).send({ error: result.error, ...(result.code ? { code: result.code } : {}) });

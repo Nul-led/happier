@@ -9,7 +9,10 @@ import {
 } from "@/app/encryption/accountEncryptionMode";
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
+    parseAccountPasswordCredentialV1,
+    type AccountPasswordCredentialV1,
 } from "@happier-dev/protocol";
+import { isE2eePasswordCredentialBoundToAccount } from "@/app/auth/password/e2eePasswordCredentialAccountBinding";
 import {
     acquireAccountSessionOwnerMetadataFenceInTx,
     AccountSessionOwnerMetadataFenceAccountNotFoundError,
@@ -122,6 +125,10 @@ export async function applyAccountEncryptionTransitionInTx(
         expectedVersion: number;
         toMode: "plain" | "e2ee";
         accountPublicKeyHex?: string;
+        passwordCredential?: Readonly<{
+            expectedRevision: number;
+            credential: AccountPasswordCredentialV1;
+        }>;
         contentKey:
             | Readonly<{ kind: "preserve" }>
             | Readonly<{
@@ -134,10 +141,50 @@ export async function applyAccountEncryptionTransitionInTx(
     version: number;
     updatedAt: number;
 }>> {
+    const source = await tx.account.findUniqueOrThrow({
+        where: { id: params.accountId },
+        select: { encryptionMode: true, publicKey: true, AccountPasswordCredential: true },
+    });
+    const sourceMode = resolveEffectiveAccountEncryptionModeFromAccountRow(source);
+    if (sourceMode.status === "inconsistent") {
+        throw new Error("account_encryption_inconsistent");
+    }
+    const currentCredential = source.AccountPasswordCredential;
+    const replacement = params.passwordCredential;
+    if (currentCredential) {
+        const parsedCurrent = parseAccountPasswordCredentialV1(sourceMode.mode, currentCredential.credential);
+        if (!parsedCurrent.ok || (parsedCurrent.mode === "e2ee"
+            && !isE2eePasswordCredentialBoundToAccount(parsedCurrent.credential, source.publicKey))) {
+            throw new Error("password_credential_inconsistent");
+        }
+        if (sourceMode.mode !== params.toMode && !replacement) {
+            throw new Error("password_credential_transition_required");
+        }
+    }
+    if (replacement) {
+        if (!currentCredential || currentCredential.revision !== replacement.expectedRevision) {
+            throw new Error("password_credential_revision_conflict");
+        }
+        const target = parseAccountPasswordCredentialV1(params.toMode, replacement.credential);
+        if (!target.ok) throw new Error("password_credential_inconsistent");
+        if (target.mode === "e2ee"
+            && !isE2eePasswordCredentialBoundToAccount(
+                target.credential,
+                params.accountPublicKeyHex ?? source.publicKey,
+            )) {
+            throw new Error("password_credential_signing_key_mismatch");
+        }
+        const credentialMutation = await tx.accountPasswordCredential.updateMany({
+            where: { accountId: params.accountId, revision: replacement.expectedRevision },
+            data: { credential: target.credential, revision: { increment: 1 } },
+        });
+        if (credentialMutation.count !== 1) throw new Error("password_credential_revision_conflict");
+    }
     const mutation = await tx.account.updateMany({
         where: {
             id: params.accountId,
             seq: params.expectedVersion,
+            status: "active",
         },
         data: {
             encryptionMode: params.toMode,

@@ -800,4 +800,67 @@ describe('Home search lifecycle', () => {
         if (burst.ok) expect(burst.hits).toHaveLength(100);
         await lifecycle.stop();
     });
+
+    it('stops at the in-flight canonical page instead of finishing the reconstructible startup projection', async () => {
+        const root = await mkdtemp(join(tmpdir(), 'happier-home-lifecycle-stop-'));
+        const dbPath = join(root, 'derived', 'search.sqlite');
+        // Three full reconciliation pages plus a remainder, so an unstopped startup projection
+        // keeps reading canonical pages after shutdown was requested.
+        const rows: readonly HomeSearchCanonicalMessage[] = Array.from({ length: 751 }, (_unused, index) => ({
+            id: `m-${String(index).padStart(5, '0')}`,
+            sessionId: 's-1',
+            seq: index,
+            createdAtMs: index,
+            content: plainTextContent(`startup page message ${index} searchable phrase`),
+        }));
+        const readPage = reader(() => rows);
+        let pagesRead = 0;
+        let firstPageEntered!: () => void;
+        const firstPageSignal = new Promise<void>((resolve) => { firstPageEntered = resolve; });
+        let releaseFirstPage!: () => void;
+        const firstPageGate = new Promise<void>((resolve) => { releaseFirstPage = resolve; });
+        const lifecycle = startHomeSearchLifecycle({
+            dbPath,
+            homeServerIdentityId: 'srv_test',
+            storagePolicy: 'plaintext_only',
+            readCanonicalMessagesPage: async (input) => {
+                pagesRead += 1;
+                if (pagesRead === 1) {
+                    firstPageEntered();
+                    await firstPageGate;
+                }
+                return await readPage(input);
+            },
+        });
+
+        lifecycle.start();
+        await firstPageSignal;
+        const stopping = lifecycle.stop();
+        releaseFirstPage();
+        await stopping;
+
+        // Shutdown joins only the page already in flight. The derived index is rebuildable, so the
+        // remaining canonical pages must never hold the Home's shutdown phase open.
+        expect(pagesRead).toBe(1);
+        expect(lifecycle.capability()).toEqual({ enabled: false, reason: 'index_unavailable' });
+
+        // The in-flight page completed its writes before SQLite closed, and the partial projection
+        // is never advertised as settled: a fresh start re-derives the exact canonical corpus.
+        const partial = await openHomeSearchDb({ dbPath });
+        expect(partial.count()).toBe(250);
+        partial.close();
+
+        const restarted = startHomeSearchLifecycle({
+            dbPath,
+            homeServerIdentityId: 'srv_test',
+            storagePolicy: 'plaintext_only',
+            readCanonicalMessagesPage: readPage,
+        });
+        restarted.start();
+        await restarted.whenReady();
+        expect(restarted.capability()).toEqual({ enabled: true });
+        expect(restarted.search({ v: 1, query: 'startup page searchable', scope: { type: 'global' }, mode: 'auto', maxResults: 1 }))
+            .toMatchObject({ ok: true, hits: [expect.objectContaining({ sessionId: 's-1' })] });
+        await restarted.stop();
+    });
 });

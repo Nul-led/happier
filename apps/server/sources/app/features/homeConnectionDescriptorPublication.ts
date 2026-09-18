@@ -432,7 +432,7 @@ export async function reserveRelocatedHomeConnectionDescriptor(params: Readonly<
     env: NodeJS.ProcessEnv;
     continuityStore: HomeConnectionDescriptorContinuityStore;
     minimumOuterRevisionExclusive: number;
-    irohEndpoint: IrohEndpointDescriptorV1;
+    irohEndpoint: IrohEndpointDescriptorV1 | null;
 }>): Promise<HomeConnectionDescriptorV1> {
     const canonicalServerUrl = resolveConfiguredCanonicalServerUrl(params.env);
     if (!canonicalServerUrl) throw new HomeConnectionDescriptorPublicationUnavailableError();
@@ -442,11 +442,14 @@ export async function reserveRelocatedHomeConnectionDescriptor(params: Readonly<
     } catch {
         throw new HomeConnectionDescriptorPublicationUnavailableError();
     }
-    const iroh: HomeIrohEndpointState = {
+    // This explicit stopped relocation selects the destination's carrier set.
+    // A null endpoint allows only configured HTTPS ingress; ordinary lifecycle
+    // unavailability still cannot retire an incumbent Iroh publication.
+    const iroh: HomeIrohEndpointState = params.irohEndpoint ? {
         status: "active",
         snapshot: { endpoint: params.irohEndpoint },
         failureReason: null,
-    };
+    } : { status: "retired", snapshot: null, failureReason: null };
     const turn = publicationTransactionChain.then(async () => await readHomeConnectionDescriptorTransaction({
         env: params.env,
         continuityStore: params.continuityStore,
@@ -491,7 +494,11 @@ async function readHomeConnectionDescriptorTransaction(params: Readonly<{
         persistedOuterRevisionOwner: prime.persisted,
         iroh,
     };
-    const previouslyCommittedOwner = revisionOwner;
+    // The first transaction after restart has the same committed predecessor
+    // in durable continuity even though the process-local frontier is empty.
+    // Required readers must not classify its unavailable Iroh endpoint as an
+    // authoritative absence of Home service.
+    const previouslyCommittedOwner = revisionOwner ?? prime.persisted;
     const composed = composeHomeConnectionDescriptor(facts);
     if (
         required

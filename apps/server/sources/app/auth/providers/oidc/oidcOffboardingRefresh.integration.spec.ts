@@ -78,6 +78,7 @@ describe("OIDC offboarding refresh (integration)", () => {
     let refreshInvalidGrant = false;
     let refreshServerError = false;
     let refreshSubjectOverride: string | null = null;
+    let omitRefreshIdToken = false;
 
     beforeAll(async () => {
         const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -99,7 +100,9 @@ describe("OIDC offboarding refresh (integration)", () => {
                         authorization_endpoint: `${oidcIssuer}/authorize`,
                         token_endpoint: `${oidcIssuer}/token`,
                         jwks_uri: `${oidcIssuer}/jwks`,
+                        userinfo_endpoint: `${oidcIssuer}/userinfo`,
                         response_types_supported: ["code"],
+                        code_challenge_methods_supported: ["S256"],
                         subject_types_supported: ["public"],
                         id_token_signing_alg_values_supported: ["RS256"],
                     }),
@@ -161,8 +164,8 @@ describe("OIDC offboarding refresh (integration)", () => {
                 }
 
                 const subject =
-                    grantType === "refresh_token" && typeof refreshSubjectOverride === "string" && refreshSubjectOverride.trim()
-                        ? refreshSubjectOverride.trim()
+                    grantType === "refresh_token" && typeof refreshSubjectOverride === "string" && refreshSubjectOverride.length > 0
+                        ? refreshSubjectOverride
                         : "user_1";
                 const idToken = signJwtRs256({
                     header: { typ: "JWT", alg: "RS256", kid },
@@ -182,15 +185,24 @@ describe("OIDC offboarding refresh (integration)", () => {
 
                 res.statusCode = 200;
                 res.setHeader("content-type", "application/json");
-                res.end(
-                    JSON.stringify({
-                        access_token: grantType === "refresh_token" ? "at_2" : "at_1",
-                        token_type: "Bearer",
-                        expires_in: 600,
-                        refresh_token: grantType === "refresh_token" ? "rt_2" : "rt_1",
-                        id_token: idToken,
-                    }),
-                );
+                res.end(JSON.stringify({
+                    access_token: grantType === "refresh_token" ? "at_2" : "at_1",
+                    token_type: "Bearer",
+                    expires_in: 600,
+                    refresh_token: grantType === "refresh_token" ? "rt_2" : "rt_1",
+                    ...(grantType === "refresh_token" && omitRefreshIdToken ? {} : { id_token: idToken }),
+                }));
+                return;
+            }
+
+            if (req.method === "GET" && url.pathname === "/userinfo") {
+                res.setHeader("content-type", "application/json");
+                res.end(JSON.stringify({
+                    sub: refreshSubjectOverride ?? "user_1",
+                    preferred_username: "acme_user",
+                    email: "acme_user@example.test",
+                    groups: groupsForTokens,
+                }));
                 return;
             }
 
@@ -221,6 +233,7 @@ describe("OIDC offboarding refresh (integration)", () => {
         refreshInvalidGrant = false;
         refreshServerError = false;
         refreshSubjectOverride = null;
+        omitRefreshIdToken = false;
         await db.repeatKey.deleteMany();
         await db.accountIdentity.deleteMany();
         await db.account.deleteMany();
@@ -233,6 +246,59 @@ describe("OIDC offboarding refresh (integration)", () => {
             await new Promise<void>((resolve) => oidcServer!.close(() => resolve()));
         }
     });
+
+    async function authenticateAccount(seedByte: number): Promise<{
+        app: ReturnType<typeof createTestApp>;
+        accountId: string;
+    }> {
+        const seed = new Uint8Array(32).fill(seedByte);
+        const kp = tweetnacl.sign.keyPair.fromSeed(seed);
+        const publicKey = privacyKit.encodeBase64(new Uint8Array(kp.publicKey));
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: `/v1/auth/external/okta/params?publicKey=${encodeURIComponent(publicKey)}`,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+        const paramsUrl = new URL((paramsRes.json() as { url: string }).url);
+        const authRes = await fetch(paramsUrl.toString(), { redirect: "manual" });
+        expect(authRes.status).toBe(302);
+        const callback = new URL(authRes.headers.get("location")!);
+        const callbackRes = await app.inject({
+            method: "GET",
+            url: `${callback.pathname}${callback.search}`,
+        });
+        expect(callbackRes.statusCode).toBe(302);
+        const callbackLocation = callbackRes.headers.location;
+        expect(callbackLocation).toBeTruthy();
+        const pending = new URL(callbackLocation!).searchParams.get("pending");
+        expect(pending).toBeTruthy();
+
+        const challenge = randomBytes(32);
+        const signature = tweetnacl.sign.detached(challenge, kp.secretKey);
+        const finalizeRes = await app.inject({
+            method: "POST",
+            url: "/v1/auth/external/okta/finalize",
+            payload: {
+                pending,
+                publicKey,
+                challenge: privacyKit.encodeBase64(new Uint8Array(challenge)),
+                signature: privacyKit.encodeBase64(new Uint8Array(signature)),
+            },
+        });
+        expect(finalizeRes.statusCode).toBe(200);
+        const account = await db.account.findFirst({
+            where: { publicKey: privacyKit.encodeHex(new Uint8Array(kp.publicKey)) },
+            select: { id: true },
+        });
+        expect(account).toBeTruthy();
+        const initial = await enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() });
+        expect(initial).toEqual({ ok: true });
+        return { app, accountId: account!.id };
+    }
 
     it("re-checks eligibility using refresh token at the offboarding interval", async () => {
         applyOidcOffboardingEnv([
@@ -310,7 +376,132 @@ describe("OIDC offboarding refresh (integration)", () => {
 
         const second = await enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() });
         expect(second).toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+        await expect(enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
 
+        await app.close();
+    });
+
+    it("rejects an authoritatively ineligible identity before its next refresh while preserving transient unknown state", async () => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }]);
+        const { app, accountId } = await authenticateAccount(17);
+        const nextCheckAt = new Date(Date.now() + 60_000);
+
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityStatus: "ineligible", eligibilityNextCheckAt: nextCheckAt },
+        });
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityStatus: "unknown", eligibilityNextCheckAt: nextCheckAt },
+        });
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: true });
+        await app.close();
+    });
+
+    it("uses UserInfo to refresh current claims when the refresh grant omits an ID token", async () => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            fetchUserInfo: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }]);
+        const { app, accountId } = await authenticateAccount(8);
+
+        omitRefreshIdToken = true;
+        groupsForTokens = ["sales"];
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+        await app.close();
+    });
+
+    it("fails closed in strict mode when a refresh grant provides no current claims", async () => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }], "true");
+        const { app, accountId } = await authenticateAccount(9);
+
+        omitRefreshIdToken = true;
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+        await expect(db.accountIdentity.findFirst({
+            where: { accountId, provider: "okta" },
+            select: { eligibilityStatus: true, eligibilityReason: true },
+        })).resolves.toEqual({
+            eligibilityStatus: "unknown",
+            eligibilityReason: "eligibility-refresh-error",
+        });
+        await app.close();
+    });
+
+    it("preserves best-effort compatibility when a refresh grant provides no current claims", async () => {
+        applyOidcOffboardingEnv([{
+            id: "okta",
+            type: "oidc",
+            displayName: "Acme Okta",
+            issuer: oidcIssuer,
+            clientId: "oidc_client",
+            clientSecret: "oidc_secret",
+            redirectUrl: "https://api.example.test/v1/oauth/okta/callback",
+            storeRefreshToken: true,
+            scopes: "openid profile email offline_access",
+            allow: { groupsAny: ["eng"] },
+        }]);
+        const { app, accountId } = await authenticateAccount(10);
+
+        omitRefreshIdToken = true;
+        await db.accountIdentity.updateMany({
+            where: { accountId, provider: "okta" },
+            data: { eligibilityNextCheckAt: new Date(0) },
+        });
+
+        await expect(enforceLoginEligibility({ accountId, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: true });
+        await expect(db.accountIdentity.findFirst({
+            where: { accountId, provider: "okta" },
+            select: { eligibilityStatus: true, eligibilityReason: true },
+        })).resolves.toEqual({ eligibilityStatus: "eligible", eligibilityReason: null });
         await app.close();
     });
 
@@ -390,6 +581,8 @@ describe("OIDC offboarding refresh (integration)", () => {
 
         const second = await enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() });
         expect(second).toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+        await expect(enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
 
         await app.close();
     });
@@ -555,7 +748,7 @@ describe("OIDC offboarding refresh (integration)", () => {
         await app.close();
     });
 
-    it("fails closed when refresh token subject does not match the linked provider user id", async () => {
+    it("compares the refreshed subject with the exact opaque linked provider user id", async () => {
         applyOidcOffboardingEnv([
             {
                 id: "okta",
@@ -622,14 +815,24 @@ describe("OIDC offboarding refresh (integration)", () => {
         const first = await enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() });
         expect(first.ok).toBe(true);
 
-        refreshSubjectOverride = "user_other";
         await db.accountIdentity.updateMany({
             where: { accountId: account!.id, provider: "okta" },
-            data: { eligibilityNextCheckAt: new Date(0) },
+            data: {
+                providerUserId: " user_1 ",
+                eligibilityNextCheckAt: new Date(0),
+            },
         });
 
         const second = await enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() });
         expect(second).toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
+
+        const identityAfterMismatch = await db.accountIdentity.findFirst({
+            where: { accountId: account!.id, provider: "okta" },
+            select: { eligibilityStatus: true },
+        });
+        expect(identityAfterMismatch).toEqual({ eligibilityStatus: "ineligible" });
+        await expect(enforceLoginEligibility({ accountId: account!.id, env: process.env, now: new Date() }))
+            .resolves.toEqual({ ok: false, statusCode: 403, error: "not-eligible" });
 
         await app.close();
     });

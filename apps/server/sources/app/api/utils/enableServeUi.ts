@@ -37,6 +37,12 @@ function acceptedQuality(accepted: Map<string, number>, encoding: UiEncoding): n
     return accepted.get(encoding) ?? accepted.get('*') ?? 0;
 }
 
+function isSensitivePublicEntryPathname(pathname: string): boolean {
+    return /^\/join\/[^/]+\/?$/.test(pathname)
+        || /^\/auth\/email\/verify\/[^/]+\/?$/.test(pathname)
+        || /^\/auth\/password\/reset\/[^/]+\/?$/.test(pathname);
+}
+
 async function statFile(path: string) {
     const info = await stat(path).catch(() => null);
     return info?.isFile() ? info : null;
@@ -153,7 +159,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
         return reply.send(createReadStream(candidate));
     }
 
-    async function sendIndexHtml(reply: any) {
+    async function sendIndexHtml(reply: any, pathname = '/') {
         const indexPath = resolve(root, 'index.html');
         let html: string;
         try {
@@ -192,6 +198,9 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
         }
         reply.header('content-type', 'text/html; charset=utf-8');
         reply.header('cache-control', 'no-cache');
+        if (isSensitivePublicEntryPathname(pathname)) {
+            reply.header('referrer-policy', 'no-referrer');
+        }
         return reply.send(html);
     }
 
@@ -242,7 +251,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
                 if (isStaticAsset) {
                     return await sendUiFile(decoded, request, reply);
                 }
-                return await sendIndexHtml(reply);
+                return await sendIndexHtml(reply, pathname);
             } catch {
                 return reply.code(404).send({ error: 'Not found' });
             }
@@ -280,7 +289,7 @@ export function enableServeUi(app: AnyFastifyInstance, ui: UiConfig) {
 
                 const relPath = filePath.slice(root.length + 1);
                 if (relPath === 'index.html') {
-                    return await sendIndexHtml(reply);
+                    return await sendIndexHtml(reply, `/${rel}`);
                 }
                 return await sendUiFile(relPath, request, reply);
             } catch {

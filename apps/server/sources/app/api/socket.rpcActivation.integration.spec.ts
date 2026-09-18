@@ -1,6 +1,7 @@
 import Fastify from "fastify";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { io as ioClient } from "socket.io-client";
+import { Server } from "socket.io";
 
 import { SOCKET_RPC_EVENTS } from "@happier-dev/protocol/socketRpc";
 
@@ -91,7 +92,7 @@ describe("startSocket RPC activation", () => {
         await db.account.deleteMany();
     });
 
-    it("accepts an RPC registered immediately from an admitted machine socket connect callback", async () => {
+    it("admits the initial RPC registration exactly once after delayed post-connect authentication", async () => {
         const machineId = "m-rpc-activation";
         const method = `${machineId}:neutral.immediate`;
         const sentinel = { source: "machine-connect-callback", value: 42 };
@@ -115,6 +116,35 @@ describe("startSocket RPC activation", () => {
 
         const app = Fastify({ logger: false }) as unknown as AppFastify;
         startSocket(app);
+        const server = app.machineDaemonPresence;
+        if (!(server instanceof Server)) throw new Error("Expected the live Socket.IO server");
+        let initializing = false;
+        let releaseRead: () => void = () => {};
+        const readReleased = new Promise<void>((resolve) => { releaseRead = resolve; });
+        let readArrived: () => void = () => {};
+        const firstRead = new Promise<void>((resolve) => { readArrived = resolve; });
+        let packetArrived: () => void = () => {};
+        const firstPacket = new Promise<void>((resolve) => { packetArrived = resolve; });
+        server.once("connection", (socket) => {
+            initializing = true;
+            socket.onAny((event) => {
+                if (event === SOCKET_RPC_EVENTS.REGISTER) packetArrived();
+            });
+        });
+        // Delay the real persistence boundary; token verification and RPC admission
+        // remain real. The connection callback runs before the final account read.
+        const originalFindUnique = db.account.findUnique;
+        const readSpy = vi.spyOn(db.account, "findUnique").mockImplementation((...args) => {
+            const query = originalFindUnique(...args);
+            if (!initializing) return query;
+            readArrived();
+            return new Proxy(query, {
+                get(target, property, receiver) {
+                    if (property !== "then") return Reflect.get(target, property, receiver);
+                    return (...thenArgs: unknown[]) => readReleased.then(() => Reflect.apply(target.then, target, thenArgs));
+                },
+            });
+        });
         await app.listen({ port: 0, host: "127.0.0.1" });
         const address = app.server.address();
         const port = typeof address === "object" && address ? address.port : null;
@@ -147,6 +177,8 @@ describe("startSocket RPC activation", () => {
 
         try {
             const registered = waitForRegistration(machineSocket, method);
+            let registrationCount = 0;
+            machineSocket.on(SOCKET_RPC_EVENTS.REGISTERED, () => { registrationCount += 1; });
             machineSocket.on("connect", () => {
                 machineSocket.emit(SOCKET_RPC_EVENTS.REGISTER, { method });
             });
@@ -163,6 +195,9 @@ describe("startSocket RPC activation", () => {
             const machineConnected = waitForConnection(machineSocket);
             machineSocket.connect();
             await machineConnected;
+            await Promise.all([firstPacket, firstRead]);
+            initializing = false;
+            releaseRead();
             await registered;
 
             const callerConnected = waitForConnection(callerSocket);
@@ -181,7 +216,11 @@ describe("startSocket RPC activation", () => {
                 ok: true,
                 result: sentinel,
             });
+            expect(registrationCount).toBe(1);
         } finally {
+            releaseRead();
+            readSpy.mockRestore();
+            Reflect.set(db.account, "findUnique", originalFindUnique);
             machineSocket.close();
             callerSocket.close();
             await app.close();

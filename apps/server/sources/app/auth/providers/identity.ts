@@ -1,40 +1,99 @@
 import type { Context } from "@/context";
-import { inTx } from "@/storage/inTx";
+import { db } from "@/storage/db";
+import { inTx, type Tx } from "@/storage/inTx";
+import { unlinkIdentity } from "./accountIdentityLifecycle";
+import { resolveAuthMethodIdForAccountIdentityProvider } from "@/app/auth/methods/registry";
 import type { PreparedIdentityConnection } from "./identityProviders/types";
-import { findIdentityProviderById } from "./identityProviders/registry";
+import { resolveIdentityRuntimeById, resolveRuntime, resolveRuntimeInTx } from "./identityProviderCatalog";
+import type { ProviderReference } from "./providerReference";
 
 type ExternalIdentityConnectionParams = {
     providerId: string;
+    /**
+     * The provider reference bound when the OAuth attempt started, when the caller has one. The
+     * identity leaf is then resolved by re-proving that reference, so an instance that changed,
+     * moved context, or disappeared between authorization and this mutation cannot complete the
+     * link.
+     *
+     * It is absent for supported released attempts authored before the binding existed and for
+     * non-OAuth callers; those resolve the current instance by id exactly as before.
+     */
+    reference?: ProviderReference;
     ctx: Context;
     profile: unknown;
     accessToken: string;
     refreshToken?: string;
     preferredUsername?: string | null;
+    transferFromAccountId?: string;
 };
+
+/**
+ * Resolves the identity leaf of the exact bound provider runtime.
+ *
+ * Throws the catalog's typed code (`auth_provider_unavailable` or
+ * `auth_provider_configuration_changed`) when the binding no longer holds, so no identity row is
+ * written against a runtime the member never authorized.
+ */
+async function resolveBoundIdentityProvider(params: ExternalIdentityConnectionParams, tx?: Tx) {
+    const providerId = params.providerId.toString().trim().toLowerCase();
+    const reference = params.reference;
+    if (!reference) {
+        const provider = (await resolveIdentityRuntimeById(process.env, providerId))?.provider;
+        if (!provider) throw new Error("unsupported-provider");
+        return provider;
+    }
+    if (reference.id !== providerId) throw new Error("auth_provider_configuration_changed");
+
+    const input = {
+        env: process.env,
+        reference,
+        purpose: "oauth_finalize",
+    } as const;
+    const resolved = tx ? await resolveRuntimeInTx(tx, input) : await resolveRuntime(input);
+    if (!resolved.ok) throw new Error(resolved.code);
+    if (!resolved.module.identity) throw new Error("unsupported-provider");
+    return resolved.module.identity;
+}
 
 export async function prepareExternalIdentityConnection(
     params: ExternalIdentityConnectionParams,
 ): Promise<PreparedIdentityConnection> {
-    const providerId = params.providerId.toString().trim().toLowerCase();
-    const provider = findIdentityProviderById(process.env, providerId);
-    if (!provider) throw new Error("unsupported-provider");
+    const provider = await resolveBoundIdentityProvider(params);
     return await provider.prepareConnect({
         ctx: params.ctx,
         profile: params.profile,
         accessToken: params.accessToken,
         refreshToken: params.refreshToken,
         preferredUsername: params.preferredUsername,
+        transferFromAccountId: params.transferFromAccountId,
     });
 }
 
 export async function connectExternalIdentity(params: ExternalIdentityConnectionParams): Promise<void> {
     const prepared = await prepareExternalIdentityConnection(params);
-    await inTx(prepared.connectInTx);
+    await inTx(async (tx) => {
+        if (params.reference) await resolveBoundIdentityProvider(params, tx);
+        await prepared.connectInTx(tx);
+    });
 }
 
 export async function disconnectExternalIdentity(params: { providerId: string; ctx: Context }): Promise<void> {
     const providerId = params.providerId.toString().trim().toLowerCase();
-    const provider = findIdentityProviderById(process.env, providerId);
-    if (!provider) throw new Error("unsupported-provider");
-    return await provider.disconnect({ ctx: params.ctx });
+    const provider = (await resolveIdentityRuntimeById(process.env, providerId))?.provider;
+    if (provider) return await provider.disconnect({ ctx: params.ctx });
+
+    // Native AuthMethods own their own routes even when they persist an AccountIdentity row.
+    if (resolveAuthMethodIdForAccountIdentityProvider(process.env, providerId) !== null) {
+        throw new Error("unsupported-provider");
+    }
+
+    // A disabled or removed deployment runtime must not strand its existing Account identity.
+    // The linked row is the authority for this mutation; lifecycle policy still rechecks every
+    // required-Team and last-login blocker before deleting it.
+    const linked = await db.accountIdentity.findFirst({
+        where: { accountId: params.ctx.uid, provider: providerId },
+        select: { id: true },
+    });
+    if (!linked) throw new Error("unsupported-provider");
+    await unlinkIdentity({ accountId: params.ctx.uid, provider: providerId });
 }

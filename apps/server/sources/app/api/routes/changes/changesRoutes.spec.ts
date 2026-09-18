@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createDbMocks, createDbTransactionMock, installDbModuleMock } from "../../testkit/dbMocks";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
@@ -8,6 +8,7 @@ const { db, reset: resetDbMocks } = createDbMocks({
     accountChange: ["findMany", "findUnique"],
     session: ["findUnique"],
     sessionShare: ["findUnique"],
+    sessionPendingMessage: ["findMany"],
 });
 
 const accountFindUnique = db.account.findUnique;
@@ -32,10 +33,50 @@ const currentSessionAccessWitnessCompatibility = {
     supportsCurrentProtocol: true,
     supportsPluginDataProtocol: true,
     supportsSessionAccessWitnessProtocol: true,
+    supportsMachinePoolChangeProtocol: true,
+    supportsSavedSecretResourceChangeProtocol: true,
     outcome: "accepted" as const,
     declaration: { v: 1, protocolVersion: 4 },
     upgradeRequired: null,
 };
+
+function hostedSession(accountId: string, id = "session-current") {
+    return {
+        id,
+        accountId,
+        account: { status: "active" },
+        primaryTeamId: null,
+        active: false,
+        lastActiveAt: new Date(1),
+        currentStorageState: "hosted",
+        acceptedThroughServerSeq: null,
+        materializationPublicationId: null,
+        materializedThroughSourceAt: null,
+        publishedThroughServerSeq: null,
+        shares: [],
+        teamGrants: [],
+        groupGrants: [],
+    };
+}
+
+function credentialRestrictedTeamSession(accountId: string, id = "session-restricted") {
+    return {
+        ...hostedSession("owner", id),
+        teamGrants: [{
+            teamId: "team-restricted",
+            effectiveAt: new Date(2),
+            accessLevel: "view",
+            canApprovePermissions: false,
+            requiredByTeamPolicy: false,
+            team: {
+                // An unreadable policy is an indeterminate authentication
+                // boundary, not structural evidence that the grant vanished.
+                authenticationPolicy: { v: 999 },
+                memberships: [{ accountId, sessionAccessStartsAt: null }],
+            },
+        }],
+    };
+}
 
 vi.mock("@/utils/logging/log", () => ({
     debug: debugSpy,
@@ -47,6 +88,12 @@ installDbModuleMock(() => ({
 }));
 
 describe("changesRoutes (/v2/changes cursor safety)", () => {
+    let changesRoutes: typeof import("./changesRoutes").changesRoutes;
+
+    beforeAll(async () => {
+        ({ changesRoutes } = await import("./changesRoutes"));
+    }, 60_000);
+
     beforeEach(() => {
         resetDbMocks();
         changesRequestsInc.mockClear();
@@ -54,13 +101,13 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         debugSpy.mockClear();
         warnSpy.mockClear();
         transaction.mockClear();
+        db.sessionPendingMessage.findMany.mockResolvedValue([]);
     });
 
     it("returns 410 when after is in the future", async () => {
         accountFindUnique.mockResolvedValue({ seq: 10, changesFloor: 0 });
         accountChangeFindMany.mockResolvedValue([]);
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
@@ -85,12 +132,12 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         accountFindUnique.mockResolvedValue({ seq: 100, changesFloor: 50 });
         accountChangeFindMany.mockResolvedValue([]);
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 10, limit: 10 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -116,23 +163,14 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
             { cursor: 11, kind: "session", entityId: "s1", changedAt: new Date(1), hint: null },
             { cursor: 12, kind: "machine", entityId: "m1", changedAt: new Date(2), hint: { a: 1 } },
         ]);
-        sessionFindUnique.mockResolvedValue({
-            accountId: "u1",
-            active: false,
-            lastActiveAt: new Date(1),
-            currentStorageState: "hosted",
-            acceptedThroughServerSeq: null,
-            materializationPublicationId: null,
-            materializedThroughSourceAt: null,
-            publishedThroughServerSeq: null,
-        });
+        sessionFindUnique.mockResolvedValue(hostedSession("u1", "s1"));
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 10, limit: 10 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -146,7 +184,7 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         expect(reply.code).not.toHaveBeenCalled();
         expect(response).toEqual({
             changes: [
-                { cursor: 11, kind: "session", entityId: "s1", changedAt: 1, hint: null },
+                { cursor: 11, kind: "session", entityId: "s1", changedAt: 1, hint: { pendingExecutionRunIds: [] } },
                 { cursor: 12, kind: "machine", entityId: "m1", changedAt: 2, hint: { a: 1 } },
             ],
             nextCursor: 12,
@@ -174,12 +212,12 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         sessionFindUnique.mockResolvedValue(null);
         accountChangeFindUnique.mockResolvedValue({ sessionId: null });
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 10, limit: 10 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -219,25 +257,16 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         accountChangeFindMany.mockResolvedValue([
             { cursor: 12, kind: "session", entityId: "session-revoked", changedAt: new Date(2), hint: null },
         ]);
-        sessionFindUnique.mockResolvedValue({
-            accountId: "owner",
-            active: false,
-            lastActiveAt: new Date(1),
-            currentStorageState: "hosted",
-            acceptedThroughServerSeq: null,
-            materializationPublicationId: null,
-            materializedThroughSourceAt: null,
-            publishedThroughServerSeq: null,
-        });
+        sessionFindUnique.mockResolvedValue(hostedSession("owner", "session-revoked"));
         sessionShareFindUnique.mockResolvedValue(null);
         accountChangeFindUnique.mockResolvedValue({ sessionId: "session-revoked" });
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "recipient",
+                authAuthority: "present_user",
                 query: { after: 10, limit: 10 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -260,15 +289,35 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
                 },
             },
         });
-        expect(sessionShareFindUnique).toHaveBeenCalledWith({
-            where: {
-                sessionId_sharedWithUserId: {
-                    sessionId: "session-revoked",
-                    sharedWithUserId: "recipient",
-                },
+        expect(sessionShareFindUnique).not.toHaveBeenCalled();
+    });
+
+    it("fails a change page recoverably instead of presenting indeterminate Team authentication as revocation", async () => {
+        accountFindUnique.mockResolvedValue({ seq: 100, changesFloor: 0 });
+        accountChangeFindMany.mockResolvedValue([
+            { cursor: 12, kind: "session", entityId: "session-restricted", changedAt: new Date(2), hint: null },
+        ]);
+        sessionFindUnique.mockResolvedValue(credentialRestrictedTeamSession("recipient"));
+
+        const route = createRouteTestBuilder({
+            method: "GET",
+            path: "/v2/changes",
+            defaultRequest: {
+                userId: "recipient",
+                authAuthority: "present_user",
+                authTokenAuthenticationEvidence: [],
+                query: { after: 10, limit: 10 },
+                accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
-            select: { accessLevel: true },
+            registerRoutes(app) {
+                changesRoutes(app as any);
+            },
         });
+
+        const { reply, response } = await route.invoke();
+        expect(reply.code).toHaveBeenCalledWith(503);
+        expect(response).toEqual({ error: "session_access_authentication_unavailable" });
+        expect(response).not.toHaveProperty("sessionAccessWitness");
     });
 
     it("collapses repeated Session changes to the latest canonical witness fact on one page", async () => {
@@ -278,23 +327,14 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
             { cursor: 12, kind: "session", entityId: "session-1", changedAt: new Date(2), hint: null },
             { cursor: 13, kind: "machine", entityId: "m1", changedAt: new Date(3), hint: null },
         ]);
-        sessionFindUnique.mockResolvedValue({
-            accountId: "u1",
-            active: false,
-            lastActiveAt: new Date(1),
-            currentStorageState: "hosted",
-            acceptedThroughServerSeq: null,
-            materializationPublicationId: null,
-            materializedThroughSourceAt: null,
-            publishedThroughServerSeq: null,
-        });
+        sessionFindUnique.mockResolvedValue(hostedSession("u1", "session-1"));
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 10, limit: 10 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -332,7 +372,6 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
             { cursor: 12, kind: "session", entityId: "s1", changedAt: new Date(2), hint: null },
         ]);
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
@@ -347,6 +386,8 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
                 supportsCurrentProtocol: true,
                 supportsPluginDataProtocol: false,
                 supportsSessionAccessWitnessProtocol: false,
+                supportsMachinePoolChangeProtocol: false,
+                supportsSavedSecretResourceChangeProtocol: false,
                 outcome: "accepted",
                 declaration: { v: 1, protocolVersion: 2 },
                 upgradeRequired: null,
@@ -354,7 +395,7 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         })).resolves.toMatchObject({
             response: {
                 changes: [
-                    { cursor: 12, kind: "session", entityId: "s1", changedAt: 2, hint: null },
+                    { cursor: 12, kind: "session", entityId: "s1", changedAt: 2, hint: { pendingExecutionRunIds: [] } },
                 ],
                 nextCursor: 12,
             },
@@ -364,6 +405,8 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
                 supportsCurrentProtocol: true,
                 supportsPluginDataProtocol: true,
                 supportsSessionAccessWitnessProtocol: false,
+                supportsMachinePoolChangeProtocol: false,
+                supportsSavedSecretResourceChangeProtocol: false,
                 outcome: "accepted",
                 declaration: { v: 1, protocolVersion: 3 },
                 upgradeRequired: null,
@@ -381,23 +424,129 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
                         pluginId: "example.tasks",
                     },
                 },
-                { cursor: 12, kind: "session", entityId: "s1", changedAt: 2, hint: null },
+                { cursor: 12, kind: "session", entityId: "s1", changedAt: 2, hint: { pendingExecutionRunIds: [] } },
             ],
             nextCursor: 12,
         });
         expect(legacyResponse.response).not.toHaveProperty("sessionAccessWitness");
     });
 
+    it("filters machinePool rows for pre-V4 clients while advancing across the raw page", async () => {
+        accountFindUnique.mockResolvedValue({ seq: 100, changesFloor: 0 });
+        accountChangeFindMany.mockResolvedValue([
+            { cursor: 11, kind: "machine", entityId: "m1", changedAt: new Date(1), hint: null },
+            { cursor: 12, kind: "machinePool", entityId: "pool-1", changedAt: new Date(2), hint: null },
+        ]);
+
+        const route = createRouteTestBuilder({
+            method: "GET",
+            path: "/v2/changes",
+            defaultRequest: { userId: "u1", query: { after: 10, limit: 10 } },
+            registerRoutes(app) {
+                changesRoutes(app as any);
+            },
+        });
+
+        // The pre-V4 peer must not receive a kind it cannot parse, and must still checkpoint past
+        // the withheld row so its poll does not stall on the raw page.
+        await expect(route.invoke({
+            accountStoredContentCompatibility: {
+                supportsCurrentProtocol: true,
+                supportsPluginDataProtocol: true,
+                supportsSessionAccessWitnessProtocol: false,
+                supportsMachinePoolChangeProtocol: false,
+                supportsSavedSecretResourceChangeProtocol: false,
+                outcome: "accepted",
+                declaration: { v: 1, protocolVersion: 3 },
+                upgradeRequired: null,
+            },
+        })).resolves.toMatchObject({
+            response: {
+                changes: [
+                    { cursor: 11, kind: "machine", entityId: "m1", changedAt: 1, hint: null },
+                ],
+                nextCursor: 12,
+            },
+        });
+
+        const currentResponse = await route.invoke({
+            accountStoredContentCompatibility: {
+                supportsCurrentProtocol: true,
+                supportsPluginDataProtocol: true,
+                supportsSessionAccessWitnessProtocol: true,
+                supportsMachinePoolChangeProtocol: true,
+                supportsSavedSecretResourceChangeProtocol: true,
+                outcome: "accepted",
+                declaration: { v: 1, protocolVersion: 4 },
+                upgradeRequired: null,
+            },
+        });
+        expect(currentResponse.response).toMatchObject({
+            changes: [
+                { cursor: 11, kind: "machine", entityId: "m1", changedAt: 1, hint: null },
+                { cursor: 12, kind: "machinePool", entityId: "pool-1", changedAt: 2, hint: null },
+            ],
+            nextCursor: 12,
+        });
+    });
+
+    it("filters savedSecretResource rows for pre-V4 clients while advancing across the raw page", async () => {
+        accountFindUnique.mockResolvedValue({ seq: 100, changesFloor: 0 });
+        accountChangeFindMany.mockResolvedValue([
+            { cursor: 11, kind: "machine", entityId: "m1", changedAt: new Date(1), hint: null },
+            { cursor: 12, kind: "savedSecretResource", entityId: "resource-1", changedAt: new Date(2), hint: null },
+        ]);
+
+        const route = createRouteTestBuilder({
+            method: "GET",
+            path: "/v2/changes",
+            defaultRequest: { userId: "u1", query: { after: 10, limit: 10 } },
+            registerRoutes(app) {
+                changesRoutes(app as any);
+            },
+        });
+
+        await expect(route.invoke({
+            accountStoredContentCompatibility: {
+                supportsCurrentProtocol: true,
+                supportsPluginDataProtocol: true,
+                supportsSessionAccessWitnessProtocol: false,
+                supportsMachinePoolChangeProtocol: false,
+                supportsSavedSecretResourceChangeProtocol: false,
+                outcome: "accepted",
+                declaration: { v: 1, protocolVersion: 3 },
+                upgradeRequired: null,
+            },
+        })).resolves.toMatchObject({
+            response: {
+                changes: [{ cursor: 11, kind: "machine", entityId: "m1", changedAt: 1, hint: null }],
+                nextCursor: 12,
+            },
+        });
+
+        await expect(route.invoke({
+            accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
+        })).resolves.toMatchObject({
+            response: {
+                changes: [
+                    { cursor: 11, kind: "machine", entityId: "m1", changedAt: 1, hint: null },
+                    { cursor: 12, kind: "savedSecretResource", entityId: "resource-1", changedAt: 2, hint: null },
+                ],
+                nextCursor: 12,
+            },
+        });
+    });
+
     it("returns nextCursor==after when there are no changes", async () => {
         accountFindUnique.mockResolvedValue({ seq: 100, changesFloor: 0 });
         accountChangeFindMany.mockResolvedValue([]);
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 50, limit: 3 },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -432,23 +581,14 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
     it("resolves one exact Session access probe with the current Account cursor and no feed acknowledgement", async () => {
         accountFindUnique.mockResolvedValue({ seq: 101, changesFloor: 0 });
         accountChangeFindMany.mockResolvedValue([]);
-        sessionFindUnique.mockResolvedValue({
-            accountId: "u1",
-            active: false,
-            lastActiveAt: new Date(1),
-            currentStorageState: "hosted",
-            acceptedThroughServerSeq: null,
-            materializationPublicationId: null,
-            materializedThroughSourceAt: null,
-            publishedThroughServerSeq: null,
-        });
+        sessionFindUnique.mockResolvedValue(hostedSession("u1"));
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/changes",
             defaultRequest: {
                 userId: "u1",
+                authAuthority: "present_user",
                 query: { after: 0, limit: 1, sessionAccessSessionId: "session-current" },
                 accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
             },
@@ -473,11 +613,35 @@ describe("changesRoutes (/v2/changes cursor safety)", () => {
         expect(accountChangeFindMany).not.toHaveBeenCalled();
     });
 
+    it("fails an indeterminate exact probe recoverably instead of returning an unavailable revocation fact", async () => {
+        accountFindUnique.mockResolvedValue({ seq: 101, changesFloor: 0 });
+        sessionFindUnique.mockResolvedValue(credentialRestrictedTeamSession("recipient"));
+
+        const route = createRouteTestBuilder({
+            method: "GET",
+            path: "/v2/changes",
+            defaultRequest: {
+                userId: "recipient",
+                authAuthority: "present_user",
+                authTokenAuthenticationEvidence: [],
+                query: { after: 0, limit: 1, sessionAccessSessionId: "session-restricted" },
+                accountStoredContentCompatibility: currentSessionAccessWitnessCompatibility,
+            },
+            registerRoutes(app) {
+                changesRoutes(app as any);
+            },
+        });
+
+        const { reply, response } = await route.invoke();
+        expect(reply.code).toHaveBeenCalledWith(503);
+        expect(response).toEqual({ error: "session_access_authentication_unavailable" });
+        expect(response).not.toHaveProperty("sessionAccessProbe");
+    });
+
     it("GET /v2/cursor returns current cursor and changesFloor", async () => {
         accountFindUnique.mockResolvedValue({ seq: 10, changesFloor: 7 });
         accountChangeFindMany.mockResolvedValue([]);
 
-        const { changesRoutes } = await import("./changesRoutes");
         const route = createRouteTestBuilder({
             method: "GET",
             path: "/v2/cursor",

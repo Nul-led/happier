@@ -93,6 +93,8 @@ const createAutomationConversationTargetV1 = vi.fn(async () => ({
 const claimAutomationRun = vi.fn(async () => ({
     run: {
         id: "run-1",
+        originKind: "automation",
+        originSessionId: null,
         automationId: "a1",
         accountId: "u1",
         state: "claimed",
@@ -201,6 +203,7 @@ describe("automationRoutes", () => {
         dbMocks.reset();
         resetAutomationsEnv({
             HAPPIER_FEATURE_AUTOMATIONS__ENABLED: undefined,
+            HAPPIER_FEATURE_WORKFLOWS__ENABLED: undefined,
         });
         findAccountById.mockResolvedValue({
             publicKey: null,
@@ -409,6 +412,31 @@ describe("automationRoutes", () => {
             userId: "u1",
         });
         expect(conversationTargetVerifyReply.code).toHaveBeenCalledWith(404);
+    });
+
+    it("refuses Workflow storage while preserving incumbent Automation routes when Workflows are disabled", async () => {
+        resetAutomationsEnv({
+            HAPPIER_FEATURE_AUTOMATIONS__ENABLED: "1",
+            HAPPIER_FEATURE_WORKFLOWS__ENABLED: "0",
+        });
+        const { automationRoutes } = await import("./automationRoutes");
+        const workflowRoute = createRouteTestBuilder({
+            method: "POST",
+            path: "/v3/automations/runs/workflow-storage",
+            registerRoutes(app) {
+                automationRoutes(app as any);
+            },
+        });
+        const automationRoute = createRouteTestBuilder({
+            method: "GET",
+            path: "/v2/automations",
+            registerRoutes(app) {
+                automationRoutes(app as any);
+            },
+        });
+
+        expect((await workflowRoute.invoke({ userId: "u1", body: {} })).reply.code).toHaveBeenCalledWith(404);
+        expect((await automationRoute.invoke({ userId: "u1" })).reply.code).not.toHaveBeenCalledWith(404);
     });
 
     it("creates an automation from POST /v2/automations", async () => {

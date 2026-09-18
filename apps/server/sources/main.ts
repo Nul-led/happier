@@ -1,24 +1,13 @@
 import 'reflect-metadata';
-import { initializeServerSentry } from '@/app/monitoring/sentry';
-import { registerProcessHandlers } from '@/utils/process/processHandlers';
+import { runFullServerMain } from '@/flavors/full/main';
 
-async function run(): Promise<void> {
-    process.env.HAPPY_SERVER_FLAVOR = 'full';
-    process.env.HAPPIER_SERVER_FLAVOR = 'full';
-
-    // Initialize Sentry before importing the server runtime so auto-instrumentation can patch dependencies (Fastify, etc).
-    initializeServerSentry(process.env);
-    registerProcessHandlers();
-
-    const { startServer } = await import('@/startServer');
-    await startServer('full');
-}
-
-void run()
+void runFullServerMain()
     .catch((e) => {
         console.error(e);
         process.exit(1);
     })
+    // A one-shot operator command reports its refusal through `process.exitCode`
+    // so a script cannot read "this Home already has an owner" as success.
     .then(() => {
-        process.exit(0);
+        process.exit(process.exitCode ?? 0);
     });

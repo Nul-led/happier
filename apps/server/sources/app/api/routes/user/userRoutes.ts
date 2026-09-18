@@ -6,16 +6,31 @@ import { friendAdd } from "@/app/social/friendAdd";
 import { Context } from "@/context";
 import { friendRemove } from "@/app/social/friendRemove";
 import { friendList } from "@/app/social/friendList";
-import { buildUserProfile } from "@/app/social/type";
+import { buildUserProfile, describeIdentityPresentation, toSocialIdentities } from "@/app/social/type";
 import {
     FriendsDisabledError,
     FriendsIdentityProviderRequiredError,
     FriendsUsernameRequiredError,
 } from "@/app/social/friendAdd";
 import { resolveFriendsPolicyFromServerFeatures } from "@/app/social/resolveFriendsPolicyFromServerFeatures";
-import { createServerFeatureGatedRouteApp } from "@/app/features/catalog/serverFeatureGate";
-import { UserProfileSchema } from "@happier-dev/protocol";
+import {
+    createServerFeatureGatedRouteApp,
+    isServerFeatureEnabledForRequest,
+} from "@/app/features/catalog/serverFeatureGate";
+import {
+    UserProfileSchema,
+    UserRecipientEnvelopeResponseSchema,
+    UsersSearchQueryV1Schema,
+    UsersSearchResponseSchema,
+    decodeKeysetCursorV1,
+    encodeKeysetCursorV1,
+    readKeysetCursorIdV1,
+    readKeysetCursorTextV1,
+} from "@happier-dev/protocol";
 import { NotFoundSchema } from "../../schemas/notFoundSchema";
+import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
+import { buildAccountTextPrefixFilter } from "@/app/account/accountTextPrefixFilter";
+import { buildSessionAccessCollaborationAccountWhere } from "@/app/session/access/sessionAccessGrantEligibility";
 
 export async function userRoutes(app: Fastify) {
     const friendsApp = createServerFeatureGatedRouteApp(app, "social.friends", process.env);
@@ -27,9 +42,7 @@ export async function userRoutes(app: Fastify) {
                 id: z.string()
             }),
             response: {
-                200: z.object({
-                    user: UserProfileSchema
-                }),
+                200: UserRecipientEnvelopeResponseSchema,
                 404: z.object({
                     error: z.literal('User not found')
                 })
@@ -66,53 +79,84 @@ export async function userRoutes(app: Fastify) {
         const status: RelationshipStatusType = relationship?.status || RelationshipStatus.none;
 
         // Build user profile
-        const identities = user.AccountIdentity.map((identity) => ({
-            provider: identity.provider,
-            providerLogin: identity.providerLogin ?? null,
-            profile: identity.profile,
-            showOnProfile: Boolean(identity.showOnProfile),
-        }));
+        const identities = toSocialIdentities(user.AccountIdentity);
+        const profile = buildUserProfile(user as any, status, identities, await describeIdentityPresentation(identities));
+        const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(user);
         return reply.send({
-            user: buildUserProfile(user as any, status, identities)
+            user: {
+                ...profile,
+                recipientEnvelopeReadiness: readiness.status === "available"
+                    ? { status: "available" as const }
+                    : readiness,
+            },
         });
     });
 
     // Search for users
-    friendsApp.get('/v1/user/search', {
+    app.get('/v1/user/search', {
         schema: {
-            querystring: z.object({
-                query: z.string()
-            }),
+            querystring: UsersSearchQueryV1Schema,
             response: {
-                200: z.object({
-                    users: z.array(UserProfileSchema)
-                }),
+                200: UsersSearchResponseSchema,
+                400: z.object({ error: z.literal("invalid_cursor") }).strict(),
                 404: NotFoundSchema,
             }
         },
-        preHandler: app.authenticate
+        preHandler: [
+            async (request, reply) => {
+                if (request.query.purpose === "collaboration") return;
+                if (!isServerFeatureEnabledForRequest("social.friends", process.env)) {
+                    return reply.code(404).send({ error: "not_found" });
+                }
+            },
+            app.authenticate,
+        ],
     }, async (request, reply) => {
         const friendsPolicy = resolveFriendsPolicyFromServerFeatures(process.env);
         const requiredIdentityProviderId = friendsPolicy.requiredIdentityProviderId;
 
-        const { query } = request.query;
+        const { query, cursor, purpose } = request.query;
+        // Collaboration eligibility is established by friendship/shared-Team
+        // authority, not by the provider policy governing social discovery.
+        const searchIdentityProviderId = purpose === "collaboration" ? null : requiredIdentityProviderId;
 
         const serverFlavorRaw = (process.env.HAPPIER_SERVER_FLAVOR ?? process.env.HAPPY_SERVER_FLAVOR)?.trim();
         const fallbackProvider = serverFlavorRaw === "light" ? "sqlite" : "postgres";
         const dbProvider = getDbProviderFromEnv(process.env, fallbackProvider);
-        const username =
-            dbProvider === "sqlite"
-                ? { startsWith: query }
-                : { startsWith: query, mode: 'insensitive' as const };
+        const username = buildAccountTextPrefixFilter(query, dbProvider);
 
-        // Search for users by username, first 10 matches
-        const users = await db.account.findMany({
+        const queryKey = `v1:user-search:${query}:${searchIdentityProviderId ?? "username"}:${purpose ?? "social"}`;
+        let after: Readonly<{ username: string; id: string }> | null = null;
+        if (cursor) {
+            const decoded = decodeKeysetCursorV1(cursor, queryKey);
+            const afterUsername = decoded.status === "ok" ? readKeysetCursorTextV1(decoded.parts[0]) : null;
+            const afterId = decoded.status === "ok" ? readKeysetCursorIdV1(decoded.parts[1]) : null;
+            if (afterUsername === null || afterId === null) {
+                return reply.code(400).send({ error: "invalid_cursor" });
+            }
+            after = { username: afterUsername, id: afterId };
+        }
+
+        // Keep the released ten-row page while making the rest of the
+        // directory reachable through the same query-bound keyset owner.
+        const rows = await db.account.findMany({
             where: {
                 username,
-                ...(requiredIdentityProviderId
+                AND: [
+                    ...(purpose === "collaboration"
+                        ? [buildSessionAccessCollaborationAccountWhere(request.userId)]
+                        : []),
+                    ...(after
+                        ? [{ OR: [
+                            { username: { gt: after.username } },
+                            { username: after.username, id: { gt: after.id } },
+                        ] }]
+                        : []),
+                ],
+                ...(searchIdentityProviderId
                     ? {
                           AccountIdentity: {
-                              some: { provider: requiredIdentityProviderId },
+                              some: { provider: searchIdentityProviderId },
                           },
                       }
                     : {}),
@@ -123,11 +167,16 @@ export async function userRoutes(app: Fastify) {
                     orderBy: { provider: "asc" },
                 },
             },
-            take: 10,
-            orderBy: {
-                username: 'asc'
-            }
+            take: 11,
+            orderBy: [{ username: 'asc' }, { id: 'asc' }],
         });
+        const users = rows.slice(0, 10);
+        const last = rows.length > 10 ? users[users.length - 1] : undefined;
+
+        // One provider presentation load for the whole search result.
+        const presentation = await describeIdentityPresentation(
+            users.flatMap((user) => toSocialIdentities(user.AccountIdentity)),
+        );
 
         // Resolve relationship status for each user
         const userProfiles = await Promise.all(users.map(async (user) => {
@@ -138,17 +187,15 @@ export async function userRoutes(app: Fastify) {
                 }
             });
             const status: RelationshipStatusType = relationship?.status || RelationshipStatus.none;
-            const identities = user.AccountIdentity.map((identity) => ({
-                provider: identity.provider,
-                providerLogin: identity.providerLogin ?? null,
-                profile: identity.profile,
-                showOnProfile: Boolean(identity.showOnProfile),
-            }));
-            return buildUserProfile(user as any, status, identities);
+            const identities = toSocialIdentities(user.AccountIdentity);
+            return buildUserProfile(user as any, status, identities, presentation);
         }));
 
         return reply.send({
-            users: userProfiles
+            users: userProfiles,
+            nextCursor: last && last.username !== null
+                ? encodeKeysetCursorV1({ queryKey, parts: [last.username, last.id] })
+                : null,
         });
     });
 

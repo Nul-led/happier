@@ -1,7 +1,7 @@
 import { type Fastify } from "../../types";
 import { db } from "@/storage/db";
 import { z } from "zod";
-import { isSessionOwner } from "@/app/share/accessControl";
+import { assertSessionCapabilityInTx, resolveSessionAccessForOperation } from "@/app/session/access/sessionAccess";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import {
     eventRouter,
@@ -9,7 +9,7 @@ import {
     buildPublicShareUpdatedUpdate,
     buildPublicShareDeletedUpdate,
 } from "@/app/events/eventRouter";
-import { createHash } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 import { afterTx, inTx } from "@/storage/inTx";
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
@@ -29,10 +29,26 @@ import {
     readAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { SESSION_METADATA_LAYOUT_VERSION_V1 } from "@happier-dev/protocol";
+import { enforceSessionPublicLinkExternalSharingPolicyInTx } from "@/app/session/access/sessionAccessExternalSharingPolicy";
+import { isPublicSessionShareActive } from "@/app/share/publicSessionSharePublication";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import { removeUnsafeSessionFollowEdgesForAccessChangeInTx } from "@/app/session/follow/sessionFollowEdgeService";
+
+function equalBytes(left: Uint8Array | null, right: Uint8Array | null): boolean {
+    if (left === null || right === null) return left === right;
+    return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+}
+
+function equalDates(left: Date | null, right: Date | null): boolean {
+    if (left === null || right === null) return left === right;
+    return left.getTime() === right.getTime();
+}
 
 export function registerPublicShareOwnerRoutes(app: Fastify): void {
     /**
-     * Create or update public share for a session
+     * Create or update the public-link desired state for a Session.
+     * An exact retry returns the stored state without resetting usage,
+     * advancing timestamps, or publishing duplicate invalidations.
      */
     app.post('/v1/sessions/:sessionId/public-share', {
         preHandler: app.authenticate,
@@ -54,17 +70,26 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
         const { token, encryptedDataKey, expiresAt, maxUses, isConsentRequired } = request.body;
         const supportsCurrentProtocol =
             readAccountStoredContentCompatibilityForHttpRequest(request)
                 .supportsCurrentProtocol;
 
         // Only owner can create public shares
-        if (!await isSessionOwner(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const admission = await resolveSessionAccessForOperation(db, {
+            accountId: userId,
+            sessionId,
+            authentication,
+            capability: "managePublicLink",
+        });
+        if (admission.status !== "allowed" || !admission.access.capabilities.managePublicLink) {
+            return reply.code(403).send({ error: 'session_access_forbidden' });
         }
 
         const result = await inTx(async (tx) => {
+            const authority = await assertSessionCapabilityInTx({ tx, accountId: userId, sessionId, capability: "managePublicLink", authentication });
+            if (!authority.ok) return { type: "forbidden" as const };
             const session = await tx.session.findUnique({
                 where: { id: sessionId },
                 select: {
@@ -75,6 +100,7 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
                     ownerMetadata: true,
                     agentState: true,
                     agentStateVersion: true,
+                    primaryTeamId: true,
                     ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 },
             });
@@ -123,37 +149,66 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
                 where: { sessionId }
             });
 
+            const nextExpiresAt = expiresAt === undefined ? null : new Date(expiresAt);
+            const suppliedTokenHash = typeof token === 'string' && token.length > 0
+                ? createHash('sha256').update(token, 'utf8').digest()
+                : null;
+            const shouldRotateToken = suppliedTokenHash !== null
+                && (existing === null || !equalBytes(existing.tokenHash, suppliedTokenHash));
+            const externalPolicyError = await enforceSessionPublicLinkExternalSharingPolicyInTx(tx, {
+                actorAccountId: userId,
+                primaryTeamId: session.primaryTeamId,
+                previous: existing,
+                next: {
+                    expiresAt: nextExpiresAt,
+                    maxUses: maxUses ?? null,
+                    rotatesToken: shouldRotateToken,
+                },
+                authentication,
+            });
+            if (externalPolicyError) {
+                return { type: "external-sharing-error" as const, error: externalPolicyError };
+            }
+
             let publicShare;
             const isUpdate = !!existing;
+            let changed = true;
 
             if (existing) {
-                const shouldRotateToken = typeof token === 'string' && token.length > 0;
                 if (shouldRotateToken && sessionEncryptionMode === "e2ee" && !encryptedDataKey) {
                     return { type: 'error' as const, error: 'encryptedDataKey required when rotating token' as const };
                 }
-                let encryptedDataKeyUpdate: { encryptedDataKey?: Uint8Array<ArrayBuffer> | null } = {};
+                let nextEncryptedDataKey = existing.encryptedDataKey;
                 if (sessionEncryptionMode === "plain") {
-                    encryptedDataKeyUpdate = { encryptedDataKey: null };
+                    nextEncryptedDataKey = null;
                 } else if (encryptedDataKey !== undefined) {
                     const parsedEncryptedDataKey = tryParseEncryptedDataKeyV0(encryptedDataKey);
                     if (parsedEncryptedDataKey.type === "error") {
                         return parsedEncryptedDataKey;
                     }
-                    encryptedDataKeyUpdate = { encryptedDataKey: parsedEncryptedDataKey.encryptedDataKey };
+                    nextEncryptedDataKey = parsedEncryptedDataKey.encryptedDataKey;
                 }
-                const nextTokenHash = shouldRotateToken ? createHash('sha256').update(token!, 'utf8').digest() : null;
+                const nextMaxUses = maxUses ?? null;
+                const nextIsConsentRequired = isConsentRequired ?? false;
+                changed = shouldRotateToken
+                    || !equalBytes(existing.encryptedDataKey, nextEncryptedDataKey)
+                    || !equalDates(existing.expiresAt, nextExpiresAt)
+                    || existing.maxUses !== nextMaxUses
+                    || existing.isConsentRequired !== nextIsConsentRequired;
 
-                publicShare = await tx.publicSessionShare.update({
-                    where: { sessionId },
-                    data: {
-                        ...(nextTokenHash ? { tokenHash: nextTokenHash } : {}),
-                        ...encryptedDataKeyUpdate,
-                        expiresAt: expiresAt ? new Date(expiresAt) : null,
-                        maxUses: maxUses ?? null,
-                        isConsentRequired: isConsentRequired ?? false,
-                        ...(nextTokenHash ? { useCount: 0 } : {}),
-                    }
-                });
+                publicShare = changed
+                    ? await tx.publicSessionShare.update({
+                        where: { sessionId },
+                        data: {
+                            ...(shouldRotateToken ? { tokenHash: suppliedTokenHash! } : {}),
+                            encryptedDataKey: nextEncryptedDataKey,
+                            expiresAt: nextExpiresAt,
+                            maxUses: nextMaxUses,
+                            isConsentRequired: nextIsConsentRequired,
+                            ...(shouldRotateToken ? { useCount: 0 } : {}),
+                        }
+                    })
+                    : existing;
             } else {
                 if (!token) {
                     return { type: 'error' as const, error: 'token required' as const };
@@ -161,7 +216,6 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
                 if (sessionEncryptionMode === "e2ee" && !encryptedDataKey) {
                     return { type: 'error' as const, error: 'encryptedDataKey required' as const };
                 }
-                const tokenHash = createHash('sha256').update(token, 'utf8').digest();
                 let encryptedDataKeyBytes: Uint8Array<ArrayBuffer> | null = null;
                 if (sessionEncryptionMode === "e2ee") {
                     const parsedEncryptedDataKey = tryParseEncryptedDataKeyV0(encryptedDataKey!);
@@ -175,13 +229,21 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
                     data: {
                         sessionId,
                         createdByUserId: userId,
-                        tokenHash,
+                        tokenHash: suppliedTokenHash!,
                         encryptedDataKey: encryptedDataKeyBytes,
-                        expiresAt: expiresAt ? new Date(expiresAt) : null,
+                        expiresAt: nextExpiresAt,
                         maxUses: maxUses ?? null,
                         isConsentRequired: isConsentRequired ?? false
                     }
                 });
+            }
+
+            if (!changed) {
+                return { type: 'ok' as const, publicShare };
+            }
+
+            if (isPublicSessionShareActive(publicShare)) {
+                await removeUnsafeSessionFollowEdgesForAccessChangeInTx(tx, { sessionId });
             }
 
             const shareCursor = await markAccountChanged(tx, { accountId: userId, kind: 'share', entityId: sessionId });
@@ -203,8 +265,23 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
             return { type: 'ok' as const, publicShare };
         });
 
+        if (result.type === "forbidden") {
+            return reply.code(403).send({ error: "session_access_forbidden" });
+        }
         if (result.type === 'publication-error') {
             return reply.code(409).send({ error: result.error, code: result.code });
+        }
+        if (result.type === "external-sharing-error") {
+            return reply.code(
+                result.error === "session_access_authentication_unavailable"
+                    ? 503
+                    : result.error === "session_access_external_sharing_requires_team_admin"
+                    || result.error === "session_access_external_sharing_disabled"
+                    || result.error === "session_access_authentication_required"
+                    ? 403
+                    : 409,
+            )
+                .send({ error: result.error });
         }
         if (result.type === "client-upgrade-required") {
             await enforceCurrentAccountStoredContentCompatibilityForHttpRequest(
@@ -248,10 +325,17 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
 
         // Only owner can view public share settings
-        if (!await isSessionOwner(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const admission = await resolveSessionAccessForOperation(db, {
+            accountId: userId,
+            sessionId,
+            authentication,
+            capability: "managePublicLink",
+        });
+        if (admission.status !== "allowed" || !admission.access.capabilities.managePublicLink) {
+            return reply.code(403).send({ error: 'session_access_forbidden' });
         }
 
         const publicShare = await db.publicSessionShare.findUnique({
@@ -289,19 +373,28 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
     }, async (request, reply) => {
         const userId = request.userId;
         const { sessionId } = request.params;
+        const authentication = readSessionAccessAuthenticationFromRequest(request);
 
         // Only owner can delete public share
-        if (!await isSessionOwner(userId, sessionId)) {
-            return reply.code(403).send({ error: 'Forbidden' });
+        const admission = await resolveSessionAccessForOperation(db, {
+            accountId: userId,
+            sessionId,
+            authentication,
+            capability: "managePublicLink",
+        });
+        if (admission.status !== "allowed" || !admission.access.capabilities.managePublicLink) {
+            return reply.code(403).send({ error: 'session_access_forbidden' });
         }
 
-        const deleted = await inTx(async (tx) => {
+        const result = await inTx(async (tx) => {
+            const authority = await assertSessionCapabilityInTx({ tx, accountId: userId, sessionId, capability: "managePublicLink", authentication });
+            if (!authority.ok) return { type: "forbidden" as const };
             const existing = await tx.publicSessionShare.findUnique({
                 where: { sessionId }
             });
 
             if (!existing) {
-                return false;
+                return { type: "not-found" as const };
             }
 
             await tx.publicSessionShare.delete({
@@ -326,10 +419,13 @@ export function registerPublicShareOwnerRoutes(app: Fastify): void {
                 });
             });
 
-            return true;
+            return { type: "ok" as const };
         });
 
-        if (!deleted) {
+        if (result.type === "forbidden") {
+            return reply.code(403).send({ error: "session_access_forbidden" });
+        }
+        if (result.type === "not-found") {
             return reply.code(404).send({ error: 'Share not found' });
         }
 

@@ -536,10 +536,13 @@ async function admitEncryptedAutomationEventV1(params: Readonly<{
             })),
             select: existingEventOccurrenceSelect,
         });
-        const existingByOccurrence = new Map(existingOccurrences.map((row) => [
-            occurrenceLookupKey(row.automationId, row.occurrenceKey!),
-            row,
-        ]));
+        const existingByOccurrence = new Map(existingOccurrences.map((row) => {
+            if (row.automationId === null || row.causeKind === null) {
+                throw new Error("Stored Automation occurrence has invalid origin correspondence");
+            }
+            const occurrence = { ...row, automationId: row.automationId, causeKind: row.causeKind };
+            return [occurrenceLookupKey(occurrence.automationId, occurrence.occurrenceKey!), occurrence] as const;
+        }));
         const missing: DefinitionGroup<EncryptedDefinition>[] = [];
         for (const group of groups) {
             const definition = group.definition;
@@ -933,10 +936,13 @@ export async function admitAutomationEventV1(params: Readonly<{
             })),
             select: existingEventOccurrenceSelect,
         });
-        const existingByOccurrence = new Map(existingOccurrences.map((row) => [
-            occurrenceLookupKey(row.automationId, row.occurrenceKey!),
-            row,
-        ]));
+        const existingByOccurrence = new Map(existingOccurrences.map((row) => {
+            if (row.automationId === null || row.causeKind === null) {
+                throw new Error("Stored Automation occurrence has invalid origin correspondence");
+            }
+            const occurrence = { ...row, automationId: row.automationId, causeKind: row.causeKind };
+            return [occurrenceLookupKey(occurrence.automationId, occurrence.occurrenceKey!), occurrence] as const;
+        }));
         for (const group of groups) {
             const { evidence, occurrenceKey } = occurrenceByGroupKey.get(group.key)!;
             const existing = existingByOccurrence.get(occurrenceLookupKey(

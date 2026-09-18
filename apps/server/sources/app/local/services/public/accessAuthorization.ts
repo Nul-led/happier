@@ -1,4 +1,5 @@
 import type { LocalServicePublicExposureV1 } from "@happier-dev/protocol";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 /**
  * Canonical owner of the two access-time facts a public exposure request carries beyond its
@@ -15,7 +16,13 @@ export type LocalServicePublicAccessSessionAuthorizer = (input: Readonly<{
     userId: string;
     sessionId: string;
     purpose: LocalServicePublicAccessPurpose;
+    authentication: SessionAccessAuthentication;
 }>) => boolean | Promise<boolean>;
+
+export type LocalServicePublicAuthenticatedUser = Readonly<{
+    userId: string;
+    authentication: SessionAccessAuthentication;
+}>;
 
 export type LocalServicePublicAccessIdentity = Readonly<{
     authenticated: boolean;
@@ -24,11 +31,11 @@ export type LocalServicePublicAccessIdentity = Readonly<{
 
 export async function resolveLocalServicePublicAccessIdentity(input: Readonly<{
     exposureId: string;
-    userId: string | null;
+    principal: LocalServicePublicAuthenticatedUser | null;
     resolveExposure?: (exposureId: string) => LocalServicePublicExposureV1 | null | undefined;
     authorizeSessionAccess?: LocalServicePublicAccessSessionAuthorizer;
 }>): Promise<LocalServicePublicAccessIdentity> {
-    if (!input.userId) {
+    if (!input.principal) {
         return { authenticated: false, sessionAuthorized: false };
     }
     const exposure = input.resolveExposure?.(input.exposureId) ?? null;
@@ -37,9 +44,10 @@ export async function resolveLocalServicePublicAccessIdentity(input: Readonly<{
     }
     try {
         const authorized = await input.authorizeSessionAccess({
-            userId: input.userId,
+            userId: input.principal.userId,
             sessionId: exposure.sessionId,
             purpose: "public_access",
+            authentication: input.principal.authentication,
         });
         return { authenticated: true, sessionAuthorized: authorized === true };
     } catch {

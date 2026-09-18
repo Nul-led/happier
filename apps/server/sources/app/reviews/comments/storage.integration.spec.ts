@@ -1,9 +1,11 @@
 import { createHash } from "node:crypto";
+import { claimReviewCommentPublication } from "@/testkit/reviewCommentPublicationTestkit";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import tweetnacl from "tweetnacl";
 
 import { createFakeRouteApp, createReplyStub, getRouteHandler } from "@/app/api/testkit/routeHarness";
 import { registerApiRoutes } from "@/app/api/api";
+import { updateAccountEncryptionMode } from "@/app/api/routes/account/updateAccountEncryptionMode";
 import {
     acquireAccountEncryptionTransitionFenceInTx,
     applyAccountEncryptionTransitionInTx,
@@ -16,7 +18,10 @@ import {
     createTrustedMachineInstallation,
 } from "@/testkit/pluginInstallationPublisherTestkit";
 import {
+    signAccountContentKeyBindingV1,
     GENERAL_PLUGIN_PERMISSION_SUBJECT_V1,
+    buildReviewCommentPublicationTransportRequestV1,
+    openReviewCommentPublicationTransportResponseV1,
     PLUGIN_INSTALLATION_MANIFEST_PUBLISHER_HEADER_V1,
     createReviewCommentPrincipalSigningInputV1,
     REVIEW_COMMENT_DIRECT_WRITE_SCOPE_V1,
@@ -28,6 +33,7 @@ import {
     stringifyReviewCommentPrincipalCanonicalJsonV1,
     type ReviewCommentActorRefV1,
     type ReviewCommentCurrentIntentV1,
+    type ReviewCommentPublicationPlanV1,
 } from "@happier-dev/protocol";
 import { buildReviewCommentTextSnapshotHashes } from "./snapshots";
 import { createReviewCommentOperations } from "./operations";
@@ -44,13 +50,10 @@ function e2eeAccountFields(seedByte: number) {
     const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(seedByte));
     const content = tweetnacl.box.keyPair.fromSecretKey(new Uint8Array(32).fill(seedByte + 1));
     const contentPublicKey = new Uint8Array(content.publicKey);
-    const contentPublicKeySig = tweetnacl.sign.detached(
-        Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentPublicKey),
-        ]),
-        signing.secretKey,
-    );
+    const contentPublicKeySig = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signing.secretKey,
+        contentPublicKey: contentPublicKey,
+    });
     return {
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         encryptionMode: "e2ee" as const,
@@ -269,8 +272,8 @@ describe("review comment durable storage", () => {
         };
 
         const outcomes = await Promise.all([
-            operations.claimPublicationDispatch(request),
-            operations.claimPublicationDispatch(request),
+            claimReviewCommentPublication(operations, request),
+            claimReviewCommentPublication(operations, request),
         ]);
 
         expect(outcomes.map(({ disposition }) => disposition).sort())
@@ -339,7 +342,7 @@ describe("review comment durable storage", () => {
             },
         };
 
-        const first = await operations.claimPublicationDispatch(request);
+        const first = await claimReviewCommentPublication(operations, request);
         expect(first).toMatchObject({
             disposition: "dispatch",
             instructions: {
@@ -350,7 +353,7 @@ describe("review comment durable storage", () => {
         });
         expect(first.dispatchToken).toEqual(expect.any(String));
 
-        await operations.claimPublicationDispatch({
+        await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -372,7 +375,7 @@ describe("review comment durable storage", () => {
             },
         });
 
-        const retry = await operations.claimPublicationDispatch(request);
+        const retry = await claimReviewCommentPublication(operations, request);
         expect(retry).toMatchObject({
             disposition: "dispatch",
             instructions: {
@@ -445,9 +448,9 @@ describe("review comment durable storage", () => {
                 verdict: null,
             },
         };
-        const first = await operations.claimPublicationDispatch(request);
+        const first = await claimReviewCommentPublication(operations, request);
 
-        await operations.claimPublicationDispatch({
+        await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -466,7 +469,7 @@ describe("review comment durable storage", () => {
             },
         });
 
-        const retry = await operations.claimPublicationDispatch(request);
+        const retry = await claimReviewCommentPublication(operations, request);
         expect(retry).toMatchObject({
             disposition: "reconcile",
             dispatchToken: null,
@@ -483,7 +486,7 @@ describe("review comment durable storage", () => {
             },
         });
 
-        const reconciled = await operations.claimPublicationDispatch({
+        const reconciled = await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -510,13 +513,110 @@ describe("review comment durable storage", () => {
                 ],
             },
         });
-        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+        await expect(claimReviewCommentPublication(operations, request)).resolves.toMatchObject({
             disposition: "dispatch",
             instructions: {
                 entries: ["confirmed", "dispatch", "dispatch"],
                 verdict: null,
             },
         });
+    });
+
+    it("admits keyless plain publication after an Account transition retains its public binding", async () => {
+        const account = await db.account.create({
+            data: { id: "account-publication-plain-retained-binding", ...e2eeAccountFields(81) },
+            select: { id: true },
+        });
+        await expect(updateAccountEncryptionMode({ accountId: account.id, mode: "plain" }))
+            .resolves.toMatchObject({ status: "updated", mode: "plain" });
+        const transitioned = await db.account.findUniqueOrThrow({
+            where: { id: account.id },
+            select: { encryptionMode: true, contentPublicKey: true, contentPublicKeySig: true },
+        });
+        expect(transitioned.encryptionMode).toBe("plain");
+        expect(transitioned.contentPublicKey).not.toBeNull();
+        expect(transitioned.contentPublicKeySig).not.toBeNull();
+
+        const context = { accountId: account.id, mode: "plain" as const, material: null };
+        const plan: ReviewCommentPublicationPlanV1 = {
+            target: { providerId: "github", configuredAccountId: "github-account-1",
+                entryRef: { sourceId: "github", kindId: "pull-request", collisionScope: "repository-1", entryId: "42" }, subtarget: null },
+            baseRevision: "base", headRevision: "head", entries: [], verdict: { kind: "comment", body: "Review summary." },
+        };
+        const wire = buildReviewCommentPublicationTransportRequestV1({
+            input: plan, context, randomBytes: (length) => tweetnacl.randomBytes(length),
+        });
+        expect(wire.contentPublicKeyFingerprint).toBeNull();
+        const route = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments/publication/claim");
+        const reply = createReplyStub();
+        const response = await route({ userId: account.id, body: wire }, reply);
+        expect(reply.statusCode).toBe(200);
+        const first = openReviewCommentPublicationTransportResponseV1({ plan, context, response });
+        expect(first.disposition).toBe("dispatch");
+        const rejoined = openReviewCommentPublicationTransportResponseV1({ plan, context,
+            response: await route({ userId: account.id, body: wire }, createReplyStub()) });
+        expect(rejoined.disposition).toBe("reconcile");
+        expect(rejoined.publicationPlanId).toBe(first.publicationPlanId);
+    });
+
+    it("keeps E2EE publication retries private in HTTP and durable claims and rejects stale Account material", async () => {
+        const account = await db.account.create({ data: {
+            id: "account-publication-private", ...e2eeAccountFields(71),
+        }, select: { id: true } });
+        const context = { accountId: account.id, mode: "e2ee" as const,
+            material: { type: "dataKey" as const, machineKey: new Uint8Array(32).fill(72) } };
+        const plan: ReviewCommentPublicationPlanV1 = {
+            target: { providerId: "github", configuredAccountId: "private-account-canary",
+                entryRef: { sourceId: "github", kindId: "pull-request", collisionScope: "private-repository-canary", entryId: "private-pr-canary" }, subtarget: null },
+            baseRevision: "private-base-canary", headRevision: "private-head-canary", entries: [],
+            verdict: { kind: "comment", body: "private-summary-canary" },
+        };
+        const route = getRouteHandler(registerDefaultRoutes(), "POST", "/v1/reviews/comments/publication/claim");
+        const build = (input: Parameters<typeof buildReviewCommentPublicationTransportRequestV1>[0]["input"]) =>
+            buildReviewCommentPublicationTransportRequestV1({ input, context, randomBytes: (length) => tweetnacl.randomBytes(length) });
+        const firstWire = build(plan);
+        const first = openReviewCommentPublicationTransportResponseV1({ plan, context,
+            response: await route({ userId: account.id, body: firstWire }, createReplyStub()) });
+        const failureWire = build({ ...plan, settlement: { dispatchToken: first.dispatchToken, result: {
+            publicationPlanId: first.publicationPlanId, entries: [], verdict: { publicationCorrelationId: first.verdict!.publicationCorrelationId,
+                outcome: { kind: "failed", code: "private-provider-error-canary", message: "private-provider-message-canary" } },
+        } } });
+        await route({ userId: account.id, body: failureWire }, createReplyStub());
+        const retry = openReviewCommentPublicationTransportResponseV1({ plan, context,
+            response: await route({ userId: account.id, body: firstWire }, createReplyStub()) });
+        expect(retry.instructions.verdict).toBe("dispatch");
+        expect(retry.priorResult?.verdict).toMatchObject({ outcome: { kind: "failed", code: "private-provider-error-canary" } });
+        const publishedWire = build({ ...plan, settlement: { dispatchToken: retry.dispatchToken, result: {
+            publicationPlanId: retry.publicationPlanId, entries: [], verdict: { publicationCorrelationId: retry.verdict!.publicationCorrelationId,
+                outcome: { kind: "published", externalRef: "https://private-provider-canary/review/7" } },
+        } } });
+        await route({ userId: account.id, body: publishedWire }, createReplyStub());
+        const rejoined = openReviewCommentPublicationTransportResponseV1({ plan, context,
+            response: await route({ userId: account.id, body: firstWire }, createReplyStub()) });
+        expect(rejoined.instructions.verdict).toBe("confirmed");
+        expect(rejoined.priorResult?.verdict).toMatchObject({ outcome: { kind: "published", externalRef: "https://private-provider-canary/review/7" } });
+        await expect(updateAccountEncryptionMode({ accountId: account.id, mode: "plain" }))
+            .resolves.toMatchObject({ status: "migration_required" });
+        expect((await db.account.findUniqueOrThrow({ where: { id: account.id }, select: { encryptionMode: true } })).encryptionMode)
+            .toBe("e2ee");
+        const rows = await db.$queryRaw<Array<{ target_json: string; target_key: string }>>`
+            SELECT target_json, target_key FROM review_comment_publication_correlations WHERE account_id = ${account.id}`;
+        expect(rows).toHaveLength(1);
+        const storedAndHttp = JSON.stringify([firstWire, failureWire, publishedWire, rows]);
+        for (const canary of ["private-account-canary", "private-repository-canary", "private-pr-canary", "private-base-canary",
+            "private-head-canary", "private-summary-canary", "private-provider-error-canary", "private-provider-message-canary", "private-provider-canary"]) {
+            expect(storedAndHttp).not.toContain(canary);
+        }
+        const staleKeyWire = buildReviewCommentPublicationTransportRequestV1({ input: plan,
+            context: { ...context, material: { type: "dataKey", machineKey: new Uint8Array(32).fill(73) } },
+            randomBytes: (length) => tweetnacl.randomBytes(length) });
+        const staleKeyReply = createReplyStub();
+        await route({ userId: account.id, body: staleKeyWire }, staleKeyReply);
+        expect(staleKeyReply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_encryption_mode_mismatch" }));
+        const wrongModeReply = createReplyStub();
+        await route({ userId: account.id, body: buildReviewCommentPublicationTransportRequestV1({ input: plan,
+            context: { accountId: account.id, mode: "plain", material: null }, randomBytes: (length) => tweetnacl.randomBytes(length) }) }, wrongModeReply);
+        expect(wrongModeReply.send).toHaveBeenCalledWith(expect.objectContaining({ error: "review_comment_encryption_mode_mismatch" }));
     });
 
     it("admits one concurrent retry and rejects a stale completion token", async () => {
@@ -571,7 +671,7 @@ describe("review comment durable storage", () => {
                 verdict: null,
             },
         };
-        const first = await operations.claimPublicationDispatch(request);
+        const first = await claimReviewCommentPublication(operations, request);
         const failedResult = {
             publicationPlanId: first.publicationPlanId,
             entries: [{
@@ -581,24 +681,33 @@ describe("review comment durable storage", () => {
             }],
             verdict: { kind: "notRequested" as const },
         };
-        await operations.claimPublicationDispatch({
+        // Model an intervening edit at the real persistence boundary: a frozen
+        // publication rejoin must not re-admit against the live revision.
+        await db.$executeRaw`UPDATE review_comments SET server_revision = server_revision + 1
+            WHERE account_id = ${account.id} AND id = ${comment.id}`;
+        await expect(claimReviewCommentPublication(operations, request)).resolves.toMatchObject({
+            disposition: "reconcile",
+            publicationPlanId: first.publicationPlanId,
+            instructions: { entries: ["reconcile"], verdict: null },
+        });
+        await claimReviewCommentPublication(operations, {
             ...request,
             input: { ...request.input, settlement: { dispatchToken: first.dispatchToken, result: failedResult } },
         });
 
         const concurrent = await Promise.all([
-            operations.claimPublicationDispatch(request),
-            operations.claimPublicationDispatch(request),
+            claimReviewCommentPublication(operations, request),
+            claimReviewCommentPublication(operations, request),
         ]);
         expect(concurrent.map((claim) => claim.disposition).sort()).toEqual(["dispatch", "reconcile"]);
         const active = concurrent.find((claim) => claim.disposition === "dispatch")!;
         expect(active.dispatchToken).not.toBe(first.dispatchToken);
 
-        await expect(operations.claimPublicationDispatch({
+        await expect(claimReviewCommentPublication(operations, {
             ...request,
             input: { ...request.input, settlement: { dispatchToken: first.dispatchToken, result: failedResult } },
         })).rejects.toMatchObject({ code: "review_comment_idempotency_conflict" });
-        const afterStaleCompletion = await operations.claimPublicationDispatch(request);
+        const afterStaleCompletion = await claimReviewCommentPublication(operations, request);
         expect(afterStaleCompletion).toMatchObject({ disposition: "reconcile", dispatchToken: null });
     });
 
@@ -638,13 +747,13 @@ describe("review comment durable storage", () => {
         };
 
         const outcomes = await Promise.all([
-            operations.claimPublicationDispatch(request),
-            operations.claimPublicationDispatch(request),
+            claimReviewCommentPublication(operations, request),
+            claimReviewCommentPublication(operations, request),
         ]);
 
         expect(outcomes.map(({ disposition }) => disposition).sort())
             .toEqual(["dispatch", "reconcile"]);
-        const laterVerdict = await operations.claimPublicationDispatch({
+        const laterVerdict = await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,

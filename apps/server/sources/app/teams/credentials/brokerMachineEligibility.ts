@@ -1,0 +1,105 @@
+import {
+    MachineKindFromLegacyProjectionSchema,
+    isPersistentMachine,
+    readMachineIrohEndpointAuthorityV1,
+    supportsMachineOperationProtocolCapabilityV1,
+    type MachineIrohEndpointAuthorityV1,
+} from "@happier-dev/protocol";
+
+import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
+import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
+import type { Tx } from "@/storage/inTx";
+
+interface TeamCredentialBrokerMachineTarget {
+    readonly custodianAccountId: string;
+    readonly brokerMachineId: string | null;
+}
+
+type TeamCredentialBrokerMachineProjection = Readonly<{
+    kind: string;
+    revokedAt: Date | null;
+    replacedByMachineId: string | null;
+    operationProtocolCapabilities: unknown;
+    operationProtocolCapabilitiesRevision: number | null;
+}>;
+
+export function classifyTeamCredentialBrokerMachineEligibility(
+    machine: TeamCredentialBrokerMachineProjection | null,
+): "eligible" | "ineligible" | "update_required" {
+    if (machine === null || classifyMachineAvailabilityState(machine) !== "available") return "ineligible";
+    const kind = MachineKindFromLegacyProjectionSchema.safeParse(machine.kind);
+    if (!kind.success || !isPersistentMachine({ kind: kind.data })) return "ineligible";
+    if (!supportsMachineOperationProtocolCapabilityV1(machine.operationProtocolCapabilities, "providerBrokerIngress")) {
+        return "update_required";
+    }
+    if (!Number.isInteger(machine.operationProtocolCapabilitiesRevision)
+        || (machine.operationProtocolCapabilitiesRevision ?? 0) <= 0) {
+        return "update_required";
+    }
+    return "eligible";
+}
+
+export type TeamCredentialBrokerMachineEligibilityError = Readonly<{
+    ok: false;
+    error: "broker_unavailable" | "update_required";
+}>;
+
+async function readEligibleBrokerMachineInTx(tx: Tx, target: TeamCredentialBrokerMachineTarget) {
+    if (!target.brokerMachineId) return { ok: false, error: "broker_unavailable" } as const;
+    const machine = await tx.machine.findFirst({
+        where: { id: target.brokerMachineId, accountId: target.custodianAccountId },
+        select: {
+            id: true,
+            kind: true,
+            revokedAt: true,
+            replacedByMachineId: true,
+            operationProtocolCapabilities: true,
+            operationProtocolCapabilitiesRevision: true,
+        },
+    });
+    if (machine === null) return { ok: false, error: "broker_unavailable" } as const;
+    const eligibility = classifyTeamCredentialBrokerMachineEligibility(machine);
+    if (eligibility === "ineligible") {
+        return { ok: false, error: "broker_unavailable" } as const;
+    }
+    if (eligibility === "update_required") {
+        return { ok: false, error: "update_required" } as const;
+    }
+    return { ok: true, machine } as const;
+}
+
+/** Saved placement requires known compatibility, but an offline broker remains repairable. */
+export async function resolveTeamCredentialBrokerMachineForSaveInTx(
+    tx: Tx,
+    target: TeamCredentialBrokerMachineTarget,
+): Promise<Readonly<{ ok: true; machineId: string }> | TeamCredentialBrokerMachineEligibilityError> {
+    const eligible = await readEligibleBrokerMachineInTx(tx, target);
+    if (!eligible.ok) return eligible;
+    return { ok: true, machineId: eligible.machine.id };
+}
+
+/**
+ * Rechecks saved eligibility and the current endpoint in the caller's authority transaction.
+ * The caller obtains the canonical Socket.IO presence inventory before entering the transaction;
+ * persisted active/lastActiveAt fields are not live presence authority.
+ */
+export async function resolveTeamCredentialBrokerMachineForOpenInTx(
+    tx: Tx,
+    params: TeamCredentialBrokerMachineTarget & Readonly<{ presence: MachineDaemonPresenceInventory }>,
+): Promise<Readonly<{
+    ok: true;
+    machineId: string;
+    endpointAuthority: MachineIrohEndpointAuthorityV1;
+}> | TeamCredentialBrokerMachineEligibilityError> {
+    const eligible = await readEligibleBrokerMachineInTx(tx, params);
+    if (!eligible.ok) return eligible;
+    if (params.presence.state !== "known" || !params.presence.machineIds.has(eligible.machine.id)) {
+        return { ok: false, error: "broker_unavailable" };
+    }
+    const endpointAuthority = readMachineIrohEndpointAuthorityV1({
+        capabilities: eligible.machine.operationProtocolCapabilities,
+        revision: eligible.machine.operationProtocolCapabilitiesRevision,
+    });
+    if (!endpointAuthority) return { ok: false, error: "broker_unavailable" };
+    return { ok: true, machineId: eligible.machine.id, endpointAuthority };
+}

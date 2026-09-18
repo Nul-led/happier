@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { Server } from "socket.io";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { io as ioClient } from "socket.io-client";
 
@@ -251,6 +252,7 @@ describe("startSocket (auth policy enforcement)", () => {
         });
         const apiToken = await auth.createApiToken({
             accountId: account.id,
+            tokenId: crypto.randomUUID(),
             label: "Socket admission must reject this",
         });
 
@@ -608,6 +610,135 @@ describe("startSocket (auth policy enforcement)", () => {
 
                 await expect(outcome).resolves.toBe("disconnected");
                 expect(verifySpy).toHaveBeenCalledTimes(2);
+            } finally {
+                releaseFinalVerification.resolve();
+                socket.close();
+                verifySpy.mockRestore();
+                await app.close();
+            }
+        }
+    }, 30_000);
+
+    it("keeps protected fanout rooms unavailable until final token currentness succeeds", async () => {
+        const admissions = [
+            {
+                name: "user",
+                configure: async (accountId: string) => ({
+                    socketAuth: {} as Readonly<Record<string, string>>,
+                    protectedRoom: `user-scoped:${accountId}`,
+                }),
+            },
+            {
+                name: "session",
+                configure: async (accountId: string) => {
+                    const sessionId = `s-room-currentness-${crypto.randomUUID()}`;
+                    await db.session.create({
+                        data: {
+                            id: sessionId,
+                            tag: `t-room-currentness-${crypto.randomUUID()}`,
+                            accountId,
+                            encryptionMode: "e2ee",
+                            metadata: "{}",
+                        },
+                    });
+                    return {
+                        socketAuth: { clientType: "session-scoped", sessionId },
+                        protectedRoom: `session:${sessionId}:${accountId}`,
+                    };
+                },
+            },
+            {
+                name: "machine",
+                configure: async (accountId: string) => {
+                    const machineId = `m-room-currentness-${crypto.randomUUID()}`;
+                    await db.machine.create({
+                        data: {
+                            id: machineId,
+                            accountId,
+                            metadata: "metadata",
+                            metadataVersion: 1,
+                            daemonState: null,
+                            daemonStateVersion: 0,
+                            active: false,
+                        },
+                    });
+                    return {
+                        socketAuth: { clientType: "machine-scoped", machineId },
+                        protectedRoom: `machine:${machineId}:${accountId}`,
+                    };
+                },
+            },
+        ] as const;
+
+        for (const admission of admissions) {
+            const account = await db.account.create({
+                data: { publicKey: `pk-room-currentness-${admission.name}-${crypto.randomUUID()}` },
+                select: { id: true },
+            });
+            const token = await auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+            });
+            const { socketAuth, protectedRoom } = await admission.configure(account.id);
+            const finalVerificationReached = deferred();
+            const releaseFinalVerification = deferred();
+            const originalVerifyToken = auth.verifyToken;
+            let verifyCalls = 0;
+            const verifySpy = vi.spyOn(auth, "verifyToken").mockImplementation(async (candidate) => {
+                const verified = await originalVerifyToken.call(auth, candidate);
+                verifyCalls += 1;
+                if (verifyCalls === 2) {
+                    finalVerificationReached.resolve();
+                    await releaseFinalVerification.promise;
+                }
+                return verified;
+            });
+
+            const app = Fastify({ logger: false }) as unknown as AppFastify;
+            startSocket(app);
+            const socketServer = app.machineDaemonPresence;
+            if (!(socketServer instanceof Server)) throw new Error("Expected the live Socket.IO server");
+            await app.listen({ port: 0, host: "127.0.0.1" });
+            const address = app.server.address();
+            const port = typeof address === "object" && address ? address.port : null;
+            if (!port) {
+                releaseFinalVerification.resolve();
+                verifySpy.mockRestore();
+                await app.close();
+                throw new Error("Failed to bind socket server");
+            }
+
+            const socket = ioClient(`http://127.0.0.1:${port}`, {
+                path: "/v1/updates",
+                transports: ["websocket"],
+                reconnection: false,
+                autoConnect: false,
+                auth: { token, ...socketAuth },
+            });
+            const protectedPayloads: unknown[] = [];
+            socket.on("currentness-protected-probe", (payload) => protectedPayloads.push(payload));
+
+            try {
+                socket.connect();
+                await finalVerificationReached.promise;
+
+                expect(await socketServer.in(protectedRoom).fetchSockets(), admission.name)
+                    .toHaveLength(0);
+                socketServer.to(protectedRoom).emit("currentness-protected-probe", {
+                    phase: "before-currentness",
+                });
+                await new Promise<void>((resolve) => setTimeout(resolve, 50));
+                expect(protectedPayloads, admission.name).toEqual([]);
+
+                releaseFinalVerification.resolve();
+                await expect.poll(
+                    async () => (await socketServer.in(protectedRoom).fetchSockets()).length,
+                ).toBe(1);
+                socketServer.to(protectedRoom).emit("currentness-protected-probe", {
+                    phase: "after-currentness",
+                });
+                await expect.poll(() => protectedPayloads).toEqual([{ phase: "after-currentness" }]);
+                expect(verifySpy, admission.name).toHaveBeenCalledTimes(2);
             } finally {
                 releaseFinalVerification.resolve();
                 socket.close();

@@ -40,6 +40,14 @@ export function isPlainArtifactDataKeyBytes(bytes: Uint8Array): boolean {
     return isPlainArtifactDataKeyMarker(privacyKit.encodeBase64(copyBytes(bytes)));
 }
 
+export function artifactDataKeyMatchesAccountMode(params: Readonly<{
+    mode: EffectiveAccountEncryptionMode;
+    dataEncryptionKey: Uint8Array;
+}>): boolean {
+    return (params.mode === "plain")
+        === isPlainArtifactDataKeyBytes(params.dataEncryptionKey);
+}
+
 export function artifactStoredContentMatchesAccountMode(params: Readonly<{
     mode: EffectiveAccountEncryptionMode;
     header: Uint8Array;
@@ -47,7 +55,8 @@ export function artifactStoredContentMatchesAccountMode(params: Readonly<{
     dataEncryptionKey: Uint8Array;
 }>): boolean {
     const plain = isPlainArtifactDataKeyBytes(params.dataEncryptionKey);
-    if (params.mode === "plain") {
+    if (!artifactDataKeyMatchesAccountMode(params)) return false;
+    if (plain) {
         return plain
             && isPlainStoredContent(params.header)
             && isPlainStoredContent(params.body);
@@ -94,11 +103,15 @@ export function storePlainArtifactDbBytes(params: Readonly<{
 export function openArtifactStoredContentBytes(params: Readonly<{
     accountId: string;
     artifactId: string;
+    mode: EffectiveAccountEncryptionMode;
     field: ArtifactContentField;
     dataEncryptionKey: Uint8Array;
     content: Uint8Array;
 }>): Uint8Array<ArrayBuffer> | null {
-    if (!isPlainArtifactDataKeyBytes(params.dataEncryptionKey)) {
+    const plain = isPlainArtifactDataKeyBytes(params.dataEncryptionKey);
+    if (!artifactDataKeyMatchesAccountMode(params)) return null;
+    if (!plain) {
+        if (isPlainStoredContent(params.content)) return null;
         return copyBytes(params.content);
     }
     if (isPlainStoredContent(params.content)) {
@@ -126,6 +139,7 @@ export function openArtifactStoredContentBytes(params: Readonly<{
 export function openArtifactStoredContentPair(params: Readonly<{
     accountId: string;
     artifactId: string;
+    mode: EffectiveAccountEncryptionMode;
     dataEncryptionKey: Uint8Array;
     header: Uint8Array;
     body: Uint8Array;

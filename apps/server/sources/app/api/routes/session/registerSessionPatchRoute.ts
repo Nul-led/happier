@@ -24,6 +24,12 @@ import {
     enforceCurrentAccountStoredContentCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
 import { type Fastify } from "../../types";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
+import {
+    SessionTeamCredentialBindingMetadataPatchV1Schema,
+    SessionTeamCredentialBindingMutationRejectionV1Schema,
+} from "@happier-dev/protocol/teams";
+import { PRESENT_USER_REQUIRED_ERROR } from "@/app/api/utils/apiTokenRouteAdmission";
 
 export function registerSessionPatchRoute(app: Fastify) {
     const legacyPatchBodySchema = z.object({
@@ -38,12 +44,15 @@ export function registerSessionPatchRoute(app: Fastify) {
     }).strict();
     app.patch('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
+        attachValidation: true,
+        config: { ephemeralSessionRunnerOperation: "session_shared_editor" },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: z.union([
                 SessionMetadataTuplePatchV1Schema,
                 SessionMetadataInactiveModelIntentOwnerPatchV1Schema,
                 SessionMetadataInactiveModelIntentPatchV1Schema,
+                SessionTeamCredentialBindingMetadataPatchV1Schema,
                 legacyPatchBodySchema,
             ]),
             response: {
@@ -65,7 +74,10 @@ export function registerSessionPatchRoute(app: Fastify) {
                     }),
                 ]),
                 400: z.object({ error: z.literal("Invalid parameters") }),
-                403: z.object({ error: z.literal("Forbidden") }),
+                403: z.union([
+                    z.object({ error: z.literal("Forbidden") }),
+                    z.object({ error: z.literal(PRESENT_USER_REQUIRED_ERROR) }),
+                ]),
                 404: z.object({ error: z.literal("Session not found") }),
                 409: z.union([
                     z.object({
@@ -79,12 +91,16 @@ export function registerSessionPatchRoute(app: Fastify) {
                             "session_publisher_authority_lost",
                         ),
                     }).strict(),
+                    SessionTeamCredentialBindingMutationRejectionV1Schema,
                 ]),
                 426: z.unknown(),
                 500: z.object({ error: z.literal("Failed to update session") }),
             },
         },
     }, async (request, reply) => {
+        if (request.validationError) {
+            return reply.code(400).send({ error: "Invalid parameters" });
+        }
         const userId = request.userId;
         const { sessionId } = request.params;
         if ("mode" in request.body) {
@@ -97,11 +113,16 @@ export function registerSessionPatchRoute(app: Fastify) {
             ) {
                 return;
             }
-            const tupleResult = await updateSessionMetadataEnvelopeTuple({
-                ...tupleBody,
-                actorUserId: userId,
-                sessionId,
-            });
+            const tupleInput = tupleBody.mode === "shared_editor"
+                || tupleBody.mode === "owner_team_credential_binding"
+                ? {
+                    ...tupleBody,
+                    actorUserId: userId,
+                    sessionId,
+                    authentication: readSessionAccessAuthenticationFromRequest(request),
+                }
+                : { ...tupleBody, actorUserId: userId, sessionId };
+            const tupleResult = await updateSessionMetadataEnvelopeTuple(tupleInput);
             if (!tupleResult.ok) {
                 if (tupleResult.error === "invalid-params") return reply.code(400).send({ error: "Invalid parameters" });
                 if (tupleResult.error === "forbidden") return reply.code(403).send({ error: "Forbidden" });
@@ -115,6 +136,15 @@ export function registerSessionPatchRoute(app: Fastify) {
                     return reply.code(409).send({
                         code:
                             "session_publisher_authority_lost" as const,
+                    });
+                }
+                if (tupleResult.error === "session_team_credential_binding_rejected") {
+                    if (!tupleResult.reason) {
+                        return reply.code(500).send({ error: "Failed to update session" });
+                    }
+                    return reply.code(409).send({
+                        code: "session_team_credential_binding_rejected" as const,
+                        reason: tupleResult.reason,
                     });
                 }
                 if (tupleResult.error === "metadata_privacy_upgrade_required") {
@@ -155,7 +185,7 @@ export function registerSessionPatchRoute(app: Fastify) {
 
             const published = await publishSessionCurrentViewUpdates({
                 sessionId,
-                participantCursors: tupleResult.participantCursors,
+                recipientCursors: tupleResult.recipientCursors,
                 source: {
                     kind: "envelope_tuple_v1",
                     sessionOwnerId: tupleResult.sessionOwnerId,
@@ -199,6 +229,7 @@ export function registerSessionPatchRoute(app: Fastify) {
         const result = await patchSession({
             actorUserId: userId,
             sessionId,
+            authentication: readSessionAccessAuthenticationFromRequest(request),
             metadata: metadata ? { ciphertext: metadata.ciphertext, expectedVersion: metadata.expectedVersion } : undefined,
             agentState: agentState ? { ciphertext: agentState.ciphertext, expectedVersion: agentState.expectedVersion } : undefined,
             sessionExpectation,
@@ -266,7 +297,7 @@ export function registerSessionPatchRoute(app: Fastify) {
         }
         const publishedLegacy = await publishSessionCurrentViewUpdates({
             sessionId,
-            participantCursors: result.participantCursors,
+            recipientCursors: result.recipientCursors,
             source: {
                 kind: "legacy_v0",
                 sessionOwnerId: userId,

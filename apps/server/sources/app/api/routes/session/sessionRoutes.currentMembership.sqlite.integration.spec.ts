@@ -240,7 +240,7 @@ describe("sessionRoutes current shared-participant reads (integration)", () => {
 
     beforeEach(() => {
         vi.resetModules();
-        harness.resetEnv();
+        harness.resetEnv({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" });
     });
 
     afterEach(async () => {
@@ -279,6 +279,62 @@ describe("sessionRoutes current shared-participant reads (integration)", () => {
                 expect(JSON.stringify(response.json())).not.toContain("sharedEditor");
             },
         );
+    });
+
+    it("keeps authenticated Account authorship when a public caller supplies the retired transcript-only hint", async () => {
+        const fixture = await createSharedSessionFixture();
+        await db.sessionShare.update({
+            where: {
+                sessionId_sharedWithUserId: {
+                    sessionId: fixture.sessionId,
+                    sharedWithUserId: fixture.collaboratorId,
+                },
+            },
+            data: { accessLevel: "edit" },
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => sessionRoutes(app),
+            async (app) => {
+                const response = await app.inject({
+                    method: "POST",
+                    url: `/v2/sessions/${fixture.sessionId}/messages`,
+                    headers: {
+                        "content-type": "application/json",
+                        "x-test-user-id": fixture.collaboratorId,
+                    },
+                    payload: {
+                        content: {
+                            t: "plain",
+                            v: { role: "user", content: { type: "text", text: "voice transcript" } },
+                        },
+                        localId: "voice-transcript-1",
+                        messageRole: "user",
+                        transcriptOnly: true,
+                    },
+                });
+
+                expect(response.statusCode, response.body).toBe(200);
+            },
+        );
+
+        expect(await db.sessionMessage.findUniqueOrThrow({
+            where: {
+                sessionId_localId: {
+                    sessionId: fixture.sessionId,
+                    localId: "voice-transcript-1",
+                },
+            },
+            select: { authorAccountId: true, inputAdmissionReceipt: true },
+        })).toEqual({
+            authorAccountId: fixture.collaboratorId,
+            inputAdmissionReceipt: {
+                v: 1,
+                issuer: "authenticatedAccount",
+                actorAccountId: fixture.collaboratorId,
+                sessionRelationship: "sharedEditor",
+            },
+        });
     });
 
     it("does not page messages after a collaborator share is revoked before the deciding transaction", async () => {
@@ -441,6 +497,7 @@ describe("sessionRoutes current shared-participant reads (integration)", () => {
         await db.session.update({
             where: { id: fixture.sessionId },
             data: {
+                seq: 2,
                 currentStorageState: "snapshot_complete",
                 acceptedThroughServerSeq: 2,
                 materializationPublicationId: "publication-current-membership",

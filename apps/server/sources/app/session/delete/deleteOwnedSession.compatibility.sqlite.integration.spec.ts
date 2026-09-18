@@ -124,6 +124,39 @@ describe("deleteOwnedSession stored-content compatibility (SQLite)", () => {
         })).toBe(1);
     });
 
+    it("invalidates a surviving Follow destination when deleting its source Session", async () => {
+        await db.session.createMany({ data: [{
+            id: "follow-source-delete",
+            tag: "follow-source-delete",
+            accountId: "owner",
+            metadata: "{}",
+            metadataLayoutVersion: 1,
+        }, {
+            id: "follow-destination-survives",
+            tag: "follow-destination-survives",
+            accountId: "owner",
+            metadata: "{}",
+            metadataLayoutVersion: 1,
+        }] });
+        await db.sessionFollowEdge.create({ data: {
+            sourceSessionId: "follow-source-delete",
+            destinationSessionId: "follow-destination-survives",
+        } });
+
+        const { deleteOwnedSession } = await import("./deleteOwnedSession");
+        await expect(deleteOwnedSession({
+            sessionId: "follow-source-delete",
+            ownerAccountId: "owner",
+            reason: "user_request",
+        })).resolves.toEqual({ ok: true });
+
+        expect(await db.accountChange.findUnique({ where: { accountId_kind_entityId: {
+            accountId: "owner",
+            kind: "session",
+            entityId: "follow-destination-survives",
+        } } })).not.toBeNull();
+    });
+
     it("rolls the durable deletion hint back when the physical delete loses its condition", async () => {
         await db.session.create({
             data: {
@@ -134,6 +167,17 @@ describe("deleteOwnedSession stored-content compatibility (SQLite)", () => {
                 metadataLayoutVersion: 0,
             },
         });
+        await db.session.create({ data: {
+            id: "delete-condition-destination",
+            tag: "delete-condition-destination",
+            accountId: "owner",
+            metadata: "{}",
+            metadataLayoutVersion: 1,
+        } });
+        await db.sessionFollowEdge.create({ data: {
+            sourceSessionId: "delete-condition-lost",
+            destinationSessionId: "delete-condition-destination",
+        } });
 
         const { deleteOwnedSession } = await import(
             "./deleteOwnedSession"
@@ -158,6 +202,13 @@ describe("deleteOwnedSession stored-content compatibility (SQLite)", () => {
                 accountId: "owner",
                 kind: "session",
                 entityId: "delete-condition-lost",
+            },
+        })).toBe(0);
+        expect(await db.accountChange.count({
+            where: {
+                accountId: "owner",
+                kind: "session",
+                entityId: "delete-condition-destination",
             },
         })).toBe(0);
         expect(emitUpdate).not.toHaveBeenCalled();

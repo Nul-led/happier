@@ -8,10 +8,19 @@ import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 
 const resetEnv = createEnvReset();
 
+/**
+ * The legacy diagnostics entitlement now additionally requires the listed
+ * Account to be active, so the database is the only boundary these route tests
+ * stand in for.
+ */
+const accountFindUnique = vi.hoisted(() => vi.fn());
+vi.mock("@/storage/db", () => ({ db: { account: { findUnique: accountFindUnique } } }));
+
 describe("bugReportDiagnosticsRoutes", () => {
     beforeEach(() => {
         vi.resetModules();
         resetEnv();
+        accountFindUnique.mockResolvedValue({ status: "active" });
     });
 
     afterEach(() => {
@@ -192,6 +201,28 @@ describe("bugReportDiagnosticsRoutes", () => {
         const { response } = await route.invoke({ userId: "owner-2" });
 
         expect((response as any).enabled).toBe(true);
+    });
+
+    it("refuses a configured diagnostics reader whose Account is no longer active", async () => {
+        resetEnv({
+            HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ENABLED: "1",
+            HAPPIER_BUG_REPORTS_SERVER_DIAGNOSTICS_ACCESS_MODE: "owner",
+            HAPPIER_SERVER_OWNER_USER_IDS: "owner-1,owner-2",
+        });
+
+        for (const status of ["suspended", "disabled"]) {
+            accountFindUnique.mockResolvedValue({ status });
+            const route = await createDiagnosticsRoute();
+            const { reply, response } = await route.invoke({ userId: "owner-2" });
+
+            expect(reply.code).toHaveBeenCalledWith(403);
+            expect(String((response as any).error ?? "")).toContain("owner");
+        }
+
+        accountFindUnique.mockResolvedValue(null);
+        const missing = await createDiagnosticsRoute();
+        const { reply } = await missing.invoke({ userId: "owner-2" });
+        expect(reply.code).toHaveBeenCalledWith(403);
     });
 
     it("returns 403 when owner-only mode is enabled without configured owners", async () => {

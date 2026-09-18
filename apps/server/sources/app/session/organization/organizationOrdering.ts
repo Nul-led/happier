@@ -14,6 +14,7 @@ import {
 } from "./organizationOrderValidation";
 import { createVisibleUnarchivedOrganizationSessionWhere } from "./sessionVisibility";
 import type { SessionOrganizationTx } from "./types";
+import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 
 interface OrderEntryHashGuardRow {
     readonly scopeKey: string;
@@ -51,6 +52,7 @@ function hasSessionOrganizationOrderHashCollision(params: Readonly<{
 export async function reorderSessionPinsInTx(tx: SessionOrganizationTx, params: Readonly<{
     accountId: string;
     request: ReorderSessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<
     | ReorderSessionOrganizationResponse
     | { readonly error: "invalid-session-organization-order" | "session-pin-limit-exceeded" }
@@ -59,6 +61,7 @@ export async function reorderSessionPinsInTx(tx: SessionOrganizationTx, params: 
         accountId: params.accountId,
         entries: params.request.entries,
         reader: tx,
+        authentication: params.authentication,
     });
     if (!valid) {
         return { error: "invalid-session-organization-order" };
@@ -70,7 +73,7 @@ export async function reorderSessionPinsInTx(tx: SessionOrganizationTx, params: 
             tx.sessionPin.count({
                 where: {
                     accountId: params.accountId,
-                    session: createVisibleUnarchivedOrganizationSessionWhere(params.accountId),
+                    session: await createVisibleUnarchivedOrganizationSessionWhere(tx, params.accountId, params.authentication),
                 },
             }),
             tx.sessionPin.findMany({
@@ -127,6 +130,7 @@ export async function reorderSessionPinsInTx(tx: SessionOrganizationTx, params: 
 export async function reorderSessionPins(params: Readonly<{
     accountId: string;
     request: ReorderSessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>): Promise<
     | ReorderSessionOrganizationResponse
     | { readonly error: "invalid-session-organization-order" | "session-pin-limit-exceeded" }
@@ -137,11 +141,13 @@ export async function reorderSessionPins(params: Readonly<{
 export async function reorderSessionOrganizationInTx(tx: SessionOrganizationTx, params: Readonly<{
     accountId: string;
     request: ReorderSessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>) {
     const valid = await validateSessionOrganizationOrderRequest({
         accountId: params.accountId,
         request: params.request,
         reader: tx,
+        authentication: params.authentication,
     });
     if (!valid) {
         return { error: "invalid-session-organization-order" };
@@ -240,6 +246,7 @@ export async function reorderSessionOrganizationInTx(tx: SessionOrganizationTx, 
 export async function reorderSessionOrganization(params: Readonly<{
     accountId: string;
     request: ReorderSessionOrganizationRequest;
+    authentication: SessionAccessAuthentication;
 }>) {
     return await inTx(async (tx) => await reorderSessionOrganizationInTx(tx, params));
 }

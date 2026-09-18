@@ -7,6 +7,7 @@ import {
 import type {
     SessionMetadataRecipientProjectionV1,
 } from "@happier-dev/protocol";
+import type { Prisma } from "@prisma/client";
 
 import {
     deriveAccountEncryptionCurrentnessFromRow,
@@ -81,6 +82,15 @@ export function requiresSessionMetadataOwnerAccountMode(params: Readonly<{
 }>): boolean {
     return params.session.metadataLayoutVersion
         === SESSION_METADATA_LAYOUT_VERSION_V1;
+}
+
+/** Selects rows representable by one captured stored-content compatibility result. */
+export function createSessionMetadataListRepresentabilityWhere(
+    compatibility: Readonly<{ supportsCurrentProtocol: boolean }>,
+): Prisma.SessionWhereInput {
+    return compatibility.supportsCurrentProtocol
+        ? {}
+        : { metadataLayoutVersion: { not: SESSION_METADATA_LAYOUT_VERSION_V1 } };
 }
 
 type SessionMetadataOwnerAccountCurrentnessRow = Readonly<{

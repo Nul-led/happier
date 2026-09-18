@@ -25,7 +25,8 @@ vi.mock("./type", () => ({
             profile: identity.profile,
             showOnProfile: Boolean(identity.showOnProfile),
         })),
-    buildUserProfile: (user: any, status: any, _githubProfile: any) => ({ id: user.id, status }),
+    describeIdentityPresentation: async () => new Map(),
+    buildUserProfile: (user: any, status: any, _identities: any, _presentation: any) => ({ id: user.id, status }),
 }));
 
 installPrismaModuleMock({

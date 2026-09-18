@@ -33,6 +33,10 @@ export function createAuthenticatedTestApp(
         request.authAuthority = request.authTokenKind === "account" || request.authTokenKind === "account_directory"
             ? "present_user"
             : "account_automation";
+        const authenticationEvidence = request.headers["x-test-authentication-evidence"];
+        if (typeof authenticationEvidence === "string") {
+            request.authTokenAuthenticationEvidence = JSON.parse(authenticationEvidence);
+        }
         if (request.authTokenKind === "api_token") {
             const accountId = request.headers["x-test-api-token-account-id"];
             const principalId = request.headers["x-test-api-token-principal-id"];

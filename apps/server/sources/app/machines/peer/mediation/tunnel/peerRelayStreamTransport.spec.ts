@@ -1,0 +1,89 @@
+import {
+    decodePeerTcpTunnelBinaryFrameV2,
+    encodePeerTcpTunnelBinaryFrameV2,
+} from "@happier-dev/protocol";
+import { describe, expect, it, vi } from "vitest";
+
+import { createPeerTcpTunnelRelaySubstream } from "./peerRelayStreamTransport";
+
+describe("createPeerTcpTunnelRelaySubstream", () => {
+    it("provides target-neutral framed byte transport while isolating the exact substream", async () => {
+        const sentFrames: Uint8Array[] = [];
+        const onReleased = vi.fn();
+        const substream = createPeerTcpTunnelRelaySubstream({
+            tunnelId: "tunnel-1",
+            substreamId: "substream-1",
+            initialWindowBytes: 64 * 1024,
+            maxFrameBytes: 64 * 1024,
+            maxDecodedPayloadBytes: 64 * 1024,
+            maxSendChunkBytes: 64 * 1024,
+            sendEncodedBinaryFrame: (frame) => {
+                sentFrames.push(frame);
+            },
+            onRelease: onReleased,
+        });
+
+        substream.open();
+        await expect(substream.stream.write(new TextEncoder().encode("request"))).resolves.toEqual({ ok: true });
+
+        const decodedSent = sentFrames.map((frame) => decodePeerTcpTunnelBinaryFrameV2({
+            frame,
+            maxHeaderBytes: 64 * 1024,
+            maxPayloadBytes: 64 * 1024,
+        }));
+        expect(decodedSent.map((decoded) => decoded.ok ? decoded.header.kind : null)).toEqual(["open", "data"]);
+        expect(decodedSent[1]).toMatchObject({
+            ok: true,
+            header: {
+                tunnelId: "tunnel-1",
+                substreamId: "substream-1",
+                direction: "client_to_daemon",
+            },
+        });
+
+        const read = substream.stream.read()[Symbol.asyncIterator]();
+        substream.acceptEnvelope({
+            v: 2,
+            scopeUserId: "account-1",
+            sender: { kind: "machine", machineId: "machine-1" },
+            recipient: { kind: "user" },
+            encoding: "binary_frame_v2",
+            frame: encodePeerTcpTunnelBinaryFrameV2({
+                header: {
+                    version: 2,
+                    kind: "data",
+                    tunnelId: "tunnel-1",
+                    substreamId: "another-substream",
+                    direction: "daemon_to_client",
+                    sequence: 0,
+                    payloadLength: 7,
+                },
+                payload: new TextEncoder().encode("ignored"),
+            }),
+        });
+        const response = new TextEncoder().encode("response");
+        substream.acceptEnvelope({
+            v: 2,
+            scopeUserId: "account-1",
+            sender: { kind: "machine", machineId: "machine-1" },
+            recipient: { kind: "user" },
+            encoding: "binary_frame_v2",
+            frame: encodePeerTcpTunnelBinaryFrameV2({
+                header: {
+                    version: 2,
+                    kind: "data",
+                    tunnelId: "tunnel-1",
+                    substreamId: "substream-1",
+                    direction: "daemon_to_client",
+                    sequence: 0,
+                    payloadLength: response.byteLength,
+                },
+                payload: response,
+            }),
+        });
+
+        await expect(read.next()).resolves.toEqual({ done: false, value: response });
+        await substream.stream.close();
+        expect(onReleased).toHaveBeenCalledTimes(1);
+    });
+});

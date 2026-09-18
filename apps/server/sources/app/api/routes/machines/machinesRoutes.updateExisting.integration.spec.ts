@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDbMocks, installDbModuleMock } from "../../testkit/dbMocks";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createInTxHarness } from "../../testkit/txHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 const markAccountChanged = vi.fn(async () => 123);
 vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged }));
@@ -32,6 +33,7 @@ const existingMachine = {
     createdAt: new Date(1),
     updatedAt: new Date(1),
 };
+const accountContentBinding = createSignedAccountContentBinding();
 
 const dbMocks = createDbMocks({
     machine: ["findFirst", "findUnique"],
@@ -65,8 +67,7 @@ describe("machinesRoutes (update existing machine)", () => {
         dbMocks.db.machine.findFirst.mockResolvedValue(existingMachine);
         dbMocks.db.machine.findUnique.mockResolvedValue(null);
         dbMocks.db.account.findUnique.mockResolvedValue({
-            contentPublicKey: new Uint8Array(32).fill(7),
-            publicKey: "account-signing-key",
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         txDbMocks.db.accessKey.deleteMany.mockResolvedValue({ count: 0 });
@@ -99,7 +100,7 @@ describe("machinesRoutes (update existing machine)", () => {
                     daemonState: undefined,
                     // base64 for bytes [0,1,2,3]
                     dataEncryptionKey: "AAECAw==",
-                    contentPublicKey: Buffer.from(new Uint8Array(32).fill(7)).toString("base64"),
+                    contentPublicKey: Buffer.from(accountContentBinding.contentPublicKey).toString("base64"),
                 },
             },
         );
@@ -127,5 +128,42 @@ describe("machinesRoutes (update existing machine)", () => {
                 }),
             }),
         );
+    });
+
+    it("preserves existing metadata when daemon registration refreshes daemon state", async () => {
+        const { machinesRoutes } = await import("./machinesRoutes");
+        const route = createRouteTestBuilder({
+            method: "POST",
+            path: "/v1/machines",
+            registerRoutes(app) {
+                machinesRoutes(app as any);
+            },
+        });
+
+        const { response } = await route.invoke(
+            {
+                userId: "u1",
+                body: {
+                    id: "m1",
+                    metadata: "daemon-bootstrap-meta",
+                    daemonState: "daemon-state-new",
+                },
+            },
+        );
+
+        expect(txDbMocks.db.machine.update).toHaveBeenCalledWith(expect.objectContaining({
+            where: { accountId_id: { accountId: "u1", id: "m1" } },
+            data: {
+                daemonState: "daemon-state-new",
+                daemonStateVersion: { increment: 1 },
+            },
+        }));
+        expect(response).toEqual(expect.objectContaining({
+            machine: expect.objectContaining({
+                metadata: "meta-old",
+                metadataVersion: 1,
+                daemonState: "daemon-state-new",
+            }),
+        }));
     });
 });

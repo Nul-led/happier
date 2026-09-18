@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 const state = vi.hoisted(() => ({
     tx: null as unknown,
@@ -100,6 +103,7 @@ describe("plugin Collection mutation", () => {
 
         await expect(mutatePluginCollection({
             accountId: "account-1",
+            authentication,
             request: {
                 pluginId: "example.tasks",
                 collectionId: "tasks",

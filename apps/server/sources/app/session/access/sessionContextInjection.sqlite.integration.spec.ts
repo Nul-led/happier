@@ -1,0 +1,219 @@
+import { randomBytes, randomUUID } from "node:crypto";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { db } from "@/storage/db";
+import { inTx, type Tx } from "@/storage/inTx";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createPresentUserSessionAccessAuthentication } from "./sessionAccessAuthentication.testkit";
+import * as contextInjection from "./sessionContextInjection";
+
+const authentication = createPresentUserSessionAccessAuthentication({
+    env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "true" },
+});
+
+/** Builds the verified destination-runtime principal from the test's custody Account. */
+function admitRuntime(
+    tx: Tx,
+    input: { authenticatedAccountId: string; sourceSessionId: string; destinationSessionId: string },
+) {
+    return contextInjection.assertSessionFollowSourceReadInTx(tx, {
+        principal: {
+            kind: "destination_runtime",
+            destinationRuntimeAccountId: input.authenticatedAccountId,
+            authentication,
+        },
+        sourceSessionId: input.sourceSessionId,
+        edge: { sourceSessionId: input.sourceSessionId, destinationSessionId: input.destinationSessionId },
+    });
+}
+
+async function createAccount() {
+    return await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+}
+
+async function createSession(accountId: string) {
+    return await db.session.create({ data: { accountId, tag: randomUUID(), metadata: "{}", encryptionMode: "plain" } });
+}
+
+async function grant(session: { id: string; accountId: string }, accountId: string, accessLevel: "view" | "edit") {
+    await db.sessionShare.create({ data: {
+        sessionId: session.id,
+        sharedByUserId: session.accountId,
+        sharedWithUserId: accountId,
+        accessLevel,
+    } });
+}
+
+describe("ordinary authenticated Follow context admission", () => {
+    let harness: LightSqliteHarness | undefined;
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({
+            tempDirPrefix: "happier-follow-context-admission-",
+            env: { HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: "true" },
+        });
+    }, 180_000);
+    afterEach(async () => {
+        if (!harness) return;
+        await db.sessionShare.deleteMany();
+        await db.session.deleteMany();
+        await db.team.deleteMany();
+        await db.account.deleteMany();
+    });
+    afterAll(async () => harness?.close());
+
+    it("does not reauthorize a historical configuring actor, but rechecks the current audience on every admission", async () => {
+        const runtime = await createAccount();
+        const author = await createAccount();
+        const reader = await createAccount();
+        const source = await createSession(runtime.id);
+        const destination = await createSession(runtime.id);
+        await grant(source, author.id, "view");
+        await grant(destination, author.id, "edit");
+
+        expect(await inTx(tx => contextInjection.mayInjectSessionContextInTx(tx, {
+            configuringAccountId: author.id, sourceSessionId: source.id, destinationSessionId: destination.id,
+            authentication,
+        }))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+
+        await db.sessionShare.deleteMany({ where: { sharedWithUserId: author.id } });
+        expect(await inTx(tx => contextInjection.mayInjectSessionContextInTx(tx, {
+            configuringAccountId: author.id, sourceSessionId: source.id, destinationSessionId: destination.id,
+            authentication,
+        }))).toEqual({ ok: false, reason: "configurer_not_allowed" });
+
+        const input = { authenticatedAccountId: runtime.id, sourceSessionId: source.id, destinationSessionId: destination.id };
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+        await grant(destination, reader.id, "view");
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_audience_broader" });
+        await grant(source, reader.id, "view");
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+    });
+
+    it("does not accept a readable collaborator as destination runtime custody and rechecks custody after transfer", async () => {
+        const runtime = await createAccount();
+        const collaborator = await createAccount();
+        const source = await createSession(runtime.id);
+        const destination = await createSession(runtime.id);
+        await grant(source, collaborator.id, "view");
+        await grant(destination, collaborator.id, "edit");
+
+        expect(await inTx(tx => admitRuntime(tx, {
+            authenticatedAccountId: collaborator.id, sourceSessionId: source.id, destinationSessionId: destination.id,
+        }))).toEqual({ ok: false, reason: "destination_runtime_not_allowed" });
+
+        await db.session.update({ where: { id: destination.id }, data: { accountId: collaborator.id } });
+        expect(await inTx(tx => admitRuntime(tx, {
+            authenticatedAccountId: runtime.id, sourceSessionId: source.id, destinationSessionId: destination.id,
+        }))).toEqual({ ok: false, reason: "destination_runtime_not_allowed" });
+        expect(await inTx(tx => admitRuntime(tx, {
+            authenticatedAccountId: collaborator.id, sourceSessionId: source.id, destinationSessionId: destination.id,
+        }))).toEqual({ ok: true, destinationRuntimeAccountId: collaborator.id });
+    });
+
+    it("rechecks the destination runtime's source entitlement after a previously allowed admission", async () => {
+        const sourceOwner = await createAccount();
+        const runtime = await createAccount();
+        const source = await createSession(sourceOwner.id);
+        const destination = await createSession(runtime.id);
+        await grant(source, runtime.id, "view");
+        const input = { authenticatedAccountId: runtime.id, sourceSessionId: source.id, destinationSessionId: destination.id };
+
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+        await db.sessionShare.deleteMany({ where: { sessionId: source.id, sharedWithUserId: runtime.id } });
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_runtime_not_allowed" });
+        await grant(source, runtime.id, "view");
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+    });
+
+    it("blocks an active destination public link even with exhausted uses, and admits after expiry or removal", async () => {
+        const runtime = await createAccount();
+        const source = await createSession(runtime.id);
+        const destination = await createSession(runtime.id);
+        const input = { authenticatedAccountId: runtime.id, sourceSessionId: source.id, destinationSessionId: destination.id };
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+        const publication = await db.publicSessionShare.create({ data: {
+            sessionId: destination.id, tokenHash: randomBytes(32), createdByUserId: runtime.id,
+            maxUses: 1, useCount: 1,
+        } });
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_public" });
+        await db.publicSessionShare.update({ where: { id: publication.id }, data: { expiresAt: new Date(0) } });
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+        await db.publicSessionShare.update({ where: { id: publication.id }, data: { expiresAt: null } });
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_public" });
+        await db.publicSessionShare.delete({ where: { id: publication.id } });
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+    });
+
+    it.each(["team", "group"] as const)("rechecks %s audience broadening and source membership history", async (kind) => {
+        const runtime = await createAccount();
+        const reader = await createAccount();
+        const source = await createSession(runtime.id);
+        const destination = await createSession(runtime.id);
+        const input = { authenticatedAccountId: runtime.id, sourceSessionId: source.id, destinationSessionId: destination.id };
+        const team = await db.team.create({ data: { name: randomUUID() } });
+        const cutoff = new Date("2026-09-01T00:00:00Z");
+        const membership = await db.teamMembership.create({ data: {
+            teamId: team.id, accountId: reader.id, role: kind === "group" ? "guest" : "member",
+            sessionAccessStartsAt: cutoff,
+        } });
+        const group = kind === "group" ? await db.teamGroup.create({ data: {
+            teamId: team.id, name: "Readers", nameKey: "readers",
+        } }) : null;
+        if (group) await db.teamGroupMembership.create({ data: {
+            teamId: team.id, teamGroupId: group.id, teamMembershipId: membership.id, sessionAccessStartsAt: cutoff,
+        } });
+        const grantAudience = async (sessionId: string, effectiveAt: Date) => {
+            if (group) {
+                await db.sessionGroupGrant.create({ data: { sessionId, teamGroupId: group.id, accessLevel: "view", effectiveAt } });
+            } else {
+                await db.sessionTeamGrant.create({ data: { sessionId, teamId: team.id, accessLevel: "view", effectiveAt } });
+            }
+        };
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+        await grantAudience(destination.id, new Date(cutoff.getTime() + 1));
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_audience_broader" });
+        await grantAudience(source.id, cutoff);
+        // Equal source cutoff remains denied even though both Sessions grant the same subject.
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: false, reason: "destination_audience_broader" });
+        if (group) {
+            await db.teamGroupMembership.update({ where: { teamGroupId_teamMembershipId: {
+                teamGroupId: group.id, teamMembershipId: membership.id,
+            } }, data: { sessionAccessStartsAt: null } });
+        } else {
+            await db.teamMembership.update({ where: { id: membership.id }, data: { sessionAccessStartsAt: null } });
+        }
+        expect(await inTx(tx => admitRuntime(tx, input))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+    });
+
+    it("denies same-session and missing-session pairs without manufacturing custody", async () => {
+        const runtime = await createAccount();
+        const session = await createSession(runtime.id);
+        expect(await inTx(tx => admitRuntime(tx, {
+            authenticatedAccountId: runtime.id, sourceSessionId: session.id, destinationSessionId: session.id,
+        }))).toEqual({ ok: false, reason: "same_session" });
+        for (const [sourceSessionId, destinationSessionId] of [[session.id, randomUUID()], [randomUUID(), session.id]]) {
+            expect(await inTx(tx => admitRuntime(tx, {
+                authenticatedAccountId: runtime.id, sourceSessionId, destinationSessionId,
+            }))).toEqual({ ok: false, reason: "unavailable" });
+        }
+    });
+
+    it("admits only the current edge's own source, never a sibling Session the runtime can read", async () => {
+        const runtime = await createAccount();
+        const source = await createSession(runtime.id);
+        const destination = await createSession(runtime.id);
+        const sibling = await createSession(runtime.id);
+        const edge = { sourceSessionId: source.id, destinationSessionId: destination.id };
+
+        expect(await inTx(tx => contextInjection.assertSessionFollowSourceReadInTx(tx, {
+            principal: { kind: "destination_runtime", destinationRuntimeAccountId: runtime.id, authentication },
+            sourceSessionId: sibling.id,
+            edge,
+        }))).toEqual({ ok: false, reason: "unavailable" });
+        expect(await inTx(tx => contextInjection.assertSessionFollowSourceReadInTx(tx, {
+            principal: { kind: "destination_runtime", destinationRuntimeAccountId: runtime.id, authentication },
+            sourceSessionId: source.id,
+            edge,
+        }))).toEqual({ ok: true, destinationRuntimeAccountId: runtime.id });
+    });
+});

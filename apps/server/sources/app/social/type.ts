@@ -2,9 +2,28 @@ import { getPublicUrl, ImageRef } from "@/storage/blob/files";
 import type { RelationshipStatus } from "@/storage/prisma";
 import * as privacyKit from "privacy-kit";
 import type { UserProfile } from "@happier-dev/protocol";
-import { findIdentityProviderById } from "@/app/auth/providers/identityProviders/registry";
+import {
+    describeLinkedIds,
+    type ProviderPresentation,
+} from "@/app/auth/providers/identityProviderCatalog";
+import { isAccountIdentityEligibleForGenericPresentation } from "@/app/auth/methods/registry";
 
 export type { UserProfile };
+
+/**
+ * Provider presentation leaves for the identities being projected, loaded once per request so
+ * profile mapping stays synchronous and never fans out into a lookup per identity row.
+ */
+export type IdentityPresentationMap = ReadonlyMap<string, ProviderPresentation>;
+
+export async function describeIdentityPresentation(
+    identities: readonly SocialIdentity[],
+): Promise<IdentityPresentationMap> {
+    return await describeLinkedIds({
+        env: process.env,
+        providerIds: identities.map((identity) => identity.provider),
+    });
+}
 
 export type SocialIdentity = Readonly<{
     provider: string;
@@ -21,30 +40,38 @@ export function toSocialIdentities(
         showOnProfile: boolean | null;
     }[],
 ): SocialIdentity[] {
-    return identities.map((identity) => ({
-        provider: identity.provider,
-        providerLogin: identity.providerLogin ?? null,
-        profile: identity.profile,
-        showOnProfile: Boolean(identity.showOnProfile),
-    }));
+    return identities
+        .filter((identity) => isAccountIdentityEligibleForGenericPresentation(process.env, identity.provider))
+        .map((identity) => ({
+            provider: identity.provider,
+            providerLogin: identity.providerLogin ?? null,
+            profile: identity.profile,
+            showOnProfile: Boolean(identity.showOnProfile),
+        }));
 }
 
-function resolveSocialProfileFromIdentities(identities: readonly SocialIdentity[]): { bio: string | null; suggestedUsername: string | null } {
+function resolveSocialProfileFromIdentities(
+    identities: readonly SocialIdentity[],
+    presentation: IdentityPresentationMap,
+): { bio: string | null; suggestedUsername: string | null } {
     for (const identity of identities) {
-        const provider = findIdentityProviderById(process.env, identity.provider);
+        const provider = presentation.get(identity.provider.toString().trim().toLowerCase());
         if (!provider?.extractSocialProfile) continue;
         return provider.extractSocialProfile({ profile: identity.profile });
     }
     return { bio: null, suggestedUsername: null };
 }
 
-function resolveBadgesFromIdentities(identities: readonly SocialIdentity[]): NonNullable<UserProfile["badges"]> {
+function resolveBadgesFromIdentities(
+    identities: readonly SocialIdentity[],
+    presentation: IdentityPresentationMap,
+): NonNullable<UserProfile["badges"]> {
     const badges: NonNullable<UserProfile["badges"]> = [];
     const seen = new Set<string>();
 
     for (const identity of identities) {
         if (!identity.showOnProfile) continue;
-        const provider = findIdentityProviderById(process.env, identity.provider);
+        const provider = presentation.get(identity.provider.toString().trim().toLowerCase());
         if (!provider?.extractProfileBadge) continue;
         const badge = provider.extractProfileBadge({ profile: identity.profile, providerLogin: identity.providerLogin });
         if (!badge) continue;
@@ -69,7 +96,8 @@ export function buildUserProfile(
         contentPublicKeySig: Uint8Array<ArrayBuffer> | null;
     },
     status: RelationshipStatus,
-    identities: readonly SocialIdentity[]
+    identities: readonly SocialIdentity[],
+    presentation: IdentityPresentationMap,
 ): UserProfile {
     const avatarJson = account.avatar;
 
@@ -85,8 +113,8 @@ export function buildUserProfile(
         };
     }
 
-    const social = resolveSocialProfileFromIdentities(identities);
-    const badges = resolveBadgesFromIdentities(identities);
+    const social = resolveSocialProfileFromIdentities(identities, presentation);
+    const badges = resolveBadgesFromIdentities(identities, presentation);
 
     const profileStatus: UserProfile["status"] = (() => {
         const raw = status?.toString?.().trim?.() ?? "";

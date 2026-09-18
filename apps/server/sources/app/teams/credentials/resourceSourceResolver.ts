@@ -1,0 +1,527 @@
+import type { QualifiedConnectedAccountServiceRef } from "@happier-dev/protocol";
+import {
+    computeCanonicalDomainSeparatedDigest,
+} from "@happier-dev/protocol";
+import {
+    TEAM_CREDENTIAL_MANUAL_CONNECTED_ACCOUNT_DIRECT_CONTRACT_V1,
+    TeamCredentialSourceBindingV1Schema,
+    computeTeamCredentialConnectedAccountSourceVersionV1,
+    computeTeamCredentialPoolMemberSourceVersionV1,
+    computeTeamCredentialSourceMemberKeyV1,
+    type TeamCredentialSourceMemberV1,
+} from "@happier-dev/protocol/teams";
+
+import type { Tx } from "@/storage/inTx";
+import {
+    readQualifiedConnectedAccountSourceIdentitiesInTx,
+    readQualifiedConnectedAccountSourceIdentityInTx,
+    type QualifiedConnectedAccountSourceIdentity,
+} from "@/app/api/routes/connect/qualifiedConnectedAccounts/credentialRepository";
+import {
+    readQualifiedConnectedAccountGroupSourceSnapshotInTx,
+    readQualifiedConnectedAccountGroupSourceSnapshotsInTx,
+    type QualifiedConnectedAccountGroupSourceSnapshot,
+} from "@/app/api/routes/connect/qualifiedConnectedAccounts/groupRepository";
+
+type DirectExportSupport = "supported" | "mixed" | "unsupported";
+
+export type TeamCredentialResourceSourceCurrentness =
+    | Readonly<{
+        kind: "provider_connection";
+        connectionId: string;
+        connectionSecurityFingerprint: string;
+        credentialSlotId: string;
+    }>
+    | Readonly<{
+        kind: "connected_account";
+        identity: QualifiedConnectedAccountSourceIdentity;
+    }>
+    | Readonly<{
+        kind: "connected_pool";
+        snapshot: QualifiedConnectedAccountGroupSourceSnapshot;
+    }>;
+
+function directContributionContractVersion(
+    contributionContractVersion: string | null,
+): string | null {
+    return contributionContractVersion === null
+        ? null
+        : computeCanonicalDomainSeparatedDigest(
+            TEAM_CREDENTIAL_MANUAL_CONNECTED_ACCOUNT_DIRECT_CONTRACT_V1,
+            [contributionContractVersion],
+        );
+}
+
+export type TeamCredentialResourceSourceResolution =
+    | Readonly<{
+        status: "current";
+        /** Opaque member attribution only when this source binding itself proves one exact member. */
+        usageSourceMemberKey: string | null;
+        directExportSupport: DirectExportSupport;
+        requestPolicyCurrentness: TeamCredentialResourceSourceCurrentness;
+        metadata:
+            | Readonly<{
+                kind: "connected_account" | "connected_pool";
+                service: QualifiedConnectedAccountServiceRef;
+            }>
+            | Readonly<{
+                kind: "provider_connection";
+                connectionId: string;
+                connectionSecurityFingerprint: string;
+                credentialSlotId: string;
+            }>;
+    }>
+    | Readonly<{
+        status: "unavailable";
+        reason: "invalid_source_binding" | "source_missing" | "source_changed";
+    }>;
+
+export function parsePublishedTeamCredentialSourceVersions(value: string | null): Record<string, string> | null {
+    if (value === null) return {};
+    try {
+        const parsed: unknown = JSON.parse(value);
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+        const entries = Object.entries(parsed);
+        if (entries.some(([key, version]) => key.length < 1 || typeof version !== "string" || version.length < 1)) {
+            return null;
+        }
+        return Object.fromEntries(entries) as Record<string, string>;
+    } catch {
+        return null;
+    }
+}
+
+type TeamCredentialSourceBinding = ReturnType<
+    typeof TeamCredentialSourceBindingV1Schema.parse
+>;
+type ConnectedAccountSourceBinding = Extract<
+    TeamCredentialSourceBinding,
+    { kind: "connected_account" }
+>;
+type ConnectedPoolSourceBinding = Extract<
+    TeamCredentialSourceBinding,
+    { kind: "connected_pool" }
+>;
+
+function projectConnectedAccountSourceResolution(
+    source: ConnectedAccountSourceBinding,
+    current: QualifiedConnectedAccountSourceIdentity | null,
+): TeamCredentialResourceSourceResolution {
+    if (!current) return { status: "unavailable", reason: "source_missing" };
+    if (current.incarnation !== source.credentialIncarnation) {
+        return { status: "unavailable", reason: "source_changed" };
+    }
+    return {
+        status: "current",
+        directExportSupport: current.directExportContract === null
+            || current.contributionContractVersion === null
+            ? "unsupported"
+            : "supported",
+        requestPolicyCurrentness: { kind: "connected_account", identity: current },
+        usageSourceMemberKey: computeTeamCredentialSourceMemberKeyV1({
+            kind: "connected_account",
+            service: source.target.account.service,
+            connectedAccountId: source.target.account.accountId,
+        }),
+        metadata: {
+            kind: source.kind,
+            service: source.target.account.service,
+        },
+    };
+}
+
+function projectConnectedPoolSourceResolution(
+    source: ConnectedPoolSourceBinding,
+    current: QualifiedConnectedAccountGroupSourceSnapshot | null,
+): TeamCredentialResourceSourceResolution {
+    if (!current) return { status: "unavailable", reason: "source_missing" };
+    if (current.incarnation !== source.poolIncarnation) {
+        return { status: "unavailable", reason: "source_changed" };
+    }
+    const enabled = current.members.filter(member => member.enabled);
+    const supported = enabled.filter(member => (
+        member.credentialRevision !== null
+        && member.directExportContract !== null
+        && member.contributionContractVersion !== null
+    )).length;
+    const directExportSupport: DirectExportSupport = supported === 0
+        ? "unsupported"
+        : supported === enabled.length ? "supported" : "mixed";
+    return {
+        status: "current",
+        directExportSupport,
+        requestPolicyCurrentness: { kind: "connected_pool", snapshot: current },
+        usageSourceMemberKey: null,
+        metadata: {
+            kind: source.kind,
+            service: source.target.service,
+        },
+    };
+}
+
+function projectProviderConnectionSourceResolution(
+    source: Extract<TeamCredentialSourceBinding, { kind: "provider_connection" }>,
+): TeamCredentialResourceSourceResolution {
+    // Provider Settings may be E2EE, so the Home deliberately retains only
+    // the source owner's opaque currentness snapshot. The canonical Provider
+    // owner on the exact broker Machine re-resolves private material.
+    return {
+        status: "current",
+        directExportSupport: "supported",
+        requestPolicyCurrentness: {
+            kind: "provider_connection",
+            connectionId: source.connectionId,
+            connectionSecurityFingerprint: source.connectionSecurityFingerprint,
+            credentialSlotId: source.credentialSlotId,
+        },
+        usageSourceMemberKey: computeTeamCredentialSourceMemberKeyV1({
+            kind: "provider_credential_slot",
+            connectionId: source.connectionId,
+            credentialSlotId: source.credentialSlotId,
+        }),
+        metadata: {
+            kind: source.kind,
+            connectionId: source.connectionId,
+            connectionSecurityFingerprint: source.connectionSecurityFingerprint,
+            credentialSlotId: source.credentialSlotId,
+        },
+    };
+}
+
+/**
+ * Resolves all source lifetimes for one bounded page. Connected Accounts and
+ * Pools each use their canonical repository batch once; Provider Connection
+ * bindings remain content-free and need no persistence lookup here.
+ */
+export async function resolveTeamCredentialResourceSourcesInTx(
+    tx: Tx,
+    params: readonly Readonly<{
+        custodianAccountId: string;
+        source: unknown;
+    }>[],
+): Promise<readonly TeamCredentialResourceSourceResolution[]> {
+    const parsed = params.map((input) => ({
+        input,
+        source: TeamCredentialSourceBindingV1Schema.safeParse(input.source),
+    }));
+    const accountRequests = parsed.flatMap(({ input, source }, index) => (
+        source.success && source.data.kind === "connected_account"
+            ? [{ index, accountId: input.custodianAccountId, ref: source.data.target.account }]
+            : []
+    ));
+    const poolRequests = parsed.flatMap(({ input, source }, index) => (
+        source.success && source.data.kind === "connected_pool"
+            ? [{
+                index,
+                accountId: input.custodianAccountId,
+                service: source.data.target.service,
+                groupId: source.data.target.groupId,
+            }]
+            : []
+    ));
+    const [accountSources, poolSources] = await Promise.all([
+        readQualifiedConnectedAccountSourceIdentitiesInTx(
+            tx,
+            accountRequests.map(({ accountId, ref }) => ({ accountId, ref })),
+        ),
+        readQualifiedConnectedAccountGroupSourceSnapshotsInTx(
+            tx,
+            poolRequests.map(({ accountId, service, groupId }) => ({
+                accountId,
+                service,
+                groupId,
+            })),
+        ),
+    ]);
+    const accountSourceByIndex = new Map(accountRequests.map((request, index) => [
+        request.index,
+        accountSources[index] ?? null,
+    ]));
+    const poolSourceByIndex = new Map(poolRequests.map((request, index) => [
+        request.index,
+        poolSources[index] ?? null,
+    ]));
+    return parsed.map(({ source }, index) => {
+        if (!source.success) {
+            return { status: "unavailable", reason: "invalid_source_binding" };
+        }
+        if (source.data.kind === "provider_connection") {
+            return projectProviderConnectionSourceResolution(source.data);
+        }
+        if (source.data.kind === "connected_account") {
+            return projectConnectedAccountSourceResolution(
+                source.data,
+                accountSourceByIndex.get(index) ?? null,
+            );
+        }
+        return projectConnectedPoolSourceResolution(
+            source.data,
+            poolSourceByIndex.get(index) ?? null,
+        );
+    });
+}
+
+/**
+ * Resolves the resource's pinned lifetime under its stored source custodian.
+ * The resource service separately admits that custodian and the actual caller.
+ * Current identity does not establish credential health or runtime readiness;
+ * those remain decisions of the source owner's materializer.
+ */
+export async function resolveTeamCredentialResourceSourceInTx(
+    tx: Tx,
+    params: Readonly<{ custodianAccountId: string; source: unknown }>,
+): Promise<TeamCredentialResourceSourceResolution> {
+    const parsed = TeamCredentialSourceBindingV1Schema.safeParse(params.source);
+    if (!parsed.success) return { status: "unavailable", reason: "invalid_source_binding" };
+    const source = parsed.data;
+    if (source.kind === "provider_connection") {
+        return projectProviderConnectionSourceResolution(source);
+    }
+    if (source.kind === "connected_account") {
+        const current = await readQualifiedConnectedAccountSourceIdentityInTx(tx, {
+            accountId: params.custodianAccountId,
+            ref: source.target.account,
+        });
+        return projectConnectedAccountSourceResolution(source, current);
+    }
+    const current = await readQualifiedConnectedAccountGroupSourceSnapshotInTx(tx, {
+            accountId: params.custodianAccountId,
+            service: source.target.service,
+            groupId: source.target.groupId,
+    });
+    return projectConnectedPoolSourceResolution(source, current);
+}
+
+export type TeamCredentialDirectSourceCurrentness =
+    | Readonly<{
+        status: "current";
+        sourceMember: TeamCredentialSourceMemberV1;
+        sourceCredentialIncarnation: string | null;
+        sourceVersion: string | null;
+        directExportSupport: "supported";
+    }>
+    | Readonly<{ status: "unavailable"; reason: "invalid_source_binding" | "source_missing" | "source_changed" | "unsupported_direct_source" }>;
+
+/** Projects direct-member currentness from the already batched source snapshot. */
+export function projectTeamCredentialDirectSourceCurrentnesses(
+    source: unknown,
+    resolution: TeamCredentialResourceSourceResolution | null,
+): readonly Extract<TeamCredentialDirectSourceCurrentness, { status: 'current' }>[] {
+    const parsed = TeamCredentialSourceBindingV1Schema.safeParse(source);
+    if (!parsed.success || resolution?.status !== 'current') return [];
+    const binding = parsed.data;
+    const currentness = resolution.requestPolicyCurrentness;
+    if (binding.kind === 'provider_connection' && currentness.kind === 'provider_connection') {
+        return [{ status: 'current', sourceMember: {
+            kind: 'provider_credential_slot', connectionId: binding.connectionId,
+            credentialSlotId: binding.credentialSlotId,
+        }, sourceCredentialIncarnation: null, sourceVersion: null, directExportSupport: 'supported' }];
+    }
+    const projectAccount = (identity: QualifiedConnectedAccountSourceIdentity, ref: Readonly<{ service: QualifiedConnectedAccountServiceRef; accountId: string }>, poolIncarnation?: string) => {
+        const sourceMember = { kind: 'connected_account' as const, service: ref.service, connectedAccountId: ref.accountId };
+        const contributionContractVersion = directContributionContractVersion(identity.contributionContractVersion);
+        if (identity.directExportContract === null || contributionContractVersion === null) return null;
+        const connectedAccountSourceVersion = computeTeamCredentialConnectedAccountSourceVersionV1({
+            sourceAccountId: ref.accountId, credentialIncarnation: identity.incarnation,
+            sourceMember, credentialRevision: identity.credentialRevision,
+            configurationRevision: identity.configurationRevision,
+            authenticationModeId: identity.authenticationModeId, contributionContractVersion,
+        });
+        return { status: 'current' as const, sourceMember, sourceCredentialIncarnation: identity.incarnation,
+            sourceVersion: poolIncarnation ? computeTeamCredentialPoolMemberSourceVersionV1({
+                connectedAccountSourceVersion, poolIncarnation, memberEnabled: true,
+            }) : connectedAccountSourceVersion, directExportSupport: 'supported' as const };
+    };
+    if (binding.kind === 'connected_account' && currentness.kind === 'connected_account') {
+        return [projectAccount(currentness.identity, binding.target.account)].filter((value): value is NonNullable<typeof value> => value !== null);
+    }
+    if (binding.kind !== 'connected_pool' || currentness.kind !== 'connected_pool') return [];
+    return currentness.snapshot.members.flatMap(member => {
+        if (!member.enabled || member.credentialRevision === null) return [];
+        const projected = projectAccount({
+            incarnation: member.credentialIncarnation,
+            credentialRevision: member.credentialRevision, configurationRevision: member.configurationRevision,
+            authenticationModeId: member.authenticationModeId, directExportContract: member.directExportContract,
+            contributionContractVersion: member.contributionContractVersion,
+        }, member.account, currentness.snapshot.incarnation);
+        return projected ? [projected] : [];
+    });
+}
+
+/** Lists only source members that are current under the source owner's stored lifetime. */
+export async function listTeamCredentialDirectSourceMembersInTx(
+    tx: Tx,
+    params: Readonly<{ custodianAccountId: string; source: unknown }>,
+): Promise<readonly TeamCredentialSourceMemberV1[] | null> {
+    const parsed = TeamCredentialSourceBindingV1Schema.safeParse(params.source);
+    if (!parsed.success) return null;
+    const source = parsed.data;
+    if (source.kind === "provider_connection") {
+        return [{ kind: "provider_credential_slot", connectionId: source.connectionId, credentialSlotId: source.credentialSlotId }];
+    }
+    if (source.kind === "connected_account") {
+        const current = await readQualifiedConnectedAccountSourceIdentityInTx(tx, {
+            accountId: params.custodianAccountId,
+            ref: source.target.account,
+        });
+        if (!current || current.incarnation !== source.credentialIncarnation) return null;
+        if (
+            current.directExportContract === null
+            || current.contributionContractVersion === null
+        ) return [];
+        return [{
+            kind: "connected_account",
+            service: source.target.account.service,
+            connectedAccountId: source.target.account.accountId,
+        }];
+    }
+    const pool = await readQualifiedConnectedAccountGroupSourceSnapshotInTx(tx, {
+        accountId: params.custodianAccountId,
+        service: source.target.service,
+        groupId: source.target.groupId,
+    });
+    if (!pool || pool.incarnation !== source.poolIncarnation) return null;
+    return pool.members.filter((member) => (
+        member.enabled
+        && member.credentialRevision !== null
+        && member.directExportContract !== null
+        && member.contributionContractVersion !== null
+    )).map((member) => ({
+        kind: "connected_account" as const,
+        service: member.account.service,
+        connectedAccountId: member.account.accountId,
+    }));
+}
+
+/**
+ * Home-owned currentness for source facts it already persists. The caller
+ * supplies only the opaque member incarnation; it never supplies revisions or
+ * an authoritative version. Provider Settings remain E2EE and therefore need
+ * their separate published-currentness owner rather than being guessed here.
+ */
+export async function resolveTeamCredentialDirectSourceCurrentnessInTx(
+    tx: Tx,
+    params: Readonly<{
+        custodianAccountId: string;
+        source: unknown;
+        sourceMemberKey: string;
+    }>,
+): Promise<TeamCredentialDirectSourceCurrentness> {
+    const parsed = TeamCredentialSourceBindingV1Schema.safeParse(params.source);
+    if (!parsed.success) return { status: "unavailable", reason: "invalid_source_binding" };
+    const source = parsed.data;
+    if (source.kind === "provider_connection") {
+        const sourceMember = {
+            kind: "provider_credential_slot" as const,
+            connectionId: source.connectionId,
+            credentialSlotId: source.credentialSlotId,
+        };
+        if (computeTeamCredentialSourceMemberKeyV1(sourceMember) !== params.sourceMemberKey) {
+            return { status: "unavailable", reason: "source_changed" };
+        }
+        return {
+            status: "current",
+            sourceMember,
+            sourceCredentialIncarnation: null,
+            sourceVersion: null,
+            directExportSupport: "supported",
+        };
+    }
+    if (source.kind === "connected_account") {
+        const current = await readQualifiedConnectedAccountSourceIdentityInTx(tx, {
+            accountId: params.custodianAccountId,
+            ref: source.target.account,
+        });
+        if (!current) return { status: "unavailable", reason: "source_missing" };
+        if (current.incarnation !== source.credentialIncarnation) {
+            return { status: "unavailable", reason: "source_changed" };
+        }
+        const sourceMember = {
+            kind: "connected_account" as const,
+            service: source.target.account.service,
+            connectedAccountId: source.target.account.accountId,
+        };
+        if (computeTeamCredentialSourceMemberKeyV1(sourceMember) !== params.sourceMemberKey) {
+            return { status: "unavailable", reason: "source_changed" };
+        }
+        const contributionContractVersion = directContributionContractVersion(
+            current.contributionContractVersion,
+        );
+        if (current.directExportContract === null || contributionContractVersion === null) {
+            return { status: "unavailable", reason: "unsupported_direct_source" };
+        }
+        return {
+            status: "current",
+            sourceMember,
+            sourceCredentialIncarnation: current.incarnation,
+            sourceVersion: computeTeamCredentialConnectedAccountSourceVersionV1({
+                sourceAccountId: source.target.account.accountId,
+                credentialIncarnation: current.incarnation,
+                sourceMember,
+                credentialRevision: current.credentialRevision,
+                configurationRevision: current.configurationRevision,
+                authenticationModeId: current.authenticationModeId,
+                contributionContractVersion,
+            }),
+            directExportSupport: "supported",
+        };
+    }
+    const pool = await readQualifiedConnectedAccountGroupSourceSnapshotInTx(tx, {
+        accountId: params.custodianAccountId,
+        service: source.target.service,
+        groupId: source.target.groupId,
+    });
+    if (!pool) return { status: "unavailable", reason: "source_missing" };
+    if (pool.incarnation !== source.poolIncarnation) {
+        return { status: "unavailable", reason: "source_changed" };
+    }
+    const member = pool.members.find((candidate) => computeTeamCredentialSourceMemberKeyV1({
+        kind: "connected_account",
+        service: candidate.account.service,
+        connectedAccountId: candidate.account.accountId,
+    }) === params.sourceMemberKey && candidate.enabled);
+    if (!member) return { status: "unavailable", reason: "source_changed" };
+    const ref = {
+        service: source.target.service,
+        accountId: member.account.accountId,
+    };
+    const current = await readQualifiedConnectedAccountSourceIdentityInTx(tx, {
+        accountId: params.custodianAccountId,
+        ref,
+    });
+    if (!current) return { status: "unavailable", reason: "source_missing" };
+    if (current.incarnation !== member.credentialIncarnation) {
+        return { status: "unavailable", reason: "source_changed" };
+    }
+    const contributionContractVersion = directContributionContractVersion(
+        current.contributionContractVersion,
+    );
+    if (current.directExportContract === null || contributionContractVersion === null) {
+        return { status: "unavailable", reason: "unsupported_direct_source" };
+    }
+    const sourceMember = {
+        kind: "connected_account" as const,
+        service: ref.service,
+        connectedAccountId: ref.accountId,
+    };
+    return {
+        status: "current",
+        sourceMember,
+        sourceCredentialIncarnation: current.incarnation,
+        sourceVersion: computeTeamCredentialPoolMemberSourceVersionV1({
+            connectedAccountSourceVersion:
+                computeTeamCredentialConnectedAccountSourceVersionV1({
+                    sourceAccountId: ref.accountId,
+                    credentialIncarnation: current.incarnation,
+                    sourceMember,
+                    credentialRevision: current.credentialRevision,
+                    configurationRevision: current.configurationRevision,
+                    authenticationModeId: current.authenticationModeId,
+                    contributionContractVersion,
+                }),
+            poolIncarnation: pool.incarnation,
+            memberEnabled: member.enabled,
+        }),
+        directExportSupport: "supported",
+    };
+}

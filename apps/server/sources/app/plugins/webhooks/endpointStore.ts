@@ -777,6 +777,7 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
         target: ResolvedPluginWebhookTargetV1;
     }>): Awaitable<ResolvedPluginWebhookContributionV1 | null>;
     authorizeSharedInstallation?(params: Readonly<{
+        tx: Tx;
         accountId: string;
         installationId: string;
         installationAuthorizationRef: string;
@@ -821,6 +822,7 @@ export function createPluginWebhookEndpointStoreV1(options: Readonly<{
                         && (
                             !options.authorizeSharedInstallation
                             || !await options.authorizeSharedInstallation({
+                                tx,
                                 accountId,
                                 installationId: input.setup.installationId,
                                 installationAuthorizationRef: input.setup.installationAuthorizationRef,

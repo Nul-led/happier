@@ -9,6 +9,7 @@ import type { Fastify } from "@/app/api/types";
 import {
     isRestrictedAuthTokenDeniedForRoute,
     isRestrictedAuthTokenKind,
+    resolveOptionalPublicAuthDisposition,
 } from "./apiTokenRouteAdmission";
 
 type RecordedRoute = Readonly<{
@@ -20,7 +21,7 @@ type RecordedRoute = Readonly<{
 
 type DirectBearerConsumerDisposition = Readonly<{
     path: string;
-    verifies: readonly ("auth.verifyToken" | "auth.verifyLegacyHomeToken" | "auth.verifyTokenForRoute")[];
+    verifies: readonly ("auth.verifyToken" | "auth.verifyLegacyHomeToken" | "auth.verifyTokenForRoute" | "auth.verifyTokenDisposition")[];
     disposition: string;
 }>;
 
@@ -35,9 +36,9 @@ const DIRECT_BEARER_CONSUMER_DISPOSITIONS = [
         disposition: "Socket.IO authenticates route-compatible bearers and explicitly disconnects restricted Directory/PAT provenance before session access.",
     },
     {
-        path: "app/api/utils/enableAuthentication.ts",
-        verifies: ["auth.verifyToken", "auth.verifyLegacyHomeToken"],
-        disposition: "Canonical Fastify route admission; Directory tokens require allowAccountDirectoryToken and PATs require allowApiToken.",
+        path: "app/api/utils/verifyRequestPrincipal.ts",
+        verifies: ["auth.verifyTokenDisposition"],
+        disposition: "Canonical HTTP bearer verification shared by Fastify route admission and the optional public auth-entry projection; Directory tokens still require allowAccountDirectoryToken, while PATs require either allowApiToken or a verified external Action proof at the route admission owner.",
     },
     {
         path: "app/api/utils/apiRateLimitPolicy.ts",
@@ -45,19 +46,9 @@ const DIRECT_BEARER_CONSUMER_DISPOSITIONS = [
         disposition: "Rate-limit key projection only; restricted Directory/PAT or invalid bearers fall back to the IP bucket and do not authorize a route.",
     },
     {
-        path: "app/api/routes/local/services/public/registerRoutes.ts",
-        verifies: ["auth.verifyTokenForRoute"],
-        disposition: "Public-preview optional owner projection; restricted Directory/PAT bearers are treated as anonymous and grant no preview authority.",
-    },
-    {
-        path: "app/api/routes/share/registerPublicShareReadRoutes.ts",
-        verifies: ["auth.verifyTokenForRoute"],
-        disposition: "Public-share optional owner projection; restricted Directory/PAT bearers are treated as anonymous and grant no share authority.",
-    },
-    {
-        path: "app/local/services/public/websocket.ts",
-        verifies: ["auth.verifyTokenForRoute"],
-        disposition: "Public-preview websocket optional owner projection; restricted Directory/PAT bearers are treated as anonymous and grant no websocket authority.",
+        path: "app/api/utils/optionalPublicAuth.ts",
+        verifies: ["auth.verifyTokenDisposition"],
+        disposition: "Canonical optional-public bearer verification; restricted Directory/PAT bearers remain anonymous-compatible while verified Runner bearers are rejected by every consumer.",
     },
 ] as const satisfies readonly DirectBearerConsumerDisposition[];
 
@@ -71,10 +62,12 @@ function listProductionTypeScriptFiles(directory: string): string[] {
     });
 }
 
-function directVerifierCalls(source: string): ("auth.verifyToken" | "auth.verifyLegacyHomeToken" | "auth.verifyTokenForRoute")[] {
-    return [...source.matchAll(/auth\.(verifyTokenForRoute|verifyLegacyHomeToken|verifyToken)\s*\(/g)]
+function directVerifierCalls(source: string): ("auth.verifyToken" | "auth.verifyLegacyHomeToken" | "auth.verifyTokenForRoute" | "auth.verifyTokenDisposition")[] {
+    return [...source.matchAll(/auth\.(verifyTokenDisposition|verifyTokenForRoute|verifyLegacyHomeToken|verifyToken)\s*\(/g)]
         .map((match) => match[1] === "verifyTokenForRoute"
             ? "auth.verifyTokenForRoute"
+            : match[1] === "verifyTokenDisposition"
+                ? "auth.verifyTokenDisposition"
             : match[1] === "verifyLegacyHomeToken"
                 ? "auth.verifyLegacyHomeToken"
             : "auth.verifyToken");
@@ -152,6 +145,7 @@ describe("Account Directory central route admission", () => {
     it("fails closed for undefined or non-Directory provenance at the one admission owner", () => {
         expect(isRestrictedAuthTokenKind("account_directory")).toBe(true);
         expect(isRestrictedAuthTokenKind("api_token")).toBe(true);
+        expect(isRestrictedAuthTokenKind("ephemeral_session_runner")).toBe(true);
         expect(isRestrictedAuthTokenKind("account")).toBe(false);
         expect(isRestrictedAuthTokenKind("terminal")).toBe(false);
         expect(isRestrictedAuthTokenKind("future_kind")).toBe(true);
@@ -164,6 +158,256 @@ describe("Account Directory central route admission", () => {
             authTokenKind: "account_directory",
             routeOptions: { config: { allowAccountDirectoryToken: true } },
         })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "account_directory",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.list",
+            routeOptions: { config: {} },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.list",
+            routeOptions: { config: {} },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            routeOptions: { config: {} },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.activity.get",
+            routeOptions: { config: {} },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.list",
+            routeOptions: { config: {} },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.follow.sources.set",
+            routeOptions: { config: {} },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.follow.sourceKey.prepare",
+            routeOptions: { config: {} },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "api_token",
+            externalActionExecutionAuthorized: true,
+            routeOptions: { config: { allowApiToken: true } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "account",
+            routeOptions: { config: { allowAccountDirectoryToken: true } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            routeOptions: { config: {} },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            externalActionExecutionAuthorized: true,
+            externalActionEffectActionId: "session.list",
+            routeOptions: { config: {} },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "runtime_features" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "another-account",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "runtime_features" } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            params: { sessionId: "session-1" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_detail" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            params: { sessionId: "session-2" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_detail" } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: { sessionId: "session-1", machineId: "machine-1" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: { sessionId: "session-1", machineId: null },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: { sessionId: "session-1" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: { sessionId: "session-1", machineId: "machine-2" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: { sessionId: "session-2", machineId: "machine-1" },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+        })).toBe(true);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: {
+                initiatorMachineId: "machine-1",
+                consumer: { kind: "session", sessionId: "session-1" },
+            },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "provider_broker_open" } },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: {
+                kind: "ephemeral_session_runner",
+                authority: "session_runtime",
+                accountId: "account-1",
+                activationId: "activation-1",
+                sessionId: "session-1",
+                machineId: "machine-1",
+                installationId: "installation-1",
+                installationPublicKey: "public-key-1",
+                creatorTokenEpoch: 0,
+            },
+            body: {
+                initiatorMachineId: "machine-2",
+                consumer: { kind: "session", sessionId: "session-1" },
+            },
+            routeOptions: { config: { ephemeralSessionRunnerOperation: "provider_broker_open" } },
+        })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "terminal",
             routeOptions: { config: { allowAccountDirectoryToken: true } },
@@ -180,5 +424,38 @@ describe("Account Directory central route admission", () => {
             authTokenKind: undefined,
             routeOptions: { config: {} },
         })).toBe(true);
+    });
+
+    it("centrally distinguishes public-compatible, anonymous-compatible, and forbidden Runner bearers", () => {
+        expect(resolveOptionalPublicAuthDisposition(null)).toEqual({ status: "anonymous" });
+        expect(resolveOptionalPublicAuthDisposition({
+            userId: "account-1",
+            authTokenKind: "account",
+            authority: "present_user",
+        })).toMatchObject({ status: "authenticated", principal: { userId: "account-1" } });
+        expect(resolveOptionalPublicAuthDisposition({
+            userId: "account-1",
+            authTokenKind: "terminal",
+            authority: "present_user",
+        })).toMatchObject({ status: "authenticated", principal: { userId: "account-1" } });
+        expect(resolveOptionalPublicAuthDisposition({
+            userId: "account-1",
+            authTokenKind: "api_token",
+            authority: "account_automation",
+        })).toEqual({ status: "anonymous" });
+        expect(resolveOptionalPublicAuthDisposition({
+            userId: "account-1",
+            authTokenKind: "account_directory",
+            authority: "present_user",
+        })).toEqual({ status: "anonymous" });
+        expect(resolveOptionalPublicAuthDisposition({
+            userId: "account-1",
+            authTokenKind: "ephemeral_session_runner",
+            authority: "session_runtime",
+        })).toEqual({ status: "session_runtime_forbidden" });
+        expect(resolveOptionalPublicAuthDisposition({
+            status: "rejected_restricted",
+            authTokenKind: "ephemeral_session_runner",
+        })).toEqual({ status: "session_runtime_forbidden" });
     });
 });

@@ -13,13 +13,16 @@ vi.mock("@/storage/db", () => ({
 const envBackup = snapshotEnv();
 
 describe("auth (token cache)", () => {
-    beforeEach(() => {
+    beforeEach(async () => {
+        // Load the real crypto/module graph before virtualizing timers; async
+        // module initialization may need the host event loop.
+        await import("./auth");
         vi.useFakeTimers();
         vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 
         applyEnvValues({ HANDY_MASTER_SECRET: "test-master-secret" });
         dbAccountFindUniqueMock.mockReset();
-        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0 });
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status: "active" });
     });
 
     afterEach(() => {
@@ -85,5 +88,19 @@ describe("auth (token cache)", () => {
         await auth.verifyToken(thirdToken);
 
         expect(auth.getCacheStats().size).toBe(2);
+    });
+
+    it.each(["suspended", "disabled"])("rejects %s Accounts at mint and on a warmed verification cache", async (status) => {
+        const { auth } = await import("./auth");
+        await auth.init();
+        const token = await auth.createToken("user-1", undefined, { kind: "account", authority: "present_user" });
+        await expect(auth.verifyToken(token)).resolves.toMatchObject({ userId: "user-1" });
+        expect(auth.getCacheStats().size).toBeGreaterThan(0);
+
+        // The database boundary changes independently of the crypto cache/epoch.
+        dbAccountFindUniqueMock.mockResolvedValue({ tokenEpoch: 0, status });
+        await expect(auth.verifyToken(token)).resolves.toBeNull();
+        await expect(auth.createToken("user-1", undefined, { kind: "account", authority: "present_user" }))
+            .rejects.toMatchObject({ code: "account-disabled" });
     });
 });

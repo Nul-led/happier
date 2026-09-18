@@ -1,7 +1,9 @@
 import { z } from "zod";
 import { type Fastify } from "../../types";
-import { db } from "@/storage/db";
+import { db, getActivePrismaRuntime } from "@/storage/db";
+import { PushTokenRegisterRequestSchema, DeviceRemoteAlertPolicyV1Schema, resolveAccountRemoteAlertPolicyCurrentness } from '@happier-dev/protocol';
 import { redactSentryLogAttributes } from "@/app/monitoring/sentryLogRedaction";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 
 function normalizeClientServerUrl(raw: unknown): string | null {
     const value = typeof raw === "string" ? raw.trim() : "";
@@ -22,14 +24,12 @@ export function pushRoutes(app: Fastify) {
     // Push Token Registration API
     app.post('/v1/push-tokens', {
         schema: {
-            body: z.object({
-                token: z.string(),
-                clientServerUrl: z.string().optional(),
-            }),
+            body: PushTokenRegisterRequestSchema,
             response: {
                 200: z.object({
                     success: z.literal(true)
                 }),
+                404: z.object({ error: z.literal('push_token_not_found') }),
                 500: z.object({
                     error: z.literal('Failed to register push token')
                 })
@@ -39,7 +39,7 @@ export function pushRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
         const { token } = request.body;
-        const rawClientServerUrl = (request.body as any)?.clientServerUrl;
+        const rawClientServerUrl = request.body.clientServerUrl;
         const clientServerUrl =
             rawClientServerUrl === undefined ? undefined : normalizeClientServerUrl(rawClientServerUrl);
 
@@ -49,6 +49,23 @@ export function pushRoutes(app: Fastify) {
             };
             if (clientServerUrl !== undefined) {
                 update.clientServerUrl = clientServerUrl;
+            }
+
+            if (request.body.remoteAlerts !== undefined) {
+                if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) {
+                    return reply.code(404).send({ error: 'push_token_not_found' });
+                }
+                const result = await db.accountPushToken.updateMany({
+                    where: { accountId: userId, token, id: request.body.remoteAlerts.registrationId },
+                    data: {
+                        ...update,
+                        remoteAlerts: request.body.remoteAlerts.policy === null
+                            ? getActivePrismaRuntime().DbNull
+                            : request.body.remoteAlerts.policy,
+                    },
+                });
+                if (result.count === 0) return reply.code(404).send({ error: 'push_token_not_found' });
+                return reply.send({ success: true });
             }
 
             await db.accountPushToken.upsert({
@@ -110,6 +127,7 @@ export function pushRoutes(app: Fastify) {
 
     // Get Push Tokens API
     app.get('/v1/push-tokens', {
+        schema: { querystring: z.object({ projectionVersion: z.coerce.number().int().optional() }) },
         preHandler: app.authenticate
     }, async (request, reply) => {
         const userId = request.userId;
@@ -124,13 +142,23 @@ export function pushRoutes(app: Fastify) {
                 }
             });
 
+            const projection = request.query.projectionVersion === 2
+                && isServerFeatureEnabledForRequest("sessions.following", process.env);
+            const account = projection ? await db.account.findUniqueOrThrow({
+                where: { id: userId }, select: { settingsVersion: true, remoteAlertPolicy: true },
+            }) : null;
             return reply.send({
+                ...(account ? { v: 2, accountRemoteAlerts: {
+                    settingsVersion: account.settingsVersion,
+                    status: resolveAccountRemoteAlertPolicyCurrentness(account.remoteAlertPolicy, account.settingsVersion).status,
+                } } : {}),
                 tokens: tokens.map(t => ({
                     id: t.id,
                     token: t.token,
                     createdAt: t.createdAt.getTime(),
                     updatedAt: t.updatedAt.getTime(),
                     clientServerUrl: t.clientServerUrl ?? null,
+                    ...(projection ? { remoteAlerts: DeviceRemoteAlertPolicyV1Schema.safeParse(t.remoteAlerts).data ?? null } : {}),
                 }))
             });
         } catch (error) {

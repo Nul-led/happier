@@ -1,6 +1,7 @@
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import {
+    CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
     ConnectedServiceCredentialHealthV1Schema,
     ConnectedServiceCredentialRevisionV1Schema,
     QualifiedConnectedAccountCredentialMetadataV4Schema,
@@ -18,6 +19,10 @@ export const QualifiedConnectedServiceCredentialStoredMetadataV4Schema =
         v: z.literal(4),
         storage: z.literal("stored_envelope_v1"),
         credentialRevision: ConnectedServiceCredentialRevisionV1Schema,
+        directExportContract: z.literal(
+            CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
+        ).optional(),
+        contributionContractVersion: z.string().trim().min(1).max(512).optional(),
         values: QualifiedConnectedAccountCredentialMetadataV4Schema,
         health: ConnectedServiceCredentialHealthV1Schema.optional(),
     }).strict();

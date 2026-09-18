@@ -1,5 +1,5 @@
 import { Context } from "@/context";
-import { buildUserProfile, toSocialIdentities, UserProfile } from "./type";
+import { buildUserProfile, describeIdentityPresentation, toSocialIdentities, UserProfile } from "./type";
 import { inTx } from "@/storage/inTx";
 import { relationshipSet } from "./relationshipSet";
 import { relationshipGet } from "./relationshipGet";
@@ -27,6 +27,7 @@ export async function friendRemove(ctx: Context, uid: string): Promise<UserProfi
             return null;
         }
         const identities = toSocialIdentities(targetUser.AccountIdentity);
+        const presentation = await describeIdentityPresentation(identities);
 
         // Read relationship status
         const currentUserRelationship = await relationshipGet(tx, currentUser.id, targetUser.id);
@@ -36,7 +37,7 @@ export async function friendRemove(ctx: Context, uid: string): Promise<UserProfi
         if (currentUserRelationship === RelationshipStatus.requested) {
             await relationshipSet(tx, currentUser.id, targetUser.id, RelationshipStatus.rejected);
             await markAccountChanged(tx, { accountId: currentUser.id, kind: 'friends', entityId: 'self' });
-            return buildUserProfile(targetUser as any, RelationshipStatus.rejected, identities);
+            return buildUserProfile(targetUser as any, RelationshipStatus.rejected, identities, presentation);
         }
 
         // If they are friends, removing should fully clear the relationship.
@@ -45,7 +46,7 @@ export async function friendRemove(ctx: Context, uid: string): Promise<UserProfi
             await relationshipSet(tx, targetUser.id, currentUser.id, RelationshipStatus.none);
             await markAccountChanged(tx, { accountId: currentUser.id, kind: 'friends', entityId: 'self' });
             await markAccountChanged(tx, { accountId: targetUser.id, kind: 'friends', entityId: 'self' });
-            return buildUserProfile(targetUser as any, RelationshipStatus.none, identities);
+            return buildUserProfile(targetUser as any, RelationshipStatus.none, identities, presentation);
         }
 
         // If status is pending, set it to none
@@ -60,10 +61,10 @@ export async function friendRemove(ctx: Context, uid: string): Promise<UserProfi
             if (targetChanged) {
                 await markAccountChanged(tx, { accountId: targetUser.id, kind: 'friends', entityId: 'self' });
             }
-            return buildUserProfile(targetUser as any, RelationshipStatus.none, identities);
+            return buildUserProfile(targetUser as any, RelationshipStatus.none, identities, presentation);
         }
 
         // Return the target user profile with status none
-        return buildUserProfile(targetUser as any, currentUserRelationship, identities);
+        return buildUserProfile(targetUser as any, currentUserRelationship, identities, presentation);
     });
 }

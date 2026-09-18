@@ -25,6 +25,10 @@ function parseEnumValues(schemaText: string, enumName: string): string[] {
         .filter(Boolean);
 }
 
+function readMigration(providerRoot: string, migrationName: string): string {
+    return readFileSync(join(providerRoot, "migrations", migrationName, "migration.sql"), "utf-8");
+}
+
 describe("storage/prisma", () => {
     it("throws a helpful error when db is accessed before initialization", () => {
         // `db` is a proxy so simply importing it is fine; accessing properties should fail loudly until initDb* runs.
@@ -109,6 +113,70 @@ describe("storage/prisma", () => {
                 expect(migrationSql).toContain(field);
             }
             expect(migrationSql).toMatch(/currentStorageState[^;]*NOT NULL[^;]*DEFAULT ['"]hosted['"]/i);
+        }
+    });
+
+    it("keeps the Lane 10 schema and migrations provider-portable", () => {
+        const root = join(process.cwd(), "prisma");
+        const postgresRoot = root;
+        const mysqlRoot = join(root, "mysql");
+        const sqliteRoot = join(root, "sqlite");
+        const migrationNames = [
+            "20260906220000_add_team_credential_resources",
+            "20260907000000_add_team_credential_usage_limits",
+            "20260907010000_add_team_credential_recipient_material",
+            "20260907090000_add_saved_secret_resources",
+            "20260907100000_add_team_credential_external_api_keys",
+        ];
+
+        const mysqlMigrations = migrationNames.map((name) => readMigration(mysqlRoot, name)).join("\n");
+        const mysqlIdentifiers = [
+            ...mysqlMigrations.matchAll(
+                /(?:(?:CREATE (?:UNIQUE )?INDEX|CONSTRAINT|(?:UNIQUE )?KEY)\s+`([^`]+)`)/g,
+            ),
+        ]
+            .map((match) => match[1]);
+        expect(mysqlIdentifiers.filter((identifier) => identifier.length > 64)).toEqual([]);
+
+        const mysqlSchema = readFileSync(join(mysqlRoot, "schema.prisma"), "utf-8");
+        const mysqlRecipientMaterial = readMigration(mysqlRoot, migrationNames[2]);
+        const mysqlSavedSecrets = readMigration(mysqlRoot, migrationNames[3]);
+        expect(mysqlSchema).toMatch(/^\s*storedMaterial\s+Bytes\s+@db\.LongBlob\s*$/m);
+        expect(mysqlSchema).toMatch(/^\s*encryptedDataKey\s+Bytes\s+@db\.LongBlob\s*$/m);
+        expect(mysqlSchema).toMatch(/^\s*sourceMemberKey\s+String\s+@db\.Char\(43\)\s*$/m);
+        expect(mysqlSchema).toMatch(/^\s*sourceVersion\s+String\s+@db\.VarChar\(256\)\s*$/m);
+        for (const providerRoot of [postgresRoot, mysqlRoot, sqliteRoot]) {
+            const schema = readFileSync(join(providerRoot, "schema.prisma"), "utf-8");
+            const bindingModel = schema.match(/model SessionTeamCredentialBinding \{([\s\S]*?)\n\}/)?.[1];
+            expect(bindingModel, `${providerRoot} SessionTeamCredentialBinding model`).toBeDefined();
+            expect(bindingModel).toMatch(/^\s*resourceRevision\s+Int\s*$/m);
+        }
+        expect(mysqlRecipientMaterial).toMatch(/`sourceMemberKey`\s+CHAR\(43\)\s+NOT NULL/);
+        expect(mysqlRecipientMaterial).toMatch(/`sourceVersion`\s+VARCHAR\(256\)\s+NOT NULL/);
+        expect(mysqlRecipientMaterial).toMatch(/`recipientContentPublicKeyFingerprint`\s+VARCHAR\(256\)\s+NULL/);
+        expect(mysqlRecipientMaterial).toMatch(/`storedMaterial`\s+LONGBLOB\s+NOT NULL/);
+        expect(mysqlSavedSecrets).toMatch(/`encryptedDataKey`\s+LONGBLOB\s+NOT NULL/);
+
+        const resourceIndex = "TeamCredentialResource_teamId_enabled_updatedAt_idx";
+        const savedSecretIndex = "SavedSecretResource_owner_updated_idx";
+        for (const providerRoot of [postgresRoot, mysqlRoot, sqliteRoot]) {
+            const resourceMigration = readMigration(providerRoot, migrationNames[0]);
+            const savedSecretMigration = readMigration(providerRoot, migrationNames[3]);
+            expect(resourceMigration).toContain(resourceIndex);
+            expect(resourceMigration).toContain("updatedAt");
+            expect(resourceMigration.match(new RegExp(`${resourceIndex}[^;]*\\bDESC\\b`, "i")) !== null).toBe(false);
+            expect(savedSecretMigration).toContain(savedSecretIndex);
+            expect(savedSecretMigration.match(new RegExp(`${savedSecretIndex}[^;]*\\bDESC\\b`, "i")) !== null).toBe(false);
+        }
+
+        const sqliteSavedSecrets = readMigration(sqliteRoot, migrationNames[3]);
+        expect(sqliteSavedSecrets).not.toMatch(/"updatedAt"\s+DATETIME\s+NOT NULL\s+DEFAULT\s+CURRENT_TIMESTAMP/);
+
+        for (const providerRoot of [postgresRoot, mysqlRoot, sqliteRoot]) {
+            const externalKeys = readMigration(providerRoot, migrationNames[4]);
+            expect(externalKeys).toMatch(/TeamCredentialExternalApiKey_teamMembershipId_fkey[^;]*ON DELETE RESTRICT/i);
+            expect(readMigration(providerRoot, migrationNames[0])).toMatch(/directSourceVersionsJson/);
+            expect(readMigration(providerRoot, migrationNames[0])).toMatch(/resourceRevision/);
         }
     });
 

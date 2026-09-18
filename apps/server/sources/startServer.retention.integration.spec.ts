@@ -4,12 +4,14 @@ import {
     createStartServerDbMocks,
     installStartServerDbModuleMock,
     installStartServerCommonWiringMocks,
+    startEnterpriseIdentitySyncWorkerMock,
     startPluginWebhookCredentialRetirementWorkerMock,
 } from '@/testkit/startServerMocks';
 import { createStartServerHarness } from '@/testkit/startServerHarness';
 
 const retentionStop = vi.fn();
 const webhookCredentialRetirementStop = vi.fn();
+const enterpriseIdentitySyncStop = vi.fn(async () => {});
 
 vi.mock('@/storage/redis/redis', () => ({
     getRedisClient: () => ({ ping: vi.fn(async () => 'PONG') }),
@@ -35,6 +37,7 @@ describe('startServer retention worker wiring', () => {
         startServerDbMocks.reset();
         startServerHarness.reset();
         startPluginWebhookCredentialRetirementWorkerMock.mockReset().mockReturnValue(null);
+        startEnterpriseIdentitySyncWorkerMock.mockReset().mockReturnValue(null);
     });
 
     afterEach(() => {
@@ -71,5 +74,22 @@ describe('startServer retention worker wiring', () => {
             'plugin-webhook-credential-retirement-worker',
             expect.any(Function),
         );
+    });
+
+    it('starts and awaits enterprise identity sync under the worker lifecycle', async () => {
+        startEnterpriseIdentitySyncWorkerMock.mockReturnValue({
+            stop: enterpriseIdentitySyncStop,
+            nudge: vi.fn(),
+        });
+        startServerHarness.prepareImport();
+        const { startServer } = await import('./startServer');
+
+        await startServer('full');
+
+        expect(startEnterpriseIdentitySyncWorkerMock).toHaveBeenCalledWith({ env: process.env });
+        const registration = onShutdown.mock.calls.find(([name]) => name === 'enterprise-identity-sync-worker');
+        expect(registration).toBeDefined();
+        await registration?.[1]();
+        expect(enterpriseIdentitySyncStop).toHaveBeenCalledTimes(1);
     });
 });

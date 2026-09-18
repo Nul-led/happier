@@ -5,10 +5,10 @@ import { readAuthFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 
 export const keyChallengeAuthMethodModule: AuthMethodModule = Object.freeze({
     id: "key_challenge",
-    resolveAuthMethod: ({ env, policy }) => {
+    resolveAuthMethod: ({ env, policy, admission }) => {
         const featureEnv = readAuthFeatureEnv(env);
         const loginEnabled = featureEnv.loginKeyChallengeEnabled;
-        const provisionEnabled = loginEnabled && policy.anonymousSignupEnabled;
+        const provisionEnabled = loginEnabled && (policy.anonymousSignupEnabled || admission !== undefined);
         return {
             id: "key_challenge",
             actions: [
@@ -18,14 +18,9 @@ export const keyChallengeAuthMethodModule: AuthMethodModule = Object.freeze({
             ui: { displayName: "Device key", iconHint: null },
         };
     },
-    isViable: (env) => {
-        const featureEnv = readAuthFeatureEnv(env);
-        return featureEnv.loginKeyChallengeEnabled;
-    },
     registerRoutes: (app) => {
         const featureEnv = readAuthFeatureEnv(process.env);
         if (!featureEnv.loginKeyChallengeEnabled) return;
         registerKeyChallengeAuthRoute(app);
     },
 });
-

@@ -42,6 +42,7 @@ import { registerAutomationV3Routes } from "../automations/registerAutomationV3R
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_ENCRYPTION_MIGRATE_AUTOMATIONS_MAX_ITEMS,
     attachAccountEncryptionMigrateProofSignatureV1,
     ARTIFACT_PLAIN_DATA_KEY_MARKER,
@@ -175,11 +176,11 @@ function createSignedContentKeyBinding(
     contentPublicKeySigBytes: Uint8Array<ArrayBuffer>;
 }> {
     const contentKey = tweetnacl.box.keyPair();
-    const binding = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(contentKey.publicKey),
-    ]);
-    const signature = tweetnacl.sign.detached(binding, signingSecretKey);
+
+    const signature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signingSecretKey,
+        contentPublicKey: contentKey.publicKey,
+    });
     return {
         contentPublicKey: privacyKit.encodeBase64(
             new Uint8Array(contentKey.publicKey),

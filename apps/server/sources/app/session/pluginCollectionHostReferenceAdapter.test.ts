@@ -38,7 +38,20 @@ function txFixture(input: Readonly<{
     share?: Readonly<{ accessLevel: "view" | "edit" | "admin" }> | null;
     change?: Readonly<{ sessionId: string | null }> | null;
 }>) {
-    const sessionFindUnique = vi.fn(async () => input.session);
+    const sessionFindUnique = vi.fn(async () => input.session ? {
+        ...input.session,
+        id: "session-1",
+        account: { status: "active" },
+        primaryTeamId: null,
+        shares: input.share ? [{
+            id: "share-1",
+            sharedWithUserId: "account-1",
+            ...input.share,
+            canApprovePermissions: false,
+        }] : [],
+        teamGrants: [],
+        groupGrants: [],
+    } : null);
     const sessionShareFindUnique = vi.fn(async () => input.share ?? null);
     const accountChangeFindUnique = vi.fn(async () => input.change ?? null);
     return {

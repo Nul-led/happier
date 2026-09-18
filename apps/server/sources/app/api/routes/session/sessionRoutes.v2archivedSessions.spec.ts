@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
     createSessionRouteTestBuilder,
     accountFindUnique,
+    createSessionAccessProjectionRelations,
+    flattenSessionWhereConjuncts,
     resetSessionRouteMocks,
     sessionFindMany,
 } from "./sessionRoutes.testkit";
@@ -18,9 +20,15 @@ describe("sessionRoutes v2 archived sessions listing", () => {
         sessionFindMany
             .mockResolvedValueOnce([
                 {
+                    ...createSessionAccessProjectionRelations(),
                     id: "s2",
                     seq: 2,
                     accountId: "u1",
+                    currentStorageState: "hosted",
+                    acceptedThroughServerSeq: null,
+                    materializationPublicationId: null,
+                    materializedThroughSourceAt: null,
+                    publishedThroughServerSeq: null,
                     encryptionMode: "e2ee",
                     createdAt: now,
                     updatedAt: now,
@@ -30,12 +38,28 @@ describe("sessionRoutes v2 archived sessions listing", () => {
                     metadataVersion: 1,
                     agentState: null,
                     agentStateVersion: 0,
-                    dataEncryptionKey: null,
+                    responsibleAccountId: null,
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 2, unreadSince: null }],
+                    accountFollows: [],
+                    sessionPins: [],
+                    sessionAttentionStandings: [],
+                    dataKeyEnvelopes: [],
                     pendingCount: 0,
+                    pendingBlockedCount: 0,
                     pendingVersion: 0,
+                    pendingPermissionRequestCount: 0,
+                    pendingUserActionRequestCount: 0,
+                    latestTurnId: null,
+                    latestTurnStatus: null,
+                    latestTurnStatusObservedAt: null,
+                    lastRuntimeIssue: null,
+                    latestReadyEventSeq: null,
+                    turns: [],
                     active: false,
                     lastActiveAt: now,
                     shares: [],
+                    teamGrants: [],
+                    groupGrants: [],
                 },
             ])
             .mockResolvedValue([]);
@@ -43,13 +67,9 @@ describe("sessionRoutes v2 archived sessions listing", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/archived");
         const { response: res } = await route.invoke({ query: { limit: 50 } });
 
-        expect(sessionFindMany).toHaveBeenCalledWith(
-            expect.objectContaining({
-                where: expect.objectContaining({
-                    archivedAt: { not: null },
-                }),
-            }),
-        );
+        expect(flattenSessionWhereConjuncts(sessionFindMany.mock.calls[0]?.[0]?.where)).toContainEqual({
+            archivedAt: { not: null },
+        });
 
         expect(res).toEqual({
             sessions: [
@@ -68,6 +88,7 @@ describe("sessionRoutes v2 archived sessions listing", () => {
     it("refuses the released layout-zero shared archived-row projection until owner migration", async () => {
         const now = new Date(1_000);
         const row = {
+            ...createSessionAccessProjectionRelations(),
             id: "legacy-shared-archived",
             seq: 1,
             currentStorageState: "hosted",
@@ -87,15 +108,30 @@ describe("sessionRoutes v2 archived sessions listing", () => {
             pendingPermissionRequestCount: 0,
             pendingUserActionRequestCount: 0,
             pendingCount: 0,
+            pendingBlockedCount: 0,
             pendingVersion: 0,
-            dataEncryptionKey: null,
+            responsibleAccountId: null,
+            accountReadStates: [],
+            accountFollows: [],
+            sessionPins: [],
+            sessionAttentionStandings: [],
+            dataKeyEnvelopes: [],
+            latestTurnId: null,
+            latestTurnStatus: null,
+            latestTurnStatusObservedAt: null,
+            lastRuntimeIssue: null,
+            latestReadyEventSeq: null,
+            turns: [],
             active: false,
             lastActiveAt: now,
             shares: [{
-                encryptedDataKey: null,
+                id: "legacy-shared-archived-direct",
+                sharedWithUserId: "u1",
                 accessLevel: "view",
                 canApprovePermissions: false,
             }],
+            teamGrants: [],
+            groupGrants: [],
         };
         sessionFindMany
             .mockResolvedValueOnce([row])
@@ -109,11 +145,9 @@ describe("sessionRoutes v2 archived sessions listing", () => {
             error: "Session metadata privacy upgrade required",
             code: "metadata_privacy_upgrade_required",
         });
-        expect(sessionFindMany).toHaveBeenCalledWith(expect.objectContaining({
-            where: expect.objectContaining({
-                archivedAt: { not: null },
-                meaningfulActivityAt: { not: null },
-            }),
-        }));
+        expect(flattenSessionWhereConjuncts(sessionFindMany.mock.calls[0]?.[0]?.where)).toEqual(expect.arrayContaining([
+            { archivedAt: { not: null } },
+            { currentStorageState: "hosted", meaningfulActivityAt: { not: null } },
+        ]));
     });
 });

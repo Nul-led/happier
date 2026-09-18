@@ -1,0 +1,537 @@
+import { db } from "@/storage/db";
+import type { Tx } from "@/storage/inTx";
+import type { Prisma } from "@prisma/client";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
+import { isSessionTranscriptShareable, SESSION_TRANSCRIPT_PUBLICATION_SELECT } from "@/app/session/sessionTranscriptPublicationPolicy";
+import { buildSessionReadableAccountWhereInTx } from "./sessionAccessWhere";
+import { verifyCurrentMaterializedRunnerPrincipalInTx } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
+import {
+    qualifySessionTeamAuthenticationInTx,
+    type SessionAccessAuthentication,
+} from "./sessionAccessAuthentication";
+
+import { SESSION_CAPABILITY_RULES, SESSION_ACCESS_LEVEL_ORDER, projectSessionAccessCapabilitiesV1, isActiveHomeAccountStatus } from "@happier-dev/protocol";
+import type { EffectiveSessionAccessLevelV1, SessionCapabilityV1, SessionAccessSourceV1, SessionEffectiveAccessV1 } from "@happier-dev/protocol";
+export { SESSION_CAPABILITY_RULES, SESSION_ACCESS_LEVEL_ORDER };
+export type SessionAccessLevel = EffectiveSessionAccessLevelV1;
+export type SessionCapability = SessionCapabilityV1;
+export type SessionAccessSource = SessionAccessSourceV1;
+export interface EffectiveSessionAccess {
+    readonly accountId: string;
+    readonly sessionId: string;
+    readonly level: SessionAccessLevel;
+    readonly sources: readonly SessionAccessSource[];
+    readonly audienceContext: SessionEffectiveAccessV1['audienceContext'];
+    readonly primaryTeamId?: string | null;
+    /** All applicable relationships for private Follow preferences, not grant authority. */
+    readonly relationshipKinds: readonly ("direct" | "team" | "group")[];
+    readonly capabilities: Readonly<Record<SessionCapability, boolean>>;
+}
+/** The transport projection excludes server-only Account and Session identity. */
+export function projectSessionEffectiveAccessV1(access: EffectiveSessionAccess): SessionEffectiveAccessV1 {
+    return { v: 1, level: access.level, sources: [...access.sources], capabilities: { ...access.capabilities },
+        audienceContext: access.audienceContext,
+        ...(access.primaryTeamId !== undefined ? { primaryTeamId: access.primaryTeamId } : {}),
+    };
+}
+export type SessionAccessReader = Pick<Tx, "session">;
+export function isSessionCollaborationEnabled(): boolean {
+    return isServerFeatureEnabledForRequest("sessions.collaboration", process.env);
+}
+
+/** Lane 01 owns minting the cutoff; this owner alone interprets it. */
+export function isGrantAfterMembershipHorizon(effectiveAt: Date, startsAt: Date | null): boolean {
+    return startsAt === null || effectiveAt.getTime() > startsAt.getTime();
+}
+
+export function buildCurrentSessionAccessMembershipWhere(includeGuests: boolean): Prisma.TeamMembershipWhereInput {
+    return {
+        status: "active", account: { status: "active" },
+        ...(includeGuests ? {} : { role: { not: "guest" as const } }),
+    };
+}
+
+export function buildSessionAccessMembershipWhere(accountIds: readonly string[], includeGuests: boolean): Prisma.TeamMembershipWhereInput {
+    return {
+        ...buildCurrentSessionAccessMembershipWhere(includeGuests),
+        accountId: { in: [...accountIds] },
+    };
+}
+
+export function buildSessionAccessProjectionSelectForAccounts(accountIds: readonly string[]) {
+    const teamMembership = buildSessionAccessMembershipWhere(accountIds, false);
+    const groupMembership = { teamMembership: buildSessionAccessMembershipWhere(accountIds, true) };
+    const collectiveEnabled = isSessionCollaborationEnabled();
+    return {
+        id: true,
+        primaryTeamId: true,
+        ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+        account: { select: { status: true } },
+        shares: { where: { sharedWithUserId: { in: [...accountIds] }, sharedWithUser: { status: "active" } }, select: { id: true, sharedWithUserId: true, accessLevel: true, canApprovePermissions: true } },
+        teamGrants: {
+            where: { ...(collectiveEnabled ? {} : { teamId: { in: [] } }), team: { archivedAt: null, memberships: { some: teamMembership } } },
+            select: {
+                teamId: true, effectiveAt: true, accessLevel: true, canApprovePermissions: true, requiredByTeamPolicy: true,
+                team: { select: { authenticationPolicy: true, memberships: { where: teamMembership, select: { accountId: true, sessionAccessStartsAt: true } } } },
+            },
+        },
+        groupGrants: {
+            where: { ...(collectiveEnabled ? {} : { teamGroupId: { in: [] } }), teamGroup: { archivedAt: null, team: { archivedAt: null }, memberships: { some: groupMembership } } },
+            select: {
+                teamGroupId: true, effectiveAt: true, accessLevel: true, canApprovePermissions: true,
+                teamGroup: { select: { teamId: true, team: { select: { authenticationPolicy: true } }, memberships: {
+                    where: groupMembership, select: { sessionAccessStartsAt: true, teamMembership: { select: { accountId: true } } },
+                } } },
+            },
+        },
+    } as const satisfies Prisma.SessionSelect;
+}
+export function buildSessionAccessProjectionSelect(accountId: string) {
+    return buildSessionAccessProjectionSelectForAccounts([accountId]);
+}
+export type SessionAccessProjectionRow = Prisma.SessionGetPayload<{ select: ReturnType<typeof buildSessionAccessProjectionSelect> }>;
+
+export interface ApplicableSessionGrant {
+    readonly source: SessionAccessSource;
+    readonly accessLevel: Exclude<SessionAccessLevel, "owner">;
+    readonly canApprovePermissions: boolean;
+}
+
+function sourceKey(source: SessionAccessSource): string {
+    if (source.kind === "direct") return `direct:${source.shareId}`;
+    if (source.kind === "team") return `team:${source.teamId}`;
+    if (source.kind === "group") return `group:${source.teamId}:${source.groupId}`;
+    return "owner";
+}
+
+/** Same-grant capability rules prevent combining Admin and delegated Edit into escalation. */
+function projectApplicableSessionGrants(accountId: string, sessionId: string, owner: boolean, grants: readonly ApplicableSessionGrant[]): EffectiveSessionAccess | null {
+    if (!owner && grants.length === 0) return null;
+    const ordered = [...grants].sort((left, right) =>
+        SESSION_ACCESS_LEVEL_ORDER.indexOf(right.accessLevel) - SESSION_ACCESS_LEVEL_ORDER.indexOf(left.accessLevel)
+        || sourceKey(left.source).localeCompare(sourceKey(right.source)));
+    const level = owner ? "owner" : ordered[0].accessLevel;
+    const capabilities = projectSessionAccessCapabilitiesV1({ owner, grants });
+    const sources = new Map<string, SessionAccessSource>();
+    const addSource = (grant: ApplicableSessionGrant | undefined) => { if (grant) sources.set(sourceKey(grant.source), grant.source); };
+    if (!owner) {
+        addSource(ordered[0]);
+        addSource(ordered.find(grant => grant.accessLevel !== "view" && grant.canApprovePermissions));
+        addSource(ordered.find(grant => grant.source.kind === "team" && grant.source.requiredByTeamPolicy));
+    }
+    const relationshipKinds = (["direct", "team", "group"] as const).filter(kind => grants.some(grant => grant.source.kind === kind));
+    // Context is independent of strongest-level explanations. Exact Group wins
+    // over Team, with immutable ids deciding presentation ties only (07.3 §9).
+    const audienceSource = grants.map(grant => grant.source)
+        .filter(source => source.kind === "group" || source.kind === "team")
+        .sort((left, right) => sourceKey(left).localeCompare(sourceKey(right)))[0];
+    const audienceContext = audienceSource?.kind === "group"
+        ? { kind: "group" as const, teamId: audienceSource.teamId, groupId: audienceSource.groupId }
+        : audienceSource?.kind === "team" ? { kind: "team" as const, teamId: audienceSource.teamId } : null;
+    return { accountId, sessionId, level, relationshipKinds, audienceContext, sources: owner ? [{ kind: "owner" }] : [...sources.values()], capabilities };
+}
+
+/** Project only applicable current grants; keys and activity are not access facts. */
+export function projectEffectiveSessionAccess(
+    row: SessionAccessProjectionRow,
+    accountId: string,
+    options: Readonly<{
+        mode?: "effective_access_v1" | "legacy_owner_or_direct";
+        qualifiedTeamIds?: ReadonlySet<string>;
+        /** Structural projection only; never use this result to authorize content or effects. */
+        includeCredentialRestrictedTeamEntitlements?: boolean;
+    }> = {},
+): EffectiveSessionAccess | null {
+    const owner = row.accountId === accountId;
+    if (owner && !isActiveHomeAccountStatus(row.account.status)) return null;
+    if (!owner && !isSessionTranscriptShareable(row)) return null;
+    const grants: ApplicableSessionGrant[] = row.shares.filter(grant => grant.sharedWithUserId === accountId).map(grant => ({
+        source: { kind: "direct", shareId: grant.id }, accessLevel: grant.accessLevel, canApprovePermissions: grant.canApprovePermissions,
+    }));
+    for (const grant of options.mode === "legacy_owner_or_direct" ? [] : row.teamGrants) {
+        if (!options.includeCredentialRestrictedTeamEntitlements
+            && !options.qualifiedTeamIds?.has(grant.teamId)) continue;
+        const membership = grant.team.memberships.find(value => value.accountId === accountId);
+        if (!membership || !isGrantAfterMembershipHorizon(grant.effectiveAt, membership.sessionAccessStartsAt)) continue;
+        grants.push({ source: { kind: "team", teamId: grant.teamId, requiredByTeamPolicy: grant.requiredByTeamPolicy }, accessLevel: grant.accessLevel, canApprovePermissions: grant.canApprovePermissions });
+    }
+    for (const grant of options.mode === "legacy_owner_or_direct" ? [] : row.groupGrants) {
+        if (!options.includeCredentialRestrictedTeamEntitlements
+            && !options.qualifiedTeamIds?.has(grant.teamGroup.teamId)) continue;
+        const membership = grant.teamGroup.memberships.find(value => value.teamMembership.accountId === accountId);
+        if (!membership || !isGrantAfterMembershipHorizon(grant.effectiveAt, membership.sessionAccessStartsAt)) continue;
+        grants.push({ source: { kind: "group", teamId: grant.teamGroup.teamId, groupId: grant.teamGroupId }, accessLevel: grant.accessLevel, canApprovePermissions: grant.canApprovePermissions });
+    }
+    const access = projectApplicableSessionGrants(accountId, row.id, owner, grants);
+    // Authored context is safe display context for every authorized reader. It is
+    // not audience authority and may name a Team unrelated to the decisive grant.
+    return access ? { ...access, primaryTeamId: row.primaryTeamId ?? null } : null;
+}
+
+export type SessionAccessOperationDecision =
+    | Readonly<{ status: "allowed"; access: EffectiveSessionAccess }>
+    | Readonly<{ status: "authentication_required" }>
+    | Readonly<{ status: "authentication_unavailable" }>
+    | Readonly<{ status: "unavailable" }>;
+
+function projectIndependentSessionAccess(row: SessionAccessProjectionRow, accountId: string): EffectiveSessionAccess | null {
+    const independentRow = {
+        ...row,
+        teamGrants: [],
+        groupGrants: [],
+    };
+    return projectEffectiveSessionAccess(independentRow, accountId);
+}
+
+function projectExactSessionRuntimeAccess(
+    row: SessionAccessProjectionRow,
+    accountId: string,
+    authentication: SessionAccessAuthentication,
+): EffectiveSessionAccess | null {
+    const principal = authentication.sessionRuntimePrincipal;
+    if (!principal) return null;
+    if (
+        principal.accountId !== accountId
+        || principal.sessionId !== row.id
+        || row.accountId !== principal.accountId
+        || !isActiveHomeAccountStatus(row.account.status)
+    ) {
+        return null;
+    }
+    return {
+        accountId,
+        sessionId: row.id,
+        level: "edit",
+        capabilities: projectSessionAccessCapabilitiesV1({
+            owner: false,
+            grants: [{ accessLevel: "edit", canApprovePermissions: false }],
+        }),
+        // Runtime authority is credential-derived, not a persisted sharing relationship.
+        sources: [],
+        relationshipKinds: [],
+        audienceContext: null,
+        primaryTeamId: row.primaryTeamId ?? null,
+    };
+}
+
+/**
+ * Credential-qualified protected-operation decision. Structural entitlement and Team
+ * authentication remain separate until this single composition point; owner/direct OR
+ * paths therefore cannot be suppressed by a failing Team-derived path.
+ */
+export async function resolveSessionAccessForOperation(
+    reader: Tx,
+    input: Readonly<{
+        accountId: string;
+        sessionId: string;
+        authentication: SessionAccessAuthentication;
+        /**
+         * When present, preserve the authentication continuation for the exact
+         * requested capability. A weaker independent grant may keep ordinary
+         * reads available while a restricted Team grant is the only source that
+         * can satisfy this operation.
+         */
+        capability?: SessionCapability;
+        /**
+         * Which seam projection the caller is answering. `legacy_owner_or_direct`
+         * leaves Team and Group grants out of the answer for a released reader;
+         * every other rule — runtime-principal currentness, Account status,
+         * transcript shareability, capability — stays here, so the two seam
+         * projections cannot drift into two access decisions.
+         */
+        accessMode?: "effective_access_v1" | "legacy_owner_or_direct";
+        /**
+         * The canonical access projection the caller already loaded for this
+         * exact Session, so a released reader still pays for one row read.
+         */
+        row?: SessionAccessProjectionRow;
+    }>,
+): Promise<SessionAccessOperationDecision> {
+    const runtimePrincipal = input.authentication.sessionRuntimePrincipal;
+    if (
+        runtimePrincipal
+        && !await verifyCurrentMaterializedRunnerPrincipalInTx(reader, runtimePrincipal)
+    ) {
+        return { status: "unavailable" };
+    }
+    const row = input.row ?? await reader.session.findUnique({
+        where: { id: input.sessionId },
+        select: buildSessionAccessProjectionSelect(input.accountId),
+    });
+    // A supplied row that names another Session fails closed instead of
+    // authorizing it; the decision below reads the row, not the requested id.
+    if (!row || row.id !== input.sessionId) return { status: "unavailable" };
+
+    if (runtimePrincipal) {
+        const access = projectExactSessionRuntimeAccess(row, input.accountId, input.authentication);
+        if (!access) return { status: "unavailable" };
+        return input.capability === undefined || access.capabilities[input.capability]
+            ? { status: "allowed", access }
+            : { status: "unavailable" };
+    }
+
+    if (input.accessMode === "legacy_owner_or_direct") {
+        // Released seam projection. Collective entitlement is not merely
+        // unqualified here, it is absent from the answer, so an old reader can
+        // never receive Team- or Group-derived access or a Team-derived
+        // authentication continuation.
+        const released = projectIndependentSessionAccess(row, input.accountId);
+        if (!released) return { status: "unavailable" };
+        return input.capability === undefined || released.capabilities[input.capability]
+            ? { status: "allowed", access: released }
+            : { status: "unavailable" };
+    }
+
+    const independent = projectIndependentSessionAccess(row, input.accountId);
+    // Ownership is already the strongest possible answer. A direct grant is not:
+    // it must be combined with any credential-qualified collective grants so a
+    // direct View row cannot mask an applicable Team Edit/Admin row.
+    if (independent?.level === "owner") return { status: "allowed", access: independent };
+    if (!isSessionTranscriptShareable(row)) return { status: "unavailable" };
+
+    const grants: ApplicableSessionGrant[] = row.shares
+        .filter(grant => grant.sharedWithUserId === input.accountId)
+        .map(grant => ({
+            source: { kind: "direct" as const, shareId: grant.id },
+            accessLevel: grant.accessLevel,
+            canApprovePermissions: grant.canApprovePermissions,
+        }));
+    let sawAuthenticationRequired = false;
+    let sawAuthenticationUnavailable = false;
+    let sawCollectiveEntitlement = false;
+    const qualificationByTeamId = new Map<string, Awaited<ReturnType<typeof qualifySessionTeamAuthenticationInTx>>>();
+    const qualifyTeam = async (team: Readonly<{ id: string; authenticationPolicy: unknown }>) => {
+        const existing = qualificationByTeamId.get(team.id);
+        if (existing) return existing;
+        const qualification = await qualifySessionTeamAuthenticationInTx(reader, {
+            accountId: input.accountId,
+            team,
+            authentication: input.authentication,
+        });
+        qualificationByTeamId.set(team.id, qualification);
+        return qualification;
+    };
+
+    const grantCanSupplyRequestedCapability = (grant: ApplicableSessionGrant): boolean =>
+        input.capability === undefined
+        || projectSessionAccessCapabilitiesV1({ owner: false, grants: [grant] })[input.capability];
+
+    const recordUnsatisfiedQualification = (
+        grant: ApplicableSessionGrant,
+        qualification: Awaited<ReturnType<typeof qualifySessionTeamAuthenticationInTx>>,
+    ): void => {
+        if (!grantCanSupplyRequestedCapability(grant)) return;
+        if (qualification.status === "authentication_required") sawAuthenticationRequired = true;
+        if (qualification.status === "unavailable") sawAuthenticationUnavailable = true;
+    };
+
+    for (const grant of row.teamGrants) {
+        const membership = grant.team.memberships.find(value => value.accountId === input.accountId);
+        if (!membership || !isGrantAfterMembershipHorizon(grant.effectiveAt, membership.sessionAccessStartsAt)) continue;
+        sawCollectiveEntitlement = true;
+        const applicableGrant: ApplicableSessionGrant = {
+            source: { kind: "team", teamId: grant.teamId, requiredByTeamPolicy: grant.requiredByTeamPolicy },
+            accessLevel: grant.accessLevel,
+            canApprovePermissions: grant.canApprovePermissions,
+        };
+        const qualification = await qualifyTeam({ id: grant.teamId, authenticationPolicy: grant.team.authenticationPolicy });
+        if (qualification.status !== "satisfied") {
+            recordUnsatisfiedQualification(applicableGrant, qualification);
+            continue;
+        }
+        grants.push(applicableGrant);
+    }
+    for (const grant of row.groupGrants) {
+        const membership = grant.teamGroup.memberships.find(value => value.teamMembership.accountId === input.accountId);
+        if (!membership || !isGrantAfterMembershipHorizon(grant.effectiveAt, membership.sessionAccessStartsAt)) continue;
+        sawCollectiveEntitlement = true;
+        const applicableGrant: ApplicableSessionGrant = {
+            source: { kind: "group", teamId: grant.teamGroup.teamId, groupId: grant.teamGroupId },
+            accessLevel: grant.accessLevel,
+            canApprovePermissions: grant.canApprovePermissions,
+        };
+        const qualification = await qualifyTeam({ id: grant.teamGroup.teamId, authenticationPolicy: grant.teamGroup.team.authenticationPolicy });
+        if (qualification.status !== "satisfied") {
+            recordUnsatisfiedQualification(applicableGrant, qualification);
+            continue;
+        }
+        grants.push(applicableGrant);
+    }
+    const access = projectApplicableSessionGrants(input.accountId, row.id, false, grants);
+    if (access && (input.capability === undefined || access.capabilities[input.capability])) {
+        return {
+            status: "allowed",
+            access: { ...access, primaryTeamId: row.primaryTeamId ?? null },
+        };
+    }
+    if (sawAuthenticationRequired) return { status: "authentication_required" };
+    if (sawAuthenticationUnavailable) return { status: "authentication_unavailable" };
+    if (access) return {
+        status: "allowed",
+        access: { ...access, primaryTeamId: row.primaryTeamId ?? null },
+    };
+    return {
+        status: input.capability === undefined && sawCollectiveEntitlement
+            ? "authentication_unavailable"
+            : "unavailable",
+    };
+}
+
+/** Evidence-independent entitlement projection for internal census/preparation only. */
+export async function resolveStructuralSessionAccess(reader: SessionAccessReader, input: { accountId: string; sessionId: string }): Promise<EffectiveSessionAccess | null> {
+    const row = await reader.session.findUnique({ where: { id: input.sessionId }, select: buildSessionAccessProjectionSelect(input.accountId) });
+    return row ? projectEffectiveSessionAccess(row, input.accountId, {
+        includeCredentialRestrictedTeamEntitlements: true,
+    }) : null;
+}
+
+/** Credential-aware protected-operation projection. */
+export async function resolveEffectiveSessionAccess(reader: Tx, input: { accountId: string; sessionId: string; authentication: SessionAccessAuthentication }): Promise<EffectiveSessionAccess | null> {
+    const decision = await resolveSessionAccessForOperation(reader, {
+        ...input,
+        authentication: input.authentication,
+    });
+    return decision.status === "allowed" ? decision.access : null;
+}
+export type SessionCapabilityAssertion =
+    | { ok: true; access: EffectiveSessionAccess }
+    | { ok: false; reason: "authentication_required" | "authentication_unavailable" | "unavailable" };
+export async function assertSessionCapabilityInTx(input: {
+    tx: Tx;
+    accountId: string;
+    sessionId: string;
+    capability: SessionCapability;
+    authentication: SessionAccessAuthentication;
+}): Promise<SessionCapabilityAssertion> {
+    const decision = await resolveSessionAccessForOperation(input.tx, {
+        accountId: input.accountId,
+        sessionId: input.sessionId,
+        authentication: input.authentication,
+        capability: input.capability,
+    });
+    if (decision.status !== "allowed") return { ok: false, reason: decision.status };
+    const access = decision.access;
+    return access?.capabilities[input.capability] ? { ok: true, access } : { ok: false, reason: "unavailable" };
+}
+/** Execution-custody operations stay owner-only independently of human capability names. */
+export async function assertSessionOwnerInTx(input: {
+    tx: SessionAccessReader; accountId: string; sessionId: string;
+}): Promise<SessionCapabilityAssertion> {
+    const access = await resolveStructuralSessionAccess(input.tx, input);
+    return access?.level === "owner" ? { ok: true, access } : { ok: false, reason: "unavailable" };
+}
+
+/**
+ * Team-resource visibility is the exact Team grant, independent of the requesting
+ * Account's decisive sources or the Session's authored primary Team context.
+ * Every grant level includes read access; per-Account membership and authentication
+ * eligibility remain the ordinary access resolver's responsibility.
+ */
+export async function assertSessionTeamReadableGrantInTx(input: {
+    tx: SessionAccessReader; sessionId: string; teamId: string;
+}): Promise<{ ok: true } | { ok: false; reason: "unavailable" }> {
+    if (!isSessionCollaborationEnabled()) return { ok: false, reason: "unavailable" };
+    const session = await input.tx.session.findFirst({
+        where: { AND: [
+            { id: input.sessionId },
+            { teamGrants: { some: { teamId: input.teamId, team: { archivedAt: null } } } },
+        ] },
+        select: SESSION_TRANSCRIPT_PUBLICATION_SELECT,
+    });
+    return session && isSessionTranscriptShareable(session) ? { ok: true } : { ok: false, reason: "unavailable" };
+}
+
+export async function resolveStructuralSessionAccessForAccountsInTx(tx: SessionAccessReader, input: {
+    sessionId: string; accountIds: readonly string[];
+}): Promise<ReadonlyMap<string, EffectiveSessionAccess | null>> {
+    const result = new Map<string, EffectiveSessionAccess | null>();
+    const accountIds = [...new Set(input.accountIds)];
+    // The repeated Account filters remain below SQLite's conservative 999-bind
+    // boundary. This chunks transport parameters, never the authorized result set.
+    for (let offset = 0; offset < accountIds.length; offset += 100) {
+        const batch = accountIds.slice(offset, offset + 100);
+        const row = await tx.session.findUnique({ where: { id: input.sessionId }, select: buildSessionAccessProjectionSelectForAccounts(batch) });
+        for (const accountId of batch) result.set(accountId, row ? projectEffectiveSessionAccess(row, accountId, {
+            includeCredentialRestrictedTeamEntitlements: true,
+        }) : null);
+    }
+    return result;
+}
+
+/**
+ * The Session-major sibling of the reader above, for a caller holding a page of
+ * Sessions rather than one.
+ *
+ * It projects the same grants through the same pure `projectEffectiveSessionAccess`,
+ * so a batched caller cannot drift from the per-Session answer; the only
+ * difference is that one `findMany` replaces one query per Session. Sessions are
+ * chunked for the same conservative bind boundary as the Account batches above,
+ * and a Session the reader cannot see is simply absent from the result.
+ */
+export async function resolveStructuralSessionAccessForSessionsInTx(tx: SessionAccessReader, input: {
+    sessionIds: readonly string[]; accountIds: readonly string[];
+}): Promise<ReadonlyMap<string, ReadonlyMap<string, EffectiveSessionAccess | null>>> {
+    const result = new Map<string, Map<string, EffectiveSessionAccess | null>>();
+    const accountIds = [...new Set(input.accountIds)];
+    const sessionIds = [...new Set(input.sessionIds)];
+    if (accountIds.length === 0 || sessionIds.length === 0) return result;
+    for (let accountOffset = 0; accountOffset < accountIds.length; accountOffset += 100) {
+        const accountBatch = accountIds.slice(accountOffset, accountOffset + 100);
+        for (let sessionOffset = 0; sessionOffset < sessionIds.length; sessionOffset += 200) {
+            const sessionBatch = sessionIds.slice(sessionOffset, sessionOffset + 200);
+            const rows = await tx.session.findMany({
+                where: { id: { in: sessionBatch } },
+                select: buildSessionAccessProjectionSelectForAccounts(accountBatch),
+            });
+            for (const row of rows) {
+                const perAccount = result.get(row.id) ?? new Map<string, EffectiveSessionAccess | null>();
+                for (const accountId of accountBatch) perAccount.set(accountId, projectEffectiveSessionAccess(row, accountId, {
+                    includeCredentialRestrictedTeamEntitlements: true,
+                }));
+                result.set(row.id, perAccount);
+            }
+        }
+    }
+    return result;
+}
+
+async function hasCapability(
+    accountId: string,
+    sessionId: string,
+    capability: SessionCapability,
+    authentication: SessionAccessAuthentication,
+): Promise<boolean> {
+    const access = await resolveSessionAccessForOperation(db, {
+        accountId,
+        sessionId,
+        authentication,
+        capability,
+    });
+    return access.status === "allowed" && access.access.capabilities[capability] === true;
+}
+export const canManageSharing = (accountId: string, sessionId: string, authentication: SessionAccessAuthentication) => hasCapability(accountId, sessionId, "manageAccess", authentication);
+export const canApprovePermissions = (accountId: string, sessionId: string, authentication: SessionAccessAuthentication) => hasCapability(accountId, sessionId, "approveRuntimePermissions", authentication);
+export const canManagePermissionDelegation = (accountId: string, sessionId: string, authentication: SessionAccessAuthentication) => hasCapability(accountId, sessionId, "managePermissionDelegation", authentication);
+
+// Recipient expansion lives in `./sessionRecipients`, which also reaches Team and
+// Group grants. An owner/direct-only copy here would silently drop those
+// collaborators from every projection fanout that consumed it.
+
+/** Minimal, stable Account census for access-authorized key preparation. */
+export async function listCurrentSessionAudienceAccountsInTx(input: {
+    tx: Pick<Tx, "session" | "account">;
+    sessionId: string;
+    afterAccountId?: string | null;
+    limit: number;
+}): Promise<readonly { accountId: string }[]> {
+    if (!Number.isSafeInteger(input.limit) || input.limit < 1) throw new RangeError("Invalid audience page size");
+    const audience = await buildSessionReadableAccountWhereInTx(input);
+    const rows = await input.tx.account.findMany({
+        where: { AND: [
+            audience,
+            ...(input.afterAccountId ? [{ id: { gt: input.afterAccountId } }] : []),
+        ] },
+        select: { id: true }, orderBy: { id: "asc" }, take: input.limit,
+    });
+    return rows.map(row => ({ accountId: row.id }));
+}

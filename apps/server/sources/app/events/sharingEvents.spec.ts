@@ -8,7 +8,7 @@ import {
 } from "./eventRouter";
 
 describe("sharing event builders", () => {
-    it("buildSessionSharedUpdate maps share fields and encodes encryptedDataKey as base64", () => {
+    it("buildSessionSharedUpdate carries the share identity and permissions without recipient key bytes", () => {
         const share = {
             id: "share-1",
             sessionId: "session-1",
@@ -21,36 +21,6 @@ describe("sharing event builders", () => {
             },
             accessLevel: "view" as const,
             canApprovePermissions: false,
-            encryptedDataKey: new Uint8Array([1, 2, 3, 4]),
-            createdAt: new Date("2025-01-09T12:00:00Z"),
-        };
-
-        const result = buildSessionSharedUpdate(share, 100, "update-id-1");
-        expect(result.body).toMatchObject({
-            t: "session-shared",
-            shareId: "share-1",
-            sharedBy: share.sharedByUser,
-            accessLevel: "view",
-            canApprovePermissions: false,
-            encryptedDataKey: Buffer.from(share.encryptedDataKey).toString("base64"),
-            createdAt: share.createdAt.getTime(),
-        });
-    });
-
-    it("buildSessionSharedUpdate omits encryptedDataKey when not present", () => {
-        const share = {
-            id: "share-1",
-            sessionId: "session-1",
-            sharedByUser: {
-                id: "user-owner",
-                firstName: "John",
-                lastName: "Doe",
-                username: "johndoe",
-                avatar: null,
-            },
-            accessLevel: "view" as const,
-            canApprovePermissions: false,
-            encryptedDataKey: null,
             createdAt: new Date("2025-01-09T12:00:00Z"),
         };
 

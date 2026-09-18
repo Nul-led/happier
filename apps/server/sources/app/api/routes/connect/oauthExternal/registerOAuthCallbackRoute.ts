@@ -7,15 +7,14 @@ import { connectExternalIdentity } from "@/app/auth/providers/identity";
 import { auth } from "@/app/auth/auth";
 import { Context } from "@/context";
 import { encryptString } from "@/modules/encrypt";
-import { findOAuthProviderById } from "@/app/oauth/providers/registry";
 import { db } from "@/storage/db";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { validateUsername } from "@/app/social/usernamePolicy";
-import { deleteOAuthStateAttemptBestEffort, loadValidOAuthStateAttempt } from "../connectRoutes.oauthStateAttempt";
+import { consumeValidOAuthStateAttempt } from "../connectRoutes.oauthStateAttempt";
 import { log } from "@/utils/logging/log";
 import { readAuthOauthKeylessFeatureEnv, readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { resolveKeylessAccountsAvailability } from "@/app/features/e2ee/resolveKeylessAccountsEnabled";
-import { resolveAuthPolicyFromEnv } from "@/app/auth/authPolicy";
+import { resolveEffectiveHomeAuthMethods } from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
 import { shouldDenyPublicSignupProvisioningAction } from "@/app/integrations/publicUrl/publicSignupProvisioningPolicy";
 import {
@@ -26,7 +25,70 @@ import {
 import { isCurrentAccountDirectoryOAuthTarget } from "./accountDirectoryOAuthTarget";
 import { OAUTH_NOT_CONFIGURED_ERROR } from "./oauthExternalErrors";
 import { oauthExternalRateLimitCallbackPerIp } from "./oauthExternalRateLimits";
-import { oauthStateAttemptSchema } from "./oauthExternalSchemas";
+import { hasInvalidOAuthSecurityBinding, oauthStateAttemptSchema, type OAuthSecurityBinding } from "./oauthExternalSchemas";
+import { resolveOAuthSecurityBinding } from "./oauthSecurityBinding";
+import { exchangeOAuthCodeForProfile } from "@/app/oauth/exchangeOAuthCodeForProfile";
+import { createIdentityConnectionTestResult } from "./identityConnectionTestResult";
+import { describeIdentityConnectionTestDiagnostics } from "./identityConnectionTestDiagnostics";
+import {
+    resolveGitHubAppInstallationVerificationOAuth,
+    verifyGitHubAppInstallationWithAdministratorProfile,
+} from "@/app/integrations/github/githubManagedAppLifecycle";
+import { parseManagedGitHubUserProfile } from "@/app/integrations/github/githubManagedUserOAuth";
+import {
+    completeGitHubAppManifestSetup,
+    isGitHubAppManifestSetupContinuationValue,
+    persistGitHubAppManifestSetupContinuation,
+} from "@/app/integrations/github/githubManagedAppManifest";
+import { readDirectoryProvisionedIdentityCandidatesInTx } from "@/app/teams/directory/provisionedIdentityBinding";
+import { inTx } from "@/storage/inTx";
+
+async function createConnectPending(params: Readonly<{
+    providerId: string;
+    userId: string;
+    securityBinding: OAuthSecurityBinding;
+    profile: unknown;
+    accessToken: string;
+    refreshToken?: string;
+}>): Promise<string> {
+    const pendingKey = `oauth_pending_${randomKeyNaked(24)}`;
+    let profileJson: string;
+    try {
+        const encoded = JSON.stringify(params.profile);
+        if (typeof encoded !== "string") throw new Error("invalid_profile");
+        profileJson = encoded;
+    } catch {
+        throw new Error("invalid_profile");
+    }
+    const tokenEnc = privacyKit.encodeBase64(
+        encryptString(["user", params.userId, "connect", params.providerId, "pending", pendingKey], params.accessToken),
+    );
+    const profileEnc = privacyKit.encodeBase64(
+        encryptString(["user", params.userId, "connect", params.providerId, "pending", pendingKey, "profile"], profileJson),
+    );
+    const refreshTokenEnc = typeof params.refreshToken === "string" && params.refreshToken.trim()
+        ? privacyKit.encodeBase64(encryptString(
+            ["user", params.userId, "connect", params.providerId, "pending", pendingKey, "refresh"],
+            params.refreshToken,
+        ))
+        : undefined;
+    await db.repeatKey.create({
+        data: {
+            key: pendingKey,
+            value: JSON.stringify({
+                flow: "connect",
+                provider: params.providerId,
+                securityBinding: params.securityBinding,
+                userId: params.userId,
+                profileEnc,
+                accessTokenEnc: tokenEnc,
+                ...(refreshTokenEnc ? { refreshTokenEnc } : {}),
+            }),
+            expiresAt: new Date(Date.now() + resolveOAuthPendingTtlMsFromEnv(process.env)),
+        },
+    });
+    return pendingKey;
+}
 
 export function registerOAuthCallbackRoute(app: Fastify) {
     app.get("/v1/oauth/:provider/callback", {
@@ -46,19 +108,14 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }),
         },
     }, async (request, reply) => {
-        const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        const fallbackWebAppUrl = resolveWebAppOAuthReturnUrlFromEnv(process.env, providerId);
-
-        if (!provider) {
-            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { error: "unsupported-provider" }));
-        }
+        const callbackProviderId = request.params.provider.toString().trim().toLowerCase();
+        const fallbackWebAppUrl = resolveWebAppOAuthReturnUrlFromEnv(process.env, callbackProviderId);
 
         const { code, state, iss } = request.query;
         const oauthError = (request.query as any)?.error?.toString?.().trim?.() || "";
 
         const oauthState = await auth.verifyOauthStateToken(state);
-        if (!oauthState || oauthState.provider !== providerId) {
+        if (!oauthState || oauthState.provider !== callbackProviderId) {
             const stateHash = createHash("sha256").update(state, "utf8").digest("hex").slice(0, 12);
             log({ module: "oauth" }, `Invalid state token (sha256:${stateHash})`);
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { error: "invalid_state" }));
@@ -68,11 +125,14 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         if (!sid) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
-        const attempt = await loadValidOAuthStateAttempt(sid);
+        const pendingAttempt = await db.repeatKey.findUnique({ where: { key: `oauth_state_${sid}` } });
+        if (pendingAttempt && isGitHubAppManifestSetupContinuationValue(pendingAttempt.value)) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
+        }
+        const attempt = await consumeValidOAuthStateAttempt(sid);
         if (!attempt) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
-        await deleteOAuthStateAttemptBestEffort(sid);
         let attemptJson: unknown;
         try {
             attemptJson = JSON.parse(attempt.value);
@@ -81,15 +141,69 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         }
         const attemptParsed = oauthStateAttemptSchema.safeParse(attemptJson);
         if (!attemptParsed.success) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
+                flow: oauthState.flow,
+                error: hasInvalidOAuthSecurityBinding(attemptJson) ? "auth_provider_configuration_changed" : "invalid_state",
+            }));
+        }
+        const providerId = attemptParsed.data.provider.toString().trim().toLowerCase();
+        const expectedCallbackProviderId = attemptParsed.data.callbackProvider?.toString().trim().toLowerCase()
+            ?? providerId;
+        if (!providerId || expectedCallbackProviderId !== callbackProviderId) {
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
-        if (attemptParsed.data.provider.toString().trim().toLowerCase() !== providerId) {
+        const attemptAdmission = attemptParsed.data.securityBinding?.admission;
+        if (attemptAdmission?.kind === "team_jit_identity" && attemptAdmission.authAttemptId !== sid) {
+            // JIT authority is minted by the state-attempt owner. Preserve that
+            // exact attempt identity when the callback turns the consumed state
+            // into a pending finalization; do not accept a merely same-Team source.
             return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
         }
+        const attemptPurpose = attemptParsed.data.securityBinding?.purpose
+            ?? attemptParsed.data.purpose
+            ?? null;
+        if (
+            attemptParsed.data.securityBinding
+            && attemptParsed.data.securityBinding.purpose !== (attemptParsed.data.purpose ?? null)
+            && attemptParsed.data.purpose !== undefined
+        ) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, { flow: oauthState.flow, error: "invalid_state" }));
+        }
+        const statePurpose = oauthState.purpose ?? null;
+        const isAccountSecurityAttempt = attemptPurpose === "account_encryption_first_key"
+            || attemptPurpose === "account_password_enrollment";
+        const isAccountSecurityState = statePurpose === "account_encryption_first_key"
+            || statePurpose === "account_password_enrollment";
+        if (
+            (isAccountSecurityAttempt || isAccountSecurityState)
+            && (
+                !isAccountSecurityAttempt
+                || !isAccountSecurityState
+                || statePurpose !== attemptPurpose
+                || oauthState.userId !== attemptParsed.data.userId
+                || oauthState.proofHash !== attemptParsed.data.proofHash
+                || oauthState.requestDigest !== attemptParsed.data.requestDigest
+            )
+        ) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
+                flow: oauthState.flow,
+                error: "invalid_state",
+            }));
+        }
+        const isIdentityConnectionTest = attemptPurpose === "identity_connection_test";
+        const isTeamAdmission = attemptPurpose === "team_admission";
+        if (isTeamAdmission !== (statePurpose === "team_admission")) {
+            return reply.redirect(buildRedirectUrl(fallbackWebAppUrl, {
+                flow: oauthState.flow,
+                error: "invalid_state",
+            }));
+        }
+        const isGitHubAppInstallationVerification =
+            attemptPurpose === "github_app_installation_verification";
+        const isGitHubAppManifestSetup = attemptPurpose === "github_app_manifest_setup";
 
-        const isFirstKeyStepUp =
-            oauthState.purpose
-            === "account_encryption_first_key";
+        const isFirstKeyStepUp = oauthState.purpose === "account_encryption_first_key"
+            || oauthState.purpose === "account_password_enrollment";
         const isAccountDirectory =
             oauthState.purpose === "account_directory";
         const accountDirectoryTarget = isAccountDirectory
@@ -140,7 +254,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 ? {
                     flow,
                     mode: "keyless",
-                    purpose: "account_encryption_first_key",
+                    purpose: oauthState.purpose!,
                 }
                 : accountDirectoryTarget
                     ? {
@@ -154,31 +268,225 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         canonicalServerUrl:
                             accountDirectoryTarget.canonicalServerUrl,
                     }
+                : isIdentityConnectionTest
+                    ? { flow, purpose: "identity_connection_test" }
+                : isTeamAdmission
+                    ? { flow, purpose: "team_admission", admissionReference: sid }
+                : isGitHubAppInstallationVerification
+                    ? { flow, purpose: "github_app_installation_verification" }
+                : isGitHubAppManifestSetup
+                    ? { flow, purpose: "github_app_manifest_setup" }
                 : flow === "auth" && authMode === "keyless"
                     ? { flow, mode: "keyless" }
                     : { flow };
 
+        if (isGitHubAppManifestSetup) {
+            const binding = attemptParsed.data.githubAppManifestSetup;
+            const userId = oauthState.userId;
+            if (
+                flow !== "connect"
+                || oauthState.purpose !== "github_app_manifest_setup"
+                || !userId
+                || !binding
+                || attemptParsed.data.securityBinding !== undefined
+            ) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "invalid_state",
+                }));
+            }
+            if (oauthError) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: oauthError,
+                }));
+            }
+            if (!code) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "missing_code",
+                }));
+            }
+            const completed = await completeGitHubAppManifestSetup({
+                actorAccountId: userId,
+                owner: binding.owner,
+                code,
+                env: process.env,
+            });
+            if (completed.status !== "created") {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: completed.status === "forbidden"
+                        ? "github_app_forbidden"
+                        : completed.status,
+                }));
+            }
+            const continuationPersisted = await persistGitHubAppManifestSetupContinuation({
+                sid,
+                expiresAt: attempt.expiresAt,
+                actorAccountId: userId,
+                owner: binding.owner,
+                registration: completed.registration,
+            });
+            if (!continuationPersisted) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "github_app_not_configured",
+                }));
+            }
+            return reply.redirect(buildRedirectUrl(webAppUrl, {
+                ...redirectBaseParams,
+                created: "1",
+                registrationId: completed.registration.id,
+            }));
+        }
+
+        if (isGitHubAppInstallationVerification) {
+            const binding = attemptParsed.data.githubAppInstallationVerification;
+            const userId = oauthState.userId;
+            if (
+                flow !== "connect"
+                || oauthState.purpose !== "github_app_installation_verification"
+                || !userId
+                || !binding
+                || attemptParsed.data.securityBinding !== undefined
+            ) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "invalid_state",
+                }));
+            }
+            if (oauthError) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: oauthError,
+                }));
+            }
+            if (!code) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "missing_code",
+                }));
+            }
+            const resolved = await resolveGitHubAppInstallationVerificationOAuth({
+                actorAccountId: userId,
+                binding,
+                env: process.env,
+            });
+            if (resolved.status !== "ready") {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: resolved.status === "forbidden" || resolved.status === "not_found"
+                        ? "github_app_forbidden"
+                        : resolved.status === "github_network_policy_changed"
+                            ? resolved.status
+                            : resolved.status === "github_enterprise_origin_not_approved"
+                                ? resolved.status
+                                : "auth_provider_configuration_changed",
+                }));
+            }
+            try {
+                const exchanged = await exchangeOAuthCodeForProfile({
+                    provider: resolved.provider,
+                    env: process.env,
+                    code,
+                    state,
+                    iss,
+                    pkceCodeVerifier: attemptParsed.data.pkceCodeVerifier,
+                    expectedNonce: attemptParsed.data.nonce,
+                });
+                const profile = parseManagedGitHubUserProfile(exchanged.profile);
+                const verified = await verifyGitHubAppInstallationWithAdministratorProfile({
+                    actorAccountId: userId,
+                    owner: binding.owner,
+                    registrationId: binding.registrationId,
+                    expectedRegistrationRevision: binding.registrationRevision,
+                    expectedRegistrationSecurityRevision: binding.registrationSecurityRevision,
+                    expectedInstallationRevision: binding.installationRevision,
+                    expectedNetworkPolicyFingerprint: binding.networkPolicyFingerprint,
+                    githubInstallationId: BigInt(binding.githubInstallationId),
+                    githubOrganizationId: BigInt(binding.githubOrganizationId),
+                    administrator: {
+                        githubUserId: BigInt(profile.id),
+                        githubUserLogin: profile.login,
+                    },
+                });
+                if (verified.status !== "verified") {
+                    return reply.redirect(buildRedirectUrl(webAppUrl, {
+                        ...redirectBaseParams,
+                        error: verified.status === "registration_revision_conflict"
+                            ? "auth_provider_configuration_changed"
+                            : verified.status,
+                    }));
+                }
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    verified: "1",
+                    registrationId: binding.registrationId,
+                    installationId: verified.installation.id,
+                }));
+            } catch {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    error: "github_administrator_evidence_unavailable",
+                }));
+            }
+        }
+
+        const boundRuntime = await resolveOAuthSecurityBinding({
+            env: process.env,
+            providerId,
+            binding: attemptParsed.data.securityBinding,
+            purpose: attemptPurpose,
+            stage: "oauth_callback",
+        });
+        if (!boundRuntime) {
+            return reply.redirect(buildRedirectUrl(webAppUrl, {
+                ...redirectBaseParams,
+                error: "auth_provider_configuration_changed",
+            }));
+        }
+        const { provider, securityBinding } = boundRuntime;
+        if (isAccountDirectory && securityBinding.provider.source === "managed") {
+            return reply.redirect(buildRedirectUrl(webAppUrl, {
+                ...redirectBaseParams,
+                error: "auth_provider_configuration_changed",
+            }));
+        }
+        const effectiveHomeMethods = securityBinding.provider.context.kind === "home"
+            ? await resolveEffectiveHomeAuthMethods({ env: process.env })
+            : null;
+        const isHomeActionEnabled = (
+            actionId: "login" | "provision",
+            mode: "keyed" | "keyless",
+        ): boolean => effectiveHomeMethods?.status === "ready"
+            && effectiveHomeMethods.decisions.some((decision) =>
+                decision.id === providerId
+                && decision.actions.some((action) =>
+                    action.id === actionId
+                    && action.enabled
+                    && (action.mode === mode || action.mode === "either")));
         if (
             flow === "auth"
             && authMode === "keyless"
+            && !isTeamAdmission
             && !isFirstKeyStepUp
             && !isAccountDirectory
         ) {
-            const policy = resolveAuthPolicyFromEnv(process.env);
-            const keyedAllowed = policy.signupProviders.includes(providerId);
-
-            const keyless = readAuthOauthKeylessFeatureEnv(process.env);
-            const keylessAllowed = keyless.enabled && keyless.providers.includes(providerId);
-            if (!keylessAllowed && !keyedAllowed) {
-                return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, error: "keyless_disabled" }));
-            }
-
+            const keyedAllowed = isHomeActionEnabled("provision", "keyed");
+            const keylessAllowed = isHomeActionEnabled("login", "keyless");
             const availability = resolveKeylessAccountsAvailability(process.env);
-            if (!availability.ok && !keyedAllowed) {
+            const keylessConfig = readAuthOauthKeylessFeatureEnv(process.env);
+            const keylessConfigured = keylessConfig.enabled
+                && keylessConfig.providers.includes(providerId);
+            if (!availability.ok && keylessConfigured && !keyedAllowed) {
                 return reply.redirect(buildRedirectUrl(webAppUrl, {
                     ...redirectBaseParams,
                     error: availability.reason === "e2ee-required" ? "e2ee_required" : "keyless_disabled",
                 }));
+            }
+            if (!keylessAllowed && !keyedAllowed) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, error: "keyless_disabled" }));
             }
         }
 
@@ -220,7 +528,8 @@ export function registerOAuthCallbackRoute(app: Fastify) {
         }
 
         try {
-            const { accessToken, refreshToken, idToken, idTokenClaims } = await provider.exchangeCodeForAccessToken({
+            const { accessToken, refreshToken, profile } = await exchangeOAuthCodeForProfile({
+                provider,
                 env: process.env,
                 code,
                 state,
@@ -228,8 +537,44 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 pkceCodeVerifier: attemptParsed.data.pkceCodeVerifier,
                 expectedNonce: attemptParsed.data.nonce,
             });
-            const profile = await provider.fetchProfile({ env: process.env, accessToken, idToken, idTokenClaims });
             const login = provider.getLogin(profile) ?? "";
+
+            if (isIdentityConnectionTest) {
+                if (flow !== "connect" || !userId || securityBinding.purpose !== "identity_connection_test") {
+                    return reply.redirect(buildRedirectUrl(webAppUrl, {
+                        ...redirectBaseParams,
+                        error: "invalid_state",
+                    }));
+                }
+                const providerUserId = provider.getProviderUserId(profile);
+                if (!providerUserId) {
+                    return reply.redirect(buildRedirectUrl(webAppUrl, {
+                        ...redirectBaseParams,
+                        error: "invalid_profile",
+                    }));
+                }
+                const expiresAt = new Date(Math.min(
+                    attempt.expiresAt.getTime(),
+                    Date.now() + resolveOAuthPendingTtlMsFromEnv(process.env),
+                ));
+                const result = await createIdentityConnectionTestResult({
+                    initiatorAccountId: userId,
+                    securityBinding,
+                    providerUserId,
+                    diagnostics: await describeIdentityConnectionTestDiagnostics({
+                        provider,
+                        env: process.env,
+                        profile,
+                        securityBinding,
+                    }),
+                    testedAt: new Date(),
+                    expiresAt,
+                });
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    resultHandle: result.resultHandle,
+                }));
+            }
 
             if (isFirstKeyStepUp) {
                 const providerUserId =
@@ -265,9 +610,9 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                         value: JSON.stringify({
                             v: 3,
                             flow: "auth",
-                            purpose:
-                                "account_encryption_first_key",
+                            purpose: oauthState.purpose!,
                             provider: providerId,
+                            securityBinding,
                             userId: userId!,
                             providerUserId,
                             proofHash: proofHash!,
@@ -286,6 +631,38 @@ export function registerOAuthCallbackRoute(app: Fastify) {
 
             if (flow === "auth") {
                 const providerUserId = provider.getProviderUserId(profile);
+                let pendingSecurityBinding = securityBinding;
+                if (isTeamAdmission
+                    && providerUserId
+                    && securityBinding.provider.context.kind === "team"
+                    && securityBinding.connection) {
+                    const teamId = securityBinding.provider.context.teamId;
+                    const team = await db.team.findUnique({
+                        where: { id: teamId },
+                        select: { admissionMode: true },
+                    });
+                    if (team?.admissionMode === "provisioned") {
+                        const exactSourceIdentity = provider.getDirectoryIdentityMatch?.(profile) ?? null;
+                        const matches = exactSourceIdentity
+                            ? await inTx((tx) => readDirectoryProvisionedIdentityCandidatesInTx(tx, {
+                                teamId,
+                                match: exactSourceIdentity,
+                            }))
+                            : [];
+                        pendingSecurityBinding = {
+                            ...securityBinding,
+                            admission: matches.length === 1 ? {
+                                kind: "team_provisioned_identity",
+                                teamId,
+                                providerId,
+                                connectionId: securityBinding.connection.id,
+                                connectionRevision: securityBinding.connection.revision,
+                                admissionMode: "provisioned",
+                                provisionedIdentityId: matches[0]!.id,
+                            } : null,
+                        };
+                    }
+                }
                 const alreadyLinked = providerUserId
                     ? await db.accountIdentity.findFirst({
                           where: {
@@ -368,6 +745,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                                     : {}),
                                 flow: "auth",
                                 provider: providerId,
+                                securityBinding: pendingSecurityBinding,
                                 proofHash: proofHash!,
                                 profileEnc,
                                 accessTokenEnc: tokenEnc,
@@ -392,23 +770,17 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                     }
 
                     const encryptionEnv = readEncryptionFeatureEnv(process.env);
-                    const policy = resolveAuthPolicyFromEnv(process.env);
-                    const keyedAllowed = policy.signupProviders.includes(providerId);
-
-                    const keylessEnv = readAuthOauthKeylessFeatureEnv(process.env);
-                    const keylessAllowed = keylessEnv.enabled && keylessEnv.providers.includes(providerId);
                     const availability = resolveKeylessAccountsAvailability(process.env);
 
                     const provisioningModes = (() => {
                         const modes: Array<{ value: "plain" | "e2ee"; mode: "keyed" | "keyless" }> = [];
                         const canProvisionPlain =
-                            keylessAllowed &&
-                            keylessEnv.autoProvision &&
+                            isHomeActionEnabled("provision", "keyless") &&
                             availability.ok &&
                             encryptionEnv.storagePolicy !== "required_e2ee";
                         if (canProvisionPlain) modes.push({ value: "plain", mode: "keyless" });
                         const canProvisionE2ee =
-                            keyedAllowed &&
+                            isHomeActionEnabled("provision", "keyed") &&
                             encryptionEnv.storagePolicy !== "plaintext_only";
                         if (canProvisionE2ee) modes.push({ value: "e2ee", mode: "keyed" });
                         return modes
@@ -494,6 +866,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                                 : {}),
                             flow: "auth",
                             provider: providerId,
+                            securityBinding: pendingSecurityBinding,
                             publicKeyHex: publicKeyHex!,
                             profileEnc,
                             accessTokenEnc: tokenEnc,
@@ -553,42 +926,13 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }
 
                 if (requireUsername) {
-                    const pendingKey = `oauth_pending_${randomKeyNaked(24)}`;
-                    let profileJson = "";
-                    try {
-                        profileJson = JSON.stringify(profile);
-                    } catch {
-                        return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, error: "invalid_profile" }));
-                    }
-                    const tokenEnc = privacyKit.encodeBase64(
-                        encryptString(["user", userId!, "connect", providerId, "pending", pendingKey], accessToken),
-                    );
-                    const profileEnc = privacyKit.encodeBase64(
-                        encryptString(["user", userId!, "connect", providerId, "pending", pendingKey, "profile"], profileJson),
-                    );
-                    const refreshTokenEnc =
-                        typeof refreshToken === "string" && refreshToken.trim()
-                            ? privacyKit.encodeBase64(
-                                  encryptString(
-                                      ["user", userId!, "connect", providerId, "pending", pendingKey, "refresh"],
-                                      refreshToken,
-                                  ),
-                              )
-                            : undefined;
-                    const ttlMs = resolveOAuthPendingTtlMsFromEnv(process.env);
-                    await db.repeatKey.create({
-                        data: {
-                            key: pendingKey,
-                            value: JSON.stringify({
-                                flow: "connect",
-                                provider: providerId,
-                                userId: userId!,
-                                profileEnc,
-                                accessTokenEnc: tokenEnc,
-                                ...(refreshTokenEnc ? { refreshTokenEnc } : {}),
-                            }),
-                            expiresAt: new Date(Date.now() + ttlMs),
-                        },
+                    const pendingKey = await createConnectPending({
+                        providerId,
+                        userId: userId!,
+                        securityBinding,
+                        profile,
+                        accessToken,
+                        ...(refreshToken ? { refreshToken } : {}),
                     });
 
                     return reply.redirect(buildRedirectUrl(webAppUrl, {
@@ -601,15 +945,50 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }
             }
 
-            await connectExternalIdentity({ providerId, ctx, profile, accessToken, refreshToken });
+            if (!await resolveOAuthSecurityBinding({
+                env: process.env, providerId, binding: securityBinding,
+                purpose: securityBinding.purpose, stage: "oauth_finalize",
+            })) {
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams, error: "auth_provider_configuration_changed",
+                }));
+            }
+            if (attemptParsed.data.connectFinalization === "credential_adoption_v1") {
+                const username = existingUsername ?? loginUsername;
+                if (!username) {
+                    return reply.redirect(buildRedirectUrl(webAppUrl, {
+                        ...redirectBaseParams,
+                        error: "invalid_profile",
+                    }));
+                }
+                const pendingKey = await createConnectPending({
+                    providerId,
+                    userId: userId!,
+                    securityBinding,
+                    profile,
+                    accessToken,
+                    ...(refreshToken ? { refreshToken } : {}),
+                });
+                return reply.redirect(buildRedirectUrl(webAppUrl, {
+                    ...redirectBaseParams,
+                    status: "connected",
+                    login,
+                    username,
+                    pending: pendingKey,
+                }));
+            }
+            // Compatibility for clients that predate authenticated connect finalization.
+            await connectExternalIdentity({ providerId, reference: securityBinding.provider, ctx, profile, accessToken, refreshToken });
             return reply.redirect(buildRedirectUrl(webAppUrl, { ...redirectBaseParams, status: "connected", login }));
-        } catch (error: any) {
-            const code = error instanceof Error ? error.message : "server_error";
+        } catch (error: unknown) {
+            const rawCode = error instanceof Error ? error.message : "server_error";
+            const code = rawCode === "auth_provider_unavailable" ? "auth_provider_configuration_changed" : rawCode;
             const safe =
                 code === "missing_access_token" ||
                 code === "invalid_profile" ||
                 code === "profile_fetch_failed" ||
                 code === "not-eligible" ||
+                code === "auth_provider_configuration_changed" ||
                 code === OAUTH_NOT_CONFIGURED_ERROR
                     ? code
                     : "server_error";

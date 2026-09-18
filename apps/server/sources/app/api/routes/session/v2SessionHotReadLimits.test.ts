@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
     resolveSessionRollbackEligibleTurnRelationLimit,
     resolveV2SessionListInitialAttentionRowLimit,
-} from "./v2SessionHotReadLimits";
+} from "@/app/session/listing/readLimits";
 
 describe("v2 session hot read limits", () => {
     it("resolves the initial durable attention row limit from configuration", () => {

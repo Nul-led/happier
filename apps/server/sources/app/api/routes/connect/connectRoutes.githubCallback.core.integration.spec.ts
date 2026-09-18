@@ -367,7 +367,10 @@ describe("connectRoutes (GitHub callback)", () => {
         await app.close();
     });
 
-    it("persists an existing OAuth pending proof bound to the exact Account, identity, and first-key request", async () => {
+    it.each([
+        ["account_encryption_first_key", `aemrb1_${"A".repeat(43)}`],
+        ["account_password_enrollment", "A".repeat(43)],
+    ] as const)("persists an existing OAuth pending proof bound to the exact Account, identity, and %s request", async (purpose, requestDigest) => {
         applyGithubConnectCallbackEnv(harness, {
             AUTH_SIGNUP_PROVIDERS: "github",
             HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_ENABLED: "1",
@@ -390,7 +393,6 @@ describe("connectRoutes (GitHub callback)", () => {
             },
         });
         const proofHash = "d".repeat(64);
-        const requestDigest = `aemrb1_${"A".repeat(43)}`;
         const app = createTestApp();
         connectRoutes(app);
         await app.ready();
@@ -400,7 +402,7 @@ describe("connectRoutes (GitHub callback)", () => {
             url:
                 `/v1/auth/external/github/params?mode=keyless`
                 + `&proofHash=${proofHash}`
-                + `&purpose=account_encryption_first_key`
+                + `&purpose=${purpose}`
                 + `&requestDigest=${encodeURIComponent(requestDigest)}`,
             headers: { "x-test-user-id": account.id },
         });
@@ -439,7 +441,7 @@ describe("connectRoutes (GitHub callback)", () => {
         expect(callbackResponse.statusCode).toBe(302);
         const redirect = new URL(callbackResponse.headers.location!);
         expect(redirect.searchParams.get("purpose"))
-            .toBe("account_encryption_first_key");
+            .toBe(purpose);
         const pendingKey = redirect.searchParams.get("pending");
         expect(pendingKey).toBeTruthy();
         const pending = await db.repeatKey.findUnique({
@@ -448,8 +450,14 @@ describe("connectRoutes (GitHub callback)", () => {
         expect(JSON.parse(pending!.value)).toEqual({
             v: 3,
             flow: "auth",
-            purpose: "account_encryption_first_key",
+            purpose,
             provider: "github",
+            securityBinding: {
+                provider: { id: "github", source: "built_in", runtimeFingerprint: "builtin:github:v1", context: { kind: "home" } },
+                connection: null,
+                admission: null,
+                purpose,
+            },
             userId: account.id,
             providerUserId: "123",
             proofHash,

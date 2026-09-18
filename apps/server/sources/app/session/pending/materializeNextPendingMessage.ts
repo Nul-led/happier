@@ -1,10 +1,11 @@
-import type { SessionParticipantCursor } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import type { SessionRecipientCursor } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import type { CurrentSessionPublisherAuthority } from "@/app/presence/sessionPublisherPresence";
 import {
     fenceExactCurrentPublisherAuthorityInTx,
     hasExactCurrentPublisherAuthorityInTx,
+    hasCurrentPublisherTargetAdmissionCapabilityInTx,
 } from "@/app/session/pending/hasExactCurrentPublisherAuthorityInTx";
-import { markPendingStateChangedParticipants } from "@/app/session/pending/markPendingStateChangedParticipants";
+import { markPendingStateChangedRecipients } from "@/app/session/pending/markPendingStateChangedRecipients";
 import {
     inTx,
     isTransactionAcquisitionUnavailableError,
@@ -23,7 +24,7 @@ import {
     type SessionInputAdmissionReceiptV1,
     type SessionStoredContentKind,
 } from "@happier-dev/protocol";
-import { didSessionActivityBadgeContributionChange } from "@/app/activity/accountActivityBadge";
+import { didSessionActivityBadgeSignalChange } from "@/app/activity/accountActivityBadge";
 import { SESSION_TRANSCRIPT_PUBLICATION_SELECT } from "@/app/session/sessionTranscriptPublicationPolicy";
 import { resolveSessionMessageRole } from "@/app/session/messageRole/resolveSessionMessageRole";
 import { compareSessionMessageContentAndRole } from "@/app/session/sessionTranscriptWrite";
@@ -36,7 +37,7 @@ import {
 } from "@/app/session/pending/selectPendingProviderInvocation";
 import { reconcilePendingActivationAuthorizationForRemovedRequestInTx } from "@/app/session/pending/pendingActivationAuthorization";
 
-type ParticipantCursor = SessionParticipantCursor;
+type RecipientCursor = SessionRecipientCursor;
 class PublisherAuthorityLostError extends Error {}
 const pendingMessageEligibleForMaterializationWhere = {
     status: "queued" as const,
@@ -50,7 +51,7 @@ export type PendingMaterializationProviderDeliveryState = Readonly<{
 }>;
 export type PendingMaterializationDeliveryState = PendingMaterializationProviderDeliveryState;
 
-export type MaterializeNextPendingMessageResult =
+type MaterializeNextPendingMessageOutcome =
     | {
         ok: true;
         didMaterialize: false;
@@ -60,7 +61,7 @@ export type MaterializeNextPendingMessageResult =
         deferredReason?: "waiting_for_foreground_turn" | "waiting_for_runtime_activity" | "runtime_activity_unknown" | "waiting_for_predecessor" | "steering_unavailable";
         localId?: string;
         pendingStateChanged?: boolean;
-        participantCursorsPending?: ParticipantCursor[];
+        recipientCursorsPending?: RecipientCursor[];
         badgeAttentionChanged?: boolean;
         deliveryState?: PendingMaterializationDeliveryState;
       }
@@ -69,8 +70,8 @@ export type MaterializeNextPendingMessageResult =
         didMaterialize: true;
         didWriteMessage: boolean;
         message: { id: string | null; seq: number | null; localId: string; messageRole: SessionMessageRole | null; content: PrismaJson.SessionMessageContent; requestedAction: import("@happier-dev/protocol").PendingRequestedActionV1; providerAction: PendingProviderAction; inputAdmissionReceipt: SessionInputAdmissionReceiptV1 | null; createdAt: Date; updatedAt: Date };
-        participantCursorsMessage: ParticipantCursor[];
-        participantCursorsPending: ParticipantCursor[];
+        recipientCursorsMessage: RecipientCursor[];
+        recipientCursorsPending: RecipientCursor[];
         pendingCount: number;
         pendingBlockedCount: number;
         pendingVersion: number;
@@ -80,7 +81,12 @@ export type MaterializeNextPendingMessageResult =
         deliveryState?: PendingMaterializationDeliveryState;
       }
     | { ok: false; error: "transaction-unavailable"; retryAfterMs: number }
-    | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "transcript-conflict" | "internal" };
+    | { ok: false; error: "session-not-found" | "forbidden" | "invalid-params" | "transcript-conflict" | "internal" | "session_input_target_update_required" };
+
+export type MaterializeNextPendingMessageResult = MaterializeNextPendingMessageOutcome & {
+    authorAccountId?: string | null;
+    sessionPendingStateForPublication?: { pendingCount: number; pendingBlockedCount: number; pendingVersion: number };
+};
 
 function toSessionMessageContentFromPending(content: PrismaJson.SessionPendingMessageContent): PrismaJson.SessionMessageContent {
     return content;
@@ -91,6 +97,86 @@ function readPendingInputAdmissionReceipt(value: unknown): SessionInputAdmission
     return parsed.success ? parsed.data : null;
 }
 
+async function blockPendingExecutionRunTargetMismatchInTx(params: {
+    tx: Tx;
+    authority: CurrentSessionPublisherAuthority;
+    sessionId: string;
+    localId: string;
+    targetExecutionRunId: string;
+    deliveryState: null | "delivering";
+    noopDeliveryState: PendingMaterializationDeliveryState;
+}): Promise<MaterializeNextPendingMessageResult> {
+    const blocked = pendingDeliveryStatusV1ToPersistedFields({
+        status: "blocked",
+        reason: "session_input_target_unavailable",
+    });
+    const updatedRow = await params.tx.sessionPendingMessage.updateMany({
+        where: {
+            sessionId: params.sessionId,
+            localId: params.localId,
+            targetExecutionRunId: params.targetExecutionRunId,
+            status: "queued",
+            deliveryState: params.deliveryState,
+        },
+        data: {
+            status: blocked.status,
+            deliveryState: blocked.deliveryState,
+            deliveryBlockedReason: blocked.deliveryBlockedReason,
+            discardedReason: blocked.discardedReason,
+        },
+    });
+    if (updatedRow.count !== 1) {
+        const current = await params.tx.session.findUniqueOrThrow({
+            where: { id: params.sessionId },
+            select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+        });
+        return {
+            ok: true,
+            didMaterialize: false,
+            ...current,
+            deliveryState: params.noopDeliveryState,
+        };
+    }
+
+    const pendingCount = await params.tx.sessionPendingMessage.count({
+        where: { sessionId: params.sessionId, targetExecutionRunId: null, status: "queued" },
+    });
+    const pendingBlockedCount = await params.tx.sessionPendingMessage.count({
+        where: { sessionId: params.sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
+    });
+    const publisherFence = await params.tx.session.updateMany({
+        where: {
+            id: params.sessionId,
+            active: true,
+            archivedAt: null,
+            lastActiveAt: params.authority.committedFence,
+        },
+        data: { pendingCount, pendingBlockedCount, pendingVersion: { increment: 1 } },
+    });
+    if (publisherFence.count !== 1) throw new PublisherAuthorityLostError();
+    const session = await params.tx.session.findUniqueOrThrow({
+        where: { id: params.sessionId },
+        select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
+    });
+    const recipientCursorsPending = await markPendingStateChangedRecipients({
+        tx: params.tx,
+        sessionId: params.sessionId,
+        pendingCount: session.pendingCount,
+        pendingBlockedCount: session.pendingBlockedCount,
+        pendingVersion: session.pendingVersion,
+    });
+    return {
+        ok: true,
+        didMaterialize: false,
+        ...session,
+        localId: params.localId,
+        pendingStateChanged: true,
+        recipientCursorsPending,
+        badgeAttentionChanged: false,
+        deliveryState: params.noopDeliveryState,
+    };
+}
+
 async function resolvePendingProviderRejoinInTx(params: {
     tx: Tx;
     authority: CurrentSessionPublisherAuthority;
@@ -98,6 +184,8 @@ async function resolvePendingProviderRejoinInTx(params: {
     sessionId: string;
     materializedDeliveryState: PendingMaterializationDeliveryState;
     noopDeliveryState: PendingMaterializationDeliveryState;
+    targetExecutionRunId: string | null;
+    expectedSidechainId: string | null;
 }): Promise<MaterializeNextPendingMessageResult | null> {
     if (!await hasExactCurrentPublisherAuthorityInTx(
         params.tx,
@@ -114,7 +202,6 @@ async function resolvePendingProviderRejoinInTx(params: {
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
-            lastViewedSessionSeq: true,
             pendingPermissionRequestCount: true,
             pendingUserActionRequestCount: true,
             active: true,
@@ -122,7 +209,7 @@ async function resolvePendingProviderRejoinInTx(params: {
         },
     });
     const row = await params.tx.sessionPendingMessage.findFirst({
-        where: { sessionId: params.sessionId, status: "queued", deliveryState: "delivering" },
+        where: { sessionId: params.sessionId, targetExecutionRunId: params.targetExecutionRunId, status: "queued", deliveryState: "delivering" },
         orderBy: [{ position: "asc" }, { createdAt: "asc" }, { localId: "asc" }],
         select: {
             localId: true,
@@ -142,14 +229,14 @@ async function resolvePendingProviderRejoinInTx(params: {
             reason: "delivery_outcome_uncertain",
         });
         await params.tx.sessionPendingMessage.update({
-            where: { sessionId_localId: { sessionId: params.sessionId, localId: row.localId } },
+            where: { sessionId_localId: { sessionId: params.sessionId, localId: row.localId }, targetExecutionRunId: params.targetExecutionRunId },
             data: {
                 deliveryState: blocked.deliveryState,
                 deliveryBlockedReason: blocked.deliveryBlockedReason,
             },
         });
         const pendingBlockedCount = await params.tx.sessionPendingMessage.count({
-            where: { sessionId: params.sessionId, status: "queued", deliveryState: "blocked" },
+            where: { sessionId: params.sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
         });
         const publisherFence = await params.tx.session.updateMany({
             where: {
@@ -165,7 +252,7 @@ async function resolvePendingProviderRejoinInTx(params: {
             where: { id: params.sessionId },
             select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
         });
-        const participantCursorsPending = await markPendingStateChangedParticipants({
+        const recipientCursorsPending = await markPendingStateChangedRecipients({
             tx: params.tx,
             sessionId: params.sessionId,
             pendingCount: updated.pendingCount,
@@ -177,7 +264,7 @@ async function resolvePendingProviderRejoinInTx(params: {
             didMaterialize: false,
             ...updated,
             pendingStateChanged: true,
-            participantCursorsPending: [...participantCursorsPending],
+            recipientCursorsPending: [...recipientCursorsPending],
             badgeAttentionChanged: false,
             deliveryState: params.noopDeliveryState,
         };
@@ -198,14 +285,28 @@ async function resolvePendingProviderRejoinInTx(params: {
     }).messageRole;
     const existingTranscriptMessage = await params.tx.sessionMessage.findFirst({
         where: { sessionId: params.sessionId, localId: row.localId },
-        select: { id: true, seq: true, content: true, messageRole: true },
+        select: { id: true, seq: true, sidechainId: true, content: true, messageRole: true },
     });
     if (existingTranscriptMessage) {
         const compatibility = compareSessionMessageContentAndRole({
             existing: existingTranscriptMessage,
             candidate: { content, messageRole },
         });
-        if (compatibility.kind !== "match") {
+        if (
+            params.targetExecutionRunId !== null
+            && existingTranscriptMessage.sidechainId !== params.expectedSidechainId
+        ) {
+            return await blockPendingExecutionRunTargetMismatchInTx({
+                tx: params.tx,
+                authority: params.authority,
+                sessionId: params.sessionId,
+                localId: row.localId,
+                targetExecutionRunId: params.targetExecutionRunId,
+                deliveryState: "delivering",
+                noopDeliveryState: params.noopDeliveryState,
+            });
+        }
+        if (existingTranscriptMessage.sidechainId !== params.expectedSidechainId || compatibility.kind !== "match") {
             return { ok: false, error: "transcript-conflict" };
         }
     }
@@ -231,8 +332,8 @@ async function resolvePendingProviderRejoinInTx(params: {
             createdAt: row.createdAt,
             updatedAt: row.updatedAt,
         },
-        participantCursorsMessage: [],
-        participantCursorsPending: [],
+        recipientCursorsMessage: [],
+        recipientCursorsPending: [],
         pendingCount: session.pendingCount,
         pendingBlockedCount: session.pendingBlockedCount,
         pendingVersion: session.pendingVersion,
@@ -250,6 +351,8 @@ type MaterializeNextPendingMessageParams = Readonly<{
     expectedRuntimeActivityRevision?: number;
     publisherAuthority: CurrentSessionPublisherAuthority;
     deadlineAtMs?: number;
+    targetExecutionRunId?: string | null;
+    expectedSidechainId?: string | null;
 }>;
 
 export async function materializeNextPendingMessage(
@@ -276,6 +379,41 @@ export function mapPendingMaterializationError(error: unknown): MaterializeNextP
 export async function materializeNextPendingMessageInTx(
     params: MaterializeNextPendingMessageParams & Readonly<{ tx: Tx }>,
 ): Promise<MaterializeNextPendingMessageResult> {
+    const targetExecutionRunId = params.targetExecutionRunId ?? null;
+    const expectedSidechainId = params.expectedSidechainId ?? null;
+    if ((targetExecutionRunId === null) !== (expectedSidechainId === null)
+        || (targetExecutionRunId !== null && (!targetExecutionRunId.trim() || !expectedSidechainId?.trim()))) {
+        return { ok: false, error: "invalid-params" };
+    }
+    const result = await materializePendingTargetInTx({ ...params, targetExecutionRunId, expectedSidechainId });
+    if (!result.ok || targetExecutionRunId === null) return result;
+    // Session invalidation keeps main counters; only the exact consumer receives Run counts.
+    const where = { sessionId: params.sessionId, targetExecutionRunId, status: "queued" as const };
+    const [pendingCount, pendingBlockedCount, author] = await Promise.all([
+        params.tx.sessionPendingMessage.count({ where }),
+        params.tx.sessionPendingMessage.count({ where: { ...where, deliveryState: "blocked" } }),
+        params.tx.sessionPendingMessage.findFirst({
+            where: { ...where, ...(result.didMaterialize ? { localId: result.message.localId } : result.localId ? { localId: result.localId } : {}) },
+            orderBy: [{ position: "asc" }, { createdAt: "asc" }, { localId: "asc" }],
+            select: { authorAccountId: true },
+        }),
+    ]);
+    return {
+        ...result,
+        pendingCount,
+        pendingBlockedCount,
+        authorAccountId: author?.authorAccountId ?? null,
+        sessionPendingStateForPublication: {
+            pendingCount: result.pendingCount,
+            pendingBlockedCount: result.pendingBlockedCount,
+            pendingVersion: result.pendingVersion,
+        },
+    };
+}
+
+async function materializePendingTargetInTx(
+    params: MaterializeNextPendingMessageParams & { tx: Tx; targetExecutionRunId: string | null; expectedSidechainId: string | null },
+): Promise<MaterializeNextPendingMessageResult> {
     const tx = params.tx;
     const actorUserId = typeof params.actorUserId === "string" ? params.actorUserId : "";
     const sessionId = typeof params.sessionId === "string" ? params.sessionId : "";
@@ -283,7 +421,7 @@ export async function materializeNextPendingMessageInTx(
     const noopDeliveryState = { mode: "provider", unresolved: false } satisfies PendingMaterializationDeliveryState;
     const foregroundState = params.foregroundState;
     const deliveryTiming = params.deliveryTiming;
-    const pendingMessageCandidateWhere = { status: "queued" as const };
+    const pendingMessageCandidateWhere = { targetExecutionRunId: params.targetExecutionRunId, status: "queued" as const };
 
     if (!actorUserId || !sessionId) return { ok: false, error: "invalid-params" };
     if (params.deliveryState !== "provider" || !params.publisherAuthority) return { ok: false, error: "forbidden" };
@@ -305,6 +443,10 @@ export async function materializeNextPendingMessageInTx(
         sessionId,
     )) return { ok: false, error: "forbidden" };
 
+    if (params.targetExecutionRunId !== null && !await hasCurrentPublisherTargetAdmissionCapabilityInTx(tx, params.publisherAuthority)) {
+        return { ok: false, error: "session_input_target_update_required" };
+    }
+
     const sessionRow = await tx.session.findUnique({
         where: { id: sessionId },
         select: {
@@ -314,7 +456,6 @@ export async function materializeNextPendingMessageInTx(
             pendingCount: true,
             pendingBlockedCount: true,
             pendingVersion: true,
-            lastViewedSessionSeq: true,
             pendingPermissionRequestCount: true,
             pendingUserActionRequestCount: true,
             active: true,
@@ -323,7 +464,7 @@ export async function materializeNextPendingMessageInTx(
     });
     if (!sessionRow) return { ok: false, error: "session-not-found" };
     if (sessionRow.accountId !== actorUserId) return { ok: false, error: "forbidden" };
-    if ((sessionRow.pendingCount ?? 0) <= 0) {
+    if (params.targetExecutionRunId === null && (sessionRow.pendingCount ?? 0) <= 0) {
         // pendingCount is a denormalized counter; treat it as a fast-path hint, not a source of truth.
         // If the counter is inconsistent (e.g. race/data corruption), fall back to checking the queue.
         const hasEligibleQueued = await tx.sessionPendingMessage.findFirst({
@@ -333,7 +474,7 @@ export async function materializeNextPendingMessageInTx(
         });
         if (!hasEligibleQueued) {
             const pendingCount = await tx.sessionPendingMessage.count({
-                where: { sessionId, status: "queued" },
+                where: { sessionId, targetExecutionRunId: null, status: "queued" },
             });
             if (pendingCount <= 0) {
                 return {
@@ -359,7 +500,6 @@ export async function materializeNextPendingMessageInTx(
                     pendingCount: true,
                     pendingBlockedCount: true,
                     pendingVersion: true,
-                    lastViewedSessionSeq: true,
                     pendingPermissionRequestCount: true,
                     pendingUserActionRequestCount: true,
                     active: true,
@@ -379,6 +519,8 @@ export async function materializeNextPendingMessageInTx(
                 sessionId,
                 materializedDeliveryState,
                 noopDeliveryState,
+                targetExecutionRunId: params.targetExecutionRunId,
+                expectedSidechainId: params.expectedSidechainId,
             });
             if (rejoin) return rejoin;
 
@@ -392,6 +534,7 @@ export async function materializeNextPendingMessageInTx(
                 foregroundState,
                 deliveryTiming,
                 readRuntimeActivity: () => {
+                    if (params.targetExecutionRunId !== null) return foregroundState === "ready" ? "idle" : "active";
                     const projection = readSessionRuntimeActivityProjectionForPendingDrain(sessionBefore);
                     if (projection === null) return "unknown";
                     if (decideRuntimeIdleAdmission(projection).decision === "allow") return "idle";
@@ -407,6 +550,7 @@ export async function materializeNextPendingMessageInTx(
                     where: {
                         sessionId,
                         localId: invocationSelection.blockedLocalId,
+                        targetExecutionRunId: params.targetExecutionRunId,
                         status: "queued",
                         deliveryState: null,
                     },
@@ -415,7 +559,7 @@ export async function materializeNextPendingMessageInTx(
                         deliveryBlockedReason: blockedFields.deliveryBlockedReason,
                     },
                 });
-                if (blocked.count === 1) {
+                if (blocked.count === 1 && params.targetExecutionRunId === null) {
                     await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
                         tx,
                         sessionId,
@@ -423,14 +567,14 @@ export async function materializeNextPendingMessageInTx(
                     });
                 }
                 const pendingBlockedCount = await tx.sessionPendingMessage.count({
-                    where: { sessionId, status: "queued", deliveryState: "blocked" },
+                    where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
                 });
                 const session = await tx.session.update({
                     where: { id: sessionId },
                     data: { pendingBlockedCount, pendingVersion: { increment: 1 } },
                     select: { pendingCount: true, pendingBlockedCount: true, pendingVersion: true },
                 });
-                const participantCursorsPending = await markPendingStateChangedParticipants({
+                const recipientCursorsPending = await markPendingStateChangedRecipients({
                     tx,
                     sessionId,
                     pendingCount: session.pendingCount,
@@ -444,7 +588,7 @@ export async function materializeNextPendingMessageInTx(
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
                     pendingStateChanged: true,
-                    participantCursorsPending,
+                    recipientCursorsPending,
                     deferredReason: "steering_unavailable",
                     localId: invocationSelection.blockedLocalId,
                     deliveryState: noopDeliveryState,
@@ -467,10 +611,10 @@ export async function materializeNextPendingMessageInTx(
 
             if (!nextPending) {
                 const pendingCount = await tx.sessionPendingMessage.count({
-                    where: { sessionId, status: "queued" },
+                    where: { sessionId, targetExecutionRunId: null, status: "queued" },
                 });
                 const blockedCount = await tx.sessionPendingMessage.count({
-                    where: { sessionId, status: "queued", deliveryState: "blocked" },
+                    where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
                 });
                 if ((sessionBefore.pendingCount ?? 0) !== pendingCount || (sessionBefore.pendingBlockedCount ?? 0) !== blockedCount) {
                     await tx.session.updateMany({
@@ -517,7 +661,7 @@ export async function materializeNextPendingMessageInTx(
                     requestedAction.kind === "steer_if_active"
                     && foregroundState === "active_steerable"
                 );
-            const requiresRuntimeActivityRevision = deliveryTiming === "after_runtime_idle"
+            const requiresRuntimeActivityRevision = params.targetExecutionRunId === null && deliveryTiming === "after_runtime_idle"
                 && !isActivityBlindAction;
             if (
                 requiresRuntimeActivityRevision
@@ -558,14 +702,28 @@ export async function materializeNextPendingMessageInTx(
 
             const existingTranscriptMessage = await tx.sessionMessage.findFirst({
                     where: { sessionId, localId },
-                    select: { id: true, seq: true, content: true, messageRole: true },
+                    select: { id: true, seq: true, sidechainId: true, content: true, messageRole: true },
                 });
                 if (existingTranscriptMessage) {
                     const compatibility = compareSessionMessageContentAndRole({
                         existing: existingTranscriptMessage,
                         candidate: { content, messageRole },
                     });
-                    if (compatibility.kind !== "match") {
+                    if (
+                        params.targetExecutionRunId !== null
+                        && existingTranscriptMessage.sidechainId !== params.expectedSidechainId
+                    ) {
+                        return await blockPendingExecutionRunTargetMismatchInTx({
+                            tx,
+                            authority: params.publisherAuthority,
+                            sessionId,
+                            localId,
+                            targetExecutionRunId: params.targetExecutionRunId,
+                            deliveryState: null,
+                            noopDeliveryState,
+                        });
+                    }
+                    if (existingTranscriptMessage.sidechainId !== params.expectedSidechainId || compatibility.kind !== "match") {
                         return { ok: false, error: "transcript-conflict" } as const;
                     }
                 }
@@ -576,6 +734,7 @@ export async function materializeNextPendingMessageInTx(
                         sessionId,
                         localId,
                         ...pendingMessageEligibleForMaterializationWhere,
+                        targetExecutionRunId: params.targetExecutionRunId,
                         providerAction: null,
                     },
                     data: {
@@ -601,17 +760,17 @@ export async function materializeNextPendingMessageInTx(
                     } as const;
                 }
 
-                await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
+                if (params.targetExecutionRunId === null) await reconcilePendingActivationAuthorizationForRemovedRequestInTx({
                     tx,
                     sessionId,
                     requestId: localId,
                 });
 
                 const pendingCount = await tx.sessionPendingMessage.count({
-                    where: { sessionId, status: "queued" },
+                    where: { sessionId, targetExecutionRunId: null, status: "queued" },
                 });
                 const pendingBlockedCount = await tx.sessionPendingMessage.count({
-                    where: { sessionId, status: "queued", deliveryState: "blocked" },
+                    where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
                 });
                 const sessionFence = await tx.session.updateMany({
                     where: {
@@ -633,7 +792,6 @@ export async function materializeNextPendingMessageInTx(
                         pendingCount: true,
                         pendingBlockedCount: true,
                         pendingVersion: true,
-                        lastViewedSessionSeq: true,
                         pendingPermissionRequestCount: true,
                         pendingUserActionRequestCount: true,
                         active: true,
@@ -641,7 +799,7 @@ export async function materializeNextPendingMessageInTx(
                     },
                 });
 
-                const participantCursorsPending = await markPendingStateChangedParticipants({
+                const recipientCursorsPending = await markPendingStateChangedRecipients({
                     tx,
                     sessionId,
                     pendingVersion: session.pendingVersion,
@@ -665,19 +823,18 @@ export async function materializeNextPendingMessageInTx(
                         createdAt: nextPending.createdAt,
                         updatedAt: nextPending.updatedAt,
                     },
-                    participantCursorsMessage: [] as ParticipantCursor[],
-                    participantCursorsPending,
+                    recipientCursorsMessage: [] as RecipientCursor[],
+                    recipientCursorsPending,
                     pendingCount: session.pendingCount,
                     pendingBlockedCount: session.pendingBlockedCount,
                     pendingVersion: session.pendingVersion,
                     deliveryState: materializedDeliveryState,
-                    badgeAttentionChanged: didSessionActivityBadgeContributionChange(
+                    badgeAttentionChanged: didSessionActivityBadgeSignalChange(
                         sessionBefore,
                         {
                             seq: session.seq,
                             pendingCount: session.pendingCount,
                             pendingBlockedCount: session.pendingBlockedCount,
-                            lastViewedSessionSeq: session.lastViewedSessionSeq,
                             pendingPermissionRequestCount: session.pendingPermissionRequestCount,
                             pendingUserActionRequestCount: session.pendingUserActionRequestCount,
                             active: session.active,

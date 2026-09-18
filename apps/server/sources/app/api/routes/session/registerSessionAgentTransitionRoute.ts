@@ -3,8 +3,8 @@ import {
     SessionMetadataInactiveModelIntentOwnerPatchV1Schema,
 } from "@happier-dev/protocol";
 
-import { buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { buildMessageUpdatedUpdate, buildNewMessageUpdate, eventRouter } from "@/app/events/eventRouter";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import { createServerFeatureGatePreHandler } from "@/app/features/catalog/serverFeatureGate";
 import {
     applySessionAgentTransitionCutover,
@@ -112,7 +112,7 @@ export function registerSessionAgentTransitionRoute(
             if (!committed.publication) return true;
             const published = await publishSessionCurrentViewUpdates({
                 sessionId,
-                participantCursors: committed.participantCursors,
+                recipientCursors: committed.recipientCursors,
                 source: committed.publication,
             });
             return published.ok;
@@ -178,11 +178,11 @@ export function registerSessionAgentTransitionRoute(
         // publish: no new sequence, no cursor movement, no republication.
         const write = result.dividerWrite;
         if (write?.didWrite) {
-            await Promise.all(write.participantCursors.map(async ({ accountId, cursor }) => {
+            await Promise.all(write.recipientCursors.map(async ({ accountId, cursor }) => {
                 eventRouter.emitUpdate({
                     userId: accountId,
                     payload: buildNewMessageUpdate(
-                        write.message,
+                        { ...write.message, accountActor: null },
                         sessionId,
                         cursor,
                         randomKeyNaked(12),
@@ -195,11 +195,25 @@ export function registerSessionAgentTransitionRoute(
                 sessionId,
                 readyProjection: write.readyProjection,
             });
+        } else if (write?.didUpdate) {
+            await Promise.all(write.recipientCursors.map(async ({ accountId, cursor }) => {
+                eventRouter.emitUpdate({
+                    userId: accountId,
+                    payload: buildMessageUpdatedUpdate(
+                        { ...write.message, accountActor: null },
+                        sessionId,
+                        cursor,
+                        randomKeyNaked(12),
+                        { attentionImpact: write.attentionImpact },
+                    ),
+                    recipientFilter: { type: "all-interested-in-session", sessionId },
+                });
+            }));
         }
         if (write) {
-            await refreshSessionParticipantBadgePushes({
+            await refreshTrackedSessionAccountBadgePushes({
                 badgeAttentionChanged: write.badgeAttentionChanged,
-                participantCursors: write.participantCursors,
+                sessionId,
             });
         }
 

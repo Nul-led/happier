@@ -1,5 +1,5 @@
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
-import { didSessionActivityBadgeContributionChange } from "@/app/activity/accountActivityBadge";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { didSessionActivityBadgeSignalChange } from "@/app/activity/accountActivityBadge";
 import {
     loadSessionTranscriptPublicationRecipientProjection,
     projectSessionTranscriptPublicationRealtimeProjection,
@@ -12,7 +12,7 @@ import {
     eventRouter,
 } from "@/app/events/eventRouter";
 import { activityCache } from "@/app/presence/sessionCache";
-import { markSessionParticipantsChanged } from "@/app/session/changeTracking/markSessionParticipantsChanged";
+import { markSessionProjectionRecipientsChanged } from "@/app/session/changeTracking/markSessionProjectionRecipientsChanged";
 import {
     applyLatestSessionTurnEndInTx,
     writeSessionRuntimeActivityObserverLossInTx,
@@ -66,7 +66,6 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
                 ...SESSION_TRANSCRIPT_PUBLICATION_SELECT,
                 pendingCount: true,
                 pendingBlockedCount: true,
-                lastViewedSessionSeq: true,
                 pendingPermissionRequestCount: true,
                 pendingUserActionRequestCount: true,
                 latestTurnId: true,
@@ -129,7 +128,7 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
         const didApply = session.active || turnApplied || activity.status === "applied";
         if (!didApply) return { status: "unchanged" as const };
 
-        const participantCursors = await markSessionParticipantsChanged({ tx, sessionId: params.sessionId });
+        const recipientCursors = await markSessionProjectionRecipientsChanged({ tx, sessionId: params.sessionId });
         const currentTurnStatus = PrimaryTurnStatusV1Schema.safeParse(session.latestTurnStatus);
         const latestTurnStatus: PrimaryTurnStatusV1 | null = turn?.ok
             ? turn.latestTurnStatus
@@ -143,7 +142,7 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
         const nextStoredRuntimeIssue = turn?.ok
             ? (turn.lastRuntimeIssue ? JSON.stringify(turn.lastRuntimeIssue) : null)
             : session.lastRuntimeIssue;
-        const badgeAttentionChanged = didSessionActivityBadgeContributionChange(session, {
+        const badgeAttentionChanged = didSessionActivityBadgeSignalChange(session, {
             ...session,
             active: false,
             latestTurnStatus,
@@ -151,7 +150,7 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
         });
         return {
             status: "applied" as const,
-            participantCursors,
+            recipientCursors,
             badgeAttentionChanged,
             activeChanged: session.active,
             activeAt: params.observedAt,
@@ -171,7 +170,7 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
     }
     const session = await loadSessionTranscriptPublicationRecipientProjection(params.sessionId);
     if (session) {
-        await Promise.all(result.participantCursors.map(async ({ accountId, cursor }) => {
+        await Promise.all(result.recipientCursors.map(async ({ accountId, cursor }) => {
             const projection = projectSessionTranscriptPublicationRealtimeProjection(
                 {
                     ...(result.activeChanged ? { active: false, activeAt: result.activeAt } : {}),
@@ -204,9 +203,9 @@ export async function applyReleasedUiV021SessionEnd(params: Readonly<{
             });
         }));
     }
-    await refreshSessionParticipantBadgePushes({
+    await refreshTrackedSessionAccountBadgePushes({
         badgeAttentionChanged: result.badgeAttentionChanged,
-        participantCursors: result.participantCursors,
+        sessionId: params.sessionId,
     });
     if (result.activeChanged) {
         eventRouter.emitEphemeral({

@@ -4,6 +4,9 @@ import { applyEnvValues, restoreEnvValues, snapshotEnvValues, type EnvValues } f
 export { applyEnvValues, restoreEnvValues, snapshotEnvValues, type EnvValues } from './env'
 
 export const startVoiceProviderIdentityBackfillWorkerMock = vi.fn((_params: unknown) => null)
+export const startEnterpriseIdentitySyncWorkerMock = vi.fn(
+  (_params: unknown): Readonly<{ stop: () => Promise<void>; nudge: () => void }> | null => null,
+)
 export const startPluginWebhookCredentialRetirementWorkerMock = vi.fn(
   (_params: unknown): Readonly<{ stop: () => void }> | null => null,
 )
@@ -84,6 +87,9 @@ export function installStartServerCommonWiringMocks(): void {
   }))
   vi.mock('@/app/voice/providerIdentityBackfill/worker', () => ({
     startVoiceProviderIdentityBackfillWorker: (params: unknown) => startVoiceProviderIdentityBackfillWorkerMock(params),
+  }))
+  vi.mock('@/app/teams/directory/runtime/worker', () => ({
+    startEnterpriseIdentitySyncWorker: (params: unknown) => startEnterpriseIdentitySyncWorkerMock(params),
   }))
   vi.mock('@/app/presence/presenceMode', () => ({
     shouldConsumePresenceFromRedis: vi.fn(() => false),

@@ -4,6 +4,7 @@ import type {
     StoredJsonContentEnvelope,
 } from "@happier-dev/protocol";
 import {
+    CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1,
     ConnectedServiceCredentialRecordV1Schema,
     ConnectedServiceIdSchema,
     assertConnectedServiceCredentialRecordBinding,
@@ -50,6 +51,10 @@ export type QualifiedConnectedAccountStoredMetadataProjection =
     kind: "oauth" | "token" | null;
     health: ConnectedServiceCredentialHealthV1 | null;
     status: CredentialStatus;
+    directExportContract:
+        | typeof CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+        | null;
+    contributionContractVersion: string | null;
 }>;
 
 function resolveStoredCredentialRevisionSemantics(
@@ -106,6 +111,8 @@ export function resolveQualifiedConnectedAccountStoredMetadata(
             kind: null,
             health: stored.health ?? null,
             status: deriveConnectedServiceCredentialStatus(stored),
+            directExportContract: stored.directExportContract ?? null,
+            contributionContractVersion: stored.contributionContractVersion ?? null,
         };
     }
     if (isConnectedServiceCredentialMetadataV2(params.metadata)) {
@@ -118,6 +125,10 @@ export function resolveQualifiedConnectedAccountStoredMetadata(
             kind: metadata.kind,
             health: metadata.health ?? null,
             status: deriveConnectedServiceCredentialStatus(metadata),
+            directExportContract: metadata.kind === "token"
+                ? CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+                : null,
+            contributionContractVersion: null,
         };
     }
     if (isConnectedServiceCredentialMetadataV3(params.metadata)) {
@@ -130,6 +141,10 @@ export function resolveQualifiedConnectedAccountStoredMetadata(
             kind: metadata.kind,
             health: metadata.health ?? null,
             status: deriveConnectedServiceCredentialStatus(metadata),
+            directExportContract: metadata.kind === "token"
+                ? CONNECTED_ACCOUNT_DIRECT_EXPORT_CONTRACT_V1
+                : null,
+            contributionContractVersion: null,
         };
     }
     return {
@@ -139,6 +154,8 @@ export function resolveQualifiedConnectedAccountStoredMetadata(
         kind: null,
         health: null,
         status: "needs_reauth",
+        directExportContract: null,
+        contributionContractVersion: null,
     };
 }
 

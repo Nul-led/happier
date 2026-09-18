@@ -1,10 +1,7 @@
 import { z } from "zod";
 import { db } from "@/storage/db";
-import { buildAccountSettingsChangedUpdate, buildUpdateAccountUpdate, eventRouter } from "@/app/events/eventRouter";
-import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { log } from "@/utils/logging/log";
-import { afterTx, inTx } from "@/storage/inTx";
-import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { inTx } from "@/storage/inTx";
 import { type Fastify } from "../../types";
 import { resolveApiHotEndpointRateLimit } from "@/app/api/utils/apiRateLimitCatalog";
 import {
@@ -14,17 +11,15 @@ import {
     AccountSettingsV2UpdateRequestSchema,
     AccountSettingsV2UpdateResponseSchema,
     AccountStoredContentUpgradeRequiredV1Schema,
-    type AccountSettingsStoredContentEnvelope,
 } from "@happier-dev/protocol";
 import {
     enforceProfilePreservingSettingsWriterCompatibilityForHttpRequest,
 } from "@/app/clientCompatibility/accountStoredContentCompatibility";
-import { recordAccountSettingsSnapshotsForWrite } from "@/app/accountSettings/accountSettingsHistoryRepository";
+import { writeAccountSettingsInTx } from "@/app/accountSettings/writeAccountSettingsInTx";
 import {
     deriveAccountEncryptionCurrentnessFromRow,
 } from "@/app/encryption/accountContentKeyAdmission";
-import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
-import { openPlainAccountSettingsDbValue, storePlainAccountSettingsDbValue } from "@/app/encryption/accountSettingsStorage";
+import { openPlainAccountSettingsDbValue } from "@/app/encryption/accountSettingsStorage";
 import {
     AccountSettingsStorageUnavailableResponseSchema,
     resolveAccountSettingsStorageUnavailableRouteError,
@@ -33,6 +28,7 @@ import {
     PresentUserRequiredResponseSchema,
     requirePresentUser,
 } from "@/app/api/utils/requirePresentUser";
+import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 
 export function registerAccountSettingsRoutes(app: Fastify): void {
     // Get Account Settings API
@@ -138,119 +134,42 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
         const { settings, expectedVersion } = request.body;
 
         try {
-            const result = await inTx(async (tx) => {
-                const fence = await acquireAccountEncryptionTransitionFenceInTx(
-                    tx,
-                    userId,
-                );
-                if (fence.status === "account_not_found") {
-                    return { type: 'internal-error' as const };
-                }
-                if (fence.status === "account_inconsistent") {
-                    return {
-                        type: "storage-unavailable" as const,
-                    };
-                }
-                const currentUser = fence.account;
-                const mode = currentUser.currentness.encryptionMode;
-                if (mode === "plain") {
-                    return { type: "plain-requires-v2" as const };
-                }
+            const result = await inTx((tx) => writeAccountSettingsInTx({
+                tx,
+                accountId: userId,
+                expectedVersion,
+                next: { kind: "v1", settings },
+            }));
 
-                if (currentUser.settingsVersion !== expectedVersion) {
-                    return {
-                        type: 'version-mismatch' as const,
-                        currentVersion: currentUser.settingsVersion,
-                        currentSettings: currentUser.settings
-                    };
-                }
-
-                const { count } = await tx.account.updateMany({
-                    where: {
-                        id: userId,
-                        settingsVersion: expectedVersion
-                    },
-                    data: {
-                        settings: settings,
-                        settingsVersion: expectedVersion + 1,
-                        updatedAt: new Date()
-                    }
-                });
-
-                if (count === 0) {
-                    const account = await tx.account.findUnique({
-                        where: { id: userId },
-                        select: { settings: true, settingsVersion: true }
-                    });
-                    return {
-                        type: 'version-mismatch' as const,
-                        currentVersion: account?.settingsVersion || 0,
-                        currentSettings: account?.settings || null
-                    };
-                }
-
-                await recordAccountSettingsSnapshotsForWrite({
-                    tx,
-                    previous: {
-                        accountId: userId,
-                        version: expectedVersion,
-                        settingsDbValue: currentUser.settings,
-                        encryptionMode: mode,
-                    },
-                    next: {
-                        accountId: userId,
-                        version: expectedVersion + 1,
-                        settingsDbValue: settings,
-                        encryptionMode: mode,
-                    },
-                });
-
-                const settingsUpdate = {
-                    value: settings,
-                    version: expectedVersion + 1
-                };
-
-                const cursor = await markAccountChanged(tx, { accountId: userId, kind: 'account', entityId: 'self', hint: { settingsVersion: expectedVersion + 1 } });
-
-                afterTx(tx, () => {
-                    const updatePayload = buildUpdateAccountUpdate(userId, { settings: settingsUpdate }, cursor, randomKeyNaked(12));
-                    eventRouter.emitUpdate({
-                        userId,
-                        payload: updatePayload,
-                        recipientFilter: { type: 'user-scoped-only' }
-                    });
-                    eventRouter.emitUpdate({
-                        userId,
-                        payload: buildAccountSettingsChangedUpdate(expectedVersion + 1, cursor, randomKeyNaked(12)),
-                        recipientFilter: { type: "user-machine-scoped-only" },
-                    });
-                });
-
-                return { type: 'success' as const, version: expectedVersion + 1 };
-            });
-
-            if (result.type === 'internal-error') {
+            if (result.status === "account_not_found") {
                 return reply.code(500).send({
                     success: false,
                     error: 'Failed to update account settings'
                 });
             }
 
-            if (result.type === "plain-requires-v2") {
+            if (result.status === "plain_requires_v2") {
                 return reply.code(400).send({ error: "plain_account_requires_settings_v2" });
             }
-            if (result.type === "storage-unavailable") {
+            if (result.status === "storage_unavailable") {
                 return reply.code(503).send({
                     error: "account_settings_storage_unavailable",
                 });
             }
 
-            if (result.type === 'version-mismatch') {
+            if (result.status === "version_mismatch") {
                 return reply.code(200).send({
                     success: false,
                     error: 'version-mismatch',
                     currentVersion: result.currentVersion,
                     currentSettings: result.currentSettings
+                });
+            }
+
+            if (result.status !== "success") {
+                return reply.code(500).send({
+                    success: false,
+                    error: "Failed to update account settings",
                 });
             }
 
@@ -349,156 +268,35 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
         if (!parsedRequest.success) {
             return reply.send({ success: false, error: "invalid", reason: "tooLarge" });
         }
-        const { content, expectedVersion } = parsedRequest.data;
+        const { content, expectedVersion, remoteAlertPolicy } = parsedRequest.data;
+        // Keep the Account document write available while Follow is off, but do
+        // not refresh its server-readable remote-alert projection. Existing
+        // rows remain compatibility-readable and become stale as the document
+        // version advances; the delivery owner is independently feature-gated.
+        const admittedRemoteAlertPolicy = isServerFeatureEnabledForRequest("sessions.following", process.env)
+            ? remoteAlertPolicy
+            : undefined;
 
         try {
-            const result = await inTx(async (tx) => {
-                const fence = await acquireAccountEncryptionTransitionFenceInTx(
-                    tx,
-                    userId,
-                );
-                if (fence.status === "account_not_found") {
-                    return { type: "internal-error" as const };
-                }
-                if (fence.status === "account_inconsistent") {
-                    return {
-                        type: "storage-unavailable" as const,
-                    };
-                }
-                const currentUser = fence.account;
-                const mode = currentUser.currentness.encryptionMode;
-                if (mode === "plain") {
-                    if (content && content.t !== "plain") {
-                        return { type: "invalid-params" as const };
-                    }
-                } else {
-                    if (content && content.t !== "encrypted") {
-                        return { type: "invalid-params" as const };
-                    }
-                }
+            const result = await inTx((tx) => writeAccountSettingsInTx({
+                tx,
+                accountId: userId,
+                expectedVersion,
+                next: {
+                    kind: "v2",
+                    content,
+                    ...(admittedRemoteAlertPolicy === undefined ? {} : { remoteAlertPolicy: admittedRemoteAlertPolicy }),
+                },
+            }));
 
-                const currentContent: AccountSettingsStoredContentEnvelope | null =
-                    mode === "plain"
-                        ? openPlainAccountSettingsDbValue({ accountId: userId, dbValue: currentUser.settings })
-                        : currentUser.settings
-                            ? { t: "encrypted", c: currentUser.settings }
-                            : null;
-
-                if (currentUser.settingsVersion !== expectedVersion) {
-                    return {
-                        type: "version-mismatch" as const,
-                        currentVersion: currentUser.settingsVersion,
-                        currentContent,
-                    };
-                }
-
-                const nextSettingsDbValue =
-                    mode === "plain"
-                        ? storePlainAccountSettingsDbValue({ accountId: userId, content: content })
-                        : (content?.t === "encrypted" ? content.c : null);
-
-                const { count } = await tx.account.updateMany({
-                    where: { id: userId, settingsVersion: expectedVersion },
-                    data: {
-                        settings: nextSettingsDbValue,
-                        settingsVersion: expectedVersion + 1,
-                        updatedAt: new Date(),
-                    },
-                });
-                if (count === 0) {
-                    const account = await tx.account.findUnique({
-                        where: { id: userId },
-                        select: {
-                            settings: true,
-                            settingsVersion: true,
-                            publicKey: true,
-                            encryptionMode: true,
-                            contentPublicKey: true,
-                            contentPublicKeySig: true,
-                        },
-                    });
-                    const refreshedCurrentness = account
-                        ? deriveAccountEncryptionCurrentnessFromRow(
-                            account,
-                        )
-                        : null;
-                    if (
-                        refreshedCurrentness?.status
-                        === "inconsistent"
-                    ) {
-                        return {
-                            type: "storage-unavailable" as const,
-                        };
-                    }
-                    const refreshedMode =
-                        refreshedCurrentness?.currentness
-                            .encryptionMode ?? mode;
-                    const refreshedContent: AccountSettingsStoredContentEnvelope | null =
-                        refreshedMode === "plain"
-                            ? openPlainAccountSettingsDbValue({ accountId: userId, dbValue: account?.settings ?? null })
-                            : account?.settings
-                                ? { t: "encrypted", c: account.settings }
-                                : null;
-                    return {
-                        type: "version-mismatch" as const,
-                        currentVersion: account?.settingsVersion ?? 0,
-                        currentContent: refreshedContent,
-                    };
-                }
-
-                await recordAccountSettingsSnapshotsForWrite({
-                    tx,
-                    previous: {
-                        accountId: userId,
-                        version: expectedVersion,
-                        settingsDbValue: currentUser.settings,
-                        encryptionMode: mode,
-                    },
-                    next: {
-                        accountId: userId,
-                        version: expectedVersion + 1,
-                        settingsDbValue: nextSettingsDbValue,
-                        encryptionMode: mode,
-                    },
-                });
-
-                const cursor = await markAccountChanged(tx, {
-                    accountId: userId,
-                    kind: "account",
-                    entityId: "self",
-                    hint: { settingsVersion: expectedVersion + 1 },
-                });
-
-                afterTx(tx, () => {
-                    const updatePayload = buildUpdateAccountUpdate(
-                        userId,
-                        { settingsV2: { content: content ?? null, version: expectedVersion + 1 } },
-                        cursor,
-                        randomKeyNaked(12),
-                    );
-                    eventRouter.emitUpdate({
-                        userId,
-                        payload: updatePayload,
-                        recipientFilter: { type: "user-scoped-only" },
-                    });
-                    eventRouter.emitUpdate({
-                        userId,
-                        payload: buildAccountSettingsChangedUpdate(expectedVersion + 1, cursor, randomKeyNaked(12)),
-                        recipientFilter: { type: "user-machine-scoped-only" },
-                    });
-                });
-
-                return { type: "success" as const, version: expectedVersion + 1 };
-            });
-
-            if (result.type === "internal-error") return reply.code(500).send({ error: "internal" });
-            if (result.type === "storage-unavailable") {
+            if (result.status === "account_not_found") return reply.code(500).send({ error: "internal" });
+            if (result.status === "storage_unavailable") {
                 return reply.code(503).send({
                     error: "account_settings_storage_unavailable",
                 });
             }
-            if (result.type === "invalid-params") return reply.code(400).send({ error: "invalid-params" });
-            if (result.type === "version-mismatch") {
+            if (result.status === "invalid_content") return reply.code(400).send({ error: "invalid-params" });
+            if (result.status === "version_mismatch") {
                 return reply.send({
                     success: false,
                     error: "version-mismatch",
@@ -506,6 +304,7 @@ export function registerAccountSettingsRoutes(app: Fastify): void {
                     currentContent: result.currentContent ?? null,
                 });
             }
+            if (result.status !== "success") return reply.code(500).send({ error: "internal" });
             return reply.send({ success: true, version: result.version });
         } catch (error) {
             const storageUnavailable = resolveAccountSettingsStorageUnavailableRouteError(error);

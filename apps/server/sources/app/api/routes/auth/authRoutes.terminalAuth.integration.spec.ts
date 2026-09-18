@@ -7,6 +7,7 @@ import tweetnacl from "tweetnacl";
 import {
     sealTerminalProvisioningV3Payload,
     sealTerminalProvisioningV3TokenOnlyPayload,
+    signAccountContentKeyBindingV1,
 } from "@happier-dev/protocol";
 
 import { db } from "@/storage/db";
@@ -84,6 +85,23 @@ function createTerminalProvisioningResponse(params: Readonly<{
             randomBytes: (length) => new Uint8Array(randomBytes(length)),
         });
     return privacyKit.encodeBase64(new Uint8Array(payload));
+}
+
+async function createE2eeAccountWithCurrentContentKey(): Promise<Readonly<{ id: string }>> {
+    const signing = tweetnacl.sign.keyPair();
+    const content = tweetnacl.box.keyPair();
+    return await db.account.create({
+        data: {
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            encryptionMode: "e2ee",
+            contentPublicKey: new Uint8Array(content.publicKey),
+            contentPublicKeySig: new Uint8Array(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey,
+                contentPublicKey: content.publicKey,
+            })),
+        },
+        select: { id: true },
+    });
 }
 
 async function markSignedInAccountPlain(signInBody: Readonly<{ publicKey: string }>): Promise<void> {
@@ -423,7 +441,7 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             },
         })).statusCode).toBe(200);
 
-        const createTokenSpy = vi.spyOn(auth, "createToken")
+        const createTokenSpy = vi.spyOn(auth, "createTokenInTx")
             .mockRejectedValueOnce(new Error("injected terminal claim mint failure"));
         try {
             const failedClaim = await app.inject({
@@ -464,8 +482,15 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             select: { id: true },
         });
         const [presentUserToken, terminalAutomationToken] = await Promise.all([
-            auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
-            auth.createToken(account.id, { session: "terminal-automation" }, { kind: "terminal", authority: "account_automation" }),
+            auth.createToken(account.id, undefined, {
+                kind: "account",
+                authority: "present_user",
+                authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            }),
+            auth.createToken(account.id, { session: "terminal-automation" }, {
+                kind: "terminal",
+                authority: "account_automation",
+            }),
         ]);
         const { publicKeyRaw, publicKeyBase64 } = createTerminalKeypair();
 
@@ -521,6 +546,167 @@ describe("authRoutes (terminal auth request) (integration)", () => {
             response,
         });
 
+        await app.close();
+    });
+
+    it("copies approved credential evidence to the exact terminal request and revalidates it at claim", async () => {
+        const account = await createE2eeAccountWithCurrentContentKey();
+        const approvingToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
+        const terminal = createTerminalKeypair();
+        const claimSecret = new Uint8Array(randomBytes(32));
+        const claimSecretB64Url = encodeBase64Url(claimSecret);
+        const claimSecretHash = sha256Base64Url(claimSecret);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: { publicKey: terminal.publicKeyBase64, supportsV2: true, claimSecretHash },
+        });
+        const response = createTerminalProvisioningResponse({ kind: "dataKey", recipientPublicKey: terminal.publicKeyRaw });
+        const approval = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${approvingToken}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response,
+                responseKind: "dataKey",
+                authorizeUnattendedTeamAccess: true,
+            },
+        });
+        expect(approval.statusCode, approval.body).toBe(200);
+
+        const authorized = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request/claim",
+            payload: { publicKey: terminal.publicKeyBase64, claimSecret: claimSecretB64Url },
+        });
+        expect(authorized.statusCode, authorized.body).toBe(200);
+        const successor = await auth.verifyToken((authorized.json() as { token: string }).token);
+        expect(successor?.authenticationEvidence).toEqual([
+            { kind: "home_method", methodId: "key_challenge" },
+        ]);
+        await app.close();
+    });
+
+    it("rejects explicit unattended approval with no evidence and leaves the request pending", async () => {
+        const account = await db.account.create({
+            data: { publicKey: `pk-terminal-no-evidence-${Date.now()}`, encryptionMode: "plain" },
+            select: { id: true },
+        });
+        const approvingToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        const terminal = createTerminalKeypair();
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+        await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                supportsV2: true,
+                claimSecretHash: sha256Base64Url(new Uint8Array(randomBytes(32))),
+            },
+        });
+        const approval = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${approvingToken}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "tokenOnly", recipientPublicKey: terminal.publicKeyRaw }),
+                responseKind: "tokenOnly",
+                authorizeUnattendedTeamAccess: true,
+            },
+        });
+        expect(approval.statusCode, approval.body).toBe(409);
+        expect(approval.json()).toEqual({ error: "credential_authentication_evidence_unavailable" });
+        expect(await db.terminalAuthRequest.findUnique({
+            where: { publicKey: privacyKit.encodeHex(terminal.publicKeyRaw) },
+            select: { response: true, responseAccountId: true, authenticationEvidence: true, approvalTokenEpoch: true },
+        })).toEqual({ response: null, responseAccountId: null, authenticationEvidence: null, approvalTokenEpoch: null });
+        await app.close();
+    });
+
+    it("keeps an explicitly unattended approval pending when its evidence or approval epoch is no longer current", async () => {
+        const account = await createE2eeAccountWithCurrentContentKey();
+        const approvingToken = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
+        const terminal = createTerminalKeypair();
+        const claimSecret = new Uint8Array(randomBytes(32));
+        const claimSecretB64Url = encodeBase64Url(claimSecret);
+        const claimSecretHash = sha256Base64Url(claimSecret);
+        const app = createTestApp();
+        authRoutes(app as any);
+        await app.ready();
+
+        await app.inject({
+            method: "POST",
+            url: "/v1/auth/request",
+            payload: { publicKey: terminal.publicKeyBase64, supportsV2: true, claimSecretHash },
+        });
+        const approval = await app.inject({
+            method: "POST",
+            url: "/v1/auth/response",
+            headers: { authorization: `Bearer ${approvingToken}` },
+            payload: {
+                publicKey: terminal.publicKeyBase64,
+                response: createTerminalProvisioningResponse({ kind: "dataKey", recipientPublicKey: terminal.publicKeyRaw }),
+                responseKind: "dataKey",
+                authorizeUnattendedTeamAccess: true,
+            },
+        });
+        expect(approval.statusCode, approval.body).toBe(200);
+        expect(await db.terminalAuthRequest.findUnique({
+            where: { publicKey: privacyKit.encodeHex(terminal.publicKeyRaw) },
+            select: { authenticationEvidence: true, approvalTokenEpoch: true },
+        })).toEqual({
+            authenticationEvidence: {
+                v: 1,
+                evidence: [{ kind: "home_method", methodId: "key_challenge" }],
+            },
+            approvalTokenEpoch: 0,
+        });
+
+        harness.resetEnv({ HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" });
+        const staleEvidenceClaim = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request/claim",
+            payload: { publicKey: terminal.publicKeyBase64, claimSecret: claimSecretB64Url },
+        });
+        expect(staleEvidenceClaim.statusCode, staleEvidenceClaim.body).toBe(409);
+        expect(staleEvidenceClaim.json()).toEqual({ error: "credential_authentication_evidence_unavailable" });
+        expect((await db.terminalAuthRequest.findUnique({
+            where: { publicKey: privacyKit.encodeHex(terminal.publicKeyRaw) },
+            select: { claimedAt: true },
+        }))?.claimedAt).toBeNull();
+
+        harness.resetEnv();
+        await auth.signOutEverywhere(account.id);
+        const staleEpochClaim = await app.inject({
+            method: "POST",
+            url: "/v1/auth/request/claim",
+            payload: { publicKey: terminal.publicKeyBase64, claimSecret: claimSecretB64Url },
+        });
+        expect(staleEpochClaim.statusCode, staleEpochClaim.body).toBe(409);
+        expect(staleEpochClaim.json()).toEqual({ error: "credential_authentication_evidence_unavailable" });
+        expect((await db.terminalAuthRequest.findUnique({
+            where: { publicKey: privacyKit.encodeHex(terminal.publicKeyRaw) },
+            select: { claimedAt: true },
+        }))?.claimedAt).toBeNull();
         await app.close();
     });
 

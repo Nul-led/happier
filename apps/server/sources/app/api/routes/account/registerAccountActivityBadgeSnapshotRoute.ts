@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { type Fastify } from "../../types";
-import { computeAccountActivityBadgeCounts } from "@/app/activity/accountActivityBadge";
+import { computeAuthenticatedAccountActivityBadgeCount } from "@/app/activity/accountActivityBadge";
+import { readSessionAccessAuthenticationFromRequest } from "@/app/session/access/sessionAccessAuthentication";
 
 export function registerAccountActivityBadgeSnapshotRoute(app: Fastify): void {
     app.get(
@@ -17,7 +18,8 @@ export function registerAccountActivityBadgeSnapshotRoute(app: Fastify): void {
         },
         async (request, reply) => {
             const accountId = request.userId;
-            const badgeCount = (await computeAccountActivityBadgeCounts([accountId])).get(accountId) ?? 0;
+            const authentication = readSessionAccessAuthenticationFromRequest(request);
+            const badgeCount = await computeAuthenticatedAccountActivityBadgeCount(accountId, authentication);
 
             return reply.send({ badgeCount });
         },

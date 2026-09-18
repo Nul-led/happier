@@ -324,7 +324,7 @@ describe("Home login approval (gate + routes) (integration)", () => {
                 auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" }),
                 auth.createToken(account.id, { session: "approval-terminal" }, { kind: "terminal", authority: "account_automation" }),
                 auth.createToken(account.id, undefined, { kind: "account_directory", authority: "present_user" }),
-                auth.createApiToken({ accountId: account.id, label: "approval PAT" }),
+                auth.createApiToken({ accountId: account.id, tokenId: crypto.randomUUID(), label: "approval PAT" }),
             ]);
 
             const app = createTestApp();

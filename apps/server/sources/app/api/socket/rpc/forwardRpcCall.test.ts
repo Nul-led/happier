@@ -408,7 +408,7 @@ describe('forwardRpcCall', () => {
         }
     });
 
-    it('stops awaiting a submitted external Action relay when its caller aborts', async () => {
+    it('keeps a submitted external Action relay open for the daemon cancellation response', async () => {
         const controller = new AbortController();
         let resolveDaemonResponse!: (value: unknown) => void;
         let markSubmitted!: () => void;
@@ -452,16 +452,11 @@ describe('forwardRpcCall', () => {
         await submitted;
         controller.abort(new Error('HTTP caller disconnected'));
         await new Promise<void>((resolve) => setImmediate(resolve));
-        const settledAfterAbort = settled;
-
-        // Let the deliberately pending boundary promise settle on RED so the
-        // test never leaves a dangling asynchronous operation behind.
-        if (!settledAfterAbort) resolveDaemonResponse({ late: true });
-
-        expect(settledAfterAbort).toBe(true);
+        expect(settled).toBe(false);
+        resolveDaemonResponse({ authenticatedCancellation: true });
         await expect(forwarded).resolves.toEqual({
-            ok: false,
-            error: 'RPC request cancelled by caller',
+            ok: true,
+            result: { authenticatedCancellation: true },
         });
     });
 

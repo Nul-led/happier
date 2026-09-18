@@ -11,7 +11,9 @@ export async function deleteOAuthStateAttemptBestEffort(sid: string): Promise<vo
     await db.repeatKey.delete({ where: { key } }).catch(() => {});
 }
 
-export async function loadValidOAuthStateAttempt(sid: string): Promise<{ key: string; value: string } | null> {
+export async function consumeValidOAuthStateAttempt(
+    sid: string,
+): Promise<{ key: string; value: string; expiresAt: Date } | null> {
     const key = oauthStateAttemptKey(sid);
     if (!key || key === "oauth_state_") return null;
 
@@ -22,6 +24,8 @@ export async function loadValidOAuthStateAttempt(sid: string): Promise<{ key: st
         return null;
     }
 
-    return { key: row.key, value: row.value };
+    const consumed = await db.repeatKey.deleteMany({
+        where: { key: row.key, value: row.value, expiresAt: { gt: new Date() } },
+    });
+    return consumed.count === 1 ? { key: row.key, value: row.value, expiresAt: row.expiresAt } : null;
 }
-

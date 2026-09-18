@@ -1,19 +1,13 @@
 import { timingSafeEqual } from "node:crypto";
 
 import {
-    computeContentPublicKeyFingerprint,
-    isValidBoxBundlePublicKey,
+    verifyAccountContentKeyBindingV1,
     type ContentPublicKeyFingerprint,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
 
 import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 import type { Tx } from "@/storage/inTx";
-
-const CONTENT_KEY_BINDING_PREFIX = Buffer.from(
-    "Happy content key v1\u0000",
-    "utf8",
-);
 
 type AccountContentKeyClient = Pick<Tx, "account">;
 
@@ -86,46 +80,27 @@ function decodeAccountSigningPublicKey(
     return copyBytes(Buffer.from(publicKeyHex, "hex"));
 }
 
+/**
+ * Server-side adapter over the canonical Protocol binding verifier. Protocol
+ * owns the binding bytes, key validation, and fingerprint; this module keeps
+ * decoding, persistence, initialization, currentness, and `key_mismatch`
+ * policy.
+ */
 export function verifyAccountContentKeyBinding(params: Readonly<{
     accountSigningPublicKey: Uint8Array;
     contentPublicKey: Uint8Array;
     contentPublicKeySignature: Uint8Array;
 }>): VerifiedAccountContentKeyBinding | null {
-    if (
-        params.accountSigningPublicKey.byteLength
-            !== tweetnacl.sign.publicKeyLength
-        || !isValidBoxBundlePublicKey(params.contentPublicKey)
-        || params.contentPublicKeySignature.byteLength
-            !== tweetnacl.sign.signatureLength
-    ) {
-        return null;
-    }
-
-    const contentPublicKey = copyBytes(params.contentPublicKey);
-    const contentPublicKeySignature = copyBytes(
-        params.contentPublicKeySignature,
-    );
-    const signedPayload = Buffer.concat([
-        CONTENT_KEY_BINDING_PREFIX,
-        Buffer.from(contentPublicKey),
-    ]);
-    try {
-        if (!tweetnacl.sign.detached.verify(
-            signedPayload,
-            contentPublicKeySignature,
-            params.accountSigningPublicKey,
-        )) {
-            return null;
-        }
-    } catch {
-        return null;
-    }
-
+    const verified = verifyAccountContentKeyBindingV1({
+        accountSigningPublicKey: params.accountSigningPublicKey,
+        contentPublicKey: params.contentPublicKey,
+        signature: params.contentPublicKeySignature,
+    });
+    if (!verified) return null;
     return {
-        contentPublicKey,
-        contentPublicKeySignature,
-        contentPublicKeyFingerprint:
-            computeContentPublicKeyFingerprint(contentPublicKey),
+        contentPublicKey: verified.contentPublicKey,
+        contentPublicKeySignature: verified.signature,
+        contentPublicKeyFingerprint: verified.contentPublicKeyFingerprint,
     };
 }
 

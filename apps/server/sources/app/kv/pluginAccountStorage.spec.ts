@@ -1,3 +1,4 @@
+import { signAccountContentKeyBindingV1 } from "@happier-dev/protocol";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import tweetnacl from "tweetnacl";
 
@@ -33,13 +34,10 @@ function createE2eeAccount() {
         encryptionMode: "e2ee" as const,
         publicKey: Buffer.from(signing.publicKey).toString("hex"),
         contentPublicKey: content.publicKey,
-        contentPublicKeySig: tweetnacl.sign.detached(
-            Buffer.concat([
-                Buffer.from("Happy content key v1\u0000", "utf8"),
-                Buffer.from(content.publicKey),
-            ]),
-            signing.secretKey,
-        ),
+        contentPublicKeySig: signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: content.publicKey,
+        }),
     };
 }
 

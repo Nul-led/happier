@@ -4,14 +4,14 @@ import {
     reviewCommentMutationInputWithoutEventEnvelopeV1,
     ReviewCommentV1Schema,
     stringifyReviewCommentPrincipalCanonicalJsonV1,
-    validateReviewCommentPublicationResultAgainstPlanV1,
+    ReviewCommentPublicationTransportRequestV1Schema,
     type ReviewCommentActorRefV1,
     type ReviewCommentAttachEvidenceRequestV1,
     type ReviewCommentAttachEvidenceResponseV1,
     type ReviewCommentBulkTransitionRequestV1,
     type ReviewCommentBulkTransitionResponseV1,
-    type ReviewCommentClaimPublicationDispatchRequestV1,
-    type ReviewCommentClaimPublicationDispatchResponseV1,
+    type ReviewCommentPublicationTransportRequestV1,
+    type ReviewCommentPublicationTransportResponseV1,
     type ReviewCommentCreateRequestV1,
     type ReviewCommentCreateResponseV1,
     type ReviewCommentEditRequestV1,
@@ -20,7 +20,6 @@ import {
     type ReviewCommentGetResponseV1,
     type ReviewCommentListRequestV1,
     type ReviewCommentListResponseV1,
-    type ReviewCommentPublicationPlanV1,
     type ReviewCommentRedactRequestV1,
     type ReviewCommentRedactResponseV1,
     type ReviewCommentReplyRequestV1,
@@ -89,8 +88,8 @@ export interface ReviewCommentOperations {
     attachEvidence(params: ReviewCommentMutationOperationParams<ReviewCommentAttachEvidenceRequestV1>): Promise<ReviewCommentAttachEvidenceResponseV1>;
     bulkTransition(params: ReviewCommentMutationOperationParams<ReviewCommentBulkTransitionRequestV1>): Promise<ReviewCommentBulkTransitionResponseV1>;
     claimPublicationDispatch(
-        params: ReviewCommentMutationOperationParams<ReviewCommentClaimPublicationDispatchRequestV1>,
-    ): Promise<ReviewCommentClaimPublicationDispatchResponseV1>;
+        params: ReviewCommentMutationOperationParams<ReviewCommentPublicationTransportRequestV1>,
+    ): Promise<ReviewCommentPublicationTransportResponseV1>;
 }
 
 async function requireComment(store: ReviewCommentStore, accountId: string, commentId: string): Promise<ReviewCommentV1> {
@@ -99,16 +98,6 @@ async function requireComment(store: ReviewCommentStore, accountId: string, comm
         throw new ReviewCommentOperationError("review_comment_not_found", `Review comment not found: ${commentId}`);
     }
     return comment;
-}
-
-function reviewCommentPublicationDigest(label: string, ...parts: readonly string[]): string {
-    const digest = createHash("sha256").update(`happier.reviewCommentPublication.${label}.v1\0`);
-    parts.forEach((part) => digest.update(part).update("\0"));
-    return digest.digest("base64url");
-}
-
-function reviewCommentPublicationTargetJson(plan: ReviewCommentPublicationPlanV1): string {
-    return stringifyReviewCommentPrincipalCanonicalJsonV1(plan.target);
 }
 
 function assertReviewCommentEditActorAllowed(params: Readonly<{
@@ -729,74 +718,28 @@ export function createReviewCommentOperations(
             return { bulkActionId, updated, failed };
         },
         async claimPublicationDispatch(
-            params: ReviewCommentMutationOperationParams<ReviewCommentClaimPublicationDispatchRequestV1>,
-        ): Promise<ReviewCommentClaimPublicationDispatchResponseV1> {
-            const { settlement, ...publicationPlan } = params.input;
-            const canonicalTarget = reviewCommentPublicationTargetJson(publicationPlan);
-            const canonicalPlan = stringifyReviewCommentPrincipalCanonicalJsonV1(publicationPlan);
-            const publicationPlanId = reviewCommentPublicationDigest("plan", params.accountId, canonicalPlan);
-            const targetKey = reviewCommentPublicationDigest("target", params.accountId, canonicalTarget);
-            const entries = params.input.entries.map((entry) => ({
+            params: ReviewCommentMutationOperationParams<ReviewCommentPublicationTransportRequestV1>,
+        ): Promise<ReviewCommentPublicationTransportResponseV1> {
+            const input = ReviewCommentPublicationTransportRequestV1Schema.parse(params.input);
+            const { publicationPlanId, targetKey, verdict, settlement } = input;
+            const entries = input.entries.map((entry) => ({
                 happierCommentId: entry.happierCommentId,
-                publicationCorrelationId: reviewCommentPublicationDigest(
-                    "entry",
-                    params.accountId,
-                    canonicalTarget,
-                    entry.happierCommentId,
-                ),
+                publicationCorrelationId: entry.publicationCorrelationId,
             }));
-            const verdict = params.input.verdict === null
-                ? null
-                : {
-                    publicationCorrelationId: reviewCommentPublicationDigest(
-                        "verdict",
-                        params.accountId,
-                        canonicalTarget,
-                        publicationPlanId,
-                    ),
-                };
-            let validatedSettlement = settlement;
-            if (settlement !== undefined) {
-                try {
-                    validatedSettlement = {
-                        dispatchToken: settlement.dispatchToken,
-                        result: validateReviewCommentPublicationResultAgainstPlanV1(
-                            publicationPlan,
-                            {
-                                disposition: "reconcile",
-                                dispatchToken: null,
-                                publicationPlanId,
-                                entries,
-                                verdict,
-                                instructions: {
-                                    entries: entries.map(() => "reconcile" as const),
-                                    verdict: verdict === null ? null : "reconcile",
-                                },
-                                priorResult: null,
-                            },
-                            settlement.result,
-                        ),
-                    };
-                } catch {
-                    throw new ReviewCommentOperationError(
-                        "review_comment_idempotency_conflict",
-                        "Publication completion does not match its frozen plan",
-                    );
-                }
-            }
             const claim = await store.claimPublicationDispatch({
                 accountId: params.accountId,
-                entries: params.input.entries.map((entry, index) => ({
+                storageMode: input.mode,
+                contentPublicKeyFingerprint: input.contentPublicKeyFingerprint,
+                entries: input.entries.map((entry, index) => ({
                     commentId: entry.happierCommentId,
                     serverRevision: entry.expectedServerRevision,
                     publicationCorrelationId: entries[index]!.publicationCorrelationId,
                 })),
                 verdictPublicationCorrelationId: verdict?.publicationCorrelationId ?? null,
                 targetKey,
-                target: params.input.target,
                 publicationPlanId,
                 dispatchToken: runtime.createId("review-publication-dispatch"),
-                ...(validatedSettlement === undefined ? {} : { settlement: validatedSettlement }),
+                ...(settlement === undefined ? {} : { settlement }),
                 createdAt: runtime.now(),
             });
             return {

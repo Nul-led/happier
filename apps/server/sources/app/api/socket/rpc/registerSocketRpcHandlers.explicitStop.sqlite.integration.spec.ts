@@ -80,7 +80,11 @@ describe("explicit machine stop RPC on SQLite", () => {
         } as unknown as Server;
         const caller = createFakeSocket({
             id: "caller-socket",
-            data: { clientType: "user-scoped" },
+            data: {
+                clientType: "user-scoped",
+                authAuthority: "present_user",
+                authTokenAuthenticationEvidence: [],
+            },
         });
         const callback = vi.fn();
 

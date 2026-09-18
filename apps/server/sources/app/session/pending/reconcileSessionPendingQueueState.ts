@@ -25,10 +25,10 @@ export async function reconcileSessionPendingQueueStateInTx(
     sessionId: string,
 ): Promise<ReconciledSessionPendingQueueState> {
     const pendingCount = await tx.sessionPendingMessage.count({
-        where: { sessionId, status: "queued" },
+        where: { sessionId, targetExecutionRunId: null, status: "queued" },
     });
     const blockedCount = await tx.sessionPendingMessage.count({
-        where: { sessionId, status: "queued", deliveryState: "blocked" },
+        where: { sessionId, targetExecutionRunId: null, status: "queued", deliveryState: "blocked" },
     });
 
     const current = await tx.session.findUniqueOrThrow({

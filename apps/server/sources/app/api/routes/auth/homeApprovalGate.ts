@@ -6,6 +6,7 @@ import {
     HomeDeviceApprovalDecisionResponseV1Schema,
     HomeDeviceApprovalListV1Schema,
 } from "@happier-dev/protocol";
+import { resolveHomeDeviceApprovalRequiredFromEnv } from "@happier-dev/cli-common/firstPartyRuntime/personalHome/configuration";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
@@ -19,16 +20,12 @@ import type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
 
 export type { HomeApprovalGate } from "@/app/auth/homeApprovalGateContract";
 
-function approvalEnabled(env: NodeJS.ProcessEnv): boolean {
-    return env.HAPPIER_HOME_DEVICE_APPROVAL_REQUIRED === "1";
-}
-
 /** Home-local approval gate. It stores pending state in the existing pairing-session owner. */
 export function createHomeApprovalGate(env: NodeJS.ProcessEnv = process.env): HomeApprovalGate {
     const policy = resolvePairingAuthPolicyFromEnv(env);
     return {
         async evaluate(input) {
-            if (!approvalEnabled(env)) return { kind: "allowed" };
+            if (!resolveHomeDeviceApprovalRequiredFromEnv(env)) return { kind: "allowed" };
             const now = new Date();
             const assertionExpiresAtMs = input.assertionExpiresAtMs ?? Number.MAX_SAFE_INTEGER;
             if (!Number.isSafeInteger(assertionExpiresAtMs) || assertionExpiresAtMs <= now.getTime()) {

@@ -40,6 +40,17 @@ export function createFakeSocket(overrides: FakeSocketOverrides = {}): FakeSocke
     return socket;
 }
 
+/** An authenticated present-user socket at the verified transport boundary. */
+export function createAuthenticatedFakeSocket(overrides: FakeSocketOverrides = {}): FakeSocket {
+    return createFakeSocket({
+        ...overrides,
+        data: {
+            authAuthority: "present_user",
+            ...(overrides.data ?? {}),
+        },
+    });
+}
+
 export function getSocketHandler(
     socket: Pick<FakeSocket, "handlers">,
     event: string,

@@ -18,6 +18,7 @@ import type {
     AutomationLegacyTemplateEnvelopeAdmission,
     AutomationLegacyUpsertInput,
     AutomationPatchInput,
+    AutomationLegacyScheduleInput,
     AutomationScheduleInput,
 } from "./automationTypes";
 
@@ -63,11 +64,16 @@ const ScheduleSchema = z.discriminatedUnion("kind", [
     }).strict(),
 ]);
 
+const LegacyScheduleSchema = z.discriminatedUnion("kind", [
+    ...ScheduleSchema.options,
+    z.object({ kind: z.literal("manual") }).strict(),
+]);
+
 const UpsertSchema = z.object({
     name: z.string().trim().min(1).max(128),
     description: z.string().max(2_000).optional().nullable(),
     enabled: z.boolean().default(true),
-    schedule: ScheduleSchema,
+    schedule: LegacyScheduleSchema,
     targetType: z.enum(["new_session", "existing_session"]),
     templateCiphertext: z.string().trim().min(1).max(AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS),
     assignments: z.array(AssignmentSchema).optional(),
@@ -77,7 +83,7 @@ const PatchSchema = z.object({
     name: z.string().trim().min(1).max(128).optional(),
     description: z.string().max(2_000).optional().nullable(),
     enabled: z.boolean().optional(),
-    schedule: ScheduleSchema.optional(),
+    schedule: LegacyScheduleSchema.optional(),
     targetType: z.enum(["new_session", "existing_session"]).optional(),
     templateCiphertext: z.string().trim().min(1).max(AUTOMATION_TEMPLATE_CIPHERTEXT_MAX_CHARS).optional(),
     assignments: z.array(AssignmentSchema).optional(),
@@ -254,6 +260,17 @@ export function parseAutomationScheduleInput(raw: unknown): AutomationScheduleIn
     return parsed.data;
 }
 
+function parseAutomationLegacyScheduleInput(raw: unknown): AutomationLegacyScheduleInput {
+    const parsed = LegacyScheduleSchema.safeParse(raw);
+    if (!parsed.success) {
+        throw new AutomationValidationError(toMessage(parsed.error));
+    }
+    if (parsed.data.kind !== "manual") {
+        assertScheduleIsComputable(parsed.data);
+    }
+    return parsed.data;
+}
+
 export function parseAutomationUpsertInput(
     raw: unknown,
     opts?: Readonly<{
@@ -265,7 +282,7 @@ export function parseAutomationUpsertInput(
     if (!parsed.success) {
         throw new AutomationValidationError(toMessage(parsed.error));
     }
-    const schedule = parseAutomationScheduleInput(parsed.data.schedule);
+    const schedule = parseAutomationLegacyScheduleInput(parsed.data.schedule);
 
     const accountMode = opts?.accountMode === "plain" ? "plain" : "e2ee";
     const legacyTemplateEnvelopeAdmission =
@@ -309,7 +326,7 @@ export function parseAutomationPatchInput(
     }
     const schedule = parsed.data.schedule === undefined
         ? undefined
-        : parseAutomationScheduleInput(parsed.data.schedule);
+        : parseAutomationLegacyScheduleInput(parsed.data.schedule);
 
     if (typeof parsed.data.templateCiphertext === "string") {
         const accountMode = opts?.accountMode === "plain" ? "plain" : "e2ee";

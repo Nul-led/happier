@@ -42,6 +42,17 @@ describe("apiRateLimitCatalog", () => {
         }));
     });
 
+    it("provides the canonical IP-keyed public Provider ingress bucket", () => {
+        const rateLimit = resolveApiHotEndpointRateLimit({
+            HAPPIER_API_RATE_LIMITS_ENABLED: "1",
+        }, "providerBroker.externalApi");
+        expect(rateLimit).toEqual(expect.objectContaining({
+            max: 600,
+            timeWindow: "1 minute",
+            keyGenerator: expect.any(Function),
+        }));
+    });
+
     it("resolves the authenticated peer-mediation route-grant bucket from its dedicated env keys", () => {
         const rateLimit = resolveApiHotEndpointRateLimit({
             HAPPIER_API_RATE_LIMITS_ENABLED: "1",

@@ -5,16 +5,18 @@ import { z } from "zod";
 
 import { type Fastify } from "../../../types";
 import {
-    connectExternalIdentity,
     prepareExternalIdentityConnection,
 } from "@/app/auth/providers/identity";
 import { auth } from "@/app/auth/auth";
 import { isAuthSignupProviderEnabled } from "@/app/auth/authPolicy";
-import { accountDisabledKey, disableAccount } from "@/app/auth/accountDisable";
+import {
+    isEffectiveHomeAuthMethodActionEnabled,
+    isEffectiveHomeAuthMethodActionEnabledInTx,
+} from "@/app/auth/methods/effectiveHomeAuthMethods";
 import { Context } from "@/context";
 import { decryptString } from "@/modules/encrypt";
-import { findOAuthProviderById } from "@/app/oauth/providers/registry";
-import { db } from "@/storage/db";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
+import { db, isPrismaUniqueConstraintError } from "@/storage/db";
 import { validateUsername } from "@/app/social/usernamePolicy";
 import {
     consumeValidOAuthPendingInTx,
@@ -23,13 +25,15 @@ import {
 } from "../connectRoutes.oauthPending";
 import { isProviderResetEnabled } from "./oauthExternalConfig";
 import {
+    OAuthProviderConfigurationChangedError,
     PROVIDER_ALREADY_LINKED_ERROR,
     RECOVERY_DISABLED_ERROR,
 } from "./oauthExternalErrors";
-import { authPendingSchema } from "./oauthExternalSchemas";
+import { authPendingSchema, hasInvalidOAuthSecurityBinding } from "./oauthExternalSchemas";
 import {
     ExternalOAuthFinalizeAuthRequestSchema,
     ExternalOAuthFinalizeAuthSuccessResponseSchema,
+    AccountDirectoryRouteErrorResponseV1Schema,
 } from "@happier-dev/protocol";
 import { shouldDenyPublicSignupProvisioningAction } from "@/app/integrations/publicUrl/publicSignupProvisioningPolicy";
 import {
@@ -37,43 +41,78 @@ import {
     verifyAccountContentKeyBinding,
     type VerifiedAccountContentKeyBinding,
 } from "@/app/encryption/accountContentKeyAdmission";
-import { deleteAccountForErasure } from "@/app/plugins/data/accountDataErase";
 import { inTx } from "@/storage/inTx";
+import {
+    HomeGovernanceInvariantError,
+    replaceAccountForProviderResetInTx,
+    type ProviderResetAccountReplacementResult,
+} from "@/app/home/governance/accountReplacement";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
+import { provisionFreshAccountInTx } from "@/app/auth/provisionFreshAccountInTx";
 import { isCurrentAccountDirectoryOAuthTarget } from "./accountDirectoryOAuthTarget";
 import {
-    ensureSameServiceHomeBootstrapForNewAccountInTx,
-    prepareSameServiceHomeBootstrapForNewAccount,
+    ensureSameServiceHomeEntryInTx,
+    prepareSameServiceHomeEntry,
 } from "@/app/accountDirectory/accountDirectoryService";
+import { oauthExternalFinalizeErrorHandler } from "./oauthExternalFinalizeErrorHandler";
+import { requireCurrentOAuthPendingRuntime, requireCurrentOAuthPendingRuntimeInTx } from "./oauthSecurityBinding";
+import { requireTeamOAuthAdmissionInTx, TeamOAuthAdmissionAbort } from "@/app/teams/memberships/teamOAuthAdmission";
+import { readOAuthAuthenticationEvidenceInTx } from "@/app/auth/authenticationEvidence";
+import { upsertVerifiedMailboxEvidenceInTx } from "@/app/auth/verifiedMailboxEvidence";
+import {
+    claimTeamInvitationPostAuthContinuationInTx,
+    discardClaimedTeamInvitationPostAuthContinuationInTx,
+} from "@/app/teams/invitations/postAuthContinuation";
+
+type ProviderResetAccountReplacementRejection = Extract<
+    ProviderResetAccountReplacementResult,
+    Readonly<{ status: "rejected" }>
+>;
+
+class ProviderResetAccountReplacementRejected extends Error {
+    constructor(readonly rejection: ProviderResetAccountReplacementRejection) {
+        super(rejection.code);
+        this.name = "ProviderResetAccountReplacementRejected";
+    }
+}
 
 export function registerExternalAuthFinalizeRoute(app: Fastify) {
     app.post("/v1/auth/external/:provider/finalize", {
+        errorHandler: oauthExternalFinalizeErrorHandler,
         schema: {
             params: z.object({ provider: z.string() }),
             body: ExternalOAuthFinalizeAuthRequestSchema,
             response: {
                 200: ExternalOAuthFinalizeAuthSuccessResponseSchema,
                 400: z.object({ error: z.enum(["invalid-pending", "invalid-proof", "invalid-public-key", "invalid-signature", "username-required", "invalid-username"]) }),
-                403: z.object({ error: z.enum(["signup-provider-disabled", "forbidden", "not-eligible", RECOVERY_DISABLED_ERROR]) }),
+                403: z.union([
+                    z.object({ error: z.enum(["signup-provider-disabled", "forbidden", "not-eligible", RECOVERY_DISABLED_ERROR, "team_authentication_required"]) }),
+                    AccountDirectoryRouteErrorResponseV1Schema,
+                ]),
+                503: z.object({ error: z.literal("team_authentication_unavailable") }),
                 404: z.object({ error: z.literal("unsupported-provider") }),
                 409: z.union([
+                    z.object({ error: z.literal("auth_provider_configuration_changed") }),
+                    AccountDirectoryRouteErrorResponseV1Schema,
                     z.object({ error: z.literal("username-taken") }),
                     z.object({ error: z.literal(PROVIDER_ALREADY_LINKED_ERROR), provider: z.string() }),
                     z.object({ error: z.literal("content_public_key_mismatch") }),
+                    // An ambiguous duplicate membership is a merge, not a
+                    // transfer. It is refused before any row is mutated and is
+                    // reported as a typed conflict rather than a new success
+                    // shape; released clients fall back on the non-2xx path.
+                    z.object({
+                        error: z.literal("team_membership_transfer_conflict"),
+                        details: z.object({ teamIds: z.array(z.string()) }).strict(),
+                    }).strict(),
                 ]),
             },
         },
     }, async (request, reply) => {
         const providerId = request.params.provider.toString().trim().toLowerCase();
-        const provider = findOAuthProviderById(process.env, providerId);
-        if (!provider) return reply.code(404).send({ error: "unsupported-provider" });
-
-        // Current server policy, not the policy captured at authorization
-        // start. This is the same canonical decision the keyless finalizer
-        // consumes for Account Directory continuations, so a provider disabled
-        // after authorization start fails both modes identically before any
-        // pending state is consumed or a token is minted.
-        if (!isAuthSignupProviderEnabled(process.env, providerId)) {
-            return reply.code(403).send({ error: "signup-provider-disabled" });
+        const availableRuntime = await resolveOAuthRuntimeById(process.env, providerId);
+        if (!availableRuntime && !await loadValidOAuthPending(request.body.pending)) {
+            return reply.code(404).send({ error: "unsupported-provider" });
         }
 
         const pendingKey = request.body.pending.toString().trim();
@@ -128,9 +167,13 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
 
         let parsedValue: z.infer<typeof authPendingSchema>;
         try {
-            const parsed = authPendingSchema.safeParse(JSON.parse(pending.value));
+            const value: unknown = JSON.parse(pending.value);
+            const parsed = authPendingSchema.safeParse(value);
             if (!parsed.success) {
                 await deleteOAuthPendingBestEffort(pendingKey);
+                if (hasInvalidOAuthSecurityBinding(value)) {
+                    return reply.code(409).send({ error: "auth_provider_configuration_changed" });
+                }
                 return reply.code(400).send({ error: "invalid-pending" });
             }
             parsedValue = parsed.data;
@@ -143,6 +186,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             (parsedValue as { v?: unknown }).v === 2
             && (parsedValue as { purpose?: unknown }).purpose
                 === "account_directory";
+        const pendingPurpose = parsedValue.securityBinding?.purpose ?? null;
+        const isTeamAdmission = pendingPurpose === "team_admission";
+        const homeAdmission = isTeamAdmission ? parsedValue.securityBinding?.admission ?? undefined : undefined;
         const isKeyedAccountDirectory =
             isAccountDirectory
             && (parsedValue as { authMode?: unknown }).authMode
@@ -192,6 +238,20 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             return reply.code(403).send({ error: "forbidden" });
         }
 
+        const bindingInput = {
+            providerId, pendingKey, binding: parsedValue.securityBinding,
+            purpose: isAccountDirectory ? "account_directory" : pendingPurpose,
+        } as const;
+        const provider = await requireCurrentOAuthPendingRuntime(bindingInput);
+        if (!isAccountDirectory && !isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabled({
+            env: process.env,
+            methodId: providerId,
+            actionId: "provision",
+            mode: "keyed",
+        })) {
+            return reply.code(403).send({ error: "signup-provider-disabled" });
+        }
+
         let accessToken: string;
         let refreshToken: string | undefined;
         let pendingProfile: unknown;
@@ -229,9 +289,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
             return reply.code(400).send({ error: "invalid-pending" });
         }
 
-        const existingAccount = await db.account.findUnique({
+        let existingAccount = await db.account.findUnique({
             where: { publicKey: publicKeyHex },
-            select: { id: true, username: true },
+            select: { id: true, username: true, contentPublicKey: true },
         });
 
         const alreadyLinked = await db.accountIdentity.findFirst({
@@ -245,18 +305,46 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
 
         if (
             isAccountDirectory
-            && !isAuthSignupProviderEnabled(process.env, providerId)
+            && (
+                parsedValue.securityBinding?.provider.source === "managed"
+                || !isAuthSignupProviderEnabled(process.env, providerId)
+            )
         ) {
             return reply.code(403).send({ error: "signup-provider-disabled" });
         }
 
+        const sameServiceBootstrapPreparation = isAccountDirectory
+            ? await prepareSameServiceHomeEntry({})
+            : null;
+        if (
+            sameServiceBootstrapPreparation?.status === "not_dual_role"
+            && sameServiceBootstrapPreparation.reason === "server_identity_mismatch"
+        ) {
+            throw new Error("Same-service Home descriptor identity mismatch");
+        }
+
         if (isAccountDirectory && alreadyLinked) {
             const token = await inTx(async (tx) => {
+                await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
                 const consumed = await consumeValidOAuthPendingInTx(
                     tx,
                     pending,
                 );
                 if (!consumed) return null;
+                if (sameServiceBootstrapPreparation) {
+                    await ensureSameServiceHomeEntryInTx(tx, {
+                        accountId: alreadyLinked.accountId,
+                        preparation: sameServiceBootstrapPreparation,
+                    });
+                }
+                const authenticationEvidence = parsedValue.securityBinding?.provider
+                    ? await readOAuthAuthenticationEvidenceInTx(tx, {
+                        accountId: alreadyLinked.accountId,
+                        providerId,
+                        runtimeFingerprint: parsedValue.securityBinding.provider.runtimeFingerprint,
+                    })
+                    : undefined;
+                if (parsedValue.securityBinding && !authenticationEvidence) throw new Error("invalid-pending");
                 return await auth.createTokenInTx(
                     tx,
                     alreadyLinked.accountId,
@@ -266,6 +354,7 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     {
                         kind: "account_directory",
                         authority: "present_user",
+                        authenticationEvidence,
                     },
                 );
             });
@@ -288,6 +377,9 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         }
 
         const resetRequested = request.body.reset === true;
+        if (isTeamAdmission && resetRequested) {
+            throw new TeamOAuthAdmissionAbort("team_authentication_unavailable");
+        }
         if (isAccountDirectory && resetRequested) {
             return reply.code(403).send({ error: "forbidden" });
         }
@@ -298,14 +390,17 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
         const usernameProvidedRaw = request.body.username?.toString().trim() || "";
         let desiredUsername: string | null = null;
 
-        let oldAccountForReset: { id: string; username: string | null; feedSeq: bigint } | null = null;
+        // Only the identity and the display name are read here. The feed
+        // cursor and Home role are inherited by the replacement coordinator
+        // from the row it rereads inside the replacement transaction.
+        let oldAccountForReset: { id: string; username: string | null } | null = null;
         if (alreadyLinked && resetRequested) {
             if (!isProviderResetEnabled(process.env)) {
                 return reply.code(403).send({ error: RECOVERY_DISABLED_ERROR });
             }
             oldAccountForReset = await db.account.findUnique({
                 where: { id: alreadyLinked.accountId },
-                select: { id: true, username: true, feedSeq: true },
+                select: { id: true, username: true },
             });
             if (!oldAccountForReset) {
                 return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
@@ -346,201 +441,140 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
 
             const identitySnapshot = await db.accountIdentity.findUnique({
                 where: { id: alreadyLinked.id },
-                select: {
-                    id: true,
-                    accountId: true,
-                    provider: true,
-                    providerUserId: true,
-                    providerLogin: true,
-                    profile: true,
-                    token: true,
-                    scopes: true,
-                    showOnProfile: true,
-                    eligibilityStatus: true,
-                    eligibilityReason: true,
-                    eligibilityCheckedAt: true,
-                    eligibilityNextCheckAt: true,
-                },
+                select: { id: true },
             });
             if (!identitySnapshot) {
                 return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
             }
 
-            const newAccount = await db.account.create({
-                data: {
-                    publicKey: publicKeyHex,
-                    ...(contentKeyBinding ? {
-                        contentPublicKey:
-                            contentKeyBinding.contentPublicKey,
-                        contentPublicKeySig:
-                            contentKeyBinding.contentPublicKeySignature,
-                    } : {}),
-                },
-                select: { id: true },
-            });
+            await requireCurrentOAuthPendingRuntime(bindingInput);
 
-            try {
-                await db.accountIdentity.delete({ where: { id: identitySnapshot.id } });
-            } catch (error) {
-                await deleteAccountForErasure({ accountId: newAccount.id }).catch(() => {});
-                throw error;
-            }
+            // The replacement Account ID is chosen before the external identity
+            // preparation that needs it, exactly as the fresh-signup branch
+            // below does. The row itself is inserted inside the replacement
+            // transaction, so a failure anywhere rolls the whole replacement
+            // back and leaves the replaced Account authoritative. There is no
+            // Account created outside the transaction and therefore no
+            // compensating erasure to run.
+            const replacementAccountId = randomUUID();
 
-            const ctx = Context.create(newAccount.id);
+            let replacementOutcome:
+                | Readonly<{ status: "replaced"; token: string }>
+                | Readonly<{
+                    status: "rejected";
+                    code: "home_account_not_found" | "team_membership_transfer_conflict";
+                    details?: Readonly<{ teamIds: readonly string[] }>;
+                }>;
             try {
-                await connectExternalIdentity({
-                    providerId,
-                    ctx,
-                    profile: pendingProfile,
-                    accessToken,
-                    refreshToken,
-                    preferredUsername: desiredUsername,
+                const prepared = await prepareExternalIdentityConnection({
+                    reference: parsedValue.securityBinding?.provider,
+                    providerId, ctx: Context.create(replacementAccountId), profile: pendingProfile,
+                    accessToken, refreshToken, preferredUsername: desiredUsername,
+                    transferFromAccountId: oldAccountId,
+                });
+                replacementOutcome = await inTx(async (tx) => {
+                    await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
+                    if (!isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: providerId,
+                        actionId: "provision",
+                        mode: "keyed",
+                    })) throw new OAuthProviderConfigurationChangedError(pendingKey);
+                    if (!await consumeValidOAuthPendingInTx(tx, pending)) throw new Error('invalid-pending');
+
+                    // One canonical coordinator owns the whole replacement:
+                    // Home role inheritance, membership-lifetime transfer with
+                    // its collision refusal, the last-active-owner guard, and
+                    // the canonical lifecycle retirement of the replaced
+                    // Account. This route contributes only its own social and
+                    // identity domains.
+                    const replacement = await replaceAccountForProviderResetInTx(tx, {
+                        oldAccountId,
+                        replacement: {
+                            accountId: replacementAccountId,
+                            publicKey: publicKeyHex,
+                            contentPublicKey: contentKeyBinding?.contentPublicKey ?? null,
+                            contentPublicKeySignature: contentKeyBinding?.contentPublicKeySignature ?? null,
+                        },
+                        desiredUsername,
+                        retireReplacedAccountInTx: async (retireTx) => {
+                            const retired = await setAccountStatusInTx(retireTx, {
+                                actorAccountId: replacementAccountId,
+                                targetAccountId: oldAccountId,
+                                status: "disabled",
+                                authority: "provider_account_replacement",
+                            });
+                            if (retired.status === "rejected") {
+                                throw new HomeGovernanceInvariantError(
+                                    `Provider reset could not retire the replaced Account (${retired.code}).`,
+                                );
+                            }
+                        },
+                    });
+                    // The pending proof was consumed earlier in this transaction.
+                    // A rejected replacement must abort so that a failed finalization
+                    // cannot commit that one-shot authority as its only durable effect.
+                    if (replacement.status === "rejected") {
+                        throw new ProviderResetAccountReplacementRejected(replacement);
+                    }
+
+                    await prepared.connectInTx(tx);
+                    await tx.userRelationship.updateMany({ where: { fromUserId: oldAccountId }, data: { fromUserId: replacementAccountId } });
+                    await tx.userRelationship.updateMany({ where: { toUserId: oldAccountId }, data: { toUserId: replacementAccountId } });
+                    await tx.userFeedItem.updateMany({ where: { userId: oldAccountId }, data: { userId: replacementAccountId } });
+
+                    const authenticationEvidence = parsedValue.securityBinding?.provider
+                        ? await readOAuthAuthenticationEvidenceInTx(tx, {
+                            accountId: replacementAccountId,
+                            providerId,
+                            runtimeFingerprint: parsedValue.securityBinding.provider.runtimeFingerprint,
+                        })
+                        : undefined;
+                    if (parsedValue.securityBinding && !authenticationEvidence) throw new Error("invalid-pending");
+                    const token = await auth.createTokenInTx(tx, replacementAccountId, undefined, {
+                        kind: "account",
+                        authority: "present_user",
+                        authenticationEvidence,
+                    });
+                    return { status: "replaced" as const, token };
                 });
             } catch (error) {
-                await db.accountIdentity
-                    .create({
-                        data: {
-                            accountId: identitySnapshot.accountId,
-                            provider: identitySnapshot.provider,
-                            providerUserId: identitySnapshot.providerUserId,
-                            providerLogin: identitySnapshot.providerLogin,
-                            profile: identitySnapshot.profile as any,
-                            token: identitySnapshot.token as any,
-                            scopes: identitySnapshot.scopes,
-                            showOnProfile: identitySnapshot.showOnProfile,
-                            eligibilityStatus: identitySnapshot.eligibilityStatus,
-                            eligibilityReason: identitySnapshot.eligibilityReason,
-                            eligibilityCheckedAt: identitySnapshot.eligibilityCheckedAt,
-                            eligibilityNextCheckAt: identitySnapshot.eligibilityNextCheckAt,
-                        },
-                    })
-                    .catch(() => {});
-                await deleteAccountForErasure({ accountId: newAccount.id }).catch(() => {});
-
-                if (error instanceof Error && error.message === "not-eligible") {
+                if (error instanceof ProviderResetAccountReplacementRejected) {
+                    replacementOutcome = error.rejection;
+                } else if (error instanceof Error && error.message === 'invalid-pending') {
+                    return reply.code(400).send({ error: 'invalid-pending' });
+                } else if (error instanceof Error && error.message === "not-eligible") {
                     await db.repeatKey.deleteMany({ where: { key: pendingKey } });
                     return reply.code(403).send({ error: "not-eligible" });
-                }
-                if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
+                } else if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
                     await db.repeatKey.deleteMany({ where: { key: pendingKey } });
                     return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
+                } else {
+                    throw error;
                 }
-                throw error;
             }
 
-            const restoreOldIdentityBestEffort = async () => {
-                await db.accountIdentity
-                    .create({
-                        data: {
-                            accountId: identitySnapshot.accountId,
-                            provider: identitySnapshot.provider,
-                            providerUserId: identitySnapshot.providerUserId,
-                            providerLogin: identitySnapshot.providerLogin,
-                            profile: identitySnapshot.profile as any,
-                            token: identitySnapshot.token as any,
-                            scopes: identitySnapshot.scopes,
-                            showOnProfile: identitySnapshot.showOnProfile,
-                            eligibilityStatus: identitySnapshot.eligibilityStatus,
-                            eligibilityReason: identitySnapshot.eligibilityReason,
-                            eligibilityCheckedAt: identitySnapshot.eligibilityCheckedAt,
-                            eligibilityNextCheckAt: identitySnapshot.eligibilityNextCheckAt,
-                        },
-                    })
-                    .catch(() => {});
-            };
-            const deleteNewIdentityBestEffort = async () => {
-                await db.accountIdentity
-                    .deleteMany({ where: { accountId: newAccount.id, provider: providerId } })
-                    .catch(() => {});
-            };
-            const deleteNewAccountBestEffort = async () => {
-                await deleteAccountForErasure({ accountId: newAccount.id }).catch(() => {});
-            };
-            const clearDisableMarkerBestEffort = async () => {
-                const key = accountDisabledKey(oldAccountId);
-                if (!key || key === "auth_disabled_") return;
-                await db.repeatKey.delete({ where: { key } }).catch(() => {});
-            };
-
-            try {
-                await disableAccount({ accountId: oldAccountId, reason: `provider_reset:${providerId}`, env: process.env });
-            } catch (error) {
-                await deleteNewIdentityBestEffort();
-                await restoreOldIdentityBestEffort();
-                await deleteNewAccountBestEffort();
-                throw error;
+            if (replacementOutcome.status === "rejected") {
+                if (replacementOutcome.code === "team_membership_transfer_conflict") {
+                    return reply.code(409).send({
+                        error: "team_membership_transfer_conflict",
+                        details: { teamIds: [...(replacementOutcome.details?.teamIds ?? [])] },
+                    });
+                }
+                return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
             }
 
-            try {
-                await db.$transaction(async (tx) => {
-                    await tx.account.update({
-                        where: { id: oldAccountId },
-                        data: {
-                            username: null,
-                        },
-                    });
-                    await tx.account.update({
-                        where: { id: newAccount.id },
-                        data: {
-                            username: desiredUsername,
-                            feedSeq: oldAccountForReset.feedSeq,
-                        },
-                    });
-
-                    await tx.userRelationship.updateMany({
-                        where: { fromUserId: oldAccountId },
-                        data: { fromUserId: newAccount.id },
-                    });
-                    await tx.userRelationship.updateMany({
-                        where: { toUserId: oldAccountId },
-                        data: { toUserId: newAccount.id },
-                    });
-                    await tx.userFeedItem.updateMany({
-                        where: { userId: oldAccountId },
-                        data: { userId: newAccount.id },
-                    });
-                });
-
-                await db.accountIdentity.updateMany({
-                    where: { accountId: newAccount.id, provider: providerId },
-                    data: { showOnProfile: identitySnapshot.showOnProfile },
-                });
-            } catch (error) {
-                await clearDisableMarkerBestEffort();
-                await deleteNewIdentityBestEffort();
-                await restoreOldIdentityBestEffort();
-                await deleteNewAccountBestEffort();
-                throw error;
-            }
-
-            await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-
-            const token = await auth.createToken(
-                newAccount.id,
-                undefined,
-                {
-                    kind: "account",
-                    authority: "present_user",
-                },
-            );
-            return reply.send({ success: true, token });
+            return reply.send({ success: true, token: replacementOutcome.token });
         }
 
-        if (isAccountDirectory && !existingAccount && !alreadyLinked) {
-            const sameServiceBootstrapPreparation = await prepareSameServiceHomeBootstrapForNewAccount({});
-            if (
-                sameServiceBootstrapPreparation.status === "not_dual_role"
-                && sameServiceBootstrapPreparation.reason === "server_identity_mismatch"
-            ) {
-                throw new Error("Same-service Home descriptor identity mismatch");
-            }
-
+        if (!existingAccount && !alreadyLinked) {
             const proposedAccountId = randomUUID();
             let preparedIdentityConnection: Awaited<
                 ReturnType<typeof prepareExternalIdentityConnection>
             >;
             try {
                 preparedIdentityConnection = await prepareExternalIdentityConnection({
+                    reference: parsedValue.securityBinding?.provider,
                     providerId,
                     ctx: Context.create(proposedAccountId),
                     profile: pendingProfile,
@@ -560,60 +594,105 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 throw error;
             }
 
-            let freshDirectoryWrite;
+            let freshAccountWrite:
+                | Readonly<{ status: "provider_disabled" }>
+                | Readonly<{ status: "provision_denied" }>
+                | Readonly<{ status: "invalid_pending" }>
+                | Readonly<{ status: "written"; token: string }>
+                | null = null;
             try {
-                freshDirectoryWrite = await inTx(async (tx) => {
+                freshAccountWrite = await inTx(async (tx) => {
+                    await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
                     // The current policy decision and exact pending delete are
                     // the first transaction operations. Every durable effect
                     // below rolls back if either authority has gone stale.
-                    if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+                    if (!await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: providerId,
+                        actionId: "provision",
+                        mode: "keyed",
+                        ...(homeAdmission ? { admission: homeAdmission } : {}),
+                    })) {
+                        if (isTeamAdmission) {
+                            throw new TeamOAuthAdmissionAbort("team_authentication_required");
+                        }
                         return { status: "provider_disabled" as const };
                     }
+                    if (shouldDenyPublicSignupProvisioningAction({
+                        env: process.env,
+                        requestIp: request.ip,
+                        methodId: providerId,
+                        mode: "keyed",
+                    })) return { status: "provision_denied" as const };
                     const consumed = await consumeValidOAuthPendingInTx(tx, pending);
                     if (!consumed) return { status: "invalid_pending" as const };
 
-                    const account = await tx.account.create({
-                        data: {
-                            id: proposedAccountId,
-                            publicKey: publicKeyHex,
-                            username: desiredUsername,
-                            ...(contentKeyBinding ? {
-                                contentPublicKey: contentKeyBinding.contentPublicKey,
-                                contentPublicKeySig: contentKeyBinding.contentPublicKeySignature,
-                            } : {}),
-                        },
+                    const account = await provisionFreshAccountInTx(tx, {
+                        insertSemantics: { kind: "must_create", accountId: proposedAccountId },
+                        publicKey: publicKeyHex,
+                        encryptionMode: "e2ee",
+                        username: desiredUsername,
+                        contentKeyBinding,
+                        identityConnection: preparedIdentityConnection,
+                        verifiedMailbox: preparedIdentityConnection.verifiedMailbox,
+                        directoryPreparation: sameServiceBootstrapPreparation,
+                        ...(isTeamAdmission ? {
+                            teamOAuthAdmission: {
+                                env: process.env,
+                                provider: parsedValue.securityBinding?.provider,
+                                connection: parsedValue.securityBinding?.connection,
+                                source: parsedValue.securityBinding?.admission,
+                            },
+                        } : {}),
                     });
-                    if (contentKeyBinding) {
-                        const admission = await admitAccountContentKey(tx, {
+                    const authenticationEvidence = isTeamAdmission
+                        ? await readOAuthAuthenticationEvidenceInTx(tx, {
                             accountId: account.id,
-                            contentPublicKey: contentKeyBinding.contentPublicKey,
-                            contentPublicKeySignature: contentKeyBinding.contentPublicKeySignature,
-                        });
-                        if (admission.status === "key_mismatch") {
-                            throw new Error("content_public_key_mismatch");
-                        }
-                        if (
-                            admission.status === "account_not_found"
-                            || admission.status === "invalid_binding"
-                        ) {
-                            throw new Error("invalid_content_public_key_binding");
-                        }
-                    }
-
-                    await preparedIdentityConnection.connectInTx(tx);
-                    await ensureSameServiceHomeBootstrapForNewAccountInTx(tx, {
-                        accountId: account.id,
-                        preparation: sameServiceBootstrapPreparation,
+                            providerId,
+                            runtimeFingerprint: parsedValue.securityBinding!.provider.runtimeFingerprint,
+                            ...(parsedValue.securityBinding!.connection?.id
+                                ? { teamConnectionId: parsedValue.securityBinding!.connection.id }
+                                : {}),
+                        })
+                        : parsedValue.securityBinding?.provider
+                            ? await readOAuthAuthenticationEvidenceInTx(tx, {
+                                accountId: account.id,
+                                providerId,
+                                runtimeFingerprint: parsedValue.securityBinding.provider.runtimeFingerprint,
+                            })
+                            : undefined;
+                    if (parsedValue.securityBinding && !authenticationEvidence) throw new Error("invalid-pending");
+                    const token = await auth.createTokenInTx(tx, account.id, undefined, {
+                        kind: isAccountDirectory ? "account_directory" : "account",
+                        authority: "present_user",
+                        authenticationEvidence,
                     });
-                    const token = await auth.createTokenInTx(
-                        tx,
-                        account.id,
-                        undefined,
-                        { kind: "account_directory", authority: "present_user" },
-                    );
                     return { status: "written" as const, token };
                 });
             } catch (error) {
+                let recoveredEqualKeyRace = false;
+                if (isPrismaUniqueConstraintError(error) && contentKeyBinding) {
+                    const racedAccount = await db.account.findUnique({
+                        where: { publicKey: publicKeyHex },
+                        select: { id: true, username: true, contentPublicKey: true },
+                    });
+                    if (
+                        racedAccount?.contentPublicKey
+                        && !Buffer.from(racedAccount.contentPublicKey).equals(
+                            Buffer.from(contentKeyBinding.contentPublicKey),
+                        )
+                    ) {
+                        return reply.code(409).send({ error: "content_public_key_mismatch" });
+                    }
+                    if (racedAccount) {
+                        // The losing must-create transaction rolled back every
+                        // effect, including pending consumption. Continue via
+                        // the canonical existing-Account branch below so the
+                        // exact equal-key winner is finalized atomically.
+                        existingAccount = racedAccount;
+                        recoveredEqualKeyRace = true;
+                    }
+                }
                 if (error instanceof Error && error.message === "content_public_key_mismatch") {
                     return reply.code(409).send({ error: "content_public_key_mismatch" });
                 }
@@ -628,24 +707,30 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                     await deleteOAuthPendingBestEffort(pendingKey);
                     return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
                 }
-                throw error;
+                if (!recoveredEqualKeyRace) throw error;
             }
 
-            if (freshDirectoryWrite.status === "provider_disabled") {
-                return reply.code(403).send({ error: "signup-provider-disabled" });
+            if (freshAccountWrite) {
+                if (freshAccountWrite.status === "provider_disabled") {
+                    return reply.code(403).send({ error: "signup-provider-disabled" });
+                }
+                if (freshAccountWrite.status === "provision_denied") {
+                    return reply.code(403).send({ error: "forbidden" });
+                }
+                if (freshAccountWrite.status === "invalid_pending") {
+                    return reply.code(400).send({ error: "invalid-pending" });
+                }
+                return reply.send({ success: true, token: freshAccountWrite.token });
             }
-            if (freshDirectoryWrite.status === "invalid_pending") {
-                return reply.code(400).send({ error: "invalid-pending" });
-            }
-            return reply.send({ success: true, token: freshDirectoryWrite.token });
         }
 
-        if (isAccountDirectory && existingAccount && !alreadyLinked) {
+        if (existingAccount && !alreadyLinked) {
             let preparedIdentityConnection: Awaited<
                 ReturnType<typeof prepareExternalIdentityConnection>
             >;
             try {
                 preparedIdentityConnection = await prepareExternalIdentityConnection({
+                    reference: parsedValue.securityBinding?.provider,
                     providerId,
                     ctx: Context.create(existingAccount.id),
                     profile: pendingProfile,
@@ -665,13 +750,47 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 throw error;
             }
 
-            let existingDirectoryWrite;
+            let existingAccountWrite:
+                | Readonly<{ status: "provider_disabled" }>
+                | Readonly<{ status: "invalid_pending" }>
+                | Readonly<{
+                    status: "written";
+                    token: string;
+                    teamInvitationContinuation?: import("@happier-dev/protocol/teams").TeamInvitationPostAuthContinuationV1;
+                }>;
             try {
-                existingDirectoryWrite = await inTx(async (tx) => {
-                    if (!isAuthSignupProviderEnabled(process.env, providerId)) {
+                existingAccountWrite = await inTx(async (tx) => {
+                    await requireCurrentOAuthPendingRuntimeInTx(tx, bindingInput);
+                    if (
+                        isAccountDirectory
+                        && (
+                            parsedValue.securityBinding?.provider.source === "managed"
+                            || !isAuthSignupProviderEnabled(process.env, providerId)
+                        )
+                    ) {
                         return { status: "provider_disabled" as const };
                     }
-                    const consumed = await consumeValidOAuthPendingInTx(tx, pending);
+                    if (!isAccountDirectory && !isTeamAdmission && !await isEffectiveHomeAuthMethodActionEnabledInTx(tx, {
+                        env: process.env,
+                        methodId: providerId,
+                        actionId: "provision",
+                        mode: "keyed",
+                    })) return { status: "provider_disabled" as const };
+                    const invitationSource = isTeamAdmission
+                        && parsedValue.securityBinding?.admission?.kind === "team_invitation"
+                        ? parsedValue.securityBinding.admission
+                        : null;
+                    const claimedInvitation = invitationSource
+                        ? await claimTeamInvitationPostAuthContinuationInTx(tx, {
+                            reference: pending.key,
+                            expectedValue: pending.value,
+                            accountId: existingAccount.id,
+                            invitation: invitationSource,
+                        })
+                        : null;
+                    const consumed = invitationSource
+                        ? claimedInvitation !== null
+                        : await consumeValidOAuthPendingInTx(tx, pending);
                     if (!consumed) return { status: "invalid_pending" as const };
 
                     if (contentKeyBinding) {
@@ -701,13 +820,62 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                         },
                     });
                     await preparedIdentityConnection.connectInTx(tx);
+                    if (isTeamAdmission && preparedIdentityConnection.verifiedMailbox) {
+                        await upsertVerifiedMailboxEvidenceInTx(tx, {
+                            accountId: existingAccount.id,
+                            email: preparedIdentityConnection.verifiedMailbox,
+                        });
+                    }
+                    const teamAdmission = isTeamAdmission
+                        ? await requireTeamOAuthAdmissionInTx(tx, {
+                            env: process.env,
+                            accountId: existingAccount.id,
+                            provider: parsedValue.securityBinding?.provider,
+                            connection: parsedValue.securityBinding?.connection,
+                            admission: parsedValue.securityBinding?.admission,
+                        })
+                        : undefined;
+                    if (claimedInvitation && !teamAdmission?.invitationRequired) {
+                        if (!await discardClaimedTeamInvitationPostAuthContinuationInTx(tx, claimedInvitation)) {
+                            return { status: "invalid_pending" as const };
+                        }
+                    }
+                    if (isAccountDirectory && sameServiceBootstrapPreparation) {
+                        await ensureSameServiceHomeEntryInTx(tx, {
+                            accountId: existingAccount.id,
+                            preparation: sameServiceBootstrapPreparation,
+                        });
+                    }
+                    const authenticationEvidence = teamAdmission?.authenticationEvidence ?? (parsedValue.securityBinding?.provider
+                        ? await readOAuthAuthenticationEvidenceInTx(tx, {
+                            accountId: existingAccount.id,
+                            providerId,
+                            runtimeFingerprint: parsedValue.securityBinding.provider.runtimeFingerprint,
+                            ...(parsedValue.securityBinding.connection?.id
+                                ? { teamConnectionId: parsedValue.securityBinding.connection.id }
+                                : {}),
+                        })
+                        : undefined);
+                    if (parsedValue.securityBinding && !authenticationEvidence) throw new Error("invalid-pending");
                     const token = await auth.createTokenInTx(
                         tx,
                         existingAccount.id,
                         undefined,
-                        { kind: "account_directory", authority: "present_user" },
+                        {
+                            kind: isAccountDirectory
+                                ? "account_directory"
+                                : "account",
+                            authority: "present_user",
+                            authenticationEvidence,
+                        },
                     );
-                    return { status: "written" as const, token };
+                    return {
+                        status: "written" as const,
+                        token,
+                        ...(claimedInvitation && teamAdmission?.invitationRequired
+                            ? { teamInvitationContinuation: claimedInvitation.continuation }
+                            : {}),
+                    };
                 });
             } catch (error) {
                 if (error instanceof Error && error.message === "content_public_key_mismatch") {
@@ -727,120 +895,21 @@ export function registerExternalAuthFinalizeRoute(app: Fastify) {
                 throw error;
             }
 
-            if (existingDirectoryWrite.status === "provider_disabled") {
+            if (existingAccountWrite.status === "provider_disabled") {
                 return reply.code(403).send({ error: "signup-provider-disabled" });
             }
-            if (existingDirectoryWrite.status === "invalid_pending") {
+            if (existingAccountWrite.status === "invalid_pending") {
                 return reply.code(400).send({ error: "invalid-pending" });
             }
-            return reply.send({ success: true, token: existingDirectoryWrite.token });
-        }
-
-        const accountWrite = await inTx(async (tx) => {
-            const proposedAccountId = randomUUID();
-            const accountCandidate = await tx.account.upsert({
-                where: { publicKey: publicKeyHex },
-                update: {},
-                create: {
-                    id: proposedAccountId,
-                    publicKey: publicKeyHex,
-                    username: desiredUsername,
-                    ...(contentKeyBinding ? {
-                        contentPublicKey:
-                            contentKeyBinding.contentPublicKey,
-                        contentPublicKeySig:
-                            contentKeyBinding
-                                .contentPublicKeySignature,
-                    } : {}),
-                },
-            });
-            const createdByThisFinalize =
-                accountCandidate.id === proposedAccountId;
-            if (contentKeyBinding) {
-                const admission = await admitAccountContentKey(tx, {
-                    accountId: accountCandidate.id,
-                    contentPublicKey:
-                        contentKeyBinding.contentPublicKey,
-                    contentPublicKeySignature:
-                        contentKeyBinding.contentPublicKeySignature,
-                });
-                if (admission.status === "key_mismatch") {
-                    return { status: "key_mismatch" as const };
-                }
-                if (
-                    admission.status === "account_not_found"
-                    || admission.status === "invalid_binding"
-                ) {
-                    return { status: "invalid_binding" as const };
-                }
-            }
-
-            const account = await tx.account.update({
-                where: { id: accountCandidate.id },
-                data: {
-                    updatedAt: new Date(),
-                    ...(!accountCandidate.username
-                        ? { username: desiredUsername }
-                        : {}),
-                },
-            });
-            return {
-                status: "written" as const,
-                account,
-                createdByThisFinalize,
-            };
-        });
-        if (accountWrite.status === "key_mismatch") {
-            return reply.code(409).send({
-                error: "content_public_key_mismatch",
+            return reply.send({
+                success: true,
+                token: existingAccountWrite.token,
+                ...(existingAccountWrite.teamInvitationContinuation
+                    ? { teamInvitationContinuation: existingAccountWrite.teamInvitationContinuation }
+                    : {}),
             });
         }
-        if (accountWrite.status === "invalid_binding") {
-            return reply.code(400).send({ error: "invalid-signature" });
-        }
-        const account = accountWrite.account;
 
-        const ctx = Context.create(account.id);
-        try {
-            await connectExternalIdentity({
-                providerId,
-                ctx,
-                profile: pendingProfile,
-                accessToken,
-                refreshToken,
-            });
-            if (!isAccountDirectory) {
-                await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-            }
-        } catch (error) {
-            if (error instanceof Error && error.message === "not-eligible") {
-                if (accountWrite.createdByThisFinalize) {
-                    await deleteAccountForErasure({ accountId: account.id }).catch(() => {});
-                }
-                await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-                return reply.code(403).send({ error: "not-eligible" });
-            }
-            if (error instanceof Error && error.message === PROVIDER_ALREADY_LINKED_ERROR) {
-                if (accountWrite.createdByThisFinalize) {
-                    await deleteAccountForErasure({ accountId: account.id }).catch(() => {});
-                }
-                await db.repeatKey.deleteMany({ where: { key: pendingKey } });
-                return reply.code(409).send({ error: PROVIDER_ALREADY_LINKED_ERROR, provider: providerId });
-            }
-            if (accountWrite.createdByThisFinalize) {
-                await deleteAccountForErasure({ accountId: account.id }).catch(() => {});
-            }
-            throw error;
-        }
-
-        const token = await auth.createToken(
-            account.id,
-            undefined,
-            {
-                kind: "account",
-                authority: "present_user",
-            },
-        );
-        return reply.send({ success: true, token });
+        return reply.code(400).send({ error: "invalid-pending" });
     });
 }

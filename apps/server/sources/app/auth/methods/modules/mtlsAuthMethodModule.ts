@@ -15,6 +15,7 @@ function isMtlsGateEnabled(env: NodeJS.ProcessEnv): boolean {
 
 export const mtlsAuthMethodModule: AuthMethodModule = Object.freeze({
     id: "mtls",
+    accountIdentityProviderId: "mtls",
     resolveAuthMethod: ({ env }) => {
         const mtlsEnv = readAuthMtlsFeatureEnv(env);
         const gateEnabled = isMtlsGateEnabled(env);
@@ -29,6 +30,5 @@ export const mtlsAuthMethodModule: AuthMethodModule = Object.freeze({
             ui: { displayName: "Certificate", iconHint: null },
         };
     },
-    isViable: (env) => isMtlsGateEnabled(env),
     registerRoutes: (app) => registerMtlsAuthRoutes(app),
 });

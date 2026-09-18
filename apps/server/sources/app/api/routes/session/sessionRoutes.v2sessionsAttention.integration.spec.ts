@@ -1,11 +1,84 @@
 import type { Prisma } from "@prisma/client";
+import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import { withAuthenticatedTestApp } from "../../testkit/sqliteFastify";
 import { sessionRoutes } from "./sessionRoutes";
-import { createV2SessionAttentionPage } from "./v2SessionListInitialPage";
+import { createV2SessionAttentionPage } from "@/app/session/listing/initialPage";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+import {
+    computeAccountActivityBadgeCounts,
+    computeAuthenticatedAccountActivityBadgeCount,
+} from "@/app/activity/accountActivityBadge";
+import { listSessionsForAccount } from "@/app/session/listing/service";
+import { createV2SessionListServerTiming } from "@/app/session/listing/timing";
+
+const authentication = createPresentUserSessionAccessAuthentication();
+
+type TrackedOwnerSessionInput = Prisma.SessionUncheckedCreateInput & Readonly<{
+    lastViewedSessionSeq?: number | null;
+}>;
+
+type AttentionSessionInput = Omit<
+    TrackedOwnerSessionInput,
+    "accountId" | "encryptionMode" | "metadata"
+>;
+
+async function createTrackedOwnerSession(args: Readonly<{
+    data: TrackedOwnerSessionInput;
+    select?: { id: true };
+}>) {
+    const { lastViewedSessionSeq, ...sessionData } = args.data;
+    const session = await db.session.create({
+        data: sessionData,
+        select: { id: true },
+    });
+    await db.accountSessionReadState.create({
+        data: {
+            accountId: args.data.accountId,
+            sessionId: session.id,
+            lastViewedSessionSeq: typeof lastViewedSessionSeq === "number"
+                ? lastViewedSessionSeq
+                : 0,
+            unreadSince: null,
+        },
+    });
+    return session;
+}
+
+async function createSparseOwnerAttentionCandidates(params: Readonly<{
+    accountId: string;
+    rejectedCount: number;
+    exactMatchCount: number;
+}>) {
+    const rejected = Array.from({ length: params.rejectedCount }, (_, index) => ({
+        id: randomUUID(),
+        accountId: params.accountId,
+        tag: randomUUID(),
+        encryptionMode: "plain" as const,
+        metadata: "{}",
+        meaningfulActivityAt: new Date(10_000 + index),
+        latestTurnStatus: "failed",
+        // Relational candidacy is intentionally broader than exact attention:
+        // only a canonical primary-session runtime issue is admitted.
+        lastRuntimeIssue: "not-a-canonical-runtime-issue",
+    }));
+    const matches = Array.from({ length: params.exactMatchCount }, (_, index) => ({
+        id: randomUUID(),
+        accountId: params.accountId,
+        tag: randomUUID(),
+        encryptionMode: "plain" as const,
+        metadata: "{}",
+        meaningfulActivityAt: new Date(1_000 - index),
+        pendingBlockedCount: 1,
+    }));
+    await db.session.createMany({ data: [...rejected, ...matches] });
+    return {
+        matchIds: matches.map((session) => session.id),
+    };
+}
 
 describe("sessionRoutes initial durable-attention hydration (integration)", () => {
     let harness: LightSqliteHarness;
@@ -38,7 +111,118 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         ]);
     });
 
-    it("continues past a filtered newer result candidate to surface an older hidden permission", async () => {
+    it("strict query scans past 200 in-base relational false positives before limiting exact attention", async () => {
+        harness.resetEnv({ HAPPIER_V2_SESSION_LIST_INITIAL_ATTENTION_ROW_LIMIT: "200" });
+        const owner = await db.account.create({
+            data: { publicKey: randomUUID(), encryptionMode: "plain" },
+        });
+        const sparse = await createSparseOwnerAttentionCandidates({
+            accountId: owner.id,
+            rejectedCount: 205,
+            exactMatchCount: 2,
+        });
+
+        const query = {
+            v: 1 as const,
+            storage: "active" as const,
+            includeInactive: true,
+            scope: "my_work" as const,
+            attention: "needs_my_attention" as const,
+            audiences: [],
+            tagIds: [],
+            limit: 1,
+        };
+        const read = async (cursor?: string) => await listSessionsForAccount({
+            userId: owner.id,
+            authentication,
+            source: { kind: "query", query: { ...query, ...(cursor ? { cursor } : {}) } },
+            rowRepresentabilityWhere: {},
+            timing: createV2SessionListServerTiming({}),
+        });
+        const first = await read();
+        expect(first).toMatchObject({
+            sessions: [{ id: sparse.matchIds[0] }],
+            hasNext: true,
+            nextCursor: expect.any(String),
+            attentionHasNext: false,
+            attentionNextCursor: null,
+        });
+        const firstCursor = first && "nextCursor" in first ? first.nextCursor : null;
+        expect(await read(firstCursor ?? undefined)).toMatchObject({
+            sessions: [{ id: sparse.matchIds[1] }],
+            hasNext: false,
+            nextCursor: null,
+            attentionHasNext: false,
+            attentionNextCursor: null,
+        });
+    });
+
+    it("released GET preserves supplemental continuation after 200 rejected attention candidates", async () => {
+        harness.resetEnv({ HAPPIER_V2_SESSION_LIST_INITIAL_ATTENTION_ROW_LIMIT: "200" });
+        const owner = await db.account.create({
+            data: { publicKey: randomUUID(), encryptionMode: "plain" },
+        });
+        const sparse = await createSparseOwnerAttentionCandidates({
+            accountId: owner.id,
+            rejectedCount: 205,
+            exactMatchCount: 1,
+        });
+
+        await withAuthenticatedTestApp(
+            (app) => sessionRoutes(app as any),
+            async (app) => {
+                const first = await app.inject({
+                    method: "GET",
+                    url: "/v2/sessions?includeAttention=true&limit=1",
+                    headers: { "x-test-user-id": owner.id },
+                });
+                expect(first.statusCode).toBe(200);
+                const firstBody = first.json();
+                expect(firstBody.sessions.map((session: { id: string }) => session.id))
+                    .not.toContain(sparse.matchIds[0]);
+                expect(firstBody).toMatchObject({
+                    attentionHasNext: true,
+                    attentionNextCursor: expect.any(String),
+                });
+
+                const continued = await app.inject({
+                    method: "GET",
+                    url: `/v2/sessions?attentionCursor=${encodeURIComponent(firstBody.attentionNextCursor)}&limit=1`,
+                    headers: { "x-test-user-id": owner.id },
+                });
+                expect(continued.statusCode).toBe(200);
+                expect(continued.json()).toMatchObject({
+                    sessions: [{ id: sparse.matchIds[0] }],
+                    nextCursor: null,
+                    hasNext: false,
+                    attentionNextCursor: null,
+                    attentionHasNext: false,
+                });
+            },
+        );
+    });
+
+    it("counts sparse exact badge attention beyond 450 content-free candidates", async () => {
+        const owner = await db.account.create({
+            data: { publicKey: randomUUID(), encryptionMode: "plain" },
+        });
+        await createSparseOwnerAttentionCandidates({
+            accountId: owner.id,
+            rejectedCount: 450,
+            exactMatchCount: 2,
+        });
+        // Both count entry points are structural. Deliberately non-decodable
+        // content must not be loaded or interpreted to produce the exact count.
+        await db.session.updateMany({
+            where: { accountId: owner.id },
+            data: { metadata: "content-is-not-part-of-badge-candidacy" },
+        });
+
+        expect((await computeAccountActivityBadgeCounts([owner.id])).get(owner.id)).toBe(2);
+        expect(await computeAuthenticatedAccountActivityBadgeCount(owner.id, authentication)).toBe(2);
+    });
+
+    it("filters non-attention rows before the candidate window", async () => {
         const owner = await db.account.create({
             data: {
                 publicKey: "pk-session-attention-hydration-owner",
@@ -46,7 +230,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             },
             select: { id: true },
         });
-        await db.session.create({
+        await createTrackedOwnerSession({
             data: {
                 tag: "ordinary-first-page",
                 accountId: owner.id,
@@ -58,7 +242,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
                 meaningfulActivityAt: new Date(3_000),
             },
         });
-        const lateResult = await db.session.create({
+        const lateResult = await createTrackedOwnerSession({
             data: {
                 tag: "hidden-voice-late-result",
                 accountId: owner.id,
@@ -81,10 +265,9 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             },
             select: { id: true },
         });
-        // Candidate through the failed-turn arm, which the predicate cannot narrow further: the
-        // stored runtime issue is what decides, and it is absent here, so `isDurableAttentionRow`
-        // rejects the row after it has already spent a candidate slot.
-        await db.session.create({
+        // A failed turn without the canonical runtime issue is quiet and must be
+        // removed by the exact personal-attention predicate before pagination.
+        await createTrackedOwnerSession({
             data: {
                 tag: "hidden-voice-failed-turn-without-runtime-issue",
                 accountId: owner.id,
@@ -112,7 +295,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             arguments: { command: "git status" },
             createdAt: 1_000,
         };
-        const pendingPermission = await db.session.create({
+        const pendingPermission = await createTrackedOwnerSession({
             data: {
                 tag: "hidden-voice-pending-permission",
                 accountId: owner.id,
@@ -154,29 +337,44 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
 
                 expect(response.statusCode).toBe(200);
                 const body = response.json();
-                expect(body.sessions.map((session: { id: string }) => session.id)).toContain(lateResult.id);
-                expect(body.sessions.map((session: { id: string }) => session.id)).not.toContain(pendingPermission.id);
-                expect(body.attentionHasNext).toBe(true);
-                expect(body.attentionNextCursor).toEqual(expect.any(String));
-
-                const continuation = await app.inject({
-                    method: "GET",
-                    url: `/v2/sessions?attentionCursor=${encodeURIComponent(body.attentionNextCursor)}&limit=1`,
-                    headers: {
-                        "x-test-user-id": owner.id,
-                    },
+                const attentionPages = [body];
+                const seenCursors = new Set<string>();
+                let attentionCursor = body.attentionNextCursor as string | null;
+                while (attentionCursor) {
+                    expect(seenCursors.has(attentionCursor)).toBe(false);
+                    seenCursors.add(attentionCursor);
+                    const continuation = await app.inject({
+                        method: "GET",
+                        url: `/v2/sessions?attentionCursor=${encodeURIComponent(attentionCursor)}&limit=1`,
+                        headers: { "x-test-user-id": owner.id },
+                    });
+                    expect(continuation.statusCode).toBe(200);
+                    const continuationBody = continuation.json();
+                    attentionPages.push(continuationBody);
+                    attentionCursor = continuationBody.attentionNextCursor;
+                }
+                const hydratedSessions = attentionPages.flatMap(
+                    (page) => page.sessions as Array<{
+                        id: string;
+                        encryptionMode: string;
+                        pendingPermissionRequestCount: number;
+                        agentStateVersion: number;
+                        agentState: string;
+                    }>,
+                );
+                expect(hydratedSessions.map((session) => session.id)).toEqual(
+                    expect.arrayContaining([lateResult.id, pendingPermission.id]),
+                );
+                expect(attentionPages.at(-1)).toMatchObject({
+                    attentionHasNext: false,
+                    attentionNextCursor: null,
                 });
-
-                expect(continuation.statusCode).toBe(200);
-                const continuationBody = continuation.json();
-                expect(continuationBody.sessions.map((session: { id: string }) => session.id)).toEqual([
-                    pendingPermission.id,
-                ]);
-                expect(continuationBody.attentionNextCursor).toBeNull();
-                expect(continuationBody.attentionHasNext).toBe(false);
-                const hydratedPermission = continuationBody.sessions.find(
+                const hydratedPermission = hydratedSessions.find(
                     (session: { id: string }) => session.id === pendingPermission.id,
                 );
+                if (!hydratedPermission) {
+                    throw new Error("Expected the pending-permission Session to be hydrated");
+                }
                 expect(hydratedPermission).toMatchObject({
                     encryptionMode: "plain",
                     pendingPermissionRequestCount: 1,
@@ -200,8 +398,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             select: { id: true },
         });
         const createAttentionSession = async (
-            data: Omit<Prisma.SessionUncheckedCreateInput, "accountId" | "encryptionMode" | "metadata">,
-        ) => await db.session.create({
+            data: AttentionSessionInput,
+        ) => await createTrackedOwnerSession({
             data: {
                 accountId: owner.id,
                 encryptionMode: "plain",
@@ -276,8 +474,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             select: { id: true },
         });
         const createAttentionSession = async (
-            data: Omit<Prisma.SessionUncheckedCreateInput, "accountId" | "encryptionMode" | "metadata">,
-        ) => await db.session.create({
+            data: AttentionSessionInput,
+        ) => await createTrackedOwnerSession({
             data: {
                 accountId: owner.id,
                 encryptionMode: "plain",
@@ -288,8 +486,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             select: { id: true },
         });
 
-        // Both of these were ready once and have since been read, so `isDurableAttentionRow`
-        // rejects them. With the candidate limit at 2 they fill the whole window.
+        // Both were ready once and have since been read. The exact personal-attention
+        // predicate must remove them before the candidate window is applied.
         const newestRead = await createAttentionSession({
             tag: "read-ready-newest",
             seq: 3,
@@ -330,6 +528,10 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
                 // The ordinary first page still carries the newest session; only the attention
                 // hydration is at stake here.
                 expect(ids).toContain(newestRead.id);
+                expect(body).toMatchObject({
+                    attentionHasNext: false,
+                    attentionNextCursor: null,
+                });
             },
         );
     });
@@ -343,8 +545,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             select: { id: true },
         });
         const createAttentionSession = async (
-            data: Omit<Prisma.SessionUncheckedCreateInput, "accountId" | "encryptionMode" | "metadata">,
-        ) => await db.session.create({
+            data: AttentionSessionInput,
+        ) => await createTrackedOwnerSession({
             data: {
                 accountId: owner.id,
                 encryptionMode: "plain",
@@ -363,8 +565,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             latestReadyEventAt: new Date(7_000),
             meaningfulActivityAt: new Date(7_000),
         });
-        // `hasUnreadReadyEvent` reads a missing `lastViewedSessionSeq` as 0, so this row is durable
-        // even though SQL's `latestReadyEventSeq > lastViewedSessionSeq` is NULL for it.
+        // The legacy-null owner cursor is migrated into the canonical viewer row at
+        // zero, so ready sequence one remains unread through the relational predicate.
         const readyNeverViewed = await createAttentionSession({
             tag: "ready-never-viewed",
             seq: 1,
@@ -389,8 +591,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             latestReadyEventAt: new Date(4_000),
             meaningfulActivityAt: new Date(4_000),
         });
-        // A zero ready sequence is not an unread ready event, but the row has never been viewed
-        // and still carries session activity, so it is durable through the generic unread arm.
+        // A zero ready sequence is not an unread ready event, but visible sequence one
+        // is still above the canonical viewer cursor and qualifies through unread.
         const readyZeroNeverViewed = await createAttentionSession({
             tag: "ready-zero-never-viewed",
             seq: 1,
@@ -421,8 +623,10 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         });
 
         const page = await createV2SessionAttentionPage({
+            where: { archivedAt: null },
             userId: owner.id,
             candidateLimit: 50,
+            authentication,
         });
 
         expect(page.rows.map((row) => row.id)).toEqual([
@@ -443,8 +647,8 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             select: { id: true },
         });
         const createAttentionSession = async (
-            data: Omit<Prisma.SessionUncheckedCreateInput, "accountId" | "encryptionMode" | "metadata">,
-        ) => await db.session.create({
+            data: AttentionSessionInput,
+        ) => await createTrackedOwnerSession({
             data: {
                 accountId: owner.id,
                 encryptionMode: "plain",
@@ -479,8 +683,10 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         });
 
         const page = await createV2SessionAttentionPage({
+            where: { archivedAt: null },
             userId: owner.id,
             candidateLimit: 50,
+            authentication,
         });
 
         expect(page.rows.map((row) => row.id)).toEqual([
@@ -489,7 +695,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         ]);
     });
 
-    it("does not let above-ceiling finite attention facts consume the hosted attention cursor", async () => {
+    it("keeps above-ceiling finite candidates quiet across the bounded attention continuation", async () => {
         const owner = await db.account.create({
             data: {
                 publicKey: "pk-session-attention-publication-ceiling-owner",
@@ -497,7 +703,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             },
             select: { id: true },
         });
-        const hostedAttention = await db.session.create({
+        const hostedAttention = await createTrackedOwnerSession({
             data: {
                 tag: "hosted-attention-keeps-cursor",
                 accountId: owner.id,
@@ -509,7 +715,7 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
             },
             select: { id: true },
         });
-        const finiteSnapshot = await db.session.create({
+        const finiteSnapshot = await createTrackedOwnerSession({
             data: {
                 tag: "finite-attention-private-catchup",
                 accountId: owner.id,
@@ -530,8 +736,10 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         });
 
         const beforePrivateCatchup = await createV2SessionAttentionPage({
+            where: { archivedAt: null },
             userId: owner.id,
             candidateLimit: 1,
+            authentication,
         });
         expect(beforePrivateCatchup).toMatchObject({
             rows: [{ id: hostedAttention.id }],
@@ -549,8 +757,10 @@ describe("sessionRoutes initial durable-attention hydration (integration)", () =
         });
 
         const afterPrivateCatchup = await createV2SessionAttentionPage({
+            where: { archivedAt: null },
             userId: owner.id,
             candidateLimit: 1,
+            authentication,
         });
         expect(afterPrivateCatchup.rows.map((row) => row.id)).toEqual(
             beforePrivateCatchup.rows.map((row) => row.id),

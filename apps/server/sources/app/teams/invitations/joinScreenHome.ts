@@ -1,0 +1,106 @@
+import { readEncryptionFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
+import {
+    resolveConfiguredCanonicalServerUrl,
+    resolveEffectiveWebappUrl,
+} from "@/app/serverUrls/effectiveServerUrls";
+import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import type { HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
+import type { HomeConnectionDescriptorContinuityStore } from "@/app/features/homeConnectionDescriptorContinuity";
+import { readRequiredAuthenticatedHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
+import type { JoinScreenHomeIdentity } from "./invitationService";
+
+/**
+ * How a join screen identifies the Home it is about to add someone to.
+ *
+ * Every fact here is read from an existing owner: server identity from the
+ * identity owner, storage disclosure from the encryption policy owner, and the
+ * name from the Home's own canonical address. Nothing is inferred from the
+ * inviter, the request Host header, or the focused Home, none of which are the
+ * Home authority.
+ */
+
+/**
+ * The disclosure a join screen may honestly make about how this Home stores
+ * content.
+ *
+ * A Home that admits both protections has no single mode to disclose, so it
+ * discloses nothing rather than presenting the current default as a guarantee.
+ */
+export function resolveJoinScreenStorageMode(
+    env: NodeJS.ProcessEnv,
+): JoinScreenHomeIdentity["storageMode"] {
+    const storagePolicy = readEncryptionFeatureEnv(env).storagePolicy;
+    if (storagePolicy === "required_e2ee") return "encrypted";
+    if (storagePolicy === "plaintext_only") return "plain";
+    return null;
+}
+
+/**
+ * The Home's published name.
+ *
+ * Until the Homes presentation projection publishes one, the canonical address
+ * this Home was configured with is the only name it actually owns; its host is
+ * what a person recognizes on a join screen. An unconfigured Home publishes
+ * nothing, and the join screen says nothing rather than borrowing the
+ * application origin's identity.
+ */
+export function resolveJoinScreenHomeDisplayName(env: NodeJS.ProcessEnv): string | null {
+    const canonical = resolveConfiguredCanonicalServerUrl(env);
+    if (!canonical) return null;
+    try {
+        return new URL(canonical).host;
+    } catch {
+        return null;
+    }
+}
+
+export async function resolveJoinScreenHomeIdentity(
+    env: NodeJS.ProcessEnv,
+): Promise<JoinScreenHomeIdentity> {
+    return {
+        serverId: await getOrCreateServerIdentityId(env),
+        displayName: resolveJoinScreenHomeDisplayName(env),
+        storageMode: resolveJoinScreenStorageMode(env),
+    };
+}
+
+/**
+ * Where a join link is rendered, and which Home it addresses.
+ *
+ * The application origin is a renderer: it never establishes which Home the
+ * link belongs to. The explicit-target carrier comes from the published Home
+ * descriptor, whose identity is the stable profile reference consumed by the
+ * join surface. If either owner cannot publish its fact, issuance remains
+ * unavailable through the existing checks; SMTP readiness alone is insufficient.
+ */
+export async function resolveTeamJoinLinkTarget(
+    env: NodeJS.ProcessEnv,
+    continuityStore?: HomeConnectionDescriptorContinuityStore | null,
+    readDescriptor: (store: HomeConnectionDescriptorContinuityStore) => Promise<HomeConnectionDescriptorV1 | undefined> =
+        (store) => readRequiredAuthenticatedHomeConnectionDescriptor({ env, continuityStore: store }),
+): Promise<Readonly<{
+    applicationOrigin: string | null;
+    homeTarget: string | null;
+    serverId: string | null;
+}>> {
+    const applicationOrigin = resolveEffectiveWebappUrl(env) ?? null;
+    if (!applicationOrigin || !continuityStore) {
+        return { applicationOrigin: null, homeTarget: null, serverId: null };
+    }
+    let descriptor: HomeConnectionDescriptorV1 | undefined;
+    try {
+        descriptor = await readDescriptor(continuityStore);
+    } catch {
+        return { applicationOrigin: null, homeTarget: null, serverId: null };
+    }
+    if (!descriptor) return { applicationOrigin: null, homeTarget: null, serverId: null };
+    return {
+        applicationOrigin,
+        serverId: descriptor.homeServerIdentityId,
+        homeTarget: JSON.stringify({
+            kind: "descriptor",
+            descriptor,
+            authority: "trusted_enrollment",
+        }),
+    };
+}

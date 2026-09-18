@@ -1,6 +1,9 @@
 import {
     isSessionAgentTransitionDividerLocalId,
+    VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG,
+    type SessionMessageAttentionImpact,
     isStoredContentKindAllowedForSessionByStoragePolicy,
+    deriveSessionMessageAuthorAccountIdV1,
     isMessageStructuredPresentationV1Candidate,
     readMessageStructuredPresentationV1,
     SessionMessageRoleSchema,
@@ -11,6 +14,8 @@ import {
     type SessionMessageRole,
     type SessionTranscriptObservationProvenanceV1,
 } from "@happier-dev/protocol";
+import { advanceCaughtUpViewerReadCursorsInTx, stampViewerUnreadEntryInTx } from "./personal/readState";
+import { resolveMessageAttentionImpact } from "./messageAttentionImpact";
 import { isDeepStrictEqual } from "node:util";
 
 import { resolveEncryptionWriteRejectionCode, type EncryptionPolicyRejectionCode } from "@/app/session/encryptionRejectionCodes";
@@ -32,6 +37,10 @@ export const SESSION_TRANSCRIPT_WRITE_SELECT = {
     deliveryResolution: true,
     createdAt: true,
     updatedAt: true,
+    // Server-internal: publishers derive the sanitized Account actor from the
+    // receipt without rereading the row. Neither field is a wire field.
+    inputAdmissionReceipt: true,
+    authorAccountId: true,
 } as const;
 
 export type SessionTranscriptStoragePolicy = "required_e2ee" | "optional" | "plaintext_only";
@@ -199,6 +208,8 @@ export type SessionTranscriptMessageWriteParams = Readonly<{
     localId: string | null;
     sidechainId: string | null;
     messageRole: SessionMessageRole | null;
+    /** Authenticated command classification; absent uses the canonical content classifier. */
+    attentionImpact?: SessionMessageAttentionImpact;
     createdAt?: Date;
     meaningfulActivityAt?: Date;
     sourceCreatedAt?: Date;
@@ -220,6 +231,17 @@ export type HistoricalSessionMessageItem = Readonly<{
     transcriptObservationProvenance?: SessionTranscriptObservationProvenanceV1;
 }>;
 
+export async function resolveSurvivingSessionMessageAuthorAccountIdInTx(
+    tx: Tx,
+    actorAccountId: string | null,
+): Promise<string | null> {
+    if (actorAccountId === null) return null;
+    // Erasure clears the relational projection, not the immutable admission.
+    // An already-admitted input can still settle after its Account disappears.
+    const account = await tx.account.findUnique({ where: { id: actorAccountId }, select: { id: true } });
+    return account?.id ?? null;
+}
+
 /**
  * Canonical transaction-local transcript insert.
  *
@@ -235,7 +257,7 @@ export async function writeSessionTranscriptMessageInTx(
     if (!storageAdmission.ok) return storageAdmission;
 
     const createdAt = params.createdAt ?? new Date();
-    let next: { seq: number };
+    let next: { seq: number; tag: string };
     try {
         next = await tx.session.update({
             where: {
@@ -244,7 +266,7 @@ export async function writeSessionTranscriptMessageInTx(
                     ? "hosted"
                     : { in: ["machine_only", "server_partial", "snapshot_complete"] },
             },
-            select: { seq: true },
+            select: { seq: true, tag: true },
             data: {
                 seq: { increment: 1 },
                 ...(params.meaningfulActivityAt ? { meaningfulActivityAt: params.meaningfulActivityAt } : {}),
@@ -274,12 +296,38 @@ export async function writeSessionTranscriptMessageInTx(
                 : {}),
             ...(params.deliveryResolution ? { deliveryResolution: params.deliveryResolution } : {}),
             ...(params.inputAdmissionReceipt ? { inputAdmissionReceipt: params.inputAdmissionReceipt } : {}),
+            // Derived here, in the same transaction as the receipt, so the
+            // relational query projection can never be caller-supplied or drift
+            // from the immutable actor authority.
+            authorAccountId: await resolveSurvivingSessionMessageAuthorAccountIdInTx(tx, deriveSessionMessageAuthorAccountIdV1({
+                messageRole: params.messageRole,
+                inputAdmissionReceipt: params.inputAdmissionReceipt,
+            })),
             ...(params.requestEqualityEvidenceV1
                 ? { requestEqualityEvidenceV1: params.requestEqualityEvidenceV1 }
                 : {}),
         },
         select: SESSION_TRANSCRIPT_WRITE_SELECT,
     });
+
+    if (params.writeAuthority === "hosted") {
+        const voiceHistory = next.tag === VOICE_TRANSCRIPT_HISTORY_SYSTEM_SESSION_TAG;
+        const impact = resolveMessageAttentionImpact({
+            content: params.content,
+            localId: params.localId,
+            explicitAttentionImpact: params.attentionImpact,
+        });
+        if (voiceHistory || !impact.affectsUnread) {
+            await advanceCaughtUpViewerReadCursorsInTx(tx, {
+                sessionId: params.sessionId,
+                // Voice history is the existing system-Session exception: it never creates unread.
+                previousVisibleSeq: voiceHistory ? 0 : next.seq - 1,
+                nextVisibleSeq: next.seq,
+            });
+        } else {
+            await stampViewerUnreadEntryInTx(tx, { sessionId: params.sessionId, visibleSessionSeq: next.seq, at: createdAt });
+        }
+    }
 
     notifySessionTranscriptMutationAfterCommit(tx, {
         kind: 'upsert',

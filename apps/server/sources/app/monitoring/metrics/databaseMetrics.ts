@@ -35,6 +35,14 @@ export const dbReadinessDurationHistogram = getOrCreateMetric("db_readiness_dura
     registers: [register],
 }));
 
+export const sqliteMaintenanceDurationHistogram = getOrCreateMetric("sqlite_maintenance_duration_seconds", () => new Histogram({
+    name: "sqlite_maintenance_duration_seconds",
+    help: "SQLite maintenance duration by operation and outcome",
+    labelNames: ["operation", "outcome"] as const,
+    buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2.5, 5, 10, 30],
+    registers: [register],
+}));
+
 export async function updateDatabaseMetrics(): Promise<void> {
     const [accountCount, sessionCount, messageCount, machineCount] = await Promise.all([
         db.account.count(),

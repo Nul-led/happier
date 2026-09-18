@@ -146,6 +146,73 @@ describe("db portability contract", () => {
         expect(reread.sessionId).toBeNull();
     });
 
+    it("cascades SessionFollowEdge deletion from either Session endpoint", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniq("contract-follow-edge-pubkey") },
+            select: { id: true },
+        });
+        const createSession = (suffix: string) => db.session.create({
+            data: {
+                accountId: account.id,
+                tag: uniq(`contract-follow-session-${suffix}`),
+                metadata: "{}",
+            },
+            select: { id: true },
+        });
+        const [deletedSource, firstDestination, secondSource, deletedDestination] = await Promise.all([
+            createSession("deleted-source"),
+            createSession("first-destination"),
+            createSession("second-source"),
+            createSession("deleted-destination"),
+        ]);
+
+        await db.sessionFollowEdge.createMany({
+            data: [
+                { sourceSessionId: deletedSource.id, destinationSessionId: firstDestination.id },
+                { sourceSessionId: secondSource.id, destinationSessionId: deletedDestination.id },
+            ],
+        });
+        await db.session.delete({ where: { id: deletedSource.id } });
+        await db.session.delete({ where: { id: deletedDestination.id } });
+
+        await expect(db.sessionFollowEdge.count({
+            where: {
+                OR: [
+                    { sourceSessionId: deletedSource.id, destinationSessionId: firstDestination.id },
+                    { sourceSessionId: secondSource.id, destinationSessionId: deletedDestination.id },
+                ],
+            },
+        })).resolves.toBe(0);
+    });
+
+    it("rejects a persisted SessionFollowEdge whose source and destination are the same Session", async () => {
+        const account = await db.account.create({
+            data: { publicKey: uniq("contract-follow-self-edge-pubkey") },
+            select: { id: true },
+        });
+        const session = await db.session.create({
+            data: {
+                accountId: account.id,
+                tag: uniq("contract-follow-self-edge-session"),
+                metadata: "{}",
+            },
+            select: { id: true },
+        });
+
+        await expect(db.sessionFollowEdge.create({
+            data: {
+                sourceSessionId: session.id,
+                destinationSessionId: session.id,
+            },
+        })).rejects.toThrow();
+        await expect(db.sessionFollowEdge.count({
+            where: {
+                sourceSessionId: session.id,
+                destinationSessionId: session.id,
+            },
+        })).resolves.toBe(0);
+    });
+
     it("preserves exact Voice grant provenance while transactionally pruning an expired lease", async () => {
         const account = await db.account.create({
             data: { publicKey: uniq("contract-voice-grant-provenance-pubkey") },

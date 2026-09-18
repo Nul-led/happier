@@ -11,6 +11,7 @@ import {
     validateMachineRpcGrantAllowedMethods,
     type AuthorizedPeerEndpointRouteKindV1,
     type DirectRouteGrantPayloadV1,
+    type DirectRouteGrantSignatureV1,
     type DirectRouteGrantPayloadV2,
     type DirectRouteGrantScopeV1,
     type DirectRouteGrantScopeV2,
@@ -248,6 +249,20 @@ function validateDirectRouteGrantV2MintInput(input: MintDirectRouteGrantV2Input)
     return { ok: true, scope: scope.data, grantExpiresAt: envelope.grantExpiresAt };
 }
 
+/** Neutral signing primitive. Key custody and public-root projection remain in
+ * resolvePeerMediationGrantSigningConfig; application owners validate payloads.
+ */
+export function signRouteGrantPayload(input: Readonly<{
+    signingInput: string;
+    signingKey: Readonly<{ keyId: string; secretKey: Uint8Array }>;
+}>): DirectRouteGrantSignatureV1 {
+    return {
+        keyId: input.signingKey.keyId,
+        alg: "Ed25519",
+        valueBase64Url: toBase64Url(tweetnacl.sign.detached(Buffer.from(input.signingInput, "utf8"), input.signingKey.secretKey)),
+    };
+}
+
 export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): MintDirectRouteGrantV1Result {
     const validated = validateDirectRouteGrantMintInput(input);
     if (!validated.ok) return validated;
@@ -278,18 +293,12 @@ export function mintDirectRouteGrantV1(input: MintDirectRouteGrantV1Input): Mint
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    const signingInput = Buffer.from(createDirectRouteGrantSigningInputV1(payloadValidation.data), "utf8");
-    const signature = tweetnacl.sign.detached(signingInput, input.signingKey.secretKey);
 
     return {
         ok: true,
         grant: {
             payload,
-            signature: {
-                keyId: input.signingKey.keyId,
-                alg: "Ed25519",
-                valueBase64Url: toBase64Url(signature),
-            },
+            signature: signRouteGrantPayload({ signingInput: createDirectRouteGrantSigningInputV1(payloadValidation.data), signingKey: input.signingKey }),
         },
         receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
     };
@@ -325,19 +334,11 @@ export function mintDirectRouteGrantV2(input: MintDirectRouteGrantV2Input): Mint
             receipt: PEER_MEDIATION_RECEIPTS.routeGrantRejected,
         };
     }
-    const signature = tweetnacl.sign.detached(
-        Buffer.from(createDirectRouteGrantSigningInputV2(parsed.data), "utf8"),
-        input.signingKey.secretKey,
-    );
     return {
         ok: true,
         grant: {
             payload: parsed.data,
-            signature: {
-                keyId: input.signingKey.keyId,
-                alg: "Ed25519",
-                valueBase64Url: toBase64Url(signature),
-            },
+            signature: signRouteGrantPayload({ signingInput: createDirectRouteGrantSigningInputV2(parsed.data), signingKey: input.signingKey }),
         },
         receipt: PEER_MEDIATION_RECEIPTS.routeGrantMinted,
     };

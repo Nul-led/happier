@@ -15,6 +15,7 @@ import {
     PluginAvailabilityReleasePublishActionInputV1Schema,
     PluginAvailabilityPackageAssetPublishActionInputV1Schema,
     PluginAvailabilityPackageAssetReadActionInputV1Schema,
+    PluginAvailabilityPackageAssetRemoveActionInputV1Schema,
     PluginAvailabilityUiArtifactPublishActionInputV1Schema,
     PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1Schema,
     PluginAvailabilityUiArtifactBrowserFrameIssueActionOutputV1Schema,
@@ -24,7 +25,6 @@ import {
     isPluginUiReleaseSlotCompatibleWithArtifactLinkV1,
     PluginMachineMaterializationSnapshotV1Schema,
     PluginMachineMaterializationV1Schema,
-    PluginCollectionContractRefV1Schema,
     PluginUiArtifactHostingCapabilityV1Schema,
     PluginUiReleaseSlotV1Schema,
     buildPluginDomainAccountChangeEntityId,
@@ -46,6 +46,7 @@ import {
     type PluginAvailabilityReleasePublishActionOutputV1,
     type PluginAvailabilityPackageAssetPublishActionOutputV1,
     type PluginAvailabilityPackageAssetReadActionOutputV1,
+    type PluginAvailabilityPackageAssetRemoveActionOutputV1,
     type PluginAvailabilityUiArtifactPublishActionOutputV1,
     type PluginAvailabilityUiArtifactBrowserFrameIssueActionOutputV1,
     type PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1,
@@ -66,11 +67,14 @@ import {
 import * as privacyKit from "privacy-kit";
 
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
+import { resolveEffectiveAccountEncryptionModeFromAccountRow } from "@/app/encryption/accountEncryptionMode";
 import { resolvePluginUiArtifactHostingCapability } from "@/app/features/pluginsFeature";
 import {
     createArtifactTx,
 } from "@/app/artifacts/artifactWriteService";
 import {
+    artifactDataKeyMatchesAccountMode,
     artifactStoredContentMatchesAccountMode,
     isPlainArtifactDataKeyBytes,
     openArtifactStoredContentPair,
@@ -332,56 +336,83 @@ async function retainSelectedPluginReleaseArchivesTx(input: Readonly<{
     selectedVersion: string | null;
     priorSelectedVersion: string | null;
 }>): Promise<void> {
-    const [releases, liveRows] = await Promise.all([
-        input.tx.accountPluginRelease.findMany({
-            where: { accountId: input.accountId, pluginId: input.pluginId },
-            orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-            select: {
-                id: true,
-                version: true,
-                collectionContracts: true,
-                packageAssetArtifactId: true,
-                uiArtifacts: { select: { artifactId: true } },
-            },
-        }),
-        input.tx.pluginCollectionRow.findMany({
-            where: {
-                accountId: input.accountId,
-                pluginId: input.pluginId,
-                deletedAt: null,
-            },
-            select: {
-                collectionId: true,
-                schemaVersion: true,
-                contractDigest: true,
-            },
-        }),
-    ]);
+    const releases = await input.tx.accountPluginRelease.findMany({
+        where: { accountId: input.accountId, pluginId: input.pluginId },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: {
+            id: true,
+            version: true,
+            packageAssetArtifactId: true,
+            uiArtifacts: { select: { artifactId: true } },
+        },
+    });
     const archiveVersions = new Set(
         [input.selectedVersion, input.priorSelectedVersion].filter(
             (version): version is string => version !== null,
         ),
     );
-    const metadataVersions = new Set(archiveVersions);
-    for (const release of releases) {
-        const refs = PluginCollectionContractRefV1Schema.array().safeParse(release.collectionContracts);
-        if (
-            refs.success
-            && refs.data.some((ref) => liveRows.some((row) => (
-                row.collectionId === ref.collectionId
-                && row.schemaVersion === ref.schemaVersion
-                && row.contractDigest === ref.contractDigest
-            )))
-        ) {
-            metadataVersions.add(release.version);
-        }
+    const releasesToPrune = releases.filter(
+        (release) => !archiveVersions.has(release.version),
+    );
+    const artifactIdsToPrune = releasesToPrune.flatMap((release) => [
+        release.packageAssetArtifactId,
+        ...release.uiArtifacts.map((link) => link.artifactId),
+    ]).filter((artifactId): artifactId is string => artifactId !== null);
+    if (artifactIdsToPrune.length === 0) return;
+    const [account, artifacts] = await Promise.all([
+        input.tx.account.findUnique({
+            where: { id: input.accountId },
+            select: {
+                encryptionMode: true,
+                publicKey: true,
+                contentPublicKey: true,
+                contentPublicKeySig: true,
+            },
+        }),
+        input.tx.artifact.findMany({
+            where: {
+                accountId: input.accountId,
+                id: { in: artifactIdsToPrune },
+            },
+            select: { id: true, dataEncryptionKey: true },
+        }),
+    ]);
+    const currentness = account
+        ? deriveAccountEncryptionCurrentnessFromRow(account)
+        : null;
+    const artifactById = new Map(artifacts.map((artifact) => [artifact.id, artifact]));
+    const mismatchedPackageAsset = releasesToPrune.some((release) => {
+        const artifact = release.packageAssetArtifactId
+            ? artifactById.get(release.packageAssetArtifactId)
+            : null;
+        return artifact !== null && artifact !== undefined && (
+            currentness?.status !== "ready"
+            || !artifactDataKeyMatchesAccountMode({
+                mode: currentness.currentness.encryptionMode,
+                dataEncryptionKey: artifact.dataEncryptionKey,
+            })
+        );
+    });
+    if (mismatchedPackageAsset) {
+        throw new PluginAvailabilityOperationError(
+            "plugin_package_asset_invalid_content",
+        );
     }
-    const priorIndex = input.priorSelectedVersion === null
-        ? -1
-        : releases.findIndex((release) => (
-            release.version === input.priorSelectedVersion
-        ));
-    for (const [index, release] of releases.entries()) {
+    if (
+        currentness?.status !== "ready"
+        || releasesToPrune.some((release) => release.uiArtifacts.some((link) => {
+            const artifact = artifactById.get(link.artifactId);
+            return artifact !== undefined && !artifactDataKeyMatchesAccountMode({
+                mode: currentness.currentness.encryptionMode,
+                dataEncryptionKey: artifact.dataEncryptionKey,
+            });
+        }))
+    ) {
+        throw new PluginAvailabilityOperationError(
+            "plugin_ui_artifact_invalid_content",
+        );
+    }
+    for (const release of releases) {
         if (!archiveVersions.has(release.version)) {
             const artifactIds = [
                 release.packageAssetArtifactId,
@@ -399,16 +430,6 @@ async function retainSelectedPluginReleaseArchivesTx(input: Readonly<{
                     where: { accountId: input.accountId, id: { in: artifactIds } },
                 });
             }
-        }
-        // Creation order is only a conservative metadata-compaction boundary.
-        // Archive eligibility is exact selected/prior state above and must not
-        // inherit either this cutoff or Data's metadata dependencies.
-        if (
-            priorIndex >= 0
-            && index < priorIndex
-            && !metadataVersions.has(release.version)
-        ) {
-            await input.tx.accountPluginRelease.delete({ where: { id: release.id } });
         }
     }
 }
@@ -564,6 +585,7 @@ function copyArtifactBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
 
 function storedArtifactMatchesEnvelope(input: Readonly<{
     accountId: string;
+    mode: "plain" | "e2ee";
     artifact: StoredPackageAssetArtifactRow;
     envelope: Readonly<{
         header: Uint8Array;
@@ -574,6 +596,7 @@ function storedArtifactMatchesEnvelope(input: Readonly<{
     const opened = openArtifactStoredContentPair({
         accountId: input.accountId,
         artifactId: input.artifact.id,
+        mode: input.mode,
         dataEncryptionKey: input.artifact.dataEncryptionKey,
         header: input.artifact.header,
         body: input.artifact.body,
@@ -587,18 +610,66 @@ function storedArtifactMatchesEnvelope(input: Readonly<{
         );
 }
 
-function isExactStoredUiArtifactRejoin(input: Readonly<{
+async function isStoredHostedArtifactRejoin(input: Readonly<{
+    tx: Tx;
     accountId: string;
     artifactId: string;
-    link: StoredUiArtifactLinkWithArtifactRow;
+    supportsCurrentStoredContentProtocol: boolean;
+    link: Readonly<{ artifactId: string; artifact: StoredPackageAssetArtifactRow }>;
+    kind: "ui" | "packageAsset";
     envelope: Readonly<{ header: Uint8Array; body: Uint8Array; dataEncryptionKey: Uint8Array }>;
-}>): boolean {
-    return input.link.artifactId === input.artifactId
-        && storedArtifactMatchesEnvelope({
+}>): Promise<boolean> {
+    if (input.link.artifact.accountId !== input.accountId) return false;
+    const account = await input.tx.account.findUnique({
+        where: { id: input.accountId },
+        select: {
+            encryptionMode: true,
+            publicKey: true,
+            contentPublicKey: true,
+            contentPublicKeySig: true,
+        },
+    });
+    const currentness = account ? deriveAccountEncryptionCurrentnessFromRow(account) : null;
+    if (currentness?.status !== "ready") return false;
+    const mode = currentness.currentness.encryptionMode;
+    const opened = openArtifactStoredContentPair({
+        ...input.link.artifact,
+        accountId: input.accountId,
+        artifactId: input.link.artifact.id,
+        mode,
+    });
+    if (
+        !opened
+        || !artifactStoredContentMatchesAccountMode({
+            mode: currentness.currentness.encryptionMode,
+            ...input.envelope,
+        })
+        || !artifactStoredContentMatchesAccountMode({
+            mode: currentness.currentness.encryptionMode,
+            ...opened,
+            dataEncryptionKey: input.link.artifact.dataEncryptionKey,
+        })
+    ) return false;
+    if (isPlainArtifactDataKeyBytes(input.envelope.dataEncryptionKey)
+        && !input.supportsCurrentStoredContentProtocol) {
+        throw new PluginAvailabilityOperationError(input.kind === "ui"
+            ? "plugin_ui_artifact_client_upgrade_required"
+            : "plugin_package_asset_client_upgrade_required");
+    }
+    if (input.link.artifactId === input.artifactId) {
+        return storedArtifactMatchesEnvelope({
             accountId: input.accountId,
+            mode,
             artifact: input.link.artifact,
             envelope: input.envelope,
         });
+    }
+    // The qualified immutable slot is authoritative, not a fresh envelope's
+    // nonce or proposed ID. Never absorb an ID already owned by another row.
+    return await input.tx.artifact.findUnique({
+        where: { id: input.artifactId },
+        select: { id: true },
+    }) === null;
 }
 
 function isExactPlainPackageAssetArchive(input: Readonly<{
@@ -1231,6 +1302,10 @@ export type PluginAvailabilityOperations = Readonly<{
         accountId: string;
         input: unknown;
     }>): Promise<PluginAvailabilityPackageAssetReadActionOutputV1>;
+    removePackageAsset(input: Readonly<{
+        accountId: string;
+        input: unknown;
+    }>): Promise<PluginAvailabilityPackageAssetRemoveActionOutputV1>;
     issueBrowserArtifactFrame(input: Readonly<{
         accountId: string;
         input: unknown;
@@ -1682,7 +1757,10 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                         },
                     })
                     : null;
-                return { availabilityCursor: account.seq, intentRow, release };
+                const packageAsset = release
+                    ? await resolveStoredPackageAssetLinkTx(tx, release.id)
+                    : null;
+                return { availabilityCursor: account.seq, intentRow, release, packageAsset };
             }),
         ]);
         const intent = current.intentRow ? intentFromRow(current.intentRow) : null;
@@ -1700,6 +1778,10 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             intent,
             release: facts,
             uiArtifacts: facts ? current.release!.uiArtifacts.map(linkFromRow) : [],
+            packageAssets: facts && current.packageAsset
+                ? [packageAssetLinkFromRow(current.packageAsset, facts.packageAssetArchive)]
+                    .filter((link): link is PluginAccountPluginPackageAssetLinkV1 => link !== null)
+                : [],
         };
     }
 
@@ -1933,7 +2015,7 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             );
         }
 
-        const publish = async (tx: Tx): Promise<PluginAvailabilityUiArtifactPublishActionOutputV1> => {
+        const publish = async (tx: Tx, rejoinOnly = false): Promise<PluginAvailabilityUiArtifactPublishActionOutputV1> => {
             const release = await resolveReleaseTx(tx, params.accountId, input.release);
             if (!release) {
                 throw new PluginAvailabilityOperationError("plugin_release_not_found");
@@ -1973,9 +2055,12 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                     );
                 }
                 if (
-                    !isExactStoredUiArtifactRejoin({
+                    !await isStoredHostedArtifactRejoin({
+                        kind: "ui",
+                        tx,
                         accountId: params.accountId,
                         artifactId: input.artifactId,
+                        supportsCurrentStoredContentProtocol: params.supportsCurrentStoredContentProtocol,
                         link: existingLink,
                         envelope: artifact,
                     })
@@ -1985,6 +2070,10 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                     );
                 }
                 return { outcome: "rejoined", link: linkFromRow(existingLink) };
+            }
+
+            if (rejoinOnly) {
+                throw new PluginAvailabilityOperationError("plugin_ui_artifact_conflict");
             }
 
             const existingArtifact = await tx.artifact.findUnique({
@@ -2061,30 +2150,9 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             return await inTx(publish);
         } catch (error) {
             if (!isPrismaErrorCode(error, "P2002")) throw error;
-            const release = await resolveReleaseTx(db, params.accountId, input.release);
-            if (!release) throw error;
-            const existingLink = await resolveStoredSlotLinkTx(
-                db,
-                release.id,
-                input.slot,
-            );
-            // Recovery is the same exact rejoin contract as the ordinary
-            // occupied-slot path; a uniqueness race grants no weaker retry.
-            if (
-                !existingLink
-                || !isStoredLinkForDeclaredSlot(existingLink, input.slot)
-                || !isExactStoredUiArtifactRejoin({
-                    accountId: params.accountId,
-                    artifactId: input.artifactId,
-                    link: existingLink,
-                    envelope: artifact,
-                })
-            ) {
-                throw new PluginAvailabilityOperationError(
-                    "plugin_ui_artifact_conflict",
-                );
-            }
-            return { outcome: "rejoined", link: linkFromRow(existingLink) };
+            // A uniqueness race rejoins through the same transaction-local
+            // release, intent, classification and Account-mode checks.
+            return await inTx((tx) => publish(tx, true));
         }
     }
 
@@ -2099,7 +2167,8 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 "plugin_ui_artifact_hosting_unsupported",
             );
         }
-        const release = await db.accountPluginRelease.findUnique({
+        const [release, account] = await Promise.all([
+            db.accountPluginRelease.findUnique({
             where: {
                 accountId_pluginId_version: {
                     accountId: params.accountId,
@@ -2118,9 +2187,20 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 uiSlots: true,
                 packageAssetArchive: true,
             },
-        });
+            }),
+            db.account.findUnique({
+                where: { id: params.accountId },
+                select: { encryptionMode: true },
+            }),
+        ]);
         if (!release) {
             throw new PluginAvailabilityOperationError("plugin_ui_artifact_not_found");
+        }
+        const accountMode = account
+            ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
+            : null;
+        if (accountMode?.status !== "ready") {
+            throw new PluginAvailabilityOperationError("plugin_ui_artifact_invalid_content");
         }
         if (!("purpose" in input)) {
             await inTx(async (tx) => {
@@ -2194,6 +2274,7 @@ export function createPluginAvailabilityOperations(options: Readonly<{
         const opened = openArtifactStoredContentPair({
             accountId: params.accountId,
             artifactId: link.artifact.id,
+            mode: accountMode.mode,
             dataEncryptionKey: link.artifact.dataEncryptionKey,
             header: link.artifact.header,
             body: link.artifact.body,
@@ -2216,8 +2297,8 @@ export function createPluginAvailabilityOperations(options: Readonly<{
 
     /**
      * Binds the release-authorized package archive to exactly one protected
-     * Account Artifact. Rejoining is deliberately byte-exact: a retry cannot
-     * replace an already accepted archive or repurpose its Artifact id.
+     * Account Artifact. A fresh publisher rejoins the existing immutable link;
+     * same-ID retries remain byte-exact and never replace accepted content.
      */
     async function publishPackageAsset(params: Readonly<{
         accountId: string;
@@ -2265,10 +2346,13 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                 );
                 if (
                     !link
-                    || link.artifactId !== input.artifactId
-                    || !storedArtifactMatchesEnvelope({
+                    || !await isStoredHostedArtifactRejoin({
+                        tx,
+                        kind: "packageAsset",
                         accountId: params.accountId,
-                        artifact: existing.packageAssetArtifact!,
+                        artifactId: input.artifactId,
+                        supportsCurrentStoredContentProtocol: params.supportsCurrentStoredContentProtocol,
+                        link: { artifactId: link.artifactId, artifact: existing.packageAssetArtifact! },
                         envelope,
                     })
                 ) {
@@ -2376,32 +2460,9 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             return await inTx(publish);
         } catch (error) {
             if (!isPrismaErrorCode(error, "P2002")) throw error;
-            const release = await resolveReleaseTx(db, params.accountId, input.release);
-            if (!release) throw error;
-            const facts = packageAssetFactsFromRow(release);
-            const existing = await resolveStoredPackageAssetLinkTx(db, release.id);
-            const link = existing
-                ? packageAssetLinkFromRow(existing, facts.packageAssetArchive)
-                : null;
-            const envelope = decodeArtifactEnvelope(
-                input.artifact,
-                "plugin_package_asset_invalid_content",
-            );
-            if (
-                !link
-                || !existing?.packageAssetArtifact
-                || link.artifactId !== input.artifactId
-                || !storedArtifactMatchesEnvelope({
-                    accountId: params.accountId,
-                    artifact: existing.packageAssetArtifact,
-                    envelope,
-                })
-            ) {
-                throw new PluginAvailabilityOperationError(
-                    "plugin_package_asset_conflict",
-                );
-            }
-            return { outcome: "rejoined", link };
+            // Re-enter the same transaction owner: a uniqueness race grants
+            // no exemption from current hosting, Account mode or ID checks.
+            return await inTx(publish);
         }
     }
 
@@ -2421,6 +2482,18 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             );
         }
         return await inTx(async (tx) => {
+            const account = await tx.account.findUnique({
+                where: { id: params.accountId },
+                select: { encryptionMode: true },
+            });
+            const accountMode = account
+                ? resolveEffectiveAccountEncryptionModeFromAccountRow(account)
+                : null;
+            if (accountMode?.status !== "ready") {
+                throw new PluginAvailabilityOperationError(
+                    "plugin_package_asset_invalid_content",
+                );
+            }
             const release = await resolveReleaseTx(tx, params.accountId, input.release);
             if (!release) {
                 throw new PluginAvailabilityOperationError("plugin_package_asset_not_found");
@@ -2453,6 +2526,7 @@ export function createPluginAvailabilityOperations(options: Readonly<{
             const opened = openArtifactStoredContentPair({
                 accountId: params.accountId,
                 artifactId: artifact.id,
+                mode: accountMode.mode,
                 dataEncryptionKey: artifact.dataEncryptionKey,
                 header: artifact.header,
                 body: artifact.body,
@@ -2733,6 +2807,61 @@ export function createPluginAvailabilityOperations(options: Readonly<{
         };
     }
 
+    /** Explicit Account-scoped removal retires the classification and its Artifact atomically. */
+    async function removePackageAsset(params: Readonly<{
+        accountId: string;
+        input: unknown;
+    }>): Promise<PluginAvailabilityPackageAssetRemoveActionOutputV1> {
+        const input = PluginAvailabilityPackageAssetRemoveActionInputV1Schema.parse(params.input);
+        return await inTx(async (tx) => {
+            const account = await tx.account.findUnique({
+                where: { id: params.accountId },
+                select: {
+                    encryptionMode: true,
+                    publicKey: true,
+                    contentPublicKey: true,
+                    contentPublicKeySig: true,
+                },
+            });
+            const currentness = account
+                ? deriveAccountEncryptionCurrentnessFromRow(account)
+                : null;
+            const release = await resolveReleaseTx(tx, params.accountId, input.release);
+            if (!release) throw new PluginAvailabilityOperationError("plugin_package_asset_not_found");
+            const facts = packageAssetFactsFromRow(release);
+            const stored = await resolveStoredPackageAssetLinkTx(tx, release.id);
+            const link = stored ? packageAssetLinkFromRow(stored, facts.packageAssetArchive) : null;
+            const artifact = stored?.packageAssetArtifact;
+            if (!artifact || !link) {
+                throw new PluginAvailabilityOperationError(
+                    "plugin_package_asset_not_found",
+                );
+            }
+            if (
+                currentness?.status !== "ready"
+                || !artifactDataKeyMatchesAccountMode({
+                    mode: currentness.currentness.encryptionMode,
+                    dataEncryptionKey: artifact.dataEncryptionKey,
+                })
+            ) {
+                throw new PluginAvailabilityOperationError(
+                    "plugin_package_asset_invalid_content",
+                );
+            }
+            const unlinked = await tx.accountPluginRelease.updateMany({
+                where: { id: release.id, accountId: params.accountId, packageAssetArtifactId: link.artifactId },
+                data: { packageAssetArtifactId: null },
+            });
+            if (unlinked.count !== 1) throw new PluginAvailabilityOperationError("plugin_package_asset_conflict");
+            const deleted = await tx.artifact.deleteMany({
+                where: { id: link.artifactId, accountId: params.accountId },
+            });
+            if (deleted.count !== 1) throw new PluginAvailabilityOperationError("plugin_package_asset_conflict");
+            await markAvailabilityChangedTx(tx, params.accountId, release.pluginId);
+            return { removed: true, link };
+        });
+    }
+
     async function removeUiArtifact(params: Readonly<{
         accountId: string;
         input: unknown;
@@ -2767,12 +2896,35 @@ export function createPluginAvailabilityOperations(options: Readonly<{
                         },
                     },
                     artifact: {
-                        select: { accountId: true },
+                        select: { accountId: true, dataEncryptionKey: true },
                     },
                 },
             });
             if (!link || link.artifact.accountId !== params.accountId) {
                 throw new PluginAvailabilityOperationError("plugin_ui_artifact_not_found");
+            }
+            const account = await tx.account.findUnique({
+                where: { id: params.accountId },
+                select: {
+                    encryptionMode: true,
+                    publicKey: true,
+                    contentPublicKey: true,
+                    contentPublicKeySig: true,
+                },
+            });
+            const currentness = account
+                ? deriveAccountEncryptionCurrentnessFromRow(account)
+                : null;
+            if (
+                currentness?.status !== "ready"
+                || !artifactDataKeyMatchesAccountMode({
+                    mode: currentness.currentness.encryptionMode,
+                    dataEncryptionKey: link.artifact.dataEncryptionKey,
+                })
+            ) {
+                throw new PluginAvailabilityOperationError(
+                    "plugin_ui_artifact_invalid_content",
+                );
             }
             const projected = linkFromRow(link);
             await tx.accountPluginUiArtifact.delete({
@@ -2806,6 +2958,7 @@ export function createPluginAvailabilityOperations(options: Readonly<{
         readUiArtifact,
         publishPackageAsset,
         readPackageAsset,
+        removePackageAsset,
         issueBrowserArtifactFrame,
         readBrowserArtifactFrame,
         removeUiArtifact,

@@ -4,11 +4,16 @@ import { getSocketRooms } from "./socketRooms";
 
 describe("getSocketRooms", () => {
     it("includes the shared user room for user-scoped clients", () => {
-        expect(getSocketRooms({ userId: "u1", clientType: "user-scoped" })).toEqual(["user:u1", "user-scoped:u1"]);
+        expect(getSocketRooms({ userId: "u1", clientType: "user-scoped" })).toEqual([
+            "account-revocation:u1",
+            "user:u1",
+            "user-scoped:u1",
+        ]);
     });
 
     it("includes session room for session-scoped clients", () => {
         expect(getSocketRooms({ userId: "u1", clientType: "session-scoped", sessionId: "s1" })).toEqual([
+            "account-revocation:u1",
             "user:u1",
             "session:s1",
             "session:s1:u1",
@@ -17,7 +22,33 @@ describe("getSocketRooms", () => {
 
     it("includes machine room for machine-scoped clients", () => {
         expect(getSocketRooms({ userId: "u1", clientType: "machine-scoped", machineId: "m1" })).toEqual([
+            "account-revocation:u1",
             "user-machines:u1",
+            "machine:m1:u1",
+        ]);
+    });
+
+    it("keeps restricted Runner sockets only in exact resource rooms plus content-free Account revocation", () => {
+        expect(getSocketRooms({
+            userId: "u1",
+            clientType: "session-scoped",
+            sessionId: "s1",
+            machineId: "m1",
+            includeUserRoomForSessionScoped: false,
+        })).toEqual([
+            "account-revocation:u1",
+            "session:s1",
+            "session:s1:u1",
+            "session:s1:machine:m1:u1",
+        ]);
+
+        expect(getSocketRooms({
+            userId: "u1",
+            clientType: "machine-scoped",
+            machineId: "m1",
+            includeUserMachinesRoom: false,
+        })).toEqual([
+            "account-revocation:u1",
             "machine:m1:u1",
         ]);
     });

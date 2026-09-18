@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { db } from "@/storage/db";
-import { disableAccount } from "@/app/auth/accountDisable";
 import { enforceLoginEligibility } from "@/app/auth/enforceLoginEligibility";
 import * as privacyKit from "privacy-kit";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
@@ -28,23 +27,32 @@ describe("enforceLoginEligibility (account disabled)", () => {
         const publicKey = privacyKit.encodeHex(new Uint8Array(32).fill(8));
         const account = await db.account.create({ data: { publicKey }, select: { id: true } });
 
-        await disableAccount({ accountId: account.id, reason: "test", env: process.env });
+        await db.account.update({ where: { id: account.id }, data: { status: "disabled" } });
 
         const out = await enforceLoginEligibility({ accountId: account.id, env: process.env });
         expect(out).toEqual({ ok: false, statusCode: 403, error: "account-disabled" });
     });
 
-    it("fails closed when the account-disabled check cannot query the database", async () => {
-        const publicKey = privacyKit.encodeHex(new Uint8Array(32).fill(9));
-        const account = await db.account.create({ data: { publicKey }, select: { id: true } });
+    it.each(["1000", "0"])("does not let cached eligibility hide disablement (positive TTL %s)", async (ttl) => {
+        const account = await db.account.create({ data: { publicKey: `eligibility-disable-cache-${ttl}` } });
+        const env = { ...process.env, AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: ttl };
+        await expect(enforceLoginEligibility({ accountId: account.id, env })).resolves.toEqual({ ok: true });
 
-        const spy = vi.spyOn(db.repeatKey, "findUnique").mockRejectedValueOnce(new Error("disk I/O error"));
-        try {
-            const out = await enforceLoginEligibility({ accountId: account.id, env: process.env });
-            expect(out).toEqual({ ok: false, statusCode: 503, error: "upstream_error" });
-        } finally {
-            spy.mockRestore();
-        }
+        await db.account.update({ where: { id: account.id }, data: { status: "suspended" } });
+
+        await expect(enforceLoginEligibility({ accountId: account.id, env })).resolves.toEqual({
+            ok: false, statusCode: 403, error: "account-disabled",
+        });
+    });
+
+    it("does not let cached eligibility authenticate an erased Account", async () => {
+        const account = await db.account.create({ data: { publicKey: "eligibility-erased-cache" } });
+        await expect(enforceLoginEligibility({ accountId: account.id, env: process.env })).resolves.toEqual({ ok: true });
+        await db.account.delete({ where: { id: account.id } });
+
+        await expect(enforceLoginEligibility({ accountId: account.id, env: process.env })).resolves.toEqual({
+            ok: false, statusCode: 401, error: "invalid-token",
+        });
     });
 
     it("fails closed when the account lookup cannot query the database", async () => {

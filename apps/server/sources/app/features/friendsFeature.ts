@@ -1,18 +1,19 @@
 import type { FeaturesPayloadDelta } from "./types";
 import { resolveFriendsPolicyFromEnv } from "@/app/social/friendsPolicy";
-import { resolveOAuthProviderStatuses } from "@/app/oauth/providers/registry";
-import { findIdentityProviderById } from "@/app/auth/providers/identityProviders/registry";
+import {
+    hasDeploymentIdentityProvider,
+    resolveDeploymentOAuthProviderStatuses,
+} from "@/app/auth/providers/deploymentProviderFeatures";
 
 export function resolveFriendsFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
     const friendsPolicy = resolveFriendsPolicyFromEnv(env);
-    const oauthProviders = resolveOAuthProviderStatuses(env);
+    const oauthProviders = resolveDeploymentOAuthProviderStatuses(env);
 
     const requiredProviderId = friendsPolicy.requiredIdentityProviderId;
     const providerConfigured = (() => {
         if (!requiredProviderId) return true;
 
-        const identityProvider = findIdentityProviderById(env, requiredProviderId);
-        if (!identityProvider) return false;
+        if (!hasDeploymentIdentityProvider(env, requiredProviderId)) return false;
 
         const oauthStatus = oauthProviders[requiredProviderId];
         if (!oauthStatus) return true;

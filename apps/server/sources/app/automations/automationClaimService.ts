@@ -1,3 +1,4 @@
+import { persistentMachineWhere } from "@/app/machines/machineSelection";
 import { createHash } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import { afterTx, inTx, type Tx } from "@/storage/inTx";
@@ -7,13 +8,17 @@ import { readMachineAvailabilityStateInTx } from "@/app/machines/machineStateGua
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import {
     AutomationV3WorkerClaimResponseSchema,
+    AutomationV3WorkerClaimReceiptRunSchema,
     AutomationV3WorkerClaimedAutomationSchema,
     AutomationV3WorkerClaimedRunSchema,
+    parseWorkflowStoredContentEnvelopeV1,
+    validateWorkflowStoredEnvelopeOuterForModeV1,
     parseAutomationRunExecutionRecipeV1,
     validateAutomationRunExecutionRecipeOuterV1,
     type AutomationAccountCurrentnessWitnessV1,
     type AutomationV3WorkerClaimResponse,
     type AutomationV3WorkerClaimedAutomation,
+    type AutomationV3WorkerClaimReceiptRun,
     type AutomationV3WorkerClaimedRun,
 } from "@happier-dev/protocol";
 
@@ -25,10 +30,13 @@ import {
 } from "./automationPersistenceSelect";
 import {
     RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX,
+    validateAutomationStoredContentEnvelopeOuterForMode,
     validateRetainedAutomationRunExecutionInputV2OuterForMode,
 } from "./automationStoredContentRead";
 import {
     decodeAutomationRunCause,
+    isAutomationCauseRow,
+    projectAutomationOriginRun,
     retainedV2OriginKindForRun,
 } from "./automationRunCauseCodec";
 import {
@@ -39,18 +47,42 @@ import type {
     AutomationRunWithAutomation,
     AutomationTriggerKind,
 } from "./automationTypes";
+import {
+    resolveAutomationRecipeFeaturePolicy,
+    type AutomationRecipeFeaturePolicy,
+} from "./automationRecipeFeaturePolicy";
 
 type ClaimCandidateState = "queued" | "claimed" | "running";
 
 type AutomationClaimResult = Readonly<{
-    run: AutomationRunWithAutomation | null;
+    run: AutomationClaimRun | null;
     accountCurrentness: AutomationAccountCurrentnessWitnessV1 | null;
     /** Exact frozen V3 wire payload when this result rejoins a receipt. */
     receiptReplay?: Readonly<{
         run: AutomationV3WorkerClaimedRun;
-        automation: AutomationV3WorkerClaimedAutomation;
+        automation: AutomationV3WorkerClaimedAutomation | null;
     }>;
 }>;
+
+type AutomationClaimRun = Prisma.AutomationRunGetPayload<{
+    select: typeof automationRunWithAutomationSelect;
+}> & Readonly<{ triggerRetired?: boolean; recipeKind?: "legacy" | "workflow-v2" }>;
+
+function recipeKindForClaimRun(run: Pick<AutomationClaimRun, "workflowCustodyState">): "legacy" | "workflow-v2" {
+    return run.workflowCustodyState !== null ? "workflow-v2" : "legacy";
+}
+
+function assertAutomationClaimRun(
+    run: AutomationClaimRun,
+): asserts run is AutomationClaimRun & AutomationRunWithAutomation {
+    if (
+        !isAutomationCauseRow(run)
+        || run.originSessionId !== null
+        || run.automation === null
+    ) {
+        throw new TypeError("Automation-origin claim has invalid origin correspondence");
+    }
+}
 
 type AutomationClaimRequest = Readonly<{
     machineInstallationId: string;
@@ -78,7 +110,7 @@ class AutomationClaimReceiptConflictError extends Error {}
 
 type AutomationClaimReceiptResultV2 = Readonly<{
     v: 2;
-    run: AutomationV3WorkerClaimedRun | null;
+    run: AutomationV3WorkerClaimReceiptRun | null;
     automation: AutomationV3WorkerClaimedAutomation | null;
 }>;
 
@@ -94,6 +126,27 @@ function projectAutomationV3ClaimReceiptResult(
         };
     }
     if (!result.run) return { v: 2, run: null, automation: null };
+    if (result.run.originKind === "direct") {
+        return {
+            v: 2,
+            run: AutomationV3WorkerClaimedRunSchema.parse({
+                id: result.run.id,
+                automationId: null,
+                attempt: result.run.attempt,
+                revision: result.run.revision,
+                recipeKind: "workflow-v2",
+                origin: {
+                    kind: "direct",
+                    ...(result.run.originSessionId === null ? {} : { originSessionId: result.run.originSessionId }),
+                },
+                workflowAcceptedSnapshotEnvelope: result.run.workflowAcceptedSnapshotEnvelope,
+                triggerId: null,
+                triggerRetired: false,
+            }),
+            automation: null,
+        };
+    }
+    assertAutomationClaimRun(result.run);
     const cause = decodeAutomationRunCause(result.run);
     return {
         v: 2,
@@ -103,7 +156,12 @@ function projectAutomationV3ClaimReceiptResult(
             triggerId: result.run.triggerId,
             triggerRetired: result.run.triggerRetired ?? false,
             attempt: result.run.attempt,
+            revision: result.run.revision,
+            recipeKind: result.run.recipeKind ?? recipeKindForClaimRun(result.run),
             executionInputEnvelope: result.run.executionInputEnvelope,
+            ...(result.run.workflowCustodyState !== null
+                ? { automationEvidenceEnvelope: result.run.triggerEvidenceEnvelope }
+                : {}),
             cause,
             ...(cause.kind === "conversation"
                 && result.run.replyHandoffState === "awaitingResult"
@@ -139,10 +197,17 @@ function projectAutomationV3ClaimReceiptResult(
 function serializeAutomationClaimReceiptResultV2(result: AutomationClaimResult): string {
     const projected = projectAutomationV3ClaimReceiptResult(result);
     if (projected.run === null) return JSON.stringify(projected);
+    if (projected.run.automationId === null) {
+        return JSON.stringify({
+            ...projected,
+            run: { ...projected.run, workflowAcceptedSnapshotEnvelope: null },
+        });
+    }
+    const { automationEvidenceEnvelope: _automationEvidenceEnvelope, ...receiptRun } = projected.run;
     return JSON.stringify({
         ...projected,
         run: {
-            ...projected.run,
+            ...receiptRun,
             executionInputEnvelope: null,
         },
     });
@@ -162,7 +227,7 @@ function parseAutomationClaimReceiptResultV2(
     if (record.v !== 2) return { ok: false };
     const run = record.run === null
         ? null
-        : AutomationV3WorkerClaimedRunSchema.safeParse(record.run);
+        : AutomationV3WorkerClaimReceiptRunSchema.safeParse(record.run);
     const automation = record.automation === null
         ? null
         : AutomationV3WorkerClaimedAutomationSchema.safeParse(record.automation);
@@ -170,7 +235,11 @@ function parseAutomationClaimReceiptResultV2(
     if (automation !== null && !automation.success) return { ok: false };
     const parsedRun = run === null ? null : run.data;
     const parsedAutomation = automation === null ? null : automation.data;
-    if ((parsedRun === null) !== (parsedAutomation === null)) return { ok: false };
+    if (
+        (parsedRun === null && parsedAutomation !== null)
+        || (parsedRun?.automationId !== null && parsedAutomation === null)
+        || (parsedRun?.automationId === null && parsedAutomation !== null)
+    ) return { ok: false };
     return {
         ok: true,
         result: { v: 2, run: parsedRun, automation: parsedAutomation },
@@ -200,11 +269,30 @@ function isClaimCandidateState(state: string): state is ClaimCandidateState {
  * still surface their frozen bytes; it never produces or rewrites a recipe.
  */
 function hasClaimableFrozenRecipe(params: {
+    accountId: string;
+    runId: string;
     executionInputEnvelope: string | null;
+    originKind?: string;
+    workflowAcceptedSnapshotEnvelope?: string | null;
+    workflowCustodyState?: string | null;
     retainedV2OriginKind?: "scheduled" | "manual";
     accountCurrentness: AutomationAccountCurrentnessWitnessV1;
     requireV2RunRepresentability?: boolean;
 }): boolean {
+    if (params.originKind === "direct") {
+        if (params.requireV2RunRepresentability || params.workflowAcceptedSnapshotEnvelope === null) return false;
+        const envelope = parseWorkflowStoredContentEnvelopeV1(params.workflowAcceptedSnapshotEnvelope);
+        return envelope !== null && validateWorkflowStoredEnvelopeOuterForModeV1({
+            mode: params.accountCurrentness.mode,
+            binding: {
+                v: 1,
+                purpose: "accepted_snapshot",
+                accountId: params.accountId,
+                runId: params.runId,
+            },
+            envelope,
+        }).kind === "available";
+    }
     if (params.requireV2RunRepresentability) {
         if (params.executionInputEnvelope === null) return false;
         return validateRetainedAutomationRunExecutionInputV2OuterForMode({
@@ -212,6 +300,13 @@ function hasClaimableFrozenRecipe(params: {
             mode: params.accountCurrentness.mode,
             retainedV2OriginKind: params.retainedV2OriginKind,
         })?.kind === "available";
+    }
+    if (params.workflowCustodyState === "pending") {
+        if (params.executionInputEnvelope === null) return false;
+        return validateAutomationStoredContentEnvelopeOuterForMode({
+            raw: params.executionInputEnvelope,
+            mode: params.accountCurrentness.mode,
+        }).kind === "available";
     }
     const strictRecipe = parseAutomationRunExecutionRecipeV1(params.executionInputEnvelope);
     if (strictRecipe.kind === "available") {
@@ -285,12 +380,15 @@ const automationClaimCandidateSelect = {
     ...automationRunCauseSelect,
     id: true,
     automationId: true,
+    originKind: true,
+    workflowAcceptedSnapshotEnvelope: true,
     state: true,
     revision: true,
     attempt: true,
     executionDispatchState: true,
     executionAttempt: true,
     executionInputEnvelope: true,
+    workflowCustodyState: true,
     leaseExpiresAt: true,
     dueAt: true,
     assignments: { select: { machineId: true } },
@@ -305,6 +403,7 @@ async function findClaimCandidates(params: {
     limit: number;
     expectedTriggerKind?: AutomationTriggerKind;
     requireV2RunRepresentability?: boolean;
+    recipeFeaturePolicy: AutomationRecipeFeaturePolicy;
 }) {
     return await params.tx.automationRun.findMany({
         where: {
@@ -318,6 +417,9 @@ async function findClaimCandidates(params: {
             // decision.
             ...(params.requireV2RunRepresentability
                 ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
+                : {}),
+            ...(!params.recipeFeaturePolicy.workflowsEnabled
+                ? { workflowCustodyState: null }
                 : {}),
             OR: [
                 {
@@ -403,7 +505,7 @@ async function tryClaimRun(params: {
     });
 }
 
-async function fetchClaimedRun(tx: Tx, runId: string): Promise<AutomationRunWithAutomation | null> {
+async function fetchClaimedRun(tx: Tx, runId: string): Promise<AutomationClaimRun | null> {
     const row = await tx.automationRun.findUnique({
         where: { id: runId },
         select: automationRunWithAutomationSelect,
@@ -415,8 +517,10 @@ async function fetchClaimedRun(tx: Tx, runId: string): Promise<AutomationRunWith
 
 async function projectClaimedRunWithTriggerCurrentness(
     tx: Tx,
-    run: AutomationRunWithAutomation,
-): Promise<AutomationRunWithAutomation> {
+    run: AutomationClaimRun,
+): Promise<AutomationClaimRun> {
+    if (run.originKind === "direct") return { ...run, triggerRetired: false };
+    assertAutomationClaimRun(run);
     const currentTrigger = run.triggerId === null
         ? null
         : await tx.automationTrigger.findFirst({
@@ -451,6 +555,7 @@ async function resolveClaimReceiptTx(params: Readonly<{
     claimRequestNonceDigest: string;
     now: Date;
     expectedTriggerKind?: AutomationTriggerKind;
+    recipeFeaturePolicy: AutomationRecipeFeaturePolicy;
 }>): Promise<AutomationClaimResult | undefined> {
     const receipt = await params.tx.automationWorkerClaimReceipt.findUnique({
         where: { id: params.claimRequestNonceDigest },
@@ -481,8 +586,13 @@ async function resolveClaimReceiptTx(params: Readonly<{
     const automation = committedResult.result.automation;
     if (
         !run
-        || !automation
+        || (!params.recipeFeaturePolicy.workflowsEnabled && run.recipeKind === "workflow-v2")
+        || (run.automationId !== null && !automation)
+        || (run.automationId === null && automation !== null)
         || (params.expectedTriggerKind !== undefined && (
+            run.automationId === null
+            || !("cause" in run)
+            ||
             run.cause.kind !== "trigger"
             || run.cause.triggerKind !== params.expectedTriggerKind
         ))
@@ -500,14 +610,21 @@ async function resolveClaimReceiptTx(params: Readonly<{
             id: run.id,
             accountId: params.accountId,
         },
-        select: { attempt: true, executionInputEnvelope: true },
+        select: {
+            attempt: true,
+            executionInputEnvelope: true,
+            triggerEvidenceEnvelope: true,
+            workflowCustodyState: true,
+            originKind: true,
+            workflowAcceptedSnapshotEnvelope: true,
+        },
     });
     if (!currentAttempt || currentAttempt.attempt !== run.attempt) {
         return { run: null, accountCurrentness: null };
     }
-    const retainedV2OriginKind = run.cause.kind === "manual"
+    const retainedV2OriginKind = run.automationId !== null && run.cause.kind === "manual"
         ? "manual" as const
-        : run.cause.kind === "trigger" && run.cause.triggerKind === "schedule"
+        : run.automationId !== null && run.cause.kind === "trigger" && run.cause.triggerKind === "schedule"
             ? "scheduled" as const
             : undefined;
     const replayWitness = await fetchAutomationAccountCurrentnessWitnessTx(
@@ -515,7 +632,12 @@ async function resolveClaimReceiptTx(params: Readonly<{
         params.accountId,
     );
     if (!replayWitness || !hasClaimableFrozenRecipe({
+        accountId: params.accountId,
+        runId: run.id,
+        originKind: currentAttempt.originKind,
         executionInputEnvelope: currentAttempt.executionInputEnvelope,
+        workflowAcceptedSnapshotEnvelope: currentAttempt.workflowAcceptedSnapshotEnvelope,
+        workflowCustodyState: currentAttempt.workflowCustodyState,
         retainedV2OriginKind,
         accountCurrentness: replayWitness,
     })) return { run: null, accountCurrentness: null };
@@ -523,7 +645,18 @@ async function resolveClaimReceiptTx(params: Readonly<{
         run: null,
         accountCurrentness: replayWitness,
         receiptReplay: {
-            run: { ...run, executionInputEnvelope: currentAttempt.executionInputEnvelope },
+            run: AutomationV3WorkerClaimedRunSchema.parse(run.automationId === null
+                ? {
+                    ...run,
+                    workflowAcceptedSnapshotEnvelope: currentAttempt.workflowAcceptedSnapshotEnvelope,
+                }
+                : {
+                    ...run,
+                    executionInputEnvelope: currentAttempt.executionInputEnvelope,
+                    ...(currentAttempt.workflowCustodyState !== null
+                        ? { automationEvidenceEnvelope: currentAttempt.triggerEvidenceEnvelope }
+                        : {}),
+                }),
             automation,
         },
     };
@@ -566,7 +699,9 @@ export async function claimAutomationRun(params: {
     requireV2RunRepresentability?: boolean;
     /** Exact V3 signed request identity; omitted only by the released V2 seam. */
     claimRequest?: AutomationClaimRequest;
+    recipeFeaturePolicy?: AutomationRecipeFeaturePolicy;
 }): Promise<AutomationClaimResult> {
+    const recipeFeaturePolicy = params.recipeFeaturePolicy ?? resolveAutomationRecipeFeaturePolicy();
     const execute = async (): Promise<AutomationClaimResult> => await inTx(async (tx) => {
         const accountFence = await acquireAccountEncryptionTransitionFenceInTx(tx, params.accountId);
         if (accountFence.status === "account_not_found") {
@@ -576,6 +711,7 @@ export async function claimAutomationRun(params: {
             where: {
                 accountId: params.accountId,
                 id: params.machineId,
+                ...persistentMachineWhere,
                 revokedAt: null,
                 replacedByMachineId: null,
             },
@@ -611,6 +747,7 @@ export async function claimAutomationRun(params: {
                 claimRequestNonceDigest,
                 now,
                 expectedTriggerKind: params.expectedTriggerKind,
+                recipeFeaturePolicy,
             });
             if (replayed !== undefined) return replayed;
         }
@@ -643,6 +780,7 @@ export async function claimAutomationRun(params: {
             limit: candidatePageSize,
             expectedTriggerKind: params.expectedTriggerKind,
             requireV2RunRepresentability: params.requireV2RunRepresentability,
+            recipeFeaturePolicy,
         });
 
         for (const candidate of candidates) {
@@ -661,7 +799,7 @@ export async function claimAutomationRun(params: {
                 return await settleClaimRequest({ run: null, accountCurrentness: null });
             }
             if (!hasExactDerivedAssignmentIndex(candidate)) {
-                if (candidate.state === "queued") {
+                if (candidate.state === "queued" && candidate.automationId !== null) {
                     await failInvalidAutomationRunBeforeClaimTx({
                         tx,
                         accountId: params.accountId,
@@ -678,8 +816,15 @@ export async function claimAutomationRun(params: {
             }
             const hasV2FrozenRecipe = params.requireV2RunRepresentability
                 ? hasClaimableFrozenRecipe({
+                    accountId: params.accountId,
+                    runId: candidate.id,
+                    originKind: candidate.originKind,
                     executionInputEnvelope: candidate.executionInputEnvelope,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(candidate),
+                    workflowAcceptedSnapshotEnvelope: candidate.workflowAcceptedSnapshotEnvelope,
+                    workflowCustodyState: candidate.workflowCustodyState,
+                    retainedV2OriginKind: candidate.originKind === "automation"
+                        ? retainedV2OriginKindForRun(candidate)
+                        : undefined,
                     accountCurrentness: preclaimCurrentness,
                     requireV2RunRepresentability: true,
                 })
@@ -694,7 +839,7 @@ export async function claimAutomationRun(params: {
                 // worker can execute it, so leave terminality to the incumbent
                 // Run owner instead of letting one poisoned page starve later
                 // compatible work forever.
-                await failInvalidAutomationRunBeforeClaimTx({
+                if (candidate.automationId !== null) await failInvalidAutomationRunBeforeClaimTx({
                     tx,
                     accountId: params.accountId,
                     automationId: candidate.automationId,
@@ -718,6 +863,7 @@ export async function claimAutomationRun(params: {
                     )
                 )
             ) {
+                if (!isAutomationCauseRow(candidate)) continue;
                 await markAbandonedAutomationExecutionDispatchOutcomeUnknownTx({
                     tx,
                     accountId: params.accountId,
@@ -735,12 +881,19 @@ export async function claimAutomationRun(params: {
             if (
                 !params.requireV2RunRepresentability
                 && !hasClaimableFrozenRecipe({
+                    accountId: params.accountId,
+                    runId: candidate.id,
+                    originKind: candidate.originKind,
                     executionInputEnvelope: candidate.executionInputEnvelope,
-                    retainedV2OriginKind: retainedV2OriginKindForRun(candidate),
+                    workflowAcceptedSnapshotEnvelope: candidate.workflowAcceptedSnapshotEnvelope,
+                    workflowCustodyState: candidate.workflowCustodyState,
+                    retainedV2OriginKind: candidate.originKind === "automation"
+                        ? retainedV2OriginKindForRun(candidate)
+                        : undefined,
                     accountCurrentness: preclaimCurrentness,
                 })
             ) {
-                await failInvalidAutomationRunBeforeClaimTx({
+                if (candidate.automationId !== null) await failInvalidAutomationRunBeforeClaimTx({
                     tx,
                     accountId: params.accountId,
                     automationId: candidate.automationId,
@@ -778,11 +931,21 @@ export async function claimAutomationRun(params: {
             }
             const projectedRun = await projectClaimedRunWithTriggerCurrentness(tx, run);
 
-            const cursor = await markAccountChanged(tx, {
-                accountId: params.accountId,
-                kind: "automation",
-                entityId: run.automationId,
-            });
+            let cursor: number;
+            if (run.originKind === "direct") {
+                cursor = await markAccountChanged(tx, {
+                    accountId: params.accountId,
+                    kind: "account",
+                    entityId: `workflow-run:${run.id}`,
+                });
+            } else {
+                assertAutomationClaimRun(run);
+                cursor = await markAccountChanged(tx, {
+                    accountId: params.accountId,
+                    kind: "automation",
+                    entityId: run.automationId,
+                });
+            }
             const accountCurrentness = await fetchAutomationAccountCurrentnessWitnessTx(tx, params.accountId);
             if (!accountCurrentness) {
                 // Returning after the claim would commit a Run a worker cannot
@@ -790,16 +953,24 @@ export async function claimAutomationRun(params: {
                 throw new Error("Automation Account currentness became unavailable during claim");
             }
 
-            afterTx(tx, () => {
-                emitAutomationRunTransition({
-                    accountId: params.accountId,
-                    run: projectedRun,
-                    previousState: candidate.state,
-                    cursor,
+            if (run.originKind === "automation") {
+                const automationRun = projectAutomationOriginRun(projectedRun);
+                if (!automationRun) throw new Error("Claimed Automation Run has invalid origin correspondence");
+                const previousState = candidate.state;
+                afterTx(tx, () => {
+                    emitAutomationRunTransition({
+                        accountId: params.accountId,
+                        run: automationRun,
+                        previousState,
+                        cursor,
+                    });
                 });
-            });
+            }
 
-            return await settleClaimRequest({ run: projectedRun, accountCurrentness });
+            return await settleClaimRequest({
+                run: { ...projectedRun, recipeKind: recipeKindForClaimRun(projectedRun) },
+                accountCurrentness,
+            });
         }
 
         return await settleClaimRequest({ run: null, accountCurrentness: null });
@@ -825,6 +996,7 @@ export async function claimAutomationRun(params: {
                 claimRequestNonceDigest,
                 now: new Date(),
                 expectedTriggerKind: params.expectedTriggerKind,
+                recipeFeaturePolicy,
             });
             // A conflicting request never retries the non-idempotent effect.
             // The winner should be visible after the unique-key conflict; if a
@@ -872,6 +1044,7 @@ export async function heartbeatAutomationRun(params: {
                 select: automationRunWithAutomationSelect,
             })
             : null;
+        if (candidate) assertAutomationClaimRun(candidate);
         if (
             params.requireV2RunRepresentability
             && (

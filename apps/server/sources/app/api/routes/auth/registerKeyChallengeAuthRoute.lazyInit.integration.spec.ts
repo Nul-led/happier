@@ -5,6 +5,7 @@ import * as privacyKit from "privacy-kit";
 import tweetnacl from "tweetnacl";
 import crypto from "node:crypto";
 import {
+    signAccountContentKeyBindingV1,
     createKeyChallengeV2SigningInput,
     createExpectedAccountKeyChallengeSigningInputV1,
 } from "@happier-dev/protocol";
@@ -14,6 +15,7 @@ import { registerKeyChallengeAuthRoute } from "./registerKeyChallengeAuthRoute";
 import { db } from "@/storage/db";
 import { auth } from "@/app/auth/auth";
 import { deriveAccountEncryptionCurrentnessFromRow } from "@/app/encryption/accountContentKeyAdmission";
+import { digestTeamInvitationToken, mintTeamInvitationToken } from "@/app/teams/invitations/token";
 
 vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
 
@@ -37,13 +39,10 @@ function createContentKeyBinding(
     signingSecretKey: Uint8Array,
     contentPublicKey: Uint8Array,
 ): Uint8Array {
-    return tweetnacl.sign.detached(
-        Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentPublicKey),
-        ]),
-        signingSecretKey,
-    );
+    return signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signingSecretKey,
+        contentPublicKey: contentPublicKey,
+    });
 }
 
 function createExpectedAccountLoginPayload(params: Readonly<{
@@ -99,18 +98,23 @@ type KeyChallengeV2IssueResponse = Readonly<{
 function createKeyChallengeV2LoginPayload(params: Readonly<{
     challenge: KeyChallengeV2IssueResponse;
     signing: tweetnacl.SignKeyPair;
-}>): Readonly<Record<string, string>> {
+    requireExistingAccount?: true;
+}>): Readonly<Record<string, string | true>> {
     return {
         challengeId: params.challenge.challengeId,
         publicKey: privacyKit.encodeBase64(ownedBytes(params.signing.publicKey)),
         signature: privacyKit.encodeBase64(
             ownedBytes(
                 tweetnacl.sign.detached(
-                createKeyChallengeV2SigningInput(params.challenge),
+                createKeyChallengeV2SigningInput({
+                    ...params.challenge,
+                    ...(params.requireExistingAccount ? { requireExistingAccount: true } : {}),
+                }),
                 ownedBytes(params.signing.secretKey),
                 ),
             ),
         ),
+        ...(params.requireExistingAccount ? { requireExistingAccount: true } : {}),
     };
 }
 
@@ -172,11 +176,11 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         const contentKey = tweetnacl.box.keyPair();
         const challenge = crypto.randomBytes(32);
         const signature = tweetnacl.sign.detached(challenge, signing.secretKey);
-        const binding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]);
-        const contentSignature = tweetnacl.sign.detached(binding, signing.secretKey);
+
+        const contentSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentKey.publicKey,
+        });
 
         const res = await app.inject({
             method: "POST",
@@ -195,6 +199,70 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
             success: true,
             token: expect.any(String),
         });
+
+        await app.close();
+        harness.resetEnv();
+    });
+
+    it("does not consume a Team invitation or create an Account when Teams is unavailable", async () => {
+        harness.resetEnv({
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+            HAPPIER_BUILD_FEATURES_DENY: "",
+        });
+        const owner = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" },
+        });
+        const team = await db.team.create({
+            data: { name: "Disabled Teams key challenge", admissionMode: "invite_only" },
+        });
+        await db.teamMembership.create({
+            data: { teamId: team.id, accountId: owner.id, role: "owner" },
+        });
+        const invitationToken = mintTeamInvitationToken();
+        const invitation = await db.teamInvitation.create({
+            data: {
+                teamId: team.id,
+                tokenHash: Buffer.from(digestTeamInvitationToken(invitationToken)),
+                role: "member",
+                historyAccess: "from_membership",
+                createdByAccountId: owner.id,
+                expiresAt: new Date(Date.now() + 60_000),
+            },
+        });
+
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+        harness.resetEnv({
+            AUTH_ANONYMOUS_SIGNUP_ENABLED: "0",
+            HAPPIER_BUILD_FEATURES_DENY: "teams",
+        });
+
+        const signing = tweetnacl.sign.keyPair();
+        const challenge = crypto.randomBytes(32);
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: {
+                publicKey: privacyKit.encodeBase64(ownedBytes(signing.publicKey)),
+                challenge: privacyKit.encodeBase64(new Uint8Array(challenge)),
+                signature: privacyKit.encodeBase64(ownedBytes(
+                    tweetnacl.sign.detached(challenge, signing.secretKey),
+                )),
+                admission: { kind: "team_invitation", token: invitationToken },
+            },
+        });
+
+        expect(response.statusCode, response.body).toBe(403);
+        expect(response.json()).toEqual({ error: "signup-disabled" });
+        expect(await db.account.findUnique({
+            where: { publicKey: privacyKit.encodeHex(ownedBytes(signing.publicKey)) },
+        })).toBeNull();
+        expect(await db.teamMembership.count({ where: { teamId: team.id } })).toBe(1);
+        await expect(db.teamInvitation.findUniqueOrThrow({
+            where: { id: invitation.id },
+            select: { acceptedAt: true, acceptedByAccountId: true },
+        })).resolves.toEqual({ acceptedAt: null, acceptedByAccountId: null });
 
         await app.close();
         harness.resetEnv();
@@ -269,11 +337,11 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         const originalContentKey = tweetnacl.box.keyPair();
         const replacementContentKey = tweetnacl.box.keyPair();
         const publicKeyHex = privacyKit.encodeHex(new Uint8Array(signing.publicKey));
-        const originalBinding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(originalContentKey.publicKey),
-        ]);
-        const originalSignature = tweetnacl.sign.detached(originalBinding, signing.secretKey);
+
+        const originalSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: originalContentKey.publicKey,
+        });
         const account = await db.account.create({
             data: {
                 publicKey: publicKeyHex,
@@ -285,11 +353,11 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
 
         const challenge = crypto.randomBytes(32);
         const signature = tweetnacl.sign.detached(challenge, signing.secretKey);
-        const replacementBinding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(replacementContentKey.publicKey),
-        ]);
-        const replacementSignature = tweetnacl.sign.detached(replacementBinding, signing.secretKey);
+
+        const replacementSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: replacementContentKey.publicKey,
+        });
         const response = await app.inject({
             method: "POST",
             url: "/v1/auth",
@@ -339,11 +407,11 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         });
         const challenge = crypto.randomBytes(32);
         const signature = tweetnacl.sign.detached(challenge, signing.secretKey);
-        const binding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]);
-        const contentSignature = tweetnacl.sign.detached(binding, signing.secretKey);
+
+        const contentSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentKey.publicKey,
+        });
 
         const response = await app.inject({
             method: "POST",
@@ -577,14 +645,11 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
 
         const signing = tweetnacl.sign.keyPair();
         const contentKey = tweetnacl.box.keyPair();
-        const binding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]);
-        const contentSignature = tweetnacl.sign.detached(
-            binding,
-            signing.secretKey,
-        );
+
+        const contentSignature = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentKey.publicKey,
+        });
         const account = await db.account.create({
             data: {
                 publicKey: privacyKit.encodeHex(
@@ -751,12 +816,37 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
         harness.resetEnv();
     });
 
+    it("discloses inactive status only after complete Account-bound key proof", async () => {
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+        const signing = tweetnacl.sign.keyPair();
+        const contentKey = tweetnacl.box.keyPair();
+        const contentPublicKeySig = createContentKeyBinding(signing.secretKey, contentKey.publicKey);
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(ownedBytes(signing.publicKey)),
+            encryptionMode: "e2ee", status: "suspended",
+            contentPublicKey: new Uint8Array(contentKey.publicKey),
+            contentPublicKeySig: new Uint8Array(contentPublicKeySig),
+        } });
+        const payload = createExpectedAccountLoginPayload({
+            signing, contentPublicKey: contentKey.publicKey, contentPublicKeySig, expectedAccountId: account.id,
+        });
+        const badProof = await app.inject({ method: "POST", url: "/v1/auth", payload: {
+            ...payload, signature: privacyKit.encodeBase64(new Uint8Array(64)),
+        } });
+        expect(badProof.statusCode).toBe(401);
+        expect(badProof.json().error).not.toBe("account-disabled");
+        const response = await app.inject({ method: "POST", url: "/v1/auth", payload });
+        expect(response.statusCode).toBe(403);
+        expect(response.json()).toEqual({ error: "account-disabled" });
+        await app.close();
+    });
+
     it("fails Account-bound eligibility generically without issuing a token or changing Account bindings", async () => {
         harness.resetEnv({
             AUTH_REQUIRED_LOGIN_PROVIDERS: "github",
             AUTH_LOGIN_ELIGIBILITY_CACHE_TTL_MS: "0",
-            AUTH_LOGIN_ELIGIBILITY_ACCOUNT_SNAPSHOT_CACHE_TTL_MS:
-                "0",
         });
         const app = createTestApp();
         registerKeyChallengeAuthRoute(app);
@@ -1060,6 +1150,167 @@ describe("registerKeyChallengeAuthRoute (lazy auth init) (integration)", () => {
 
         await app.close();
         harness.resetEnv();
+    });
+
+    it("binds the v2 existing-Account constraint and rejects an unknown signing identity without side effects", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://server-a.example.test/api",
+            HAPPIER_SERVER_IDENTITY_ID: "srv_challenge_a",
+        });
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+
+        const signing = tweetnacl.sign.keyPair();
+        const publicKey = privacyKit.encodeHex(ownedBytes(signing.publicKey));
+        const writeCountsBefore = await Promise.all([
+            db.account.count(),
+            db.accountIdentity.count(),
+            db.accountEmail.count(),
+            db.accountPasswordCredential.count(),
+            db.accountApiToken.count(),
+            db.session.count(),
+            db.teamMembership.count(),
+        ]);
+        const issued = await app.inject({
+            method: "POST",
+            url: "/v1/auth/challenge",
+            payload: {},
+        });
+        expect(issued.statusCode).toBe(200);
+        const challenge = issued.json() as KeyChallengeV2IssueResponse;
+        const unsignedConstraintResponse = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: {
+                ...createKeyChallengeV2LoginPayload({ challenge, signing }),
+                requireExistingAccount: true,
+            },
+        });
+        expect(unsignedConstraintResponse.statusCode).toBe(401);
+        expect(unsignedConstraintResponse.json()).toEqual({ error: "Invalid signature" });
+        const constrainedPayload = createKeyChallengeV2LoginPayload({
+            challenge,
+            signing,
+            requireExistingAccount: true,
+        });
+
+        const malformedContentBindingResponse = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: {
+                ...constrainedPayload,
+                contentPublicKey: privacyKit.encodeBase64(new Uint8Array([1])),
+                contentPublicKeySig: privacyKit.encodeBase64(new Uint8Array([2])),
+            },
+        });
+        expect(malformedContentBindingResponse.statusCode).toBe(401);
+        expect(malformedContentBindingResponse.json()).toEqual({ error: "Invalid token" });
+
+        const retryIssued = await app.inject({
+            method: "POST",
+            url: "/v1/auth/challenge",
+            payload: {},
+        });
+        expect(retryIssued.statusCode).toBe(200);
+
+        const response = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: createKeyChallengeV2LoginPayload({
+                challenge: retryIssued.json() as KeyChallengeV2IssueResponse,
+                signing,
+                requireExistingAccount: true,
+            }),
+        });
+
+        expect(response.statusCode).toBe(401);
+        expect(response.json()).toEqual({ error: "Invalid token" });
+        await expect(db.account.findUnique({ where: { publicKey } })).resolves.toBeNull();
+        await expect(Promise.all([
+            db.account.count(),
+            db.accountIdentity.count(),
+            db.accountEmail.count(),
+            db.accountPasswordCredential.count(),
+            db.accountApiToken.count(),
+            db.session.count(),
+            db.teamMembership.count(),
+        ])).resolves.toEqual(writeCountsBefore);
+
+        await app.close();
+        harness.resetEnv();
+    });
+
+    it("authenticates an exact existing Account in one constrained v2 redemption", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://server-a.example.test/api",
+            HAPPIER_SERVER_IDENTITY_ID: "srv_challenge_a",
+        });
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+
+        const signing = tweetnacl.sign.keyPair();
+        const publicKey = privacyKit.encodeHex(ownedBytes(signing.publicKey));
+        const accountCountBefore = await db.account.count();
+        await db.account.create({ data: { publicKey, encryptionMode: "plain" } });
+        const existingIssued = await app.inject({
+            method: "POST",
+            url: "/v1/auth/challenge",
+            payload: {},
+        });
+        expect(existingIssued.statusCode).toBe(200);
+        const existingResponse = await app.inject({
+            method: "POST",
+            url: "/v1/auth",
+            payload: createKeyChallengeV2LoginPayload({
+                challenge: existingIssued.json() as KeyChallengeV2IssueResponse,
+                signing,
+                requireExistingAccount: true,
+            }),
+        });
+        expect(existingResponse.statusCode).toBe(200);
+        expect(existingResponse.json()).toEqual({ success: true, token: expect.any(String) });
+        await expect(db.account.count()).resolves.toBe(accountCountBefore + 1);
+
+        await app.close();
+        harness.resetEnv();
+    });
+
+    it.each([
+        { operationKind: "password_credential_mutation_v1", operationDigest: null },
+        { operationKind: null, operationDigest: "digest-only" },
+        { operationKind: "password_credential_mutation_v1", operationDigest: "mutation-digest" },
+    ])("rejects operation-bearing challenges at login without consuming them: %j", async (operation) => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://server-a.example.test/api",
+            HAPPIER_SERVER_IDENTITY_ID: "srv_challenge_a",
+        });
+        const app = createTestApp();
+        registerKeyChallengeAuthRoute(app);
+        await app.ready();
+        try {
+            const signing = tweetnacl.sign.keyPair();
+            await db.account.create({ data: {
+                publicKey: privacyKit.encodeHex(ownedBytes(signing.publicKey)),
+                encryptionMode: "plain",
+            } });
+            const issued = await app.inject({ method: "POST", url: "/v1/auth/challenge", payload: {} });
+            expect(issued.statusCode).toBe(200);
+            const challenge = issued.json() as KeyChallengeV2IssueResponse;
+            await db.keyChallengeV2.update({ where: { id: challenge.challengeId }, data: operation });
+            const response = await app.inject({
+                method: "POST", url: "/v1/auth",
+                payload: createKeyChallengeV2LoginPayload({ challenge, signing }),
+            });
+            expect(response.statusCode).toBe(401);
+            expect(response.json()).not.toHaveProperty("token");
+            expect(await db.keyChallengeV2.findUnique({ where: { id: challenge.challengeId } }))
+                .toMatchObject({ consumedAt: null });
+        } finally {
+            await app.close();
+            harness.resetEnv();
+        }
     });
 
     it("rejects a v2 assertion relayed from the issuing public origin to another server", async () => {

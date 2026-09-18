@@ -70,6 +70,7 @@ export const automationDefinitionListItemSelect = {
  * select a partial immutable cause; `CauseRow` is derived from these keys.
  */
 export const automationRunCauseSelect = {
+    originKind: true,
     triggerId: true,
     causeKind: true, causeTriggerKind: true, causeTriggerRevision: true, causeOccurredAt: true,
     causeEventPluginId: true, causeEventLocalId: true, causeScheduledFor: true,
@@ -81,9 +82,12 @@ export const automationRunCauseSelect = {
 
 export const automationRunItemSelect = {
     ...automationRunCauseSelect,
-    id: true, automationId: true, accountId: true, state: true,
+    id: true, originKind: true, automationId: true, originSessionId: true,
+    workflowAcceptedSnapshotEnvelope: true,
+    accountId: true, state: true,
     legacyManualIdempotencyKey: true, occurrenceEvidenceEqualityTag: true,
     triggerEvidenceEnvelope: true, executionInputEnvelope: true,
+    workflowCustodyState: true,
     executionDispatchState: true, executionAttempt: true,
     executionDispatchCommittedAt: true, executionDispatchDueAt: true,
     executionNativeRunId: true, executionNativeCallId: true, executionNativeSidechainId: true,

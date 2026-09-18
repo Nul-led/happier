@@ -578,6 +578,16 @@ export function createReviewCommentAccountEncryptionMigrationPersistenceInTx(
                 eventRows,
             });
         },
+        async readPublicationCorrelationCount(accountId) {
+            // Every retained row counts: settlement is recorded inside `target_json`
+            // rather than by deleting the correlation.
+            const rows = await tx.$queryRaw<Array<{ count: number | bigint }>>(Prisma.sql`
+                SELECT COUNT(*) AS count
+                FROM review_comment_publication_correlations
+                WHERE account_id = ${accountId}
+            `);
+            return toNumber(rows[0]?.count ?? 0);
+        },
         async rewriteCommentSensitiveEnvelope(params) {
             const row = await readCommentRow(tx, params.accountId, params.commentId);
             if (

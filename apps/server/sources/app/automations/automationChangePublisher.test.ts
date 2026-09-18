@@ -7,7 +7,7 @@ import {
     type UpdatePayload,
 } from "@/app/events/eventRouter";
 
-import { emitAutomationRunTransition } from "./automationChangePublisher";
+import { emitAutomationRunTransition, emitAutomationRunUpdatedToMachineOnly } from "./automationChangePublisher";
 import type { AutomationRunItem } from "./automationTypes";
 
 function createMachineObserver(updates: UpdatePayload[]): ClientConnection {
@@ -28,7 +28,9 @@ function createRun(state: AutomationRunItem["state"]): AutomationRunItem {
     const now = new Date("2026-08-11T12:00:00.000Z");
     return {
         id: "run-1",
+        originKind: "automation",
         automationId: "automation-1",
+        originSessionId: null,
         accountId: "account-1",
         state,
         triggerId: "trigger-1",
@@ -205,5 +207,33 @@ describe("Automation Run transition publisher", () => {
             transitionCause: "cancelledWhileRunning",
         }));
         expect(lifecycleBodies[1]).not.toHaveProperty("transitionCause");
+    });
+
+    it("targets the owning machine with direct Workflow cancellation control without fabricating an Automation id", () => {
+        const emitUpdate = vi.spyOn(eventRouter, "emitUpdate");
+        const run = createRun("running");
+
+        emitAutomationRunUpdatedToMachineOnly({
+            accountId: "account-1",
+            machineId: "machine-1",
+            run: { ...run, automationId: null, state: "interrupted" },
+            cursor: 7,
+            workflowControl: "cancel_requested",
+        });
+
+        expect(emitUpdate).toHaveBeenCalledWith(expect.objectContaining({
+            recipientFilter: { type: "machine-only", machineId: "machine-1" },
+            payload: expect.objectContaining({
+                seq: 7,
+                body: expect.objectContaining({
+                    t: "automation-run-updated",
+                    runId: "run-1",
+                    automationId: null,
+                    state: "running",
+                    targetMachineId: "machine-1",
+                    workflowControl: "cancel_requested",
+                }),
+            }),
+        }));
     });
 });

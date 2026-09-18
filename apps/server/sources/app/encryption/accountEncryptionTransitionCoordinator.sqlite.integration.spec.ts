@@ -1,18 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+    signAccountContentKeyBindingV1,
     ACCOUNT_ENCRYPTION_MIGRATE_TRANSITION_COLLECTION_PAGE_MAX_ITEMS,
     AutomationRunExecutionInputV1Schema,
     AutomationTriggerIdSchema,
     deriveAutomationOccurrenceKeyV1,
+    sealWorkflowAcceptedSnapshotStoredEnvelopeV1,
+    sealWorkflowCheckpointStoredEnvelopeV1,
+    sealWorkflowProgressStoredEnvelopeV1,
     sealPluginCollectionPrivatePayloadV1,
+    serializeWorkflowStoredContentEnvelopeV1,
 } from "@happier-dev/protocol";
 import type { Prisma } from "@prisma/client";
 import tweetnacl from "tweetnacl";
 
 import { materializePluginCollectionContractsFromManifestTx } from "@/app/plugins/data/collections/contracts";
-import { db } from "@/storage/db";
+import { db, initDbSqlite, shutdownDbClient } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { setAccountStatusInTx } from "@/app/home/governance/accountLifecycle";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 import {
     createLightSqliteHarness,
@@ -31,10 +37,12 @@ import {
     cleanupExpiredAccountEncryptionTransitionsInTx,
     finalizeAccountEncryptionTransitionCoordinatorInTx,
     inventoryAccountEncryptionTransitionCoordinatorInTx,
+    inventoryAccountEncryptionTransitionAutomationsCoordinatorInTx,
     prepareAccountEncryptionTransitionCoordinatorInTx,
     stageAccountEncryptionTransitionAutomationsCoordinatorInTx,
     stageAccountEncryptionTransitionCollectionsCoordinatorInTx,
     ACCOUNT_ENCRYPTION_TRANSITION_LIFECYCLE,
+    admitAccountDataEraseThroughEncryptionTransitionInTx,
 } from "./accountEncryptionTransitionCoordinator";
 import {
     deriveAccountEncryptionMigrationKeyFingerprints,
@@ -110,6 +118,131 @@ function plainAutomationTemplate(payload: unknown): string {
         kind: "happier_automation_template_plain_v1",
         payload,
     });
+}
+
+const WORKFLOW_TRANSITION_MATERIAL = {
+    type: "dataKey" as const,
+    machineKey: new Uint8Array(32).fill(91),
+};
+
+const WORKFLOW_TRANSITION_DEFINITION = {
+    version: 1 as const,
+    inputs: [],
+    defaults: {},
+    blocks: [{
+        kind: "step" as const,
+        id: "restart-step",
+        document: {
+            text: "Prove transition restart currentness",
+            references: [],
+            attachments: [],
+        },
+        input: [],
+        result: { kind: "text" as const },
+    }],
+};
+
+function workflowSealMode(mode: "plain" | "e2ee") {
+    return mode === "plain"
+        ? { mode } as const
+        : {
+            mode,
+            material: WORKFLOW_TRANSITION_MATERIAL,
+            randomBytes: (length: number) => new Uint8Array(length).fill(37),
+        } as const;
+}
+
+function workflowAcceptedSnapshotEnvelope(params: Readonly<{
+    accountId: string;
+    runId: string;
+    mode: "plain" | "e2ee";
+}>): string {
+    return serializeWorkflowStoredContentEnvelopeV1(
+        sealWorkflowAcceptedSnapshotStoredEnvelopeV1({
+            ...workflowSealMode(params.mode),
+            binding: {
+                v: 1,
+                purpose: "accepted_snapshot",
+                accountId: params.accountId,
+                runId: params.runId,
+            },
+            acceptedSnapshot: {
+                definition: WORKFLOW_TRANSITION_DEFINITION,
+                source: { kind: "inline" },
+                inputs: {},
+                machineId: "workflow-transition-machine",
+                executionTarget: { kind: "session" },
+                workspaceTarget: {
+                    project: {
+                        machineId: "workflow-transition-machine",
+                        directory: "/repo/workflow-transition",
+                        checkoutRootPath: "/repo/workflow-transition",
+                    },
+                },
+                origin: { kind: "direct" },
+                authorization: {
+                    admittedPermissionCeiling: "default",
+                    principal: { kind: "host" },
+                },
+            },
+        }),
+    );
+}
+
+function workflowCheckpointEnvelope(params: Readonly<{
+    accountId: string;
+    runId: string;
+    invocationRecordId: string;
+    mode: "plain" | "e2ee";
+}>): string {
+    return serializeWorkflowStoredContentEnvelopeV1(
+        sealWorkflowCheckpointStoredEnvelopeV1({
+            ...workflowSealMode(params.mode),
+            binding: {
+                v: 1,
+                purpose: "checkpoint",
+                accountId: params.accountId,
+                runId: params.runId,
+            },
+            checkpoint: {
+                kind: "happier.workflow-checkpoint.v1",
+                rootRecordId: params.invocationRecordId,
+                nextSequence: "1",
+                frontier: { nextBlockOrdinal: 1, paused: false },
+            },
+        }),
+    );
+}
+
+function workflowInvocationEnvelope(params: Readonly<{
+    accountId: string;
+    runId: string;
+    invocationRecordId: string;
+    mode: "plain" | "e2ee";
+}>): string {
+    return serializeWorkflowStoredContentEnvelopeV1(
+        sealWorkflowProgressStoredEnvelopeV1({
+            ...workflowSealMode(params.mode),
+            binding: {
+                v: 1,
+                purpose: "invocation_progress",
+                accountId: params.accountId,
+                runId: params.runId,
+                recordId: params.invocationRecordId,
+                sequence: "0",
+                parentRecordId: null,
+                memberOrdinal: "0",
+                attempt: "0",
+            },
+            progress: {
+                kind: "happier.workflow-progress.v1",
+                invocationPath: { blockId: "$root", scope: [] },
+                blockKind: "root",
+                attempt: "0",
+                logicalInvocationRecordId: params.invocationRecordId,
+            },
+        }),
+    );
 }
 
 describe("Account encryption transition coordinator Collection participant", () => {
@@ -302,6 +435,31 @@ describe("Account encryption transition coordinator Collection participant", () 
         });
         return { row, sourceEnvelope, transitionId: prepared.transition.transitionId };
     }
+
+    it("denies activation and fresh preparation after Disable while allowing erasure cleanup", async () => {
+        const staged = await createStagedE2eeToPlainCollectionTransition();
+        const owner = await db.account.create({ data: { homeRole: "owner" } });
+        await expect(inTx((tx) => setAccountStatusInTx(tx, {
+            actorAccountId: owner.id, targetAccountId: ACCOUNT_ID,
+            status: "suspended", authority: "home_administration",
+        }))).resolves.toMatchObject({ status: "applied" });
+        const disabled = await db.account.findUniqueOrThrow({ where: { id: ACCOUNT_ID } });
+        const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints(disabled);
+        await expect(inTx((tx) => prepareAccountEncryptionTransitionCoordinatorInTx({
+            tx, accountId: ACCOUNT_ID, request: {
+                toMode: "plain", expectedAccountVersion: disabled.seq,
+                expectedSigningKeyFingerprint: fingerprints.signingKeyFingerprint,
+                expectedContentKeyFingerprint: fingerprints.contentKeyFingerprint,
+            },
+        }))).rejects.toMatchObject({ code: "account-disabled" });
+        await expect(inTx((tx) => activateAccountEncryptionTransitionCoordinatorInTx({
+            tx, accountId: ACCOUNT_ID, transitionId: staged.transitionId,
+        }))).rejects.toMatchObject({ code: "account-disabled" });
+        expect(await db.account.findUnique({ where: { id: ACCOUNT_ID } })).toEqual(disabled);
+        await expect(inTx((tx) => admitAccountDataEraseThroughEncryptionTransitionInTx({ tx, accountId: ACCOUNT_ID })))
+            .resolves.toEqual({ status: "ready" });
+        expect(await db.accountEncryptionTransitionCollectionStage.count({ where: { transitionId: staged.transitionId } })).toBe(0);
+    });
 
     it("aborts the Account mode flip when the coordinator re-census finds an unstaged live Collection row", async () => {
         await db.account.create({
@@ -564,6 +722,273 @@ describe("Account encryption transition coordinator Collection participant", () 
             where: { id: ACCOUNT_ID },
             select: { encryptionMode: true, seq: true },
         })).resolves.toEqual({ encryptionMode: "plain", seq: 2 });
+    });
+
+    it("resumes a staged Workflow Run and invocation after SQLite reload and rejects its stale pre-restart callback", async () => {
+        const binding = createSignedAccountContentBinding();
+        const runId = "workflow-transition-restart-run";
+        const invocationRecordId = "workflow-transition-restart-root";
+        const sourceAcceptedSnapshot = workflowAcceptedSnapshotEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            mode: "e2ee",
+        });
+        const sourceCheckpoint = workflowCheckpointEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            invocationRecordId,
+            mode: "e2ee",
+        });
+        const sourceInvocation = workflowInvocationEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            invocationRecordId,
+            mode: "e2ee",
+        });
+        const targetAcceptedSnapshot = workflowAcceptedSnapshotEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            mode: "plain",
+        });
+        const targetCheckpoint = workflowCheckpointEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            invocationRecordId,
+            mode: "plain",
+        });
+        const targetInvocation = workflowInvocationEnvelope({
+            accountId: ACCOUNT_ID,
+            runId,
+            invocationRecordId,
+            mode: "plain",
+        });
+
+        await db.account.create({
+            data: { id: ACCOUNT_ID, ...binding, encryptionMode: "e2ee" },
+        });
+        await db.automationRun.create({
+            data: {
+                id: runId,
+                accountId: ACCOUNT_ID,
+                automationId: null,
+                originKind: "direct",
+                causeKind: null,
+                state: "running",
+                executionInputEnvelope: sourceAcceptedSnapshot,
+                workflowAcceptedSnapshotEnvelope: sourceAcceptedSnapshot,
+                workflowCheckpointEnvelope: sourceCheckpoint,
+                workflowCustodyState: "pending",
+                scheduledAt: new Date("2026-09-12T09:00:00.000Z"),
+                dueAt: new Date("2026-09-12T09:00:00.000Z"),
+                workflowInvocations: {
+                    create: {
+                        id: invocationRecordId,
+                        sequence: 0n,
+                        parentRecordId: null,
+                        memberOrdinal: 0n,
+                        attempt: 0n,
+                        lifecycle: "running",
+                        contentEnvelope: sourceInvocation,
+                    },
+                },
+            },
+        });
+
+        const fingerprints = deriveAccountEncryptionMigrationKeyFingerprints({
+            publicKey: binding.publicKey,
+            contentPublicKey: binding.contentPublicKey,
+        });
+        const prepared = await inTx(async (tx) => (
+            await prepareAccountEncryptionTransitionCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                request: {
+                    toMode: "plain",
+                    expectedAccountVersion: 0,
+                    expectedSigningKeyFingerprint:
+                        fingerprints.signingKeyFingerprint,
+                    expectedContentKeyFingerprint:
+                        fingerprints.contentKeyFingerprint,
+                },
+            })
+        ));
+        if (prepared.status !== "prepared") {
+            throw new Error(`Expected prepared transition, got ${prepared.status}`);
+        }
+        await declareIsolatedFixtureCapacity(prepared.transition.transitionId);
+        await expect(inTx(async (tx) => (
+            await authorizeAccountEncryptionTransitionCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+                authorization: { kind: "present_user_confirmation" },
+            })
+        ))).resolves.toEqual({ status: "authorized" });
+
+        await expect(inTx(async (tx) => (
+            await inventoryAccountEncryptionTransitionCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+            })
+        ))).resolves.toEqual({ status: "ready", items: [] });
+        const inventory = await inTx(async (tx) => (
+            await inventoryAccountEncryptionTransitionAutomationsCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+            })
+        ));
+        if (inventory.status !== "ready") {
+            throw new Error(`Expected Workflow transition inventory, got ${inventory.status}`);
+        }
+        expect(inventory.items.map((item) => item.kind)).toEqual([
+            "run",
+            "workflow_invocation",
+        ]);
+        const stageItems = inventory.items.map((item) => {
+            if (item.kind === "workflow_invocation") {
+                return {
+                    kind: item.kind,
+                    runId: item.runId,
+                    invocationRecordId: item.invocationRecordId,
+                    source: item.source,
+                    target: { contentEnvelope: targetInvocation },
+                } as const;
+            }
+            if (item.kind !== "run" || item.origin.kind !== "direct") {
+                throw new Error("Expected one direct Workflow Run participant");
+            }
+            return {
+                kind: item.kind,
+                runId: item.runId,
+                origin: item.origin,
+                expectedRevision: item.revision,
+                source: item.source,
+                target: {
+                    triggerEvidenceEnvelope: null,
+                    occurrenceEvidenceEqualityTag: null,
+                    executionInputEnvelope: targetAcceptedSnapshot,
+                    workflowAcceptedSnapshotEnvelope: targetAcceptedSnapshot,
+                    workflowCheckpointEnvelope: targetCheckpoint,
+                    resultEnvelope: null,
+                    replyContextEnvelope: null,
+                    failureDetailEnvelope: null,
+                    summaryCiphertext: null,
+                },
+            } as const;
+        });
+        await expect(inTx(async (tx) => (
+            await stageAccountEncryptionTransitionAutomationsCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+                items: stageItems,
+            })
+        ))).resolves.toMatchObject({
+            status: "staged",
+            stagedParticipantCount: 2,
+        });
+        await expect(db.accountEncryptionTransitionAutomationStage.findMany({
+            where: { transitionId: prepared.transition.transitionId },
+            orderBy: [{ participantKind: "asc" }, { participantId: "asc" }],
+            select: { participantKind: true, participantId: true, targetContent: true },
+        })).resolves.toEqual([
+            {
+                participantKind: "run",
+                participantId: runId,
+                targetContent: expect.any(String),
+            },
+            {
+                participantKind: "workflow_invocation",
+                participantId: invocationRecordId,
+                targetContent: expect.any(String),
+            },
+        ]);
+
+        // Model a server process replacement: release the active Prisma client,
+        // then initialize a fresh client against this test-owned SQLite file.
+        await shutdownDbClient();
+        await initDbSqlite();
+        await db.$connect();
+
+        await expect(inTx(async (tx) => (
+            await activateAccountEncryptionTransitionCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+            })
+        ))).resolves.toMatchObject({ status: "activated", mode: "plain" });
+        const currentRun = await db.automationRun.findUniqueOrThrow({
+            where: { id: runId },
+            select: {
+                revision: true,
+                executionInputEnvelope: true,
+                workflowAcceptedSnapshotEnvelope: true,
+                workflowCheckpointEnvelope: true,
+            },
+        });
+        expect(currentRun).toEqual({
+            revision: 1,
+            executionInputEnvelope: targetAcceptedSnapshot,
+            workflowAcceptedSnapshotEnvelope: targetAcceptedSnapshot,
+            workflowCheckpointEnvelope: targetCheckpoint,
+        });
+        const currentInvocation = await db.workflowRunInvocation.findUniqueOrThrow({
+            where: { id: invocationRecordId },
+            select: {
+                runId: true,
+                sequence: true,
+                parentRecordId: true,
+                memberOrdinal: true,
+                attempt: true,
+                lifecycle: true,
+                contentEnvelope: true,
+            },
+        });
+        expect(currentInvocation).toEqual({
+            runId,
+            sequence: 0n,
+            parentRecordId: null,
+            memberOrdinal: 0n,
+            attempt: 0n,
+            lifecycle: "running",
+            contentEnvelope: targetInvocation,
+        });
+        await expect(db.account.findUniqueOrThrow({
+            where: { id: ACCOUNT_ID },
+            select: { encryptionMode: true, seq: true },
+        })).resolves.toEqual({ encryptionMode: "plain", seq: 1 });
+
+        await expect(inTx(async (tx) => (
+            await stageAccountEncryptionTransitionAutomationsCoordinatorInTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                transitionId: prepared.transition.transitionId,
+                items: stageItems,
+            })
+        ))).resolves.toEqual({ status: "transition_not_ready" });
+        await expect(db.automationRun.findUniqueOrThrow({
+            where: { id: runId },
+            select: {
+                revision: true,
+                executionInputEnvelope: true,
+                workflowAcceptedSnapshotEnvelope: true,
+                workflowCheckpointEnvelope: true,
+            },
+        })).resolves.toEqual(currentRun);
+        await expect(db.workflowRunInvocation.findUniqueOrThrow({
+            where: { id: invocationRecordId },
+            select: {
+                runId: true,
+                sequence: true,
+                parentRecordId: true,
+                memberOrdinal: true,
+                attempt: true,
+                lifecycle: true,
+                contentEnvelope: true,
+            },
+        })).resolves.toEqual(currentInvocation);
     });
 
     it("rejects 10,001 retained Automation Runs before persisting an Account transition source stage", async () => {
@@ -1935,13 +2360,10 @@ describe("Account encryption transition coordinator Collection participant", () 
         const binding = verifyAccountContentKeyBinding({
             accountSigningPublicKey: signing.publicKey,
             contentPublicKey: content.publicKey,
-            contentPublicKeySignature: tweetnacl.sign.detached(
-                Buffer.concat([
-                    Buffer.from("Happy content key v1\u0000", "utf8"),
-                    Buffer.from(content.publicKey),
-                ]),
-                signing.secretKey,
-            ),
+            contentPublicKeySignature: signAccountContentKeyBindingV1({
+                accountSigningSecretKey: signing.secretKey,
+                contentPublicKey: content.publicKey,
+            }),
         });
         if (!binding) throw new Error("Expected a valid content-key binding.");
         const accountPublicKeyHex = Buffer.from(signing.publicKey).toString("hex");

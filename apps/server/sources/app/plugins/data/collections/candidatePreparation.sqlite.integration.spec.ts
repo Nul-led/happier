@@ -14,14 +14,18 @@ import {
 } from "./candidatePreparation";
 import { readPluginCollectionAccountActivationUsageInTx } from "./quota";
 import { mutatePluginCollection } from "./mutation";
+import { getPluginCollection, queryPluginCollection } from "./uiQuery";
 import { createPluginAvailabilityOperations } from "@/app/plugins/availability/operations";
 import { readPluginsFeatureEnv } from "@/app/features/catalog/readFeatureEnv";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import {
     createLightSqliteHarness,
     type LightSqliteHarness,
 } from "@/testkit/lightSqliteHarness";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 const ACCOUNT_ID = "candidate-preparation-account";
 const OTHER_ACCOUNT_ID = "candidate-preparation-other-account";
@@ -122,6 +126,44 @@ const TARGET_MANIFEST_WITH_INDEX = {
             indexes: [{
                 id: "by-status",
                 fields: [{ field: "status", direction: "asc" }],
+            }],
+        }],
+    },
+} as const;
+
+const OPTIONAL_PRIVATE_SOURCE_MANIFEST = {
+    ...SOURCE_MANIFEST,
+    contributes: {
+        accountCollections: [{
+            ...SOURCE_MANIFEST.contributes.accountCollections[0],
+            readableSchemaVersions: [2],
+            indexes: [{
+                id: "by-status",
+                fields: [{ field: "status", direction: "asc" }],
+            }],
+        }],
+    },
+} as const;
+
+const OPTIONAL_PRIVATE_TARGET_MANIFEST = {
+    ...OPTIONAL_PRIVATE_SOURCE_MANIFEST,
+    version: TARGET_VERSION,
+    contributes: {
+        accountCollections: [{
+            ...OPTIONAL_PRIVATE_SOURCE_MANIFEST.contributes.accountCollections[0],
+            schemaVersion: 2,
+            schema: {
+                ...OPTIONAL_PRIVATE_SOURCE_MANIFEST.contributes.accountCollections[0].schema,
+                properties: {
+                    ...OPTIONAL_PRIVATE_SOURCE_MANIFEST.contributes.accountCollections[0].schema.properties,
+                    note: { type: "string", maxLength: 256 },
+                },
+            },
+            readableSchemaVersions: [1],
+            migrations: [{
+                id: "optional-private-v1-to-v2",
+                fromSchemaVersion: 1,
+                toSchemaVersion: 2,
             }],
         }],
     },
@@ -397,6 +439,496 @@ describe("plugin Collection candidate preparation", () => {
         ]);
     });
 
+    it("atomically adopts an optional-private target contract without rewriting live row content or revision", async () => {
+        const [source] = await materialize(OPTIONAL_PRIVATE_SOURCE_MANIFEST);
+        const [target] = await materialize(OPTIONAL_PRIVATE_TARGET_MANIFEST);
+        if (!source || !target) throw new Error("Expected optional-private source and target contracts.");
+        await db.account.create({ data: { id: ACCOUNT_ID, publicKey: null, encryptionMode: "plain" } });
+        await seedCurrentSource({ accountId: ACCOUNT_ID, source, enabled: true });
+        await seedRelease({
+            accountId: ACCOUNT_ID,
+            version: SOURCE_VERSION,
+            manifest: OPTIONAL_PRIVATE_SOURCE_MANIFEST,
+            contracts: [source],
+        });
+        await seedRelease({
+            accountId: ACCOUNT_ID,
+            version: TARGET_VERSION,
+            manifest: OPTIONAL_PRIVATE_TARGET_MANIFEST,
+            contracts: [target],
+        });
+        await inTx(async (tx) => {
+            await preparePluginCollectionWritableContractsTx({
+                tx,
+                accountId: ACCOUNT_ID,
+                pluginId: PLUGIN_ID,
+                contracts: [source],
+            });
+        });
+        await mutatePluginCollection({
+            accountId: ACCOUNT_ID,
+            authentication,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                writerContext: {
+                    schemaVersion: source.schemaVersion,
+                    contractDigest: source.contractDigest,
+                },
+                operations: [{
+                    kind: "put",
+                    rowId: "task-optional-private",
+                    expectedRevision: "absent",
+                    expectedAbsenceEpoch: 0,
+                    content: { t: "plain", v: {} },
+                    projection: {
+                        id: "task-optional-private",
+                        status: "open",
+                        title: "Original title",
+                    },
+                }],
+            },
+        });
+
+        const rowBefore = await db.pluginCollectionRow.findFirstOrThrow({
+            where: { accountId: ACCOUNT_ID, rowId: "task-optional-private" },
+            select: {
+                id: true,
+                schemaVersion: true,
+                revision: true,
+                contractId: true,
+                contractDigest: true,
+                contentEnvelope: true,
+            },
+        });
+        const projectionsBefore = await db.pluginCollectionProjection.findMany({
+            where: { rowDbId: rowBefore.id },
+            orderBy: { fieldId: "asc" },
+        });
+        const indexStateBefore = await db.pluginCollectionIndexState.findFirstOrThrow({
+            where: { accountId: ACCOUNT_ID, indexId: "by-status" },
+        });
+        const indexEntriesBefore = await db.pluginCollectionIndexEntry.findMany({
+            where: { indexStateId: indexStateBefore.id },
+            orderBy: { id: "asc" },
+        });
+
+        const service = availabilityOperations();
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [target],
+                expectedRevision: "1",
+            },
+        })).rejects.toMatchObject({ code: "plugin_intent_revision_conflict" });
+        await expect(db.pluginCollectionRow.findFirstOrThrow({
+            where: { id: rowBefore.id },
+        })).resolves.toMatchObject({
+            schemaVersion: source.schemaVersion,
+            revision: rowBefore.revision,
+            contractId: rowBefore.contractId,
+            contractDigest: source.contractDigest,
+            contentEnvelope: rowBefore.contentEnvelope,
+        });
+        await expect(db.pluginCollectionIndexState.findUniqueOrThrow({
+            where: { id: indexStateBefore.id },
+        })).resolves.toMatchObject({
+            contractId: indexStateBefore.contractId,
+            contractDigest: source.contractDigest,
+        });
+
+        await db.$executeRawUnsafe(`
+            CREATE TRIGGER optional_private_late_intent_failure
+            BEFORE UPDATE ON "AccountPluginIntent"
+            WHEN NEW."desiredVersion" = '${TARGET_VERSION}'
+            BEGIN
+                SELECT RAISE(ABORT, 'late optional-private intent failure');
+            END
+        `);
+        try {
+            await expect(service.setIntent({
+                accountId: ACCOUNT_ID,
+                input: {
+                    pluginId: PLUGIN_ID,
+                    desiredVersion: TARGET_VERSION,
+                    enabled: true,
+                    offlineUiHosting: "disabled",
+                    writableCollections: [target],
+                    expectedRevision: "0",
+                },
+            })).rejects.toThrow();
+        } finally {
+            await db.$executeRawUnsafe("DROP TRIGGER IF EXISTS optional_private_late_intent_failure");
+        }
+        await expect(db.pluginCollectionRow.findFirstOrThrow({
+            where: { id: rowBefore.id },
+        })).resolves.toMatchObject({
+            schemaVersion: source.schemaVersion,
+            revision: rowBefore.revision,
+            contractId: rowBefore.contractId,
+            contractDigest: source.contractDigest,
+            contentEnvelope: rowBefore.contentEnvelope,
+        });
+        await expect(db.pluginCollectionIndexState.findUniqueOrThrow({
+            where: { id: indexStateBefore.id },
+        })).resolves.toMatchObject({
+            contractId: indexStateBefore.contractId,
+            contractDigest: source.contractDigest,
+        });
+
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [target],
+                expectedRevision: "0",
+            },
+        })).resolves.toMatchObject({
+            intent: {
+                desiredVersion: TARGET_VERSION,
+                writableCollections: [target],
+                revision: "1",
+            },
+        });
+
+        const targetContract = await db.pluginCollectionContract.findFirstOrThrow({
+            where: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                schemaVersion: target.schemaVersion,
+                contractDigest: target.contractDigest,
+            },
+            select: { id: true },
+        });
+        await expect(db.pluginCollectionRow.findFirstOrThrow({
+            where: { id: rowBefore.id },
+            select: {
+                schemaVersion: true,
+                revision: true,
+                contractId: true,
+                contractDigest: true,
+                contentEnvelope: true,
+            },
+        })).resolves.toEqual({
+            schemaVersion: target.schemaVersion,
+            revision: rowBefore.revision,
+            contractId: targetContract.id,
+            contractDigest: target.contractDigest,
+            contentEnvelope: rowBefore.contentEnvelope,
+        });
+        await expect(db.pluginCollectionProjection.findMany({
+            where: { rowDbId: rowBefore.id },
+            orderBy: { fieldId: "asc" },
+        })).resolves.toEqual(projectionsBefore);
+        await expect(db.pluginCollectionIndexState.findUniqueOrThrow({
+            where: { id: indexStateBefore.id },
+        })).resolves.toMatchObject({
+            contractId: targetContract.id,
+            contractDigest: target.contractDigest,
+            buildState: "ready",
+            indexedThroughRevision: rowBefore.revision,
+        });
+        await expect(db.pluginCollectionIndexEntry.findMany({
+            where: { indexStateId: indexStateBefore.id },
+            orderBy: { id: "asc" },
+        })).resolves.toEqual(indexEntriesBefore);
+
+        const targetGet = await getPluginCollection({
+            accountId: ACCOUNT_ID,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                readerContext: target,
+                rowId: "task-optional-private",
+            },
+        });
+        expect(targetGet.row).toMatchObject({ rowId: "task-optional-private", revision: rowBefore.revision });
+        await expect(getPluginCollection({
+            accountId: ACCOUNT_ID,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                readerContext: source,
+                rowId: "task-optional-private",
+            },
+        })).resolves.toMatchObject({
+            row: { rowId: "task-optional-private", revision: rowBefore.revision },
+        });
+        await expect(queryPluginCollection({
+            accountId: ACCOUNT_ID,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                readerContext: target,
+                indexId: "by-status",
+                prefix: ["open"],
+                order: "asc",
+                limit: 10,
+            },
+        })).resolves.toMatchObject({
+            rows: [{ rowId: "task-optional-private", revision: rowBefore.revision }],
+        });
+        await expect(inTx(async (tx) => await preparePluginCollectionWritableContractsTx({
+            tx,
+            accountId: ACCOUNT_ID,
+            pluginId: PLUGIN_ID,
+            contracts: [target],
+        }))).resolves.toEqual({ contracts: [target] });
+
+        await expect(mutatePluginCollection({
+            accountId: ACCOUNT_ID,
+            authentication,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                writerContext: {
+                    schemaVersion: target.schemaVersion,
+                    contractDigest: target.contractDigest,
+                },
+                operations: [{
+                    kind: "put",
+                    rowId: "task-optional-private",
+                    expectedRevision: rowBefore.revision,
+                    content: { t: "plain", v: { note: "Written by target" } },
+                    projection: {
+                        id: "task-optional-private",
+                        status: "open",
+                        title: "Updated title",
+                    },
+                }],
+            },
+        })).resolves.toMatchObject({
+            results: [{ rowId: "task-optional-private", revision: rowBefore.revision + 1 }],
+        });
+    });
+
+    it("re-upgrades an optional-private contract after an empty Availability roundtrip", async () => {
+        const [source] = await materialize(OPTIONAL_PRIVATE_SOURCE_MANIFEST);
+        const [target] = await materialize(OPTIONAL_PRIVATE_TARGET_MANIFEST);
+        if (!source || !target) throw new Error("Expected optional-private source and target contracts.");
+        await db.account.create({ data: { id: ACCOUNT_ID, publicKey: null, encryptionMode: "plain" } });
+        await seedRelease({
+            accountId: ACCOUNT_ID,
+            version: SOURCE_VERSION,
+            manifest: OPTIONAL_PRIVATE_SOURCE_MANIFEST,
+            contracts: [source],
+        });
+        await seedRelease({
+            accountId: ACCOUNT_ID,
+            version: TARGET_VERSION,
+            manifest: OPTIONAL_PRIVATE_TARGET_MANIFEST,
+            contracts: [target],
+        });
+
+        const service = availabilityOperations();
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: SOURCE_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [source],
+                expectedRevision: null,
+            },
+        })).resolves.toMatchObject({ intent: { revision: "0" } });
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [target],
+                expectedRevision: "0",
+            },
+        })).resolves.toMatchObject({ intent: { revision: "1" } });
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: SOURCE_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [source],
+                expectedRevision: "1",
+            },
+        })).resolves.toMatchObject({ intent: { revision: "2" } });
+
+        const emptyStates = await db.pluginCollectionIndexState.findMany({
+            where: { accountId: ACCOUNT_ID, indexId: "by-status" },
+            orderBy: { contractDigest: "asc" },
+            select: {
+                id: true,
+                contractDigest: true,
+                buildState: true,
+                indexedThroughRevision: true,
+            },
+        });
+        expect(emptyStates).toHaveLength(2);
+        expect(emptyStates).toEqual(expect.arrayContaining([
+            expect.objectContaining({
+                contractDigest: source.contractDigest,
+                buildState: "ready",
+                indexedThroughRevision: 0,
+            }),
+            expect.objectContaining({
+                contractDigest: target.contractDigest,
+                buildState: "ready",
+                indexedThroughRevision: 0,
+            }),
+        ]));
+
+        await mutatePluginCollection({
+            accountId: ACCOUNT_ID,
+            authentication,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                writerContext: {
+                    schemaVersion: source.schemaVersion,
+                    contractDigest: source.contractDigest,
+                },
+                operations: [{
+                    kind: "put",
+                    rowId: "task-roundtrip",
+                    expectedRevision: "absent",
+                    expectedAbsenceEpoch: 0,
+                    content: { t: "plain", v: {} },
+                    projection: {
+                        id: "task-roundtrip",
+                        status: "open",
+                        title: "Roundtrip title",
+                    },
+                }],
+            },
+        });
+        const rowBefore = await db.pluginCollectionRow.findFirstOrThrow({
+            where: { accountId: ACCOUNT_ID, rowId: "task-roundtrip" },
+            select: {
+                id: true,
+                revision: true,
+                contentEnvelope: true,
+            },
+        });
+        const sourceState = emptyStates.find((state) => state.contractDigest === source.contractDigest);
+        const dormantTargetState = emptyStates.find((state) => state.contractDigest === target.contractDigest);
+        if (!sourceState || !dormantTargetState) throw new Error("Expected both roundtrip index states.");
+        await expect(db.pluginCollectionIndexEntry.count({
+            where: { indexStateId: sourceState.id },
+        })).resolves.toBe(1);
+        await expect(db.pluginCollectionIndexEntry.count({
+            where: { indexStateId: dormantTargetState.id },
+        })).resolves.toBe(0);
+
+        const nonDormantEntry = await db.pluginCollectionIndexEntry.create({
+            data: {
+                indexStateId: dormantTargetState.id,
+                encodedSortKey: Uint8Array.from([0]),
+                rowId: "unexpected-target-row",
+                rowRevision: 1,
+            },
+            select: { id: true },
+        });
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [target],
+                expectedRevision: "2",
+            },
+        })).rejects.toMatchObject({ code: "plugin_intent_writable_collections_not_ready" });
+        await expect(db.accountPluginIntent.findUniqueOrThrow({
+            where: { accountId_pluginId: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID } },
+            select: { desiredVersion: true, revision: true },
+        })).resolves.toEqual({ desiredVersion: SOURCE_VERSION, revision: BigInt(2) });
+        await expect(db.pluginCollectionIndexState.findUniqueOrThrow({
+            where: { id: dormantTargetState.id },
+        })).resolves.toMatchObject({
+            contractDigest: target.contractDigest,
+            buildState: "ready",
+            indexedThroughRevision: 0,
+        });
+        await db.pluginCollectionIndexEntry.delete({ where: { id: nonDormantEntry.id } });
+
+        await expect(service.setIntent({
+            accountId: ACCOUNT_ID,
+            input: {
+                pluginId: PLUGIN_ID,
+                desiredVersion: TARGET_VERSION,
+                enabled: true,
+                offlineUiHosting: "disabled",
+                writableCollections: [target],
+                expectedRevision: "2",
+            },
+        })).resolves.toMatchObject({
+            intent: {
+                desiredVersion: TARGET_VERSION,
+                writableCollections: [target],
+                revision: "3",
+            },
+        });
+
+        await expect(db.pluginCollectionRow.findUniqueOrThrow({
+            where: { id: rowBefore.id },
+            select: {
+                schemaVersion: true,
+                revision: true,
+                contractDigest: true,
+                contentEnvelope: true,
+            },
+        })).resolves.toEqual({
+            schemaVersion: target.schemaVersion,
+            revision: rowBefore.revision,
+            contractDigest: target.contractDigest,
+            contentEnvelope: rowBefore.contentEnvelope,
+        });
+        await expect(queryPluginCollection({
+            accountId: ACCOUNT_ID,
+            request: {
+                pluginId: PLUGIN_ID,
+                collectionId: COLLECTION_ID,
+                readerContext: target,
+                indexId: "by-status",
+                prefix: ["open"],
+                order: "asc",
+                limit: 10,
+            },
+        })).resolves.toMatchObject({
+            rows: [{ rowId: "task-roundtrip", revision: rowBefore.revision }],
+        });
+        await expect(db.pluginCollectionIndexState.findMany({
+            where: { accountId: ACCOUNT_ID, indexId: "by-status" },
+            select: {
+                id: true,
+                contractDigest: true,
+                buildState: true,
+                indexedThroughRevision: true,
+            },
+        })).resolves.toEqual([{
+            id: sourceState.id,
+            contractDigest: target.contractDigest,
+            buildState: "ready",
+            indexedThroughRevision: rowBefore.revision,
+        }]);
+        await expect(db.pluginCollectionIndexEntry.count({
+            where: { indexStateId: sourceState.id },
+        })).resolves.toBe(1);
+        await expect(db.pluginCollectionIndexState.findUnique({
+            where: { id: dormantTargetState.id },
+        })).resolves.toBeNull();
+    });
+
     it("accepts a disabled but current source intent, keeps first targets for a bounded batch, and retires only its exact binding", async () => {
         const [source] = await materialize(SOURCE_MANIFEST);
         const [target] = await materialize(TARGET_MANIFEST);
@@ -557,6 +1089,53 @@ describe("plugin Collection candidate preparation", () => {
             },
         })).rejects.toMatchObject({ code: "collection_candidate_preparation_invalid" });
         await expect(db.pluginCollectionCandidatePreparationStage.count({ where: { accountId: ACCOUNT_ID } })).resolves.toBe(0);
+    });
+
+    it("accepts duplicate source rows idempotently while retaining the first admitted target", async () => {
+        const [source] = await materialize(SOURCE_MANIFEST);
+        const [target] = await materialize(TARGET_MANIFEST);
+        if (!source || !target) throw new Error("Expected source and target contracts.");
+        await db.account.create({ data: { id: ACCOUNT_ID, publicKey: null, encryptionMode: "plain" } });
+        const sourceContract = await seedCurrentSource({ accountId: ACCOUNT_ID, source, enabled: true });
+        await seedRelease({ accountId: ACCOUNT_ID, version: SOURCE_VERSION, manifest: SOURCE_MANIFEST, contracts: [source] });
+        await seedRelease({ accountId: ACCOUNT_ID, version: TARGET_VERSION, manifest: TARGET_MANIFEST, contracts: [target] });
+        await seedLiveSourceRow({ accountId: ACCOUNT_ID, contract: { ...sourceContract, ...source }, rowId: "task-1" });
+        const binding = {
+            source,
+            target,
+            candidate: { releaseVersion: TARGET_VERSION, artifactDigest: `sha256:${"c".repeat(64)}` },
+        } as const;
+
+        await expect(stagePluginCollectionCandidatePreparation({
+            accountId: ACCOUNT_ID,
+            request: {
+                binding,
+                items: [
+                    {
+                        source: { rowId: "task-1", revision: 1 },
+                        target: {
+                            content: { t: "plain", v: {} },
+                            projection: { id: "task-1", status: "open", title: "First target" },
+                        },
+                    },
+                    {
+                        source: { rowId: "task-1", revision: 1 },
+                        target: {
+                            content: { t: "plain", v: {} },
+                            projection: { id: "task-1", status: "closed", title: "Duplicate target" },
+                        },
+                    },
+                ],
+            },
+        })).resolves.toEqual({
+            results: [{ status: "staged" }, { status: "staged" }],
+        });
+        await expect(db.pluginCollectionCandidatePreparationStage.findMany({
+            where: { accountId: ACCOUNT_ID },
+            select: { targetProjection: true },
+        })).resolves.toEqual([{
+            targetProjection: { id: "task-1", status: "open", title: "First target" },
+        }]);
     });
 
     it("rejects a source row that exists only under another Account", async () => {
@@ -855,6 +1434,7 @@ describe("plugin Collection candidate preparation", () => {
 
         await mutatePluginCollection({
             accountId: ACCOUNT_ID,
+            authentication,
             request: {
                 pluginId: PLUGIN_ID,
                 collectionId: COLLECTION_ID,
@@ -1047,11 +1627,11 @@ describe("plugin Collection candidate preparation", () => {
     });
 
     it("promotes a cross-page unique-relation swap atomically with one-row DB pages", async () => {
-        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
         const { target, service } = await prepareAvailabilityPromotionFixture({
             targetManifest: TARGET_MANIFEST_WITH_UNIQUE_RELATION,
             targetTitles: ["task-b", "task-a"],
         });
+        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
 
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
@@ -1076,11 +1656,11 @@ describe("plugin Collection candidate preparation", () => {
     });
 
     it("rejects cross-page unique-relation duplicates and rolls back with one-row DB pages", async () => {
-        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
         const { source, target, service } = await prepareAvailabilityPromotionFixture({
             targetManifest: TARGET_MANIFEST_WITH_UNIQUE_RELATION,
             targetTitles: ["task-a", "task-a"],
         });
+        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
 
         await expect(service.setIntent({
             accountId: ACCOUNT_ID,
@@ -1118,9 +1698,9 @@ describe("plugin Collection candidate preparation", () => {
     });
 
     it("pages and materializes a large candidate promotion in bounded row batches", async () => {
-        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
         const rowIds = Array.from({ length: 5 }, (_, index) => `task-${index}`);
         const { target } = await prepareAvailabilityPromotionFixture({ rowIds });
+        harness.resetEnv({ HAPPIER_COLLECTION_MAX_BATCH_ROWS: "1" });
         const currentIntent = await db.accountPluginIntent.findUniqueOrThrow({
             where: { accountId_pluginId: { accountId: ACCOUNT_ID, pluginId: PLUGIN_ID } },
             select: {
@@ -1205,7 +1785,10 @@ describe("plugin Collection candidate preparation", () => {
                 targetContracts: [target],
             });
             return await preparePluginCollectionWritableContractsTx({
-                tx: boundedTx,
+                // Writable-contract readiness also runs the Account quota
+                // census, whose byte-bounded pages are independent of the
+                // promotion row-operation batch ceiling observed above.
+                tx,
                 accountId: ACCOUNT_ID,
                 pluginId: PLUGIN_ID,
                 contracts: [target],

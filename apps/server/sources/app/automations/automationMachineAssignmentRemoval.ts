@@ -9,6 +9,7 @@ import {
 import { acquireAccountEncryptionTransitionFenceInTx } from "@/app/encryption/accountEncryptionTransition";
 import type { AccountEncryptionInconsistencyReason } from "@/app/encryption/accountContentKeyAdmission";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
+import { cancelWorkflowRunTx, WorkflowRunServiceError } from "@/app/workflows/workflowRunService";
 import { automationPortableQueryChunks } from "./automationPortableQueryChunks";
 import { automationRunItemSelect } from "./automationPersistenceSelect";
 import {
@@ -16,7 +17,10 @@ import {
     publishCancelledAutomationRunsTx,
     type CancelledAutomationRunTxResult,
 } from "./automationRunService";
-import type { AutomationRunItem } from "./automationTypes";
+import {
+    AUTOMATION_RUN_TERMINAL_STATES,
+    type AutomationRunItem,
+} from "./automationTypes";
 import { settleAutomationReplyHandoffsForRevokedMachineTx } from "./automationReplyHandoffService";
 
 export type AutomationMachineAssignmentRemovalResult = Readonly<{
@@ -339,12 +343,12 @@ async function settleRunsStrandedByDurableMachineLossTx(params: Readonly<{
     const strandedRuns = (await Promise.all(automationPortableQueryChunks({
         values: strandedRunIds,
         bindingsPerValue: 1,
-        fixedBindings: 5,
+        fixedBindings: 1 + AUTOMATION_RUN_TERMINAL_STATES.length,
     }).map((chunk) => params.tx.automationRun.findMany({
         where: {
             id: { in: [...chunk] },
             accountId: params.accountId,
-            state: { in: ["queued", "claimed", "running"] },
+            state: { notIn: [...AUTOMATION_RUN_TERMINAL_STATES] },
         },
         select: automationRunItemSelect,
         orderBy: [{ id: "asc" }],
@@ -353,6 +357,20 @@ async function settleRunsStrandedByDurableMachineLossTx(params: Readonly<{
 
     const results: CancelledAutomationRunTxResult[] = [];
     for (const previousRun of strandedRuns) {
+        if (previousRun.workflowCustodyState !== null) {
+            try {
+                await cancelWorkflowRunTx(params.tx, {
+                    accountId: params.accountId,
+                    runId: previousRun.id,
+                    expectedRevision: previousRun.revision,
+                    cause: "permanent_target_loss",
+                });
+            } catch (error) {
+                if (error instanceof WorkflowRunServiceError && error.code === "currentness_conflict") continue;
+                throw error;
+            }
+            continue;
+        }
         const result = await cancelAutomationRunRowTx({
             tx: params.tx,
             accountId: params.accountId,

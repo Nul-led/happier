@@ -1,8 +1,11 @@
+import { persistentMachineWhere } from "@/app/machines/machineSelection";
 import type { Tx } from "@/storage/inTx";
 import { db } from "@/storage/db";
 import type { Prisma } from "@prisma/client";
 
 import {
+    AUTOMATION_RUN_STATES,
+    isAutomationRunState,
     isTerminalAutomationRunState,
     type AutomationAssignmentInput,
     type AutomationExecutionDispatchState,
@@ -13,7 +16,10 @@ import {
     AutomationValidationError,
     normalizeAutomationAssignments,
 } from "./automationValidation";
-import { isAutomationDefinitionRepresentableInV2 } from "./automationApiProjection";
+import {
+    isAutomationDefinitionRepresentableInV2,
+    toAutomationV2ScheduleDto,
+} from "./automationApiProjection";
 import { RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } from "./automationStoredContentRead";
 import { classifyMachineAvailabilityState } from "@/app/machines/machineStateGuards";
 
@@ -30,6 +36,8 @@ type AutomationAssignmentWakeRun = Readonly<{
 }>;
 
 const automationAssignmentWakeRunSelect = {
+    originKind: true,
+    automationId: true,
     triggerId: true,
     causeKind: true,
     causeTriggerKind: true,
@@ -65,6 +73,10 @@ function automationDaemonWakeAutomationSelect(
         },
         runs: {
             where: {
+                originKind: "automation",
+                automationId: { not: null },
+                causeKind: { not: null },
+                state: { in: [...AUTOMATION_RUN_STATES] },
                 ...(requireV2RunRepresentability
                     ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
                     : {}),
@@ -154,6 +166,7 @@ async function assertMachineAssignmentsCanBeWritten(params: {
             where: {
                 accountId: params.accountId,
                 id: { in: params.machineIds },
+                ...persistentMachineWhere,
             },
             select: { id: true, revokedAt: true, replacedByMachineId: true },
         }),
@@ -311,6 +324,10 @@ export async function listDaemonAssignments(params: {
             where: {
                 machineId: params.machineId,
                 run: {
+                    originKind: "automation",
+                    automationId: { not: null },
+                    causeKind: { not: null },
+                    state: { in: [...AUTOMATION_RUN_STATES] },
                     accountId: params.accountId,
                     ...(params.requireV2DefinitionRepresentability
                         ? { executionInputEnvelope: { startsWith: RETAINED_AUTOMATION_RUN_EXECUTION_INPUT_V2_JSON_PREFIX } }
@@ -343,17 +360,25 @@ export async function listDaemonAssignments(params: {
         .filter((row) => !params.requireV2DefinitionRepresentability
             || isAutomationDefinitionRepresentableInV2(row.automation))
         .map((row) => {
-            const runs: AutomationAssignmentWakeRun[] = row.automation.runs.map((run) => ({
-                ...run,
-                assignedToMachine: run.assignments.length > 0,
-            }));
+            const runs: AutomationAssignmentWakeRun[] = row.automation.runs.map((run) => {
+                if (run.causeKind === null || !isAutomationRunState(run.state)) {
+                    throw new Error("Stored Automation assignment Run has invalid origin correspondence");
+                }
+                return {
+                    ...run,
+                    state: run.state,
+                    causeKind: run.causeKind,
+                    assignedToMachine: run.assignments.length > 0,
+                };
+            });
             return {
                 ...row,
                 automation: { ...row.automation, runs },
-                // The released adapter consumes this explicit owner-provided
-                // projection rather than inferring a schedule from array order.
-                v2ScheduleTrigger: params.requireV2DefinitionRepresentability
-                    ? row.automation.triggers.find((trigger) => trigger.kind === "schedule") ?? null
+                // The released adapter consumes this exact owner-provided wire
+                // projection. Zero canonical triggers is the released manual
+                // shape; no trigger row is fabricated for it.
+                v2Schedule: params.requireV2DefinitionRepresentability
+                    ? toAutomationV2ScheduleDto(row.automation.triggers[0])
                     : null,
                 nextClaimAt: resolveAutomationAssignmentNextClaimAt({
                     schedules: row.automation.triggers
@@ -367,6 +392,13 @@ export async function listDaemonAssignments(params: {
     const activeDefinitionIds = new Set(activeAssignments.map((row) => row.automation.id));
     const frozenByAutomationId = new Map<string, typeof admittedRunAssignments>();
     for (const assignment of admittedRunAssignments) {
+        if (
+            assignment.run.automationId === null
+            || assignment.run.causeKind === null
+            || !isAutomationRunState(assignment.run.state)
+        ) {
+            throw new Error("Stored Automation assignment Run has invalid origin correspondence");
+        }
         if (activeDefinitionIds.has(assignment.run.automationId)) continue;
         const group = frozenByAutomationId.get(assignment.run.automationId);
         if (group) group.push(assignment);
@@ -427,16 +459,30 @@ export async function listDaemonAssignments(params: {
                 ? candidate
                 : best
         ));
-        const runs: AutomationAssignmentWakeRun[] = assignments.map((assignment) => ({
-            ...assignment.run,
-            assignedToMachine: true,
-        }));
-        const retainedDefinitionSchedule = representative.run.triggerId === null
-            ? (() => {
-                const schedules = automation.triggers.filter((trigger) => trigger.kind === "schedule");
-                return schedules.length === 1 ? schedules[0] : null;
-            })()
-            : null;
+        const runs: AutomationAssignmentWakeRun[] = assignments.map((assignment) => {
+            if (assignment.run.causeKind === null || !isAutomationRunState(assignment.run.state)) {
+                throw new Error("Stored Automation assignment Run has invalid origin correspondence");
+            }
+            return {
+                ...assignment.run,
+                state: assignment.run.state,
+                causeKind: assignment.run.causeKind,
+                assignedToMachine: true,
+            };
+        });
+        const frozenTriggerId = representative.run.triggerId;
+        const retainedDefinitionSchedules = frozenTriggerId === null
+            ? automation.triggers.filter((trigger) => trigger.kind === "schedule")
+            : [];
+        let frozenV2Schedule: ReturnType<typeof toAutomationV2ScheduleDto> | null = null;
+        if (frozenTriggerId === null) {
+            if (retainedDefinitionSchedules.length <= 1) {
+                frozenV2Schedule = toAutomationV2ScheduleDto(retainedDefinitionSchedules[0]);
+            }
+        } else {
+            const trigger = frozenV2ScheduleTriggerById.get(frozenTriggerId);
+            if (trigger) frozenV2Schedule = toAutomationV2ScheduleDto(trigger);
+        }
         admittedRunWakes.push({
             id: representative.run.id,
             machineId: representative.machineId,
@@ -444,9 +490,11 @@ export async function listDaemonAssignments(params: {
             priority: representative.priority,
             updatedAt: representative.run.updatedAt,
             automation: { ...automation, runs },
-            v2ScheduleTrigger: representative.run.triggerId === null
-                ? retainedDefinitionSchedule
-                : frozenV2ScheduleTriggerById.get(representative.run.triggerId) ?? null,
+            // A V2 Run Now on a retained scheduled Definition keeps that
+            // Definition schedule. A manual zero-trigger Definition projects
+            // the exact released manual shape. Missing or ambiguous scheduled
+            // provenance remains null so the route still fails closed.
+            v2Schedule: frozenV2Schedule,
             nextClaimAt: resolveAutomationAssignmentNextClaimAt({ schedules: [], runs }),
         });
     }

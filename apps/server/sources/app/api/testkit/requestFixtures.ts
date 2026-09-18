@@ -54,6 +54,8 @@ export function createAuthenticatedRouteRequest(
 ): RouteRequestFixture & { userId: string } {
     const request = createRouteRequest({
         userId: "u1",
+        authTokenKind: "account",
+        authAuthority: "present_user",
         ...overrides,
     });
 

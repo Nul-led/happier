@@ -12,12 +12,13 @@ describe("Account Directory domain error mapping", () => {
         expect(Object.keys(ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE).length).toBeGreaterThan(0);
         for (const [internalCode, protocolCode] of Object.entries(ACCOUNT_DIRECTORY_PROTOCOL_ERROR_BY_CODE)) {
             expect(protocolCodes).toContain(protocolCode);
-            expect(protocolCode).toMatch(/^[a-z][a-z_]*$/u);
             expect(internalCode).toMatch(/^[a-z][a-z_]*$/u);
         }
     });
 
     it("projects domain errors onto typed status-plus-body responses", () => {
+        expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("account_disabled")))
+            .toEqual({ statusCode: 403, body: { error: "account-disabled" } });
         expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("invalid_client_key")))
             .toEqual({ statusCode: 401, body: { error: "invalid_client_key" } });
         expect(accountDirectoryProtocolErrorResponse(new AccountDirectoryError("assertion_clock_skew")))

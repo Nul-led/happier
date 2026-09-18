@@ -1,9 +1,11 @@
+import { InactiveAccountError } from "@/app/auth/accountStatus";
 import { z } from "zod";
 import { db } from "@/storage/db";
 import { createServerFeatureGatePreHandler } from "@/app/features/catalog/serverFeatureGate";
 import {
     AccountEncryptionModeResponseSchema,
     AccountEncryptionCurrentnessResponseSchema,
+    AccountEncryptionCurrentnessErrorResponseSchema,
     AccountEncryptionModeUpdateRequestSchema,
 } from "@happier-dev/protocol";
 import { type Fastify } from "../../types";
@@ -15,6 +17,7 @@ import {
 import {
     deriveAccountEncryptionMigrationKeyFingerprints,
 } from "@/app/encryption/accountEncryptionTransition";
+import { deriveAccountRecipientEnvelopeReadinessFromRow } from "@/app/encryption/accountRecipientEnvelopeReadiness";
 import {
     PresentUserRequiredResponseSchema,
     requirePresentUser,
@@ -70,7 +73,8 @@ export function registerAccountEncryptionRoutes(app: Fastify): void {
                     mode: currentness.currentness.encryptionMode,
                     updatedAt: user.encryptionModeUpdatedAt.getTime(),
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -83,9 +87,7 @@ export function registerAccountEncryptionRoutes(app: Fastify): void {
             schema: {
                 response: {
                     200: AccountEncryptionCurrentnessResponseSchema,
-                    400: z.object({
-                        error: z.literal("migration-required"),
-                    }),
+                    400: AccountEncryptionCurrentnessErrorResponseSchema,
                     500: z.object({ error: z.literal("internal") }),
                 },
             },
@@ -101,6 +103,7 @@ export function registerAccountEncryptionRoutes(app: Fastify): void {
                         contentPublicKey: true,
                         contentPublicKeySig: true,
                         seq: true,
+                        settingsVersion: true,
                     },
                 });
                 if (!user) {
@@ -108,21 +111,29 @@ export function registerAccountEncryptionRoutes(app: Fastify): void {
                 }
                 const currentness =
                     deriveAccountEncryptionCurrentnessFromRow(user);
+                const readiness = deriveAccountRecipientEnvelopeReadinessFromRow(user, currentness);
+                const recipientEnvelopeReadiness = readiness.status === "available"
+                    ? { status: "available" as const }
+                    : readiness;
                 if (currentness.status === "inconsistent") {
-                    return reply.code(400).send({
+                    return reply.code(400).send(AccountEncryptionCurrentnessErrorResponseSchema.parse({
                         error: "migration-required",
-                    });
+                        recipientEnvelopeReadiness,
+                    }));
                 }
                 return reply.send({
                     mode: currentness.currentness.encryptionMode,
                     version: user.seq,
+                    settingsVersion: user.settingsVersion,
+                    recipientEnvelopeReadiness,
                     ...deriveAccountEncryptionMigrationKeyFingerprints(
                         user,
                     ),
                     updatedAt:
                         user.encryptionModeUpdatedAt.getTime(),
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },
@@ -183,7 +194,8 @@ export function registerAccountEncryptionRoutes(app: Fastify): void {
                     mode: result.mode,
                     updatedAt: result.updatedAt,
                 });
-            } catch {
+            } catch (error) {
+                if (error instanceof InactiveAccountError) throw error;
                 return reply.code(500).send({ error: "internal" });
             }
         },

@@ -92,7 +92,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
                     sharedMetadataVersion: 5,
                     agentStateVersion: 3,
                 },
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 101 },
                     { accountId: "u2", cursor: 55 },
                 ],
@@ -112,7 +112,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
                 badgeAttentionChanged: false,
                 attentionImpact: { affectsUnread: false, affectsMeaningfulActivity: false },
                 message: dividerMessageRow(),
-                participantCursors: [{ accountId: "u1", cursor: 102 }],
+                recipientCursors: [{ accountId: "u1", cursor: 102 }],
             },
         });
 
@@ -148,7 +148,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             dividerSeq: 42,
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [
+                recipientCursors: [
                     { accountId: "u1", cursor: 101 },
                     { accountId: "u2", cursor: 55 },
                 ],
@@ -198,7 +198,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             dividerSeq: 42,
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [],
+                recipientCursors: [],
                 publication: null,
             },
             dividerWrite: null,
@@ -222,7 +222,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             dividerSeq: 42,
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [],
+                recipientCursors: [],
                 publication: null,
             },
             // A concurrent writer won the reserved localId, so the message owner
@@ -234,7 +234,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
                 badgeAttentionChanged: false,
                 attentionImpact: { affectsUnread: false, affectsMeaningfulActivity: false },
                 message: dividerMessageRow(),
-                participantCursors: [{ accountId: "u1", cursor: 102 }],
+                recipientCursors: [{ accountId: "u1", cursor: 102 }],
             },
         });
 
@@ -251,6 +251,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             "s1",
             102,
             expect.any(String),
+            { attentionImpact: { affectsUnread: false, affectsMeaningfulActivity: false } },
         );
         expect(buildNewMessageUpdate).not.toHaveBeenCalled();
         expect(emitUpdate).toHaveBeenCalledTimes(1);
@@ -267,7 +268,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             error: "divider-conflict",
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
                 publication: {
                     kind: "legacy_v0",
                     sessionOwnerId: "u1",
@@ -332,7 +333,7 @@ describe("sessionRoutes Agent-transition cutover publication", () => {
             dividerSeq: 42,
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [{ accountId: "u1", cursor: 101 }],
+                recipientCursors: [{ accountId: "u1", cursor: 101 }],
                 publication: {
                     kind: "legacy_v0",
                     sessionOwnerId: "u1",
@@ -402,7 +403,7 @@ describe("sessionRoutes Agent-transition cutover feature gate", () => {
             dividerSeq: 42,
             currentView: {
                 currentView: { kind: "legacy_v0", metadataVersion: 2, agentStateVersion: 3 },
-                participantCursors: [],
+                recipientCursors: [],
                 publication: null,
             },
             dividerWrite: null,

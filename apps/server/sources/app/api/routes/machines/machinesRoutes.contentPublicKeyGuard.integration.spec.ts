@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
     MACHINE_PLAIN_DATA_KEY_MARKER,
     encodePlainMachineStoredContent,
+    signAccountContentKeyBindingV1,
 } from "@happier-dev/protocol";
 import tweetnacl from "tweetnacl";
 
@@ -9,6 +10,7 @@ import { createDbMocks, installDbModuleMock } from "../../testkit/dbMocks";
 import { createEnvReset } from "../../testkit/env";
 import { createRouteTestBuilder } from "../../testkit/routeTestBuilder";
 import { createInTxHarness } from "../../testkit/txHarness";
+import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 
 vi.mock("@/utils/logging/log", () => ({ log: vi.fn() }));
 vi.mock("@/app/changes/markAccountChanged", () => ({ markAccountChanged: vi.fn(async () => 123) }));
@@ -102,7 +104,7 @@ const accountStoredContentUpgradeRequired = {
     requirement: {
         v: 1,
         kind: "account-stored-content",
-        minimumProtocolVersion: 1,
+        minimumProtocolVersion: 2,
     },
 } as const;
 
@@ -116,9 +118,9 @@ describe("machinesRoutes (contentPublicKey guard)", () => {
         resetContentPublicKeyGuardEnv();
         dbMocks.db.machine.findFirst.mockResolvedValue(existingMachine);
         dbMocks.db.machine.findUnique.mockResolvedValue(null);
+        const accountContentBinding = createSignedAccountContentBinding();
         dbMocks.db.account.findUnique.mockResolvedValue({
-            contentPublicKey: new Uint8Array(32).fill(7),
-            publicKey: "account-signing-key",
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         dbMocks.db.account.updateMany.mockResolvedValue({ count: 0 });
@@ -496,14 +498,14 @@ describe("machinesRoutes (contentPublicKey guard)", () => {
         expect(txDbMocks.db.machine.update).not.toHaveBeenCalled();
     });
 
-    it("does not set account contentPublicKey when missing and no signature is provided (compat)", async () => {
-        dbMocks.db.account.findUnique.mockResolvedValueOnce({
-            contentPublicKey: null,
-            publicKey: "account-signing-key",
+    it("does not rewrite a current account contentPublicKey when the client omits its signature (compat)", async () => {
+        const accountContentBinding = createSignedAccountContentBinding();
+        dbMocks.db.account.findUnique.mockResolvedValue({
+            ...accountContentBinding,
             encryptionMode: "e2ee",
         });
         const route = await createMachinesRoute();
-        const contentPublicKey = Buffer.from(new Uint8Array(32).fill(7)).toString("base64");
+        const contentPublicKey = Buffer.from(accountContentBinding.contentPublicKey).toString("base64");
         const { response, reply } = await route.invoke({
             userId: "u1",
             body: {
@@ -525,15 +527,14 @@ describe("machinesRoutes (contentPublicKey guard)", () => {
         );
     });
 
-    it("sets account contentPublicKey when missing and a valid signature is provided", async () => {
+    it("rejects an E2EE account whose persisted content-key binding is missing", async () => {
         const signing = tweetnacl.sign.keyPair();
         const contentKey = tweetnacl.box.keyPair();
         const contentPublicKey = Buffer.from(contentKey.publicKey).toString("base64");
-        const binding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]);
-        const sig = tweetnacl.sign.detached(binding, signing.secretKey);
+        const sig = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentKey.publicKey,
+        });
         const contentPublicKeySig = Buffer.from(sig).toString("base64");
 
         const accountWithoutContentKey = {
@@ -559,25 +560,20 @@ describe("machinesRoutes (contentPublicKey guard)", () => {
             },
         });
 
-        expect(reply.code).not.toHaveBeenCalledWith(400);
-        expect(dbMocks.db.account.updateMany).toHaveBeenCalledTimes(1);
-        expect(txDbMocks.db.machine.update).toHaveBeenCalledTimes(1);
-        expect(response).toEqual(
-            expect.objectContaining({
-                machine: expect.objectContaining({ id: "m1" }),
-            }),
-        );
+        expect(reply.code).toHaveBeenCalledWith(400);
+        expect(response).toEqual({ error: "invalid-params", reason: "machine_storage_mode_mismatch" });
+        expect(dbMocks.db.account.updateMany).not.toHaveBeenCalled();
+        expect(txDbMocks.db.machine.update).not.toHaveBeenCalled();
     });
 
-    it("fills a missing signature for the exact same account content key after validating proof", async () => {
+    it("rejects an E2EE account whose persisted content-key signature is missing", async () => {
         const signing = tweetnacl.sign.keyPair();
         const contentKey = tweetnacl.box.keyPair();
         const contentPublicKey = Buffer.from(contentKey.publicKey).toString("base64");
-        const binding = Buffer.concat([
-            Buffer.from("Happy content key v1\u0000", "utf8"),
-            Buffer.from(contentKey.publicKey),
-        ]);
-        const sig = tweetnacl.sign.detached(binding, signing.secretKey);
+        const sig = signAccountContentKeyBindingV1({
+            accountSigningSecretKey: signing.secretKey,
+            contentPublicKey: contentKey.publicKey,
+        });
         const contentPublicKeySig = Buffer.from(sig).toString("base64");
         dbMocks.db.account.findUnique.mockResolvedValue({
             contentPublicKey: new Uint8Array(contentKey.publicKey),
@@ -600,22 +596,9 @@ describe("machinesRoutes (contentPublicKey guard)", () => {
             },
         });
 
-        expect(reply.code).not.toHaveBeenCalledWith(400);
-        expect(dbMocks.db.account.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: "u1",
-                contentPublicKey: new Uint8Array(contentKey.publicKey),
-                contentPublicKeySig: null,
-            },
-            data: {
-                contentPublicKeySig: new Uint8Array(sig),
-            },
-        });
-        expect(txDbMocks.db.machine.update).toHaveBeenCalledTimes(1);
-        expect(response).toEqual(
-            expect.objectContaining({
-                machine: expect.objectContaining({ id: "m1" }),
-            }),
-        );
+        expect(reply.code).toHaveBeenCalledWith(400);
+        expect(response).toEqual({ error: "invalid-params", reason: "machine_storage_mode_mismatch" });
+        expect(dbMocks.db.account.updateMany).not.toHaveBeenCalled();
+        expect(txDbMocks.db.machine.update).not.toHaveBeenCalled();
     });
 });

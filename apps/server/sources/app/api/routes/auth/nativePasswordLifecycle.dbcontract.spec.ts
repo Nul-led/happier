@@ -1,0 +1,297 @@
+import { randomUUID } from "node:crypto";
+import Fastify, { type FastifyInstance } from "fastify";
+import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+
+import { createNativeAuthOneTimeOperationKeyV1, normalizeVerifiedEmail } from "@happier-dev/protocol";
+import { auth } from "@/app/auth/auth";
+import { issueNativeAuthOneTimeOperationInTx } from "@/app/auth/email/nativeAuthOneTimeOperations";
+import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
+import { emailPasswordAuthMethodModule } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
+import { createTeamInvitationForActorInTx } from "@/app/teams/invitations/invitationService";
+import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
+import { db, initDbMysql, initDbPostgres, shutdownDbClient } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+
+type NativeContractProvider = "postgres" | "mysql";
+
+function resolveProvider(): NativeContractProvider {
+    const raw = String(process.env.HAPPIER_DB_PROVIDER ?? process.env.HAPPY_DB_PROVIDER ?? "postgres")
+        .trim()
+        .toLowerCase();
+    if (raw === "postgres" || raw === "postgresql") return "postgres";
+    if (raw === "mysql") return "mysql";
+    throw new Error(`Unsupported native-auth contract provider: ${raw}. Expected postgres or mysql.`);
+}
+
+function resolveDatabaseUrl(provider: NativeContractProvider): string | null {
+    const providerUrl = provider === "postgres"
+        ? process.env.HAPPIER_TEST_POSTGRES_DATABASE_URL
+        : process.env.HAPPIER_TEST_MYSQL_DATABASE_URL;
+    return providerUrl?.trim() || null;
+}
+
+function fullLengthEmail(firstCharacter: "a" | "z", runKey: string): string {
+    const local = `${firstCharacter}${runKey}${"x".repeat(63 - runKey.length)}`;
+    return `${local}@${"b".repeat(63)}.${"c".repeat(63)}.${"d".repeat(63)}.${"e".repeat(63)}`;
+}
+
+function createApp(): FastifyInstance {
+    const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+    app.setValidatorCompiler(validatorCompiler);
+    app.setSerializerCompiler(serializerCompiler);
+    enableAuthentication(app);
+    const delivery: AuthEmailDelivery = {
+        isReady: true,
+        deliver: async () => ({ status: "sent" }),
+    };
+    emailPasswordAuthMethodModule.registerRoutes(app, {
+        authEmailDelivery: delivery,
+        isEmailDeliveryReady: () => true,
+        resolveApplicationLinkTarget: async () => ({
+            applicationOrigin: "https://app.example.test",
+            homeTarget: "provider-db-contract-home",
+            serverId: "provider-db-contract-home",
+        }),
+    });
+    return app;
+}
+
+async function issueFreshAccountProof(normalizedEmail: string) {
+    return await inTx((tx) => issueNativeAuthOneTimeOperationInTx(tx, {
+        v: 1,
+        purpose: "verify_native_email",
+        normalizedEmail,
+        consumer: { kind: "fresh_account", continuationId: null },
+    }));
+}
+
+async function installTargetedMembershipFailureTrigger(
+    provider: NativeContractProvider,
+    teamId: string,
+    suffix: string,
+): Promise<() => Promise<void>> {
+    if (!/^[a-z0-9-]+$/iu.test(teamId) || !/^[a-z0-9]+$/iu.test(suffix)) {
+        throw new Error("Unsafe provider-contract trigger identifier");
+    }
+    const triggerName = `native_auth_member_${suffix}`;
+    if (provider === "mysql") {
+        await db.$executeRawUnsafe(`CREATE TRIGGER \`${triggerName}\` BEFORE INSERT ON \`TeamMembership\` FOR EACH ROW BEGIN IF NEW.\`teamId\` = '${teamId}' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'native auth membership fault'; END IF; END`);
+        return async () => {
+            await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS \`${triggerName}\``);
+        };
+    }
+    const functionName = `${triggerName}_fn`;
+    await db.$executeRawUnsafe(`CREATE FUNCTION "${functionName}"() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."teamId" = '${teamId}' THEN RAISE EXCEPTION 'native auth membership fault'; END IF; RETURN NEW; END; $$`);
+    try {
+        await db.$executeRawUnsafe(`CREATE TRIGGER "${triggerName}" BEFORE INSERT ON "TeamMembership" FOR EACH ROW EXECUTE FUNCTION "${functionName}"()`);
+    } catch (error) {
+        await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${functionName}"()`);
+        throw error;
+    }
+    return async () => {
+        await db.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${triggerName}" ON "TeamMembership"`);
+        await db.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${functionName}"()`);
+    };
+}
+
+describe("native password public-owner provider contract", () => {
+    const provider = resolveProvider();
+    const databaseUrl = resolveDatabaseUrl(provider);
+    const providerIt = databaseUrl ? it : it.skip;
+    const createdAccountIds = new Set<string>();
+    const createdTeamIds = new Set<string>();
+    const issuedProofKeys = new Set<string>();
+    let connected = false;
+
+    beforeAll(async () => {
+        if (!databaseUrl) return;
+        process.env.DATABASE_URL = databaseUrl;
+        process.env.HAPPIER_DB_PROVIDER = provider;
+        process.env.HAPPY_DB_PROVIDER = provider;
+        process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED = "true";
+        process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED = "true";
+        process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED = "1";
+        process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY = "optional";
+        process.env.AUTH_REQUIRED_LOGIN_PROVIDERS = "";
+        process.env.HAPPIER_PUBLIC_SERVER_URL = "https://home.example.test";
+        process.env.HAPPIER_SERVER_IDENTITY_ID = `native-auth-${provider}-contract`;
+        if (provider === "mysql") await initDbMysql();
+        else initDbPostgres();
+        await db.$connect();
+        connected = true;
+        await auth.init();
+    }, 120_000);
+
+    afterEach(async () => {
+        if (!connected) return;
+        if (createdTeamIds.size > 0) {
+            await db.team.deleteMany({ where: { id: { in: [...createdTeamIds] } } });
+            createdTeamIds.clear();
+        }
+        if (createdAccountIds.size > 0) {
+            await db.account.deleteMany({ where: { id: { in: [...createdAccountIds] } } });
+            createdAccountIds.clear();
+        }
+        if (issuedProofKeys.size > 0) {
+            await db.repeatKey.deleteMany({ where: { key: { in: [...issuedProofKeys] } } });
+            issuedProofKeys.clear();
+        }
+    });
+
+    afterAll(async () => {
+        if (connected) await shutdownDbClient();
+    });
+
+    providerIt("provisions, logs in, changes a full-length sign-in address, and preserves normalization uniqueness", async () => {
+        const runKey = randomUUID().replace(/-/gu, "").slice(0, 16);
+        const originalEmail = fullLengthEmail("a", runKey);
+        const changedEmail = fullLengthEmail("z", runKey);
+        expect(originalEmail).toHaveLength(320);
+        expect(changedEmail).toHaveLength(320);
+        expect(normalizeVerifiedEmail(originalEmail)?.normalizedEmail).toBe(originalEmail);
+        const password = `provider-contract password ${runKey}`;
+        const proof = await issueFreshAccountProof(originalEmail);
+        issuedProofKeys.add(createNativeAuthOneTimeOperationKeyV1("verify_native_email", proof.rawBearer));
+        const app = createApp();
+        await app.ready();
+        try {
+            const provisioned = await app.inject({
+                method: "POST",
+                url: "/v1/auth/email/provision",
+                payload: {
+                    v: 1,
+                    email: originalEmail,
+                    admission: { kind: "native_email_verification", token: proof.rawBearer },
+                    account: { mode: "plain", password },
+                },
+            });
+            expect(provisioned.statusCode, provisioned.body).toBe(200);
+            const provisionedBody = provisioned.json<{ accountId: string; token: string }>();
+            createdAccountIds.add(provisionedBody.accountId);
+
+            const initialLogin = await app.inject({
+                method: "POST",
+                url: "/v1/auth/email/login",
+                payload: { v: 1, email: originalEmail, password },
+            });
+            expect(initialLogin.statusCode, initialLogin.body).toBe(200);
+
+            const changeProof = await inTx((tx) => issueNativeAuthOneTimeOperationInTx(tx, {
+                v: 1,
+                purpose: "verify_native_email",
+                normalizedEmail: changedEmail,
+                consumer: {
+                    kind: "sign_in_email_change",
+                    accountId: provisionedBody.accountId,
+                    expectedNativeIdentity: originalEmail,
+                },
+            }));
+            issuedProofKeys.add(createNativeAuthOneTimeOperationKeyV1("verify_native_email", changeProof.rawBearer));
+            const changed = await app.inject({
+                method: "POST",
+                url: "/v1/account/email/change",
+                headers: { authorization: `Bearer ${provisionedBody.token}` },
+                payload: { v: 1, verificationToken: changeProof.rawBearer },
+            });
+            expect(changed.statusCode, changed.body).toBe(200);
+
+            const changedLogin = await app.inject({
+                method: "POST",
+                url: "/v1/auth/email/login",
+                payload: { v: 1, email: changedEmail, password },
+            });
+            expect(changedLogin.statusCode, changedLogin.body).toBe(200);
+            expect((await app.inject({
+                method: "POST",
+                url: "/v1/auth/email/login",
+                payload: { v: 1, email: originalEmail, password },
+            })).statusCode).toBe(401);
+
+            const collisionProof = await issueFreshAccountProof(changedEmail);
+            issuedProofKeys.add(createNativeAuthOneTimeOperationKeyV1("verify_native_email", collisionProof.rawBearer));
+            const collision = await app.inject({
+                method: "POST",
+                url: "/v1/auth/email/provision",
+                payload: {
+                    v: 1,
+                    email: changedEmail.toUpperCase(),
+                    admission: { kind: "native_email_verification", token: collisionProof.rawBearer },
+                    account: { mode: "plain", password: `${password} collision` },
+                },
+            });
+            expect(collision.statusCode, collision.body).toBe(401);
+            expect(await db.accountIdentity.count({
+                where: { provider: "email", providerUserId: changedEmail },
+            })).toBe(1);
+            expect(await db.account.count({
+                where: { AccountIdentity: { some: { provider: "email", providerUserId: changedEmail } } },
+            })).toBe(1);
+            expect(await db.repeatKey.findUnique({
+                where: { key: createNativeAuthOneTimeOperationKeyV1("verify_native_email", collisionProof.rawBearer) },
+            })).not.toBeNull();
+        } finally {
+            await app.close();
+        }
+    }, 120_000);
+
+    providerIt("rolls Account, identity, mailbox, password, and invitation consumption back when membership admission fails", async () => {
+        const runKey = randomUUID().replace(/-/gu, "").slice(0, 16);
+        const invitedEmail = `${runKey}@rollback.example.test`;
+        const password = `rollback password ${runKey}`;
+        const inviter = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        createdAccountIds.add(inviter.id);
+        const team = await db.team.create({ data: { name: `Native auth rollback ${runKey}` } });
+        createdTeamIds.add(team.id);
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: inviter.id, role: "owner" } });
+        const invitation = await inTx((tx) => createTeamInvitationForActorInTx(tx, {
+            teamId: team.id,
+            actorAccountId: inviter.id,
+            role: "member",
+            historyAccess: "from_membership",
+            recipientEmailNormalized: invitedEmail,
+            emailDeliveryAvailable: true,
+            requestKey: randomUUID(),
+        }));
+        if (!invitation.ok || !invitation.value.token) throw new Error("Invitation setup failed");
+        const accountCountBeforeAdmission = await db.account.count();
+        const payload = {
+            v: 1,
+            email: invitedEmail,
+            admission: { kind: "team_invitation" as const, token: invitation.value.token },
+            account: { mode: "plain" as const, password },
+        };
+        const removeFault = await installTargetedMembershipFailureTrigger(
+            provider,
+            team.id,
+            randomUUID().replace(/-/gu, "").slice(0, 12),
+        );
+        const app = createApp();
+        await app.ready();
+        try {
+            const failed = await app.inject({ method: "POST", url: "/v1/auth/email/provision", payload });
+            expect(failed.statusCode).toBe(500);
+            expect(await db.account.count()).toBe(accountCountBeforeAdmission);
+            expect(await db.accountIdentity.findUnique({
+                where: { provider_providerUserId: { provider: "email", providerUserId: invitedEmail } },
+            })).toBeNull();
+            expect(await db.accountEmail.count({ where: { normalizedEmail: invitedEmail } })).toBe(0);
+            expect(await db.accountPasswordCredential.count({
+                where: { account: { AccountIdentity: { some: { provider: "email", providerUserId: invitedEmail } } } },
+            })).toBe(0);
+            expect(await db.teamInvitation.findUniqueOrThrow({ where: { id: invitation.value.invitation.id } }))
+                .toMatchObject({ acceptedAt: null, acceptedByAccountId: null });
+            expect(await db.teamMembership.count({ where: { teamId: team.id } })).toBe(1);
+
+            await removeFault();
+            const retried = await app.inject({ method: "POST", url: "/v1/auth/email/provision", payload });
+            expect(retried.statusCode, retried.body).toBe(200);
+            createdAccountIds.add(retried.json<{ accountId: string }>().accountId);
+            expect(await db.account.count()).toBe(accountCountBeforeAdmission + 1);
+            expect(await db.teamMembership.count({ where: { teamId: team.id } })).toBe(2);
+        } finally {
+            await removeFault().catch(() => undefined);
+            await app.close();
+        }
+    }, 120_000);
+});

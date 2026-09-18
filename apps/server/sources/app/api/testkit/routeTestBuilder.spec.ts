@@ -15,6 +15,7 @@ describe("routeTestBuilder", () => {
             registerRoutes(app) {
                 app.post("/v1/test/:id", async (request: any) => ({
                     userId: request.userId,
+                    authAuthority: request.authAuthority,
                     params: request.params,
                     headers: request.headers,
                     body: request.body,
@@ -29,6 +30,7 @@ describe("routeTestBuilder", () => {
 
         expect(firstResult.response).toEqual({
             userId: "user-default",
+            authAuthority: "present_user",
             params: { id: "route-1" },
             headers: { "x-default": "default-header", "x-extra": "extra-header" },
             body: { ok: true },

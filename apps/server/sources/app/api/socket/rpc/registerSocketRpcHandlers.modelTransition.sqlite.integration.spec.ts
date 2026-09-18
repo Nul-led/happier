@@ -13,6 +13,14 @@ import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lig
 import { createFakeSocket, triggerSocketHandler } from "../../testkit/socketHarness";
 import { registerSocketRpcHandlers } from "./registerSocketRpcHandlers";
 
+function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((resolvePromise) => {
+        resolve = resolvePromise;
+    });
+    return { promise, resolve };
+}
+
 describe("publisher-authoritative model-transition RPC routing on SQLite", () => {
     let harness: LightSqliteHarness;
 
@@ -93,7 +101,11 @@ describe("publisher-authoritative model-transition RPC routing on SQLite", () =>
     function createCaller(): ReturnType<typeof createFakeSocket> {
         return createFakeSocket({
             id: `caller-${randomUUID()}`,
-            data: { clientType: "user-scoped" },
+            data: {
+                clientType: "user-scoped",
+                authAuthority: "present_user",
+                authTokenAuthenticationEvidence: [],
+            },
         });
     }
 
@@ -179,6 +191,105 @@ describe("publisher-authoritative model-transition RPC routing on SQLite", () =>
         expect(staleEffect).not.toHaveBeenCalled();
         expect(currentEffect).toHaveBeenCalledOnce();
         expect(callback).toHaveBeenCalledWith({ ok: true, result: exactResult });
+    });
+
+    it("does not emit after specialized target currentness succeeds when the editor loses Session access", async () => {
+        const seeded = await seed();
+        const editor = await db.account.create({
+            data: {
+                publicKey: `editor-${randomUUID()}`,
+                encryptionMode: "plain",
+            },
+            select: { id: true },
+        });
+        await db.sessionShare.create({
+            data: {
+                sessionId: seeded.binding.sessionId,
+                sharedByUserId: seeded.binding.accountId,
+                sharedWithUserId: editor.id,
+                accessLevel: "edit",
+                canApprovePermissions: false,
+            },
+        });
+
+        let now = new Date(seeded.initialFence.getTime() + 10);
+        const presence = createSessionPublisherPresence({ now: () => now });
+        const targetEffect = vi.fn(async () => ({ ok: true, status: "applied" } as const));
+        const target = {
+            id: "current",
+            data: { clientType: "session-scoped" } as Record<string, unknown>,
+            timeout: vi.fn(() => ({ emitWithAck: targetEffect })),
+        };
+        const registration = await presence.registerPublisher({
+            socket: target,
+            binding: seeded.binding,
+            completeActivitySnapshot: { state: "active", activeCount: 1 },
+        });
+        if (registration.status !== "registered") {
+            throw new Error("expected current publisher registration");
+        }
+
+        const specializedCurrentnessSucceeded = deferred<void>();
+        const resumeSpecializedGuard = deferred<void>();
+        const instrumentedPresence = {
+            ...presence,
+            isCurrentPublisherProjection: async (
+                params: Parameters<typeof presence.isCurrentPublisherProjection>[0],
+            ) => {
+                const current = await presence.isCurrentPublisherProjection(params);
+                if (current) {
+                    specializedCurrentnessSucceeded.resolve();
+                    await resumeSpecializedGuard.promise;
+                }
+                return current;
+            },
+        };
+        const method = `${seeded.binding.sessionId}:${SESSION_RPC_METHODS.SESSION_MODEL_TRANSITION}`;
+        const io = createRoutingIo({
+            accountId: seeded.binding.accountId,
+            method,
+            targets: [target],
+            targetsBySocketId: new Map([[target.id, [target]]]),
+        });
+        const caller = createCaller();
+        const callback = vi.fn();
+        registerSocketRpcHandlers({
+            userId: editor.id,
+            socket: caller as unknown as Socket,
+            io,
+            sessionPublisherPresence: instrumentedPresence,
+        });
+
+        const call = triggerSocketHandler(caller, SOCKET_RPC_EVENTS.CALL, {
+            method,
+            params: {
+                v: 1,
+                selection: {
+                    agentTargetKey: "backend:codex",
+                    providerConnectionId: null,
+                    modelId: "next-model",
+                },
+            },
+        }, callback);
+
+        await specializedCurrentnessSucceeded.promise;
+        await db.sessionShare.delete({
+            where: {
+                sessionId_sharedWithUserId: {
+                    sessionId: seeded.binding.sessionId,
+                    sharedWithUserId: editor.id,
+                },
+            },
+        });
+        resumeSpecializedGuard.resolve();
+        await call;
+
+        expect(targetEffect).not.toHaveBeenCalled();
+        expect(callback).toHaveBeenCalledWith({
+            ok: false,
+            error: "RPC method not available",
+            errorCode: RPC_ERROR_CODES.METHOD_NOT_AVAILABLE,
+        });
     });
 
     it("suppresses the selected socket result when a successor wins during the emit", async () => {

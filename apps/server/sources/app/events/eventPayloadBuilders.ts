@@ -1,14 +1,19 @@
+import type { SessionViewerProjectionV1 } from "@happier-dev/protocol";
 import { AccountProfile } from "@/types";
 import { getPublicUrl } from "@/storage/blob/files";
 import { type UpdatePayload, type EphemeralPayload } from "./eventPayloadTypes";
 import {
+    MachineKindFromLegacyProjectionSchema,
+    type MachineKind,
     SESSION_MESSAGE_USER_ATTENTION_IMPACT,
     parseSessionRuntimeActivityProjectionFields,
     type AutomationRunStateV3,
     type PendingActivationAuthorizationV1,
+    type ParticipantExecutionRunRecipientRoutingIdentityV1,
     SessionMetadataRecipientProjectionV1Schema,
     type PrimaryTurnStatusV1,
     type SessionMessageDeliveryResolutionV1,
+    type SessionMessageAccountActorV1,
     type SessionMessageAttentionImpact,
     type SessionMetadataRecipientProjectionV1,
     type SessionOwnerMetadataEnvelopeV1,
@@ -36,6 +41,12 @@ type UpdateMessagePayloadInput = Readonly<{
     sourceCreatedAt?: Date | null;
     sourceUpdatedAt?: Date | null;
     transcriptObservationProvenance?: SessionTranscriptObservationProvenanceV1 | null;
+    /**
+     * Sanitized authenticated Account actor, already evaluated by the server
+     * projector. Absent means an unmigrated producer; `null` is an explicit
+     * retraction. The raw admission receipt is never accepted here.
+     */
+    accountActor?: SessionMessageAccountActorV1 | null;
 }>;
 
 type UpdateMessagePayloadOptions = Readonly<{
@@ -59,6 +70,11 @@ function serializeUpdateMessage(message: UpdateMessagePayloadInput, options?: Up
         ...(message.transcriptObservationProvenance
             ? { transcriptObservationProvenance: message.transcriptObservationProvenance }
             : {}),
+        // Explicit object-or-null from a current producer; omitted only when the
+        // publisher predates the projection. Deliberately whitelisted rather
+        // than spread, so `inputAdmissionReceipt`/`authorAccountId` on the
+        // source row can never reach the wire.
+        ...("accountActor" in message ? { accountActor: message.accountActor ?? null } : {}),
     };
 }
 
@@ -75,7 +91,13 @@ export function buildNewSessionUpdate(session: {
     ownerMetadata?: string | null;
     agentState: string | null;
     agentStateVersion: number;
-    dataEncryptionKey: Uint8Array | null;
+    /**
+     * The creating owner's own envelope, already Base64-projected by the
+     * canonical `(Session, Account)` tuple projector. This builder never reads a
+     * Session column for key material, so it cannot resurrect the owner/share
+     * branch the tuple replaced.
+     */
+    dataEncryptionKey: string | null;
     encryptionMode: string | null;
     active: boolean;
     lastActiveAt: Date;
@@ -89,7 +111,7 @@ export function buildNewSessionUpdate(session: {
     ownerMetadata?: SessionOwnerMetadataEnvelopeV1;
     agentState: string | null;
     agentStateVersion: number;
-}>): UpdatePayload {
+}>, viewer?: SessionViewerProjectionV1): UpdatePayload {
     const projected = metadataProjection ?? session;
     return {
         id: updateId,
@@ -99,6 +121,7 @@ export function buildNewSessionUpdate(session: {
             id: session.id,
             // Compatibility: some clients use `sid` for sessionId.
             sid: session.id,
+            ...(viewer ? { viewer } : {}),
             seq: applySessionTranscriptPublicationCeiling(session.seq, session),
             metadata: projected.metadata,
             metadataVersion: projected.metadataVersion,
@@ -112,7 +135,7 @@ export function buildNewSessionUpdate(session: {
                 : {}),
             agentState: projected.agentState,
             agentStateVersion: projected.agentStateVersion,
-            dataEncryptionKey: session.dataEncryptionKey ? Buffer.from(session.dataEncryptionKey).toString('base64') : null,
+            dataEncryptionKey: session.dataEncryptionKey,
             encryptionMode: normalizeSessionEncryptionMode(session.encryptionMode),
             active: session.active,
             activeAt: session.lastActiveAt.getTime(),
@@ -192,6 +215,7 @@ export function buildUpdateSessionUpdate(
     metadata?: { value: string | null; version: number },
     agentState?: { value: string | null; version: number },
     projection?: {
+        viewer?: SessionViewerProjectionV1;
         active?: boolean;
         activeAt?: number;
         lastViewedSessionSeq?: number;
@@ -204,6 +228,7 @@ export function buildUpdateSessionUpdate(
         latestTurnStatus?: PrimaryTurnStatusV1 | null;
         latestTurnStatusObservedAt?: number | null;
         lastRuntimeIssue?: SessionRuntimeIssueV1 | null;
+        rollbackEligibleTurnStarts?: readonly number[];
         runtimeActivityState?: 'active' | 'idle' | 'unknown';
         runtimeActivityActiveCount?: number;
         runtimeActivityObservedAt?: number | null;
@@ -229,6 +254,7 @@ export function buildUpdateSessionUpdate(
         seq: updateSeq,
         body: {
             t: 'update-session',
+            ...(projection?.viewer ? { viewer: projection.viewer } : {}),
             id: sessionId,
             // Compatibility: some clients use `sid` for sessionId.
             sid: sessionId,
@@ -258,6 +284,9 @@ export function buildUpdateSessionUpdate(
                 ? { latestTurnStatusObservedAt: projection.latestTurnStatusObservedAt ?? null }
                 : {}),
             ...(projection && 'lastRuntimeIssue' in projection ? { lastRuntimeIssue: projection.lastRuntimeIssue ?? null } : {}),
+            ...(Array.isArray(projection?.rollbackEligibleTurnStarts)
+                ? { rollbackEligibleTurnStarts: projection.rollbackEligibleTurnStarts }
+                : {}),
             ...runtimeActivityFields,
             ...(typeof projection?.meaningfulActivityAt === "number" && Number.isFinite(projection.meaningfulActivityAt)
                 ? { meaningfulActivityAt: projection.meaningfulActivityAt }
@@ -333,6 +362,7 @@ export function buildPendingChangedUpdate(
         pendingVersion: number;
         pendingCount: number;
         pendingBlockedCount?: number;
+        recipient?: ParticipantExecutionRunRecipientRoutingIdentityV1;
         changedByAccountId?: string;
         meaningfulActivityAt?: Date | number;
         pendingActivationRequestId?: string;
@@ -355,6 +385,7 @@ export function buildPendingChangedUpdate(
             pendingVersion: data.pendingVersion,
             pendingCount: data.pendingCount,
             ...(typeof data.pendingBlockedCount === "number" ? { pendingBlockedCount: data.pendingBlockedCount } : {}),
+            ...(data.recipient ? { recipient: data.recipient } : {}),
             ...(typeof data.changedByAccountId === "string" ? { changedByAccountId: data.changedByAccountId } : {}),
             ...(typeof data.pendingActivationRequestId === "string"
                 ? { pendingActivationRequestId: data.pendingActivationRequestId }
@@ -515,6 +546,7 @@ export function buildAccountSettingsChangedUpdate(settingsVersion: number, updat
 
 export function buildNewMachineUpdate(machine: {
     id: string;
+    kind?: MachineKind;
     seq: number;
     metadata: string;
     metadataVersion: number;
@@ -540,6 +572,7 @@ export function buildNewMachineUpdate(machine: {
         seq: updateSeq,
         body: {
             t: 'new-machine',
+            kind: MachineKindFromLegacyProjectionSchema.parse(machine.kind),
             machineId: machine.id,
             seq: machine.seq,
             metadata: machine.metadata,
@@ -759,7 +792,6 @@ export function buildSessionSharedUpdate(share: {
     };
     accessLevel: 'view' | 'edit' | 'admin';
     canApprovePermissions: boolean;
-    encryptedDataKey: Uint8Array | null;
     createdAt: Date;
 }, updateSeq: number, updateId: string): UpdatePayload {
     return {
@@ -774,7 +806,6 @@ export function buildSessionSharedUpdate(share: {
             sharedBy: share.sharedByUser,
             accessLevel: share.accessLevel,
             canApprovePermissions: share.canApprovePermissions,
-            ...(share.encryptedDataKey ? { encryptedDataKey: Buffer.from(share.encryptedDataKey).toString('base64') } : {}),
             createdAt: share.createdAt.getTime()
         },
         createdAt: Date.now()

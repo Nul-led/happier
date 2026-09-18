@@ -12,26 +12,9 @@ import type { ServerFeatureResolver } from './serverFeatureRegistry';
 import { resolveServerFeatureBuildPolicy } from './serverFeatureBuildPolicy';
 import { applyBrowserCapabilityFeatureGateClosure } from '../browserFeature';
 import { isSessionSystemRecordsProtocolV1Active } from '@/app/session/systemRecords/sessionSystemRecordProtocolContract';
-
-const DEFAULT_SETUP_SURFACE_POLICY_FEATURES: Record<string, unknown> = Object.freeze({
-    setup: {
-        relay: {
-            allowRelaySelection: { enabled: true },
-            allowHappierCloud: { enabled: true },
-            allowCustomRelayUrl: { enabled: true },
-            allowLocalRelayHost: { enabled: true },
-            allowRemoteSshRelayHost: { enabled: true },
-        },
-        relayAccess: {
-            allowTailscale: { enabled: true },
-            allowCloudflareTunnel: { enabled: true },
-        },
-    },
-    remoteHosts: {
-        management: { enabled: true },
-        secretMaterial: { enabled: false },
-    },
-});
+import { resolveAuthPolicyFromEnv } from '@/app/auth/authPolicy';
+import { resolveEffectiveHomeSignInServicePolicy } from '@/app/auth/methods/signInServicePolicy';
+import { resolveSetupSurfacePolicyFeature } from '../setupSurfacePolicyFeature';
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
     return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -58,7 +41,11 @@ export function resolveServerFeaturePayload(
         throw new Error('resolveServerFeaturePayload: resolvers list is empty');
     }
 
-    const mergedFeatures: Record<string, unknown> = mergeDeep({}, DEFAULT_SETUP_SURFACE_POLICY_FEATURES);
+    const setupSurfacePolicy = resolveSetupSurfacePolicyFeature();
+    const mergedFeatures: Record<string, unknown> = mergeDeep(
+        {},
+        setupSurfacePolicy.features as Record<string, unknown>,
+    );
     const mergedCapabilities: Record<string, unknown> = {};
     for (const resolver of resolvers) {
         const partial = resolver(env);
@@ -70,6 +57,24 @@ export function resolveServerFeaturePayload(
             Object.assign(mergedCapabilities, mergeDeep(mergedCapabilities, patch));
         }
     }
+
+    const authPolicy = resolveAuthPolicyFromEnv(env);
+    const accountDirectory = isPlainObject(mergedCapabilities.accountDirectory)
+        ? mergedCapabilities.accountDirectory
+        : null;
+    const accountDirectoryCapable = accountDirectory?.homeDirectory === true;
+    // This assembler is synchronous and reads no database, so it publishes the
+    // deployment recommendation without the persisted Home narrowing; the
+    // `/v1/features` route replaces it with the effective Home value it resolves.
+    const deploymentSignInService = authPolicy.signInService ?? null;
+    const signInService = resolveEffectiveHomeSignInServicePolicy({
+        envPolicy: deploymentSignInService,
+        narrowing: null,
+        accountDirectoryCapable,
+    }) ?? undefined;
+    const accountServicePresentation = accountDirectoryCapable
+        ? authPolicy.accountServicePresentation ?? undefined
+        : undefined;
 
     // `turns` is advertised only while the transcript anchor projection is active: before that,
     // `SessionTurn` rows may still be v0 and their anchors cannot be trusted to describe turn
@@ -93,12 +98,25 @@ export function resolveServerFeaturePayload(
         throw new Error(`Invalid /v1/features feature gates: ${parsedFeatureGates.error.message}`);
     }
 
-    const parsed = featuresSchema.safeParse({ features: mergedFeatures, capabilities: mergedCapabilities });
+    const parsed = featuresSchema.safeParse({
+        features: mergedFeatures,
+        capabilities: mergedCapabilities,
+        ...(signInService ? { signInService } : {}),
+        ...(accountServicePresentation ? { accountServicePresentation } : {}),
+    });
     if (!parsed.success) {
         throw new Error(`Invalid /v1/features payload: ${parsed.error.message}`);
     }
 
     const payload = parsed.data;
+    if (deploymentSignInService?.mode === 'self' && !accountDirectoryCapable) {
+        payload.capabilities.auth.misconfig.push({
+            code: 'auth_sign_in_service_self_unavailable',
+            message: 'Self sign-in service mode requires the Account Directory capability',
+            kind: 'auth-sign-in-service-config',
+            envVars: ['HAPPIER_AUTH_SIGN_IN_SERVICE_MODE'],
+        });
+    }
 
     // 1) Enforce build-policy denies on represented server features (fail-closed).
     const buildPolicy = resolveServerFeatureBuildPolicy(env);

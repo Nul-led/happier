@@ -1,0 +1,68 @@
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("@/storage/blob/files", () => ({
+    getPublicUrl: (path: string) => `https://files.test/${path}`,
+}));
+
+const {
+    ACCOUNT_DISPLAY_PROFILE_SELECT,
+    projectAccountDisplayProfileV1,
+    toShareUserProfile,
+} = await import("./accountDisplayProfile");
+
+const BASE = {
+    id: "acc_alice",
+    firstName: "Alice",
+    lastName: "Chen",
+    username: "alice",
+    avatar: { path: "avatars/alice.png", width: 1, height: 1, thumbhash: "x" },
+};
+
+describe("accountDisplayProfile", () => {
+    it("selects only the neutral presentation columns plus the Account id", () => {
+        expect(Object.keys(ACCOUNT_DISPLAY_PROFILE_SELECT).sort()).toEqual([
+            "avatar",
+            "firstName",
+            "id",
+            "lastName",
+            "username",
+        ]);
+    });
+
+    it("projects the neutral display profile with a public avatar URL and no Account id", () => {
+        const projected = projectAccountDisplayProfileV1(BASE);
+        expect(projected).toEqual({
+            firstName: "Alice",
+            lastName: "Chen",
+            username: "alice",
+            avatarUrl: "https://files.test/avatars/alice.png",
+        });
+        expect(projected).not.toHaveProperty("id");
+    });
+
+    it("degrades malformed or absent avatar data to a null URL instead of leaking raw storage state", () => {
+        for (const avatar of [null, undefined, {}, { path: 42 }, "avatars/alice.png", []]) {
+            expect(projectAccountDisplayProfileV1({ ...BASE, avatar }).avatarUrl).toBeNull();
+        }
+    });
+
+    it("keeps absent names null rather than substituting an identifier", () => {
+        expect(projectAccountDisplayProfileV1({
+            id: "acc_ghost",
+            firstName: null,
+            lastName: null,
+            username: null,
+            avatar: null,
+        })).toEqual({ firstName: null, lastName: null, username: null, avatarUrl: null });
+    });
+
+    it("keeps the released direct-share wire shape, including its Account id field", () => {
+        expect(toShareUserProfile(BASE)).toEqual({
+            id: "acc_alice",
+            firstName: "Alice",
+            lastName: "Chen",
+            username: "alice",
+            avatar: "https://files.test/avatars/alice.png",
+        });
+    });
+});

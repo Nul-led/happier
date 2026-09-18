@@ -9,6 +9,7 @@ import {
     PluginAvailabilityMaterializationsReportActionInputV1Schema,
     PluginAvailabilityPackageAssetPublishActionInputV1Schema,
     PluginAvailabilityPackageAssetReadActionInputV1Schema,
+    PluginAvailabilityPackageAssetRemoveActionInputV1Schema,
     PluginAvailabilityReleaseReadActionInputV1Schema,
     PluginAvailabilityReleasePublishActionInputV1Schema,
     PluginAvailabilityUiArtifactBrowserFrameIssueActionInputV1Schema,
@@ -171,6 +172,9 @@ export function registerPluginAvailabilityRoutes(
     ];
     const packageAssetReadPath = PluginAvailabilityActionHttpPathsV1[
         "account.plugins.availability.packageAsset.read"
+    ];
+    const packageAssetRemovePath = PluginAvailabilityActionHttpPathsV1[
+        "account.plugins.availability.packageAsset.remove"
     ];
 
     // This is intentionally the sole unauthenticated Availability route. The
@@ -388,6 +392,20 @@ export function registerPluginAvailabilityRoutes(
                 return;
             }
             return result;
+        } catch (error) {
+            await sendOperationError(request, reply, error);
+            return;
+        }
+    });
+
+    app.post(packageAssetRemovePath, {
+        preHandler: app.authenticate,
+    }, async (request, reply) => {
+        try {
+            return await operations.removePackageAsset({
+                accountId: requestUserId(request),
+                input: parseOperationInput(PluginAvailabilityPackageAssetRemoveActionInputV1Schema, request.body),
+            });
         } catch (error) {
             await sendOperationError(request, reply, error);
             return;

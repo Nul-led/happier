@@ -2,7 +2,7 @@ import { readMachineDaemonOwnershipMetadataFromSocketAuth } from "@happier-dev/p
 
 import {
     machineInstallationPublicKeysEqual,
-    verifyMachineInstallationRegistration,
+    validateMachineInstallationProof,
 } from "@/app/machines/installationProof";
 
 export const VERIFIED_MACHINE_INSTALLATION_ID_SOCKET_DATA_KEY = "verifiedMachineInstallationId";
@@ -24,7 +24,7 @@ export function resolveVerifiedMachineSocketInstallationId(params: Readonly<{
     socketAuth: unknown;
 }>): string | null {
     const ownership = readMachineDaemonOwnershipMetadataFromSocketAuth(params.socketAuth);
-    const verification = verifyMachineInstallationRegistration({
+    const verification = validateMachineInstallationProof({
         accountId: params.accountId,
         machineId: params.machineId,
         installationId: ownership.installationId,

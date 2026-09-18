@@ -5,7 +5,9 @@ import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
     decodeBase64,
     encodeBase64,
+    parseAccountPasswordCredentialV1,
     pluginJsonValuesEqual,
+    type AccountPasswordCredentialV1,
     type AccountEncryptionMigrateCollectionInventoryItem,
     type AccountEncryptionMigrateCollectionStageItem,
     type AccountEncryptionMigrateTransitionPrepareRequest,
@@ -14,6 +16,8 @@ import {
 } from "@happier-dev/protocol";
 
 import { markAccountChanged } from "@/app/changes/markAccountChanged";
+import { assertAccountActive } from "@/app/auth/accountStatus";
+import { isE2eePasswordCredentialBoundToAccount } from "@/app/auth/password/e2eePasswordCredentialAccountBinding";
 import {
     verifyAccountContentKeyBindingForAccountPublicKey,
 } from "@/app/encryption/accountContentKeyAdmission";
@@ -125,9 +129,24 @@ type AccountEncryptionTransitionFirstKeyAuthorization = Readonly<{
     signingKeyFingerprint: string;
 }>;
 
-type AccountEncryptionTransitionAuthorization =
+/**
+ * The prepared replacement password credential, already proven by the route
+ * owner: the first-key external-auth proof for a Plain source credential, and
+ * the purpose-bound Key Challenge mutation proof for an E2EE one. The
+ * coordinator only checks that it is coherent with the transition's target mode
+ * and Account key, then stages it for the activation transaction.
+ */
+type AccountEncryptionTransitionPasswordCredential = Readonly<{
+    expectedRevision: number;
+    credential: AccountPasswordCredentialV1;
+}>;
+
+type AccountEncryptionTransitionAuthorization = Readonly<{
+    passwordCredential?: AccountEncryptionTransitionPasswordCredential;
+}> & (
     | Readonly<{ kind: "present_user_confirmation" }>
-    | AccountEncryptionTransitionFirstKeyAuthorization;
+    | AccountEncryptionTransitionFirstKeyAuthorization
+);
 
 type AccountEncryptionTransitionStageSource = Readonly<{
     pluginId: string;
@@ -321,7 +340,12 @@ export async function acquireAccountEncryptionTransitionCoordinatorFenceInTx(
     tx: Tx,
     accountId: string,
 ): Promise<AccountEncryptionTransitionFenceResult> {
-    return await acquireAccountEncryptionTransitionFenceInTx(tx, accountId);
+    const fence = await acquireAccountEncryptionTransitionFenceInTx(tx, accountId);
+    if (fence.status !== "account_not_found") {
+        const account = await tx.account.findUniqueOrThrow({ where: { id: accountId }, select: { status: true } });
+        assertAccountActive(account.status);
+    }
+    return fence;
 }
 
 /**
@@ -343,6 +367,10 @@ export async function finalizeAccountEncryptionTransitionCoordinatorInTx(
                 kind: "migration_replace";
                 binding: VerifiedAccountContentKeyBinding;
             }>;
+        passwordCredential?: Readonly<{
+            expectedRevision: number;
+            credential: AccountPasswordCredentialV1;
+        }>;
         accountChangeHint: unknown;
     }>,
 ): Promise<AccountEncryptionTransitionCoordinatorResult> {
@@ -391,12 +419,79 @@ export async function finalizeAccountEncryptionTransitionCoordinatorInTx(
             ? { accountPublicKeyHex: params.accountPublicKeyHex }
             : {}),
         contentKey: params.contentKey,
+        ...(params.passwordCredential
+            ? { passwordCredential: params.passwordCredential }
+            : {}),
     });
     return { status: "applied", cursor, ...updated };
 }
 
 function isTransitionMode(value: unknown): value is AccountEncryptionTransitionMode {
     return value === "plain" || value === "e2ee";
+}
+
+/**
+ * Decide what this transition must do with an enrolled password credential.
+ *
+ * Changing the Account's mode changes which credential kind is valid, so an
+ * enrolled credential must be replaced by one prepared for the target mode. A
+ * caller that wants no password after the transition removes it first through
+ * the Account Security owner; this is deliberately not a second removal path.
+ */
+async function resolveTransitionPasswordStagingInTx(params: Readonly<{
+    tx: Tx;
+    accountId: string;
+    toMode: AccountEncryptionTransitionMode;
+    targetAccountPublicKeyHex: string | null;
+    replacement: AccountEncryptionTransitionPasswordCredential | undefined;
+}>): Promise<
+    | Readonly<{ ok: true; staged: AccountEncryptionTransitionPasswordCredential | null }>
+    | Readonly<{ ok: false }>
+> {
+    const current = await params.tx.accountPasswordCredential.findUnique({
+        where: { accountId: params.accountId },
+        select: { revision: true },
+    });
+    if (!current) return params.replacement ? { ok: false } : { ok: true, staged: null };
+    if (!params.replacement || params.replacement.expectedRevision !== current.revision) {
+        return { ok: false };
+    }
+    const target = parseAccountPasswordCredentialV1(params.toMode, params.replacement.credential);
+    if (!target.ok) return { ok: false };
+    if (target.mode === "e2ee"
+        && !isE2eePasswordCredentialBoundToAccount(
+            target.credential,
+            params.targetAccountPublicKeyHex,
+        )) {
+        return { ok: false };
+    }
+    return { ok: true, staged: { expectedRevision: current.revision, credential: target.credential } };
+}
+
+/** The staged replacement, re-validated against the current target facts. */
+function stagedTransitionPasswordCredential(
+    transition: Readonly<{
+        toEncryptionMode: string;
+        targetPasswordCredential: unknown;
+        targetPasswordRevision: number | null;
+    }>,
+): AccountEncryptionTransitionPasswordCredential | null {
+    if (transition.targetPasswordCredential === null
+        || transition.targetPasswordCredential === undefined
+        || transition.targetPasswordRevision === null) {
+        return null;
+    }
+    if (!isTransitionMode(transition.toEncryptionMode)) {
+        throw new Error("Account encryption transition staged a password credential for an invalid mode");
+    }
+    const parsed = parseAccountPasswordCredentialV1(
+        transition.toEncryptionMode,
+        transition.targetPasswordCredential,
+    );
+    if (!parsed.ok) {
+        throw new Error("Account encryption transition staged an invalid password credential");
+    }
+    return { expectedRevision: transition.targetPasswordRevision, credential: parsed.credential };
 }
 
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
@@ -514,6 +609,8 @@ const accountEncryptionTransitionSelect = {
     targetAccountPublicKey: true,
     targetContentPublicKey: true,
     targetContentPublicKeySig: true,
+    targetPasswordCredential: true,
+    targetPasswordRevision: true,
     status: true,
     activeAccountId: true,
     preparedAt: true,
@@ -750,7 +847,11 @@ function decodeAccountEncryptionTransitionAutomationInventoryCursor(
         const after = record.after as Record<string, unknown>;
         if (
             Object.keys(after).length !== 2
-            || (after.participantKind !== "definition" && after.participantKind !== "run")
+            || (
+                after.participantKind !== "definition"
+                && after.participantKind !== "run"
+                && after.participantKind !== "workflow_invocation"
+            )
             || typeof after.participantId !== "string"
             || after.participantId.length === 0
             || after.participantId.length > 256
@@ -988,7 +1089,7 @@ async function closeAccountEncryptionTransitionInTx(params: Readonly<{
     now: Date;
     requireExpired: boolean;
 }>): Promise<AccountEncryptionTransitionCloseResult> {
-    const fence = await acquireAccountEncryptionTransitionCoordinatorFenceInTx(
+    const fence = await acquireAccountEncryptionTransitionFenceInTx(
         params.tx,
         params.accountId,
     );
@@ -1713,9 +1814,25 @@ export async function authorizeAccountEncryptionTransitionCoordinatorInTx(
         if (params.authorization.kind !== "present_user_confirmation") {
             return { status: "invalid_authorization" };
         }
+        const password = await resolveTransitionPasswordStagingInTx({
+            tx: params.tx,
+            accountId: params.accountId,
+            toMode: source.toMode,
+            targetAccountPublicKeyHex: null,
+            replacement: params.authorization.passwordCredential,
+        });
+        if (!password.ok) return { status: "invalid_authorization" };
         await params.tx.accountEncryptionTransition.update({
             where: { id: transition.id },
-            data: { status: "authorized", authorizedAt: now },
+            data: {
+                status: "authorized", authorizedAt: now,
+                ...(password.staged
+                    ? {
+                        targetPasswordCredential: toPrismaJson(password.staged.credential),
+                        targetPasswordRevision: password.staged.expectedRevision,
+                    }
+                    : {}),
+            },
         });
         return await stageAuthorizedParticipantSourceCensusInTx({
             tx: params.tx,
@@ -1794,6 +1911,14 @@ export async function authorizeAccountEncryptionTransitionCoordinatorInTx(
         // Account must re-use the exact stored public binding.
         return { status: "invalid_authorization" };
     }
+    const password = await resolveTransitionPasswordStagingInTx({
+        tx: params.tx,
+        accountId: params.accountId,
+        toMode: source.toMode,
+        targetAccountPublicKeyHex: targetAccountPublicKey,
+        replacement: params.authorization.passwordCredential,
+    });
+    if (!password.ok) return { status: "invalid_authorization" };
     await params.tx.accountEncryptionTransition.update({
         where: { id: transition.id },
         data: {
@@ -1805,6 +1930,12 @@ export async function authorizeAccountEncryptionTransitionCoordinatorInTx(
                 verifiedBinding.contentPublicKeySignature,
             status: "authorized",
             authorizedAt: now,
+            ...(password.staged
+                ? {
+                    targetPasswordCredential: toPrismaJson(password.staged.credential),
+                    targetPasswordRevision: password.staged.expectedRevision,
+                }
+                : {}),
         },
     });
     return await stageAuthorizedParticipantSourceCensusInTx({
@@ -2347,7 +2478,9 @@ function automationStageIdentityKey(
 ): string {
     return item.kind === "definition"
         ? `definition\u0000${item.automationId}`
-        : `run\u0000${item.runId}`;
+        : item.kind === "run"
+            ? `run\u0000${item.runId}`
+            : `workflow_invocation\u0000${item.invocationRecordId}`;
 }
 
 function automationStageMatchesRequestedSource(
@@ -2362,11 +2495,21 @@ function automationStageMatchesRequestedSource(
             && source.revision === item.expectedRevision
             && pluginJsonValuesEqual(source.source, item.source);
     }
-    return source.kind === "run"
+    if (item.kind === "run") {
+        return source.kind === "run"
+            && source.runId === item.runId
+            && pluginJsonValuesEqual(source.origin, item.origin)
+            && source.revision === item.expectedRevision
+            && (item.origin.kind === "direct"
+                || (source.origin.kind === "automation"
+                    && "cause" in source
+                    && "cause" in item
+                    && pluginJsonValuesEqual(source.cause, item.cause)))
+            && pluginJsonValuesEqual(source.source, item.source);
+    }
+    return source.kind === "workflow_invocation"
         && source.runId === item.runId
-        && source.automationId === item.automationId
-        && source.revision === item.expectedRevision
-        && pluginJsonValuesEqual(source.cause, item.cause)
+        && source.invocationRecordId === item.invocationRecordId
         && pluginJsonValuesEqual(source.source, item.source);
 }
 
@@ -2450,7 +2593,12 @@ export async function stageAccountEncryptionTransitionAutomationsCoordinatorInTx
         identities: params.items.map((item) => (
             item.kind === "definition"
                 ? { participantKind: "definition" as const, participantId: item.automationId }
-                : { participantKind: "run" as const, participantId: item.runId }
+                : item.kind === "run"
+                    ? { participantKind: "run" as const, participantId: item.runId }
+                    : {
+                        participantKind: "workflow_invocation" as const,
+                        participantId: item.invocationRecordId,
+                    }
         )),
     });
     if (!stages || stages.length !== params.items.length) {
@@ -2954,6 +3102,10 @@ export async function activateAccountEncryptionTransitionCoordinatorInTx(
         tx: params.tx,
         accountId: params.accountId,
     });
+    // The replacement credential staged at authorization commits with the mode
+    // flip, so the Account is never published in one mode beside a credential
+    // of the other. A conflicting revision aborts this whole transaction.
+    const stagedPassword = stagedTransitionPasswordCredential(transition);
     const updated = await applyAccountEncryptionTransitionInTx(params.tx, {
         accountId: params.accountId,
         expectedVersion: cursor,
@@ -2961,6 +3113,7 @@ export async function activateAccountEncryptionTransitionCoordinatorInTx(
         ...(targetKeyMaterial
             ? { accountPublicKeyHex: targetKeyMaterial.accountPublicKeyHex }
             : {}),
+        ...(stagedPassword ? { passwordCredential: stagedPassword } : {}),
         contentKey: targetKeyMaterial
             ? { kind: "migration_replace", binding: targetKeyMaterial.binding }
             : { kind: "preserve" },
@@ -3054,7 +3207,7 @@ export async function admitAccountDataEraseThroughEncryptionTransitionInTx(
         now?: Date;
     }>,
 ): Promise<AccountEncryptionTransitionAccountDataEraseAdmissionResult> {
-    const fence = await acquireAccountEncryptionTransitionCoordinatorFenceInTx(
+    const fence = await acquireAccountEncryptionTransitionFenceInTx(
         params.tx,
         params.accountId,
     );

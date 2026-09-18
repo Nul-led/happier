@@ -1,3 +1,5 @@
+import { isPersistentMachine, type MachineKind } from "@happier-dev/protocol";
+
 import { db } from "@/storage/db";
 import { parseIntEnv } from "@/config/env";
 import { delay } from "@/utils/runtime/delay";
@@ -12,7 +14,7 @@ import {
 import { isRetryableSqliteWriteError } from "@/storage/sqliteRetryClassifier";
 import { warn } from "@/utils/logging/log";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
-import { refreshSessionParticipantBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
+import { refreshTrackedSessionAccountBadgePushes } from "@/app/activity/refreshAccountActivityBadgePushes";
 import {
     loadSessionTranscriptPublicationRecipientProjection,
     projectSessionTranscriptPublicationRealtimeProjection,
@@ -55,6 +57,7 @@ type TimedOutPresenceCandidate = {
     id: string;
     accountId: string;
     lastActiveAt: Date;
+    kind?: MachineKind;
 };
 
 type ExactFenceUpdateDelegate = {
@@ -105,7 +108,7 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
             if (result.status !== "expired") continue;
             const session = await loadSessionTranscriptPublicationRecipientProjection(result.sessionId);
             if (session) {
-                for (const { accountId, cursor } of result.participantCursors) {
+                for (const { accountId, cursor } of result.recipientCursors) {
                     const projection = projectSessionTranscriptPublicationRealtimeProjection(
                         { active: false, activeAt: result.activeAt.getTime() },
                         session,
@@ -126,9 +129,9 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
                     });
                 }
             }
-            await refreshSessionParticipantBadgePushes({
+            await refreshTrackedSessionAccountBadgePushes({
                 badgeAttentionChanged: result.badgeAttentionChanged,
-                participantCursors: result.participantCursors,
+                sessionId: result.sessionId,
             });
             if (result.activationHint) {
                 await emitPendingActivationHint({
@@ -137,7 +140,7 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
                     pendingCount: result.activationHint.pendingCount,
                     pendingBlockedCount: result.activationHint.pendingBlockedCount,
                     pendingVersion: result.activationHint.pendingVersion,
-                    participantCursors: [...result.participantCursors],
+                    recipientCursors: [...result.recipientCursors],
                     activationTarget: result.activationHint.activationTarget,
                 });
             }
@@ -163,10 +166,13 @@ export async function runPresenceTimeoutTick(timeoutConfig: PresenceTimeoutConfi
                     lte: new Date(Date.now() - timeoutConfig.machineTimeoutMs)
                 }
             },
-            select: { id: true, accountId: true, lastActiveAt: true },
+            select: { id: true, accountId: true, lastActiveAt: true, kind: true },
         });
         const changedMachines = await markTimedOutMachinesInactive(db.machine, machines);
         for (const machine of changedMachines) {
+            // Temporary Runner Machines are absent from ordinary Machine inventory,
+            // so their reachability never enters the broad Account-wide fanout.
+            if (!isPersistentMachine(machine)) continue;
             eventRouter.emitEphemeral({
                 userId: machine.accountId,
                 payload: buildMachineActivityEphemeral(machine.id, false, machine.lastActiveAt.getTime()),

@@ -13,6 +13,7 @@ import { AutomationStoredContentReadError } from "@/app/automations/automationSt
 import { AutomationSessionLifecycleRegistrationValidationError } from "@/app/automations/automationSessionLifecycleRegistration";
 import { AutomationValidationError } from "@/app/automations/automationValidation";
 import type { ClearAutomationRunHistoryResult } from "@/app/automations/automationCrudService";
+import type { AutomationRunItem } from "@/app/automations/automationTypes";
 import { PRESENT_USER_REQUIRED_ERROR } from "../../utils/requirePresentUser";
 
 const dbMocks = createDbMocks({
@@ -190,7 +191,7 @@ const listAutomationDefinitionsPage = vi.fn(async () => ({
     automations: [scheduleAutomation],
     nextCursor: null,
 }));
-const runAutomationNow = vi.fn(async () => null);
+const runAutomationNow = vi.fn(async (): Promise<AutomationRunItem | null> => null);
 const setAutomationEnabled = vi.fn(async () => scheduleAutomation);
 const updateAutomation = vi.fn(async () => scheduleAutomation);
 const reconcileAutomationDefinition = vi.fn(async () => scheduleAutomation);
@@ -944,7 +945,72 @@ describe("registerAutomationV3Routes", () => {
             }),
         });
 
-        await runNowRoute.invoke({
+        const admittedAt = new Date("2026-09-10T09:00:00.000Z");
+        runAutomationNow.mockResolvedValueOnce({
+            id: "workflow-run-exact",
+            originKind: "automation",
+            automationId: "automation-1",
+            originSessionId: null,
+            accountId: "account-1",
+            revision: 0,
+            triggerId: null,
+            triggerRetired: false,
+            state: "queued",
+            causeKind: "manual",
+            causeTriggerKind: null,
+            causeTriggerRevision: null,
+            causeOccurredAt: admittedAt,
+            causeEventPluginId: null,
+            causeEventLocalId: null,
+            causeScheduledFor: null,
+            causeSessionLifecycleEvent: null,
+            causeSourceSessionId: null,
+            causeSourceTurnId: null,
+            causeSessionLifecycleRequestId: null,
+            causeSessionLifecycleRequestKind: null,
+            causeSessionLifecyclePolicyKind: null,
+            causeSessionLifecycleConfiguredCount: null,
+            occurrenceKey: null,
+            legacyManualIdempotencyKey: null,
+            occurrenceEvidenceEqualityTag: null,
+            causeSourceSelectorId: null,
+            triggerEvidenceEnvelope: null,
+            executionInputEnvelope: null,
+            executionDispatchCommittedAt: null,
+            executionDispatchDueAt: null,
+            executionNativeRunId: null,
+            executionNativeCallId: null,
+            executionNativeSidechainId: null,
+            resultEnvelope: null,
+            replyContextEnvelope: null,
+            replyHandoffActionPluginId: null,
+            replyHandoffActionLocalId: null,
+            replyHandoffTargetMachineId: null,
+            replyHandoffTargetMachineInstallationId: null,
+            replyHandoffTargetMaterializationId: null,
+            replyHandoffId: null,
+            dueAt: admittedAt,
+            scheduledAt: admittedAt,
+            claimedAt: null,
+            startedAt: null,
+            finishedAt: null,
+            claimedByMachineId: null,
+            leaseExpiresAt: null,
+            attempt: 0,
+            errorCode: null,
+            producedSessionId: null,
+            executionDispatchState: null,
+            executionAttempt: 0,
+            replyHandoffState: "none",
+            replyHandoffAttempt: 0,
+            replyHandoffDueAt: null,
+            workflowCustodyState: "pending",
+            summaryCiphertext: null,
+            errorMessage: null,
+            createdAt: admittedAt,
+            updatedAt: admittedAt,
+        });
+        const { response } = await runNowRoute.invoke({
             userId: "account-1",
             params: { id: "automation-1" },
             headers: { "idempotency-key": "ci-build-42" },
@@ -953,6 +1019,13 @@ describe("registerAutomationV3Routes", () => {
             accountId: "account-1",
             automationId: "automation-1",
             idempotencyKey: "ci-build-42",
+        });
+        expect(response).toMatchObject({
+            run: { id: "workflow-run-exact", automationId: "automation-1" },
+            workflowRun: {
+                recipeKind: "workflow-v2",
+                workflowRunId: "workflow-run-exact",
+            },
         });
     });
 
@@ -1166,8 +1239,12 @@ describe("registerAutomationV3Routes", () => {
         claimAutomationRun.mockResolvedValueOnce({
             run: {
                 id: "run-1",
+                originKind: "automation",
                 automationId: "automation-1",
+                originSessionId: null,
                 attempt: 2,
+                revision: 0,
+                workflowCustodyState: null,
                 triggerId: null,
                 causeKind: "manual",
                 causeTriggerKind: null,
@@ -1213,6 +1290,8 @@ describe("registerAutomationV3Routes", () => {
                 id: "run-1",
                 automationId: "automation-1",
                 attempt: 2,
+                revision: 0,
+                recipeKind: "legacy",
                 triggerId: null,
                 cause: { kind: "manual", invokedAt: invokedAt.getTime() },
                 executionInputEnvelope: frozenExecutionInput,
@@ -1232,8 +1311,12 @@ describe("registerAutomationV3Routes", () => {
         claimAutomationRun.mockResolvedValueOnce({
             run: {
                 id: "run-final",
+                originKind: "automation",
                 automationId: "automation-1",
+                originSessionId: null,
                 attempt: 2,
+                revision: 0,
+                workflowCustodyState: null,
                 triggerId: null,
                 causeKind: "conversation",
                 causeTriggerKind: null,
@@ -1293,8 +1376,12 @@ describe("registerAutomationV3Routes", () => {
         claimAutomationRun.mockResolvedValueOnce({
             run: {
                 id: "run-scheduled",
+                originKind: "automation",
                 automationId: "automation-1",
+                originSessionId: null,
                 attempt: 1,
+                revision: 0,
+                workflowCustodyState: null,
                 triggerId: "trigger-schedule-1",
                 causeKind: "trigger",
                 causeTriggerKind: "schedule",
@@ -1351,8 +1438,12 @@ describe("registerAutomationV3Routes", () => {
         claimAutomationRun.mockResolvedValueOnce({
             run: {
                 id: "run-plugin-event",
+                originKind: "automation",
                 automationId: eventAutomation.id,
+                originSessionId: null,
                 attempt: 1,
+                revision: 0,
+                workflowCustodyState: null,
                 triggerId: "trigger-event-1",
                 causeKind: "trigger",
                 causeTriggerKind: "pluginEvent",

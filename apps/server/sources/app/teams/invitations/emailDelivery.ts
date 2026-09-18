@@ -1,0 +1,77 @@
+import type { NormalizedVerifiedEmail } from "@happier-dev/protocol";
+import type {
+    TeamInvitationAdmissibleRoleV1,
+    TeamInvitationEmailDeliveryV1,
+} from "@happier-dev/protocol/teams";
+import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
+import type { SessionHistoryAccess } from "@/storage/enums.generated";
+import { inTx } from "@/storage/inTx";
+import { recordTeamInvitationEmailDeliveryResultInTx } from "./invitationLifecycle";
+
+/**
+ * The one internal hand-off of an email-bound invitation bearer.
+ *
+ * Lane 01 owns the invitation and its token; the mail boundary owns transport,
+ * rendering, and abuse controls. This composes them and does nothing else: the
+ * bearer travels from the create transaction straight to that boundary and is
+ * never returned to the manager, logged, or retained.
+ *
+ * Delivery runs after the invitation has committed and outside any transaction,
+ * so a slow or failing SMTP conversation can never hold a database transaction
+ * open or roll a real invitation back.
+ */
+
+export type TeamInvitationEmailDeps = Readonly<{ delivery: AuthEmailDelivery }>;
+
+export type DeliverTeamInvitationEmailInput = Readonly<{
+    invitationId: string;
+    recipient: NormalizedVerifiedEmail;
+    /** Rendered once by the invitation transport; the renderer derives its QR from these exact bytes. */
+    joinUrl: string;
+    homeName: string;
+    teamName: string;
+    role: TeamInvitationAdmissibleRoleV1;
+    historyAccess: SessionHistoryAccess;
+    expiresAt: Date;
+}>;
+
+/**
+ * Attempts delivery once and records the coarse result on the exact invitation.
+ *
+ * There is deliberately no retry, queue, or attempt ledger: retry is explicit
+ * reissue, which mints a new bearer and invalidates the old one. Because the
+ * result is addressed by invitation id, a slow delivery for a bearer that has
+ * since been reissued updates only its own terminal row and can never mark the
+ * replacement sent.
+ *
+ * A crash between submission and the result write leaves no recorded result,
+ * which honestly means "unknown" rather than a false sent or unsent claim.
+ */
+export async function deliverTeamInvitationEmail(
+    deps: TeamInvitationEmailDeps,
+    input: DeliverTeamInvitationEmailInput,
+): Promise<TeamInvitationEmailDeliveryV1> {
+    const result = await deps.delivery.deliver({
+        kind: "invitation",
+        to: input.recipient,
+        joinUrl: input.joinUrl,
+        homeName: input.homeName,
+        teamName: input.teamName,
+        // The inviter is not the Home owner and this Home publishes no
+        // authoritative relationship, so the invitation names no person.
+        inviterLabel: null,
+        requestedRole: input.role,
+        sharesSessionHistory: input.historyAccess === "all_existing",
+        emailBound: true,
+        expiresAt: input.expiresAt,
+    });
+
+    const attemptedAt = new Date();
+    const status = result.status === "sent" ? "sent" : "failed";
+    await inTx((tx) => recordTeamInvitationEmailDeliveryResultInTx(tx, {
+        invitationId: input.invitationId,
+        status,
+        attemptedAt,
+    }));
+    return { status, attemptedAt: attemptedAt.getTime() };
+}

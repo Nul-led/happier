@@ -1,8 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-    ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS,
-} from "@happier-dev/protocol";
-
 import { createInTxHarness } from "@/app/api/testkit/txHarness";
 import type { Tx } from "@/storage/inTx";
 
@@ -63,6 +59,43 @@ const plainTarget = {
 } as const;
 
 describe("migrateSessionAccountEncryptionInTx", () => {
+    it("atomically rewrites a complete owner inventory beyond the former 500-Session ceiling", async () => {
+        const rows = Array.from({ length: 501 }, (_, index) => ({
+            id: `session-${index}`,
+            accountId: "account-1",
+            metadata: "shared",
+            metadataVersion: index,
+            metadataLayoutVersion: 1,
+            ownerMetadata: JSON.stringify(encryptedSource),
+            agentState: null,
+            agentStateVersion: index,
+            archivedAt: null,
+        }));
+        const tx = createTx({ rows });
+
+        const result = await sessionWriteService.migrateSessionAccountEncryptionInTx({
+            tx,
+            accountId: "account-1",
+            fromMode: "e2ee",
+            toMode: "plain",
+            directive: {
+                action: "migrate",
+                items: rows.map((row) => ({
+                    sessionId: row.id,
+                    expectedMetadataLayoutVersion: 1,
+                    expectedMetadataVersion: row.metadataVersion,
+                    expectedAgentStateVersion: row.agentStateVersion,
+                    expectedOwnerMetadata: encryptedSource,
+                    ownerMetadata: plainTarget,
+                })),
+            },
+        });
+
+        expect(result.status).toBe("applied");
+        expect(tx.session.updateMany).toHaveBeenCalledTimes(501);
+        expect(tx.accountChange.upsert).toHaveBeenCalledTimes(501);
+    });
+
     it("rewrites exact canonical and retained encrypted layout-1 owner values through the Session tuple CAS", async () => {
         const rows = [
             {
@@ -126,9 +159,6 @@ describe("migrateSessionAccountEncryptionInTx", () => {
                 ],
             },
             orderBy: { id: "asc" },
-            take:
-                ACCOUNT_ENCRYPTION_MIGRATE_SESSIONS_MAX_ITEMS
-                + 1,
             select: {
                 id: true,
                 accountId: true,

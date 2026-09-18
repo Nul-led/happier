@@ -27,6 +27,8 @@ describe("requestFixtures", () => {
 
         expect(request).toMatchObject({
             userId: "user-42",
+            authTokenKind: "account",
+            authAuthority: "present_user",
             params: { sessionId: "session-1" },
             query: { page: 3 },
             headers: { "x-test": "1" },

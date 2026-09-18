@@ -35,6 +35,14 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     "connectedServices.deviceAuth.poll": { defaultMax: 240, defaultWindow: "1 minute", keyMode: "user" },
     "session.pending": { defaultMax: 600, defaultWindow: "1 minute", keyMode: "user" },
     "session.pending.materialize": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "user" },
+    // Discussions share one profile: an open Collaboration surface reads lists,
+    // pages and cursors at roughly the same cadence as the session transcript it
+    // sits beside, and no measured traffic separates its reads from its writes.
+    "session.discussions": { defaultMax: 600, defaultWindow: "1 minute", keyMode: "user" },
+    // Board mutations are user-scoped, transaction-backed Session writes. The
+    // ceiling protects aggregate SSR transaction capacity while retaining the
+    // same burst budget as the incumbent interactive Session mutation surface.
+    "session.board": { defaultMax: 600, defaultWindow: "1 minute", keyMode: "user" },
     "diagnostics.bugReportSnapshot": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "user" },
     "voice.token": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "user" },
     "voice.sessionComplete": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
@@ -44,6 +52,7 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     "auth.pairing.request": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.accountRequest.poll": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.accountRequest.complete": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
+    "auth.entry": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.terminalRequest.poll": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.terminalRequest.status": { defaultMax: 240, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.terminalRequest.claim": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "ip" },
@@ -52,6 +61,25 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     "auth.homeApproval.decision": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
     "auth.keyChallenge.issue": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
     "auth.keyChallenge.redeem": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "ip" },
+    // Native email/password V1 defaults. A limit firing returns the shared
+    // rate-limit result and never changes existence-neutral disclosure.
+    "auth.email.prelogin": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.email.login": { defaultMax: 20, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.email.unlock": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.email.stepUp": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "user" },
+    "auth.email.verify.request": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.email.verify.requestAuthenticated": { defaultMax: 5, defaultWindow: "1 minute", keyMode: "user" },
+    "auth.email.verify.preview": { defaultMax: 20, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.password.reset.request": { defaultMax: 5, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.password.reset.preview": { defaultMax: 20, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.password.reset.submit": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "ip" },
+    "auth.password.mutate": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "user" },
+    "account.security.read": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "user" },
+    // API-token management is an Account Security surface, but it retains its
+    // own operator knobs. The defaults deliberately match the corresponding
+    // Security read/mutation cadence instead of introducing a new threshold.
+    "auth.apiTokens.read": { defaultMax: 120, defaultWindow: "1 minute", keyMode: "user" },
+    "auth.apiTokens.mutate": { defaultMax: 10, defaultWindow: "1 minute", keyMode: "user" },
     "oauthExternal.authParams": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "ip" },
     "oauthExternal.connectParams": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
     "oauthExternal.callback": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "ip" },
@@ -63,6 +91,10 @@ const API_HOT_ENDPOINT_RATE_LIMIT_DEFAULTS = {
     // Bearer-only Action ingress is keyed by IP so rate limiting never
     // performs a second PAT verification before the route's onRequest auth.
     actions: { defaultMax: 600, defaultWindow: "1 minute", keyMode: "ip" },
+    // External Provider ingress shares the existing public streamed-request
+    // capacity profile. Team usage limits remain the authenticated resource
+    // policy owner; this bucket only protects unauthenticated edge work.
+    "providerBroker.externalApi": { defaultMax: 600, defaultWindow: "1 minute", keyMode: "ip" },
     "accountDirectory.read": { defaultMax: 300, defaultWindow: "1 minute", keyMode: "user" },
     "accountDirectory.mutate": { defaultMax: 60, defaultWindow: "1 minute", keyMode: "user" },
     "accountDirectory.assertionMint": { defaultMax: 30, defaultWindow: "1 minute", keyMode: "user" },

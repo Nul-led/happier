@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { executeExternalSessionHistoricalImportCommand } from "@/app/session/externalSessionHistoricalImportCommand";
 import { createSessionPublisherPresence } from "@/app/presence/sessionPublisherPresence";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import {
     buildSessionMessagePublicationWhere,
     isSessionTranscriptShareable,
@@ -23,6 +24,8 @@ import { createSessionMessage } from "@/app/session/sessionWriteService";
 import { loadUsageMessageStatsForQuery } from "@/app/usage/query/loadUsageMessageStatsForQuery";
 import { db, initDbMysql, initDbPostgres } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 function resolveContractProvider(): "postgres" | "mysql" {
     const raw = (process.env.HAPPIER_DB_PROVIDER ?? process.env.HAPPY_DB_PROVIDER ?? "postgres")
@@ -256,6 +259,8 @@ describe("historical transcript writer database contract", () => {
             createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId: "ordinary:item",
                 messageRole: "user",
                 content: { t: "plain", v: { text: "ordinary" } },
@@ -408,6 +413,8 @@ describe("historical transcript writer database contract", () => {
             const backfill = createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId,
                 messageRole: "agent",
                 content: initialContent,
@@ -418,6 +425,8 @@ describe("historical transcript writer database contract", () => {
             const correction = createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId,
                 messageRole: "user",
                 content: correctedContent,
@@ -487,6 +496,8 @@ describe("historical transcript writer database contract", () => {
             const lowerWatermark = createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId,
                 messageRole: "agent",
                 content,
@@ -500,6 +511,8 @@ describe("historical transcript writer database contract", () => {
             const higherWatermark = createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId,
                 messageRole: "agent",
                 content,
@@ -544,6 +557,8 @@ describe("historical transcript writer database contract", () => {
             await expect(createSessionMessage({
                 actorUserId: account.id,
                 sessionId: session.id,
+                inputAdmission: "authenticatedAccount",
+                authentication,
                 localId: `ordinary:${currentStorageState}`,
                 messageRole: "user",
                 content: { t: "plain", v: { text: "ordinary" } },

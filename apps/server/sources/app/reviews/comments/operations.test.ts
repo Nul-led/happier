@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { claimReviewCommentPublication } from "@/testkit/reviewCommentPublicationTestkit";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -155,8 +156,8 @@ describe("review comment operations", () => {
         };
 
         const [first, second] = await Promise.all([
-            operations.claimPublicationDispatch(request),
-            operations.claimPublicationDispatch(request),
+            claimReviewCommentPublication(operations, request),
+            claimReviewCommentPublication(operations, request),
         ]);
 
         expect([first.disposition, second.disposition].sort()).toEqual(["dispatch", "reconcile"]);
@@ -171,7 +172,7 @@ describe("review comment operations", () => {
         expect(first.publicationPlanId).not.toContain("account-1");
         expect(first.publicationPlanId).not.toContain("repository-1");
 
-        await expect(operations.claimPublicationDispatch({
+        await expect(claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -191,8 +192,8 @@ describe("review comment operations", () => {
                 verdict: null,
             },
         };
-        const threadA = await operations.claimPublicationDispatch(threadPlan);
-        const threadB = await operations.claimPublicationDispatch({
+        const threadA = await claimReviewCommentPublication(operations, threadPlan);
+        const threadB = await claimReviewCommentPublication(operations, {
             ...threadPlan,
             input: {
                 ...threadPlan.input,
@@ -208,7 +209,7 @@ describe("review comment operations", () => {
         expect(threadA.entries[0]?.publicationCorrelationId)
             .not.toBe(threadB.entries[0]?.publicationCorrelationId);
 
-        await expect(operations.claimPublicationDispatch({
+        await expect(claimReviewCommentPublication(operations, {
             ...threadPlan,
             input: {
                 ...threadPlan.input,
@@ -266,7 +267,7 @@ describe("review comment operations", () => {
                 verdict: null,
             },
         };
-        const claim = await operations.claimPublicationDispatch(request);
+        const claim = await claimReviewCommentPublication(operations, request);
 
         await operations.edit({
             accountId: "account-1",
@@ -281,7 +282,7 @@ describe("review comment operations", () => {
             },
         });
 
-        await expect(operations.claimPublicationDispatch({
+        await expect(claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -298,7 +299,7 @@ describe("review comment operations", () => {
                 },
             },
         })).resolves.toMatchObject({ disposition: "reconcile" });
-        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+        await expect(claimReviewCommentPublication(operations, request)).resolves.toMatchObject({
             disposition: "dispatch",
             instructions: { entries: ["dispatch"], verdict: null },
         });
@@ -346,10 +347,10 @@ describe("review comment operations", () => {
                 verdict: null,
             },
         };
-        const first = await operations.claimPublicationDispatch(request);
+        const first = await claimReviewCommentPublication(operations, request);
         const entry = first.entries[0]!;
 
-        const activeReconciliation = await operations.claimPublicationDispatch({
+        const activeReconciliation = await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -368,12 +369,12 @@ describe("review comment operations", () => {
             instructions: { entries: ["reconcile"] },
             priorResult: { entries: [{ outcome: { kind: "uncertain" } }] },
         });
-        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+        await expect(claimReviewCommentPublication(operations, request)).resolves.toMatchObject({
             disposition: "reconcile",
             instructions: { entries: ["reconcile"] },
         });
 
-        await operations.claimPublicationDispatch({
+        await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -387,14 +388,14 @@ describe("review comment operations", () => {
                 },
             },
         });
-        const reconciled = await operations.claimPublicationDispatch(request);
+        const reconciled = await claimReviewCommentPublication(operations, request);
         expect(reconciled).toMatchObject({
             disposition: "reconcile",
             dispatchToken: null,
             instructions: { entries: ["reconcile"] },
         });
 
-        const settled = await operations.claimPublicationDispatch({
+        const settled = await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -411,7 +412,7 @@ describe("review comment operations", () => {
         expect(settled).toMatchObject({
             priorResult: { entries: [{ outcome: { kind: "failed", code: "gitlab-pending-draft" } }] },
         });
-        await expect(operations.claimPublicationDispatch(request)).resolves.toMatchObject({
+        await expect(claimReviewCommentPublication(operations, request)).resolves.toMatchObject({
             disposition: "dispatch",
             instructions: { entries: ["dispatch"] },
         });
@@ -442,8 +443,8 @@ describe("review comment operations", () => {
         };
 
         const [first, second] = await Promise.all([
-            operations.claimPublicationDispatch(request),
-            operations.claimPublicationDispatch(request),
+            claimReviewCommentPublication(operations, request),
+            claimReviewCommentPublication(operations, request),
         ]);
 
         expect([first.disposition, second.disposition].sort()).toEqual(["dispatch", "reconcile"]);
@@ -451,7 +452,7 @@ describe("review comment operations", () => {
         expect(first.entries).toEqual([]);
         expect(first.verdict).toEqual(second.verdict);
 
-        const laterVerdict = await operations.claimPublicationDispatch({
+        const laterVerdict = await claimReviewCommentPublication(operations, {
             ...request,
             input: {
                 ...request.input,
@@ -461,7 +462,7 @@ describe("review comment operations", () => {
         expect(laterVerdict.disposition).toBe("dispatch");
         expect(laterVerdict.publicationPlanId).not.toBe(first.publicationPlanId);
 
-        const otherAccount = await operations.claimPublicationDispatch({
+        const otherAccount = await claimReviewCommentPublication(operations, {
             ...request,
             accountId: "account-2",
             actor: { kind: "user", userId: "user-2" },

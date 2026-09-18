@@ -107,6 +107,12 @@ function transaction(row: ReturnType<typeof endpointRow> | null = endpointRow())
             updateMany: vi.fn(async () => ({ count: 1 })),
         },
         pluginWebhookRoute: {
+            findFirst: vi.fn(async () => ({
+                id: "route-1",
+                opaqueRouteId: "wh_route_AAAAAAAAAAAAAAAAAAAAAA",
+                enabled: true,
+                revokedAt: null,
+            })),
             create: vi.fn(async ({ data }: { data: { opaqueRouteId: string } }) => ({
                 id: "route-1",
                 opaqueRouteId: data.opaqueRouteId,
@@ -320,6 +326,42 @@ describe("plugin webhook endpoint store", () => {
 
         expect(mocks.endpointFindFirst).not.toHaveBeenCalled();
         expect(mocks.inTx).toHaveBeenCalledTimes(1);
+    });
+
+    it("authorizes a shared installation inside the endpoint persistence transaction", async () => {
+        const tx = transaction(null);
+        mocks.endpointFindFirst.mockResolvedValue(null);
+        mocks.inTx.mockImplementation(async (callback: (value: typeof tx) => unknown) => await callback(tx));
+        mocks.readContribution.mockResolvedValueOnce({
+            pluginId: contribution.pluginId,
+            localId: contribution.localId,
+            handlerActionLocalId: "receive",
+            verifierKind: "github_hmac_sha256_v1",
+            routingKind: "providerInstallation",
+        });
+        const authorizeSharedInstallation = vi.fn(async () => true);
+        const store = createPluginWebhookEndpointStoreV1({
+            resolveTarget: mocks.readTarget,
+            resolveContribution: mocks.readContribution,
+            authorizeSharedInstallation,
+            resolvePublicBaseUrl: () => "https://server.example.test",
+            randomBytes: (length) => new Uint8Array(length),
+        });
+
+        await store.ensure({
+            accountId: "account-1",
+            webhookContribution: contribution,
+            targetMaterialization: target,
+            sourceInstanceId: "github-installation-123",
+            setup: {
+                kind: "githubSharedInstallationV1",
+                installationId: "123",
+                installationAuthorizationRef: "canonical-installation-row",
+            },
+            idempotencyKey: "ensure-shared-installation-transaction",
+        });
+
+        expect(authorizeSharedInstallation).toHaveBeenCalledWith(expect.objectContaining({ tx }));
     });
 
     it("derives one readiness ordering for every endpoint projection", async () => {

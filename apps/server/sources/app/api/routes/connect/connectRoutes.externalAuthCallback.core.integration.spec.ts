@@ -6,10 +6,13 @@ import { db } from "@/storage/db";
 import { connectRoutes } from "./connectRoutes";
 import { auth } from "@/app/auth/auth";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
+import { createExternalAuthorizeAttempt } from "./oauthExternal/createExternalAuthorizeUrl";
 import tweetnacl from "tweetnacl";
 import * as privacyKit from "privacy-kit";
 
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
 
 
 function createTestApp() {
@@ -17,6 +20,7 @@ function createTestApp() {
     app.setValidatorCompiler(validatorCompiler);
     app.setSerializerCompiler(serializerCompiler);
     const typed = app.withTypeProvider<ZodTypeProvider>() as any;
+    enableAuthentication(typed);
     return typed;
 }
 
@@ -52,6 +56,7 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         await db.repeatKey.deleteMany();
         await db.accountIdentity.deleteMany();
         await db.account.deleteMany();
+        await db.homeGovernancePolicy.deleteMany();
     });
 
     afterAll(async () => {
@@ -59,7 +64,124 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         globalThis.fetch = originalFetch;
     });
 
-    it("creates a pending auth record and redirects without creating an account", async () => {
+    it("defers normal connect completion to the authenticated finalizer and adopts merged credential evidence", async () => {
+        applyGithubExternalAuthCallbackEnv(harness);
+        const account = await db.account.create({
+            data: { publicKey: `pk-connect-adoption-${Date.now()}`, username: "account-owner" },
+            select: { id: true },
+        });
+        const initiating = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+            authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+        });
+        const profile = {
+            id: 4815,
+            login: "external-login",
+            avatar_url: "https://avatars.example.test/external-login.png",
+            name: "External Login",
+        };
+        vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+            if (typeof url === "string" && url.includes("https://github.com/login/oauth/access_token")) {
+                return { ok: true, json: async () => ({ access_token: "connect_tok_1" }) } as any;
+            }
+            if (typeof url === "string" && url.includes("https://api.github.com/user")) {
+                return { ok: true, json: async () => profile } as any;
+            }
+            throw new Error(`Unexpected fetch: ${String(url)}`);
+        }));
+
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: "/v1/connect/external/github/params?connectFinalization=credential_adoption_v1",
+            headers: { authorization: `Bearer ${initiating}` },
+        });
+        expect(paramsRes.statusCode, paramsRes.body).toBe(200);
+        const state = new URL((paramsRes.json() as { url: string }).url).searchParams.get("state");
+        expect(state).toBeTruthy();
+
+        const callback = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?code=connect-code&state=${encodeURIComponent(state!)}`,
+        });
+        expect(callback.statusCode).toBe(302);
+        const redirect = new URL(callback.headers.location as string);
+        expect(redirect.searchParams.get("error"), callback.headers.location).toBeNull();
+        expect(redirect.searchParams.get("status")).toBe("connected");
+        expect(redirect.searchParams.get("username")).toBe("account-owner");
+        const pending = redirect.searchParams.get("pending");
+        expect(pending).toMatch(/^oauth_pending_/);
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(0);
+
+        const finalized = await app.inject({
+            method: "POST",
+            url: "/v1/connect/external/github/finalize",
+            headers: { authorization: `Bearer ${initiating}` },
+            payload: { pending, username: "account-owner" },
+        });
+        expect(finalized.statusCode, finalized.body).toBe(200);
+        const replacement = await auth.verifyToken((finalized.json() as { token: string }).token);
+        expect(replacement?.userId).toBe(account.id);
+        expect(replacement?.authenticationEvidence).toEqual([
+            { kind: "home_method", methodId: "key_challenge" },
+            expect.objectContaining({
+                kind: "provider",
+                providerId: "github",
+                identityId: expect.any(String),
+                runtimeFingerprint: expect.any(String),
+            }),
+        ]);
+        expect((await auth.verifyToken(initiating))?.authenticationEvidence).toEqual([
+            { kind: "home_method", methodId: "key_challenge" },
+        ]);
+        await app.close();
+    });
+
+    it("preserves legacy callback-side connect completion when the client omits adoption capability", async () => {
+        applyGithubExternalAuthCallbackEnv(harness);
+        const account = await db.account.create({
+            data: { publicKey: `pk-connect-legacy-${Date.now()}`, username: "legacy-owner" },
+            select: { id: true },
+        });
+        const initiating = await auth.createToken(account.id, undefined, {
+            kind: "account",
+            authority: "present_user",
+        });
+        vi.stubGlobal("fetch", vi.fn(async (url: unknown) => {
+            if (typeof url === "string" && url.includes("https://github.com/login/oauth/access_token")) {
+                return { ok: true, json: async () => ({ access_token: "legacy_connect_tok" }) } as any;
+            }
+            if (typeof url === "string" && url.includes("https://api.github.com/user")) {
+                return { ok: true, json: async () => ({ id: 4816, login: "legacy-external" }) } as any;
+            }
+            throw new Error(`Unexpected fetch: ${String(url)}`);
+        }));
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: "/v1/connect/external/github/params",
+            headers: { authorization: `Bearer ${initiating}` },
+        });
+        const state = new URL((paramsRes.json() as { url: string }).url).searchParams.get("state");
+        const callback = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?code=legacy-connect&state=${encodeURIComponent(state!)}`,
+        });
+        const redirect = new URL(callback.headers.location as string);
+        expect(redirect.searchParams.get("error"), callback.headers.location).toBeNull();
+        expect(redirect.searchParams.get("status")).toBe("connected");
+        expect(redirect.searchParams.get("pending")).toBeNull();
+        expect(await db.accountIdentity.count({ where: { accountId: account.id } })).toBe(1);
+        await app.close();
+    });
+
+    it("atomically consumes an attempt and creates one pending auth record without creating an account", async () => {
         applyGithubExternalAuthCallbackEnv(harness);
         const seed = new Uint8Array(32).fill(1);
         const kp = tweetnacl.sign.keyPair.fromSeed(seed);
@@ -96,10 +218,16 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         const state = paramsUrl.searchParams.get("state");
         expect(state).toBeTruthy();
 
-        const res = await app.inject({
+        const responses = await Promise.all([0, 1].map(() => app.inject({
             method: "GET",
             url: `/v1/oauth/github/callback?code=c1&state=${encodeURIComponent(state!)}`,
-        });
+        })));
+        const accepted = responses.filter((response) =>
+            new URL(response.headers.location as string).searchParams.has("pending"));
+        expect(accepted).toHaveLength(1);
+        const rejected = responses.find((response) => response !== accepted[0])!;
+        expect(new URL(rejected.headers.location as string).searchParams.get("error")).toBe("invalid_state");
+        const res = accepted[0]!;
 
         expect(res.statusCode).toBe(302);
         const redirect = new URL(res.headers.location as string);
@@ -110,6 +238,8 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
 
         const pendingRow = await db.repeatKey.findUnique({ where: { key: pending as string } });
         expect(pendingRow).toBeTruthy();
+        expect(fetchMock.mock.calls.filter(([url]) =>
+            String(url).includes("https://github.com/login/oauth/access_token"))).toHaveLength(1);
         // Pending record must not store the raw GitHub profile JSON.
         expect(pendingRow!.value.includes("avatar_url")).toBe(false);
         expect(pendingRow!.value.includes("Octo Cat")).toBe(false);
@@ -238,6 +368,101 @@ describe("connectRoutes (GitHub callback) external auth flow (integration)", () 
         const accounts = await db.account.findMany();
         expect(accounts.length).toBe(0);
 
+        await app.close();
+    });
+
+    it("refuses a provider removed by the current Home authentication policy before code exchange", async () => {
+        applyGithubExternalAuthCallbackEnv(harness, {
+            HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_ENABLED: "1",
+            HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_PROVIDERS: "github",
+            HAPPIER_FEATURE_AUTH_OAUTH__KEYLESS_AUTO_PROVISION: "1",
+            HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+        });
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const paramsRes = await app.inject({
+            method: "GET",
+            url: `/v1/auth/external/github/params?proofHash=${"c".repeat(64)}`,
+        });
+        expect(paramsRes.statusCode).toBe(200);
+        const state = new URL((paramsRes.json() as { url: string }).url).searchParams.get("state");
+        expect(state).toBeTruthy();
+        await db.homeGovernancePolicy.create({
+            data: {
+                id: "home",
+                revision: 1,
+                authenticationPolicy: { v: 1, enabledMethodIds: ["email"] },
+            },
+        });
+        const network = vi.fn();
+        vi.stubGlobal("fetch", network);
+
+        const response = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?code=denied-by-home&state=${encodeURIComponent(state!)}`,
+        });
+        expect(response.statusCode).toBe(302);
+        expect(new URL(response.headers.location as string).searchParams.get("error")).toBe("keyless_disabled");
+        expect(network).not.toHaveBeenCalled();
+        await app.close();
+    });
+
+    it("returns one-time bounded evidence for an identity-connection test without linking or authenticating", async () => {
+        applyGithubExternalAuthCallbackEnv(harness);
+        const resolved = await resolveOAuthRuntimeById(process.env, "github");
+        expect(resolved).not.toBeNull();
+        const attempt = await createExternalAuthorizeAttempt({
+            flow: "connect",
+            env: process.env,
+            providerId: "github",
+            provider: resolved!.provider,
+            reference: resolved!.reference,
+            userId: "initiating-admin",
+            purpose: "identity_connection_test",
+            webAppOAuthReturnUrl: "https://app.example.test/settings/authentication",
+        });
+        expect(attempt).not.toBeNull();
+        const state = new URL(attempt!.url).searchParams.get("state");
+        expect(state).toBeTruthy();
+
+        const fetchMock = vi.fn(async (url: unknown) => {
+            if (typeof url === "string" && url.includes("https://github.com/login/oauth/access_token")) {
+                return { ok: true, json: async () => ({ access_token: "test-only-token" }) } as any;
+            }
+            if (typeof url === "string" && url.includes("https://api.github.com/user")) {
+                return {
+                    ok: true,
+                    json: async () => ({ id: 314, login: "test-subject", name: "Test Subject" }),
+                } as any;
+            }
+            throw new Error(`unexpected URL: ${String(url)}`);
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        const app = createTestApp();
+        connectRoutes(app as any);
+        await app.ready();
+
+        const response = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?code=test-code&state=${encodeURIComponent(state!)}`,
+        });
+        expect(response.statusCode).toBe(302);
+        const redirect = new URL(response.headers.location as string);
+        expect(redirect.searchParams.get("purpose")).toBe("identity_connection_test");
+        expect(redirect.searchParams.get("error")).toBeNull();
+        const resultHandle = redirect.searchParams.get("resultHandle");
+        expect(resultHandle).toBeTruthy();
+        const stored = await db.repeatKey.findUnique({
+            where: { key: `oauth_identity_connection_test_result_${resultHandle}` },
+        });
+        expect(stored).toBeTruthy();
+        expect(stored!.value).not.toContain("test-only-token");
+        expect(stored!.value).not.toContain("Test Subject");
+        expect(await db.account.count()).toBe(0);
+        expect(await db.accountIdentity.count()).toBe(0);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
         await app.close();
     });
 

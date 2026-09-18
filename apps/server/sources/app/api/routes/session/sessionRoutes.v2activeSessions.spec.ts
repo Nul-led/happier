@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
     createSessionRouteTestBuilder,
     accountFindUnique,
+    createSessionAccessProjectionRelations,
+    createSessionDataKeyEnvelopeFixture,
+    flattenSessionWhereConjuncts,
     resetSessionRouteMocks,
     sessionFindMany,
 } from "./sessionRoutes.testkit";
@@ -19,16 +22,32 @@ describe("sessionRoutes v2 active sessions listing", () => {
         sessionFindMany.mockReset();
     });
 
+    it("uses the active-family bound for an unqualified request", async () => {
+        sessionFindMany.mockResolvedValue([]);
+
+        const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/active");
+        await route.invoke({ query: {} });
+
+        expect(sessionFindMany.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ take: 500 }));
+    });
+
     it("reuses the canonical v2 row contract and visibility while filtering to the active window", async () => {
         const now = new Date(1_000);
         sessionFindMany.mockResolvedValueOnce([
             {
+                ...createSessionAccessProjectionRelations(),
                 id: "owned-active",
                 seq: 3,
+                currentStorageState: "hosted",
+                acceptedThroughServerSeq: null,
+                materializationPublicationId: null,
+                materializedThroughSourceAt: null,
+                publishedThroughServerSeq: null,
                 accountId: "u1",
                 encryptionMode: "e2ee",
                 createdAt: now,
                 updatedAt: now,
+                meaningfulActivityAt: now,
                 archivedAt: null,
                 metadata: "m3",
                 metadataVersion: 1,
@@ -39,12 +58,19 @@ describe("sessionRoutes v2 active sessions listing", () => {
                 pendingUserActionRequestCount: 0,
                 pendingCount: 4,
                 pendingVersion: 8,
-                dataEncryptionKey: Buffer.from([1, 2, 3]),
-                active: true,
-                lastActiveAt: now,
-                shares: [],
+                    dataKeyEnvelopes: [createSessionDataKeyEnvelopeFixture(Buffer.from([1, 2, 3]))],
+                    active: true,
+                    lastActiveAt: now,
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 2, unreadSince: null }],
+                    accountFollows: [],
+                    sessionPins: [],
+                    sessionAttentionStandings: [],
+                    shares: [],
+                    teamGrants: [],
+                    groupGrants: [],
             },
             {
+                ...createSessionAccessProjectionRelations(),
                 id: "shared-active",
                 seq: 2,
                 currentStorageState: "hosted",
@@ -64,18 +90,26 @@ describe("sessionRoutes v2 active sessions listing", () => {
                 pendingUserActionRequestCount: 2,
                 pendingCount: 3,
                 pendingVersion: 5,
-                dataEncryptionKey: null,
-                active: true,
-                lastActiveAt: now,
-                shares: [
-                    {
-                        encryptedDataKey: Buffer.from([4, 5]),
+                    dataKeyEnvelopes: [createSessionDataKeyEnvelopeFixture(Buffer.from([4, 5]))],
+                    active: true,
+                    lastActiveAt: now,
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 1, unreadSince: null }],
+                    accountFollows: [],
+                    sessionPins: [],
+                    sessionAttentionStandings: [],
+                    shares: [
+                        {
+                            id: "shared-active-grant",
+                            sharedWithUserId: "u1",
                         accessLevel: "edit",
                         canApprovePermissions: true,
-                    },
-                ],
+                        },
+                    ],
+                    teamGrants: [],
+                    groupGrants: [],
             },
             {
+                ...createSessionAccessProjectionRelations(),
                 id: "shared-partial",
                 seq: 1,
                 currentStorageState: "server_partial",
@@ -97,14 +131,21 @@ describe("sessionRoutes v2 active sessions listing", () => {
                 pendingUserActionRequestCount: 0,
                 pendingCount: 0,
                 pendingVersion: 0,
-                dataEncryptionKey: null,
-                active: true,
-                lastActiveAt: now,
-                shares: [{
-                    encryptedDataKey: null,
+                    dataKeyEnvelopes: [],
+                    active: true,
+                    lastActiveAt: now,
+                    accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 0, unreadSince: null }],
+                    accountFollows: [],
+                    sessionPins: [],
+                    sessionAttentionStandings: [],
+                    shares: [{
+                        id: "shared-partial-grant",
+                        sharedWithUserId: "u1",
                     accessLevel: "view",
-                    canApprovePermissions: false,
-                }],
+                        canApprovePermissions: false,
+                    }],
+                    teamGrants: [],
+                    groupGrants: [],
             },
         ]).mockResolvedValue([]);
 
@@ -113,35 +154,9 @@ describe("sessionRoutes v2 active sessions listing", () => {
             query: { limit: 2 },
         });
 
-        expect(sessionFindMany).toHaveBeenCalledWith(
+        const firstQuery = sessionFindMany.mock.calls[0]?.[0];
+        expect(firstQuery).toEqual(
             expect.objectContaining({
-                where: expect.objectContaining({
-                    OR: [
-                        { accountId: "u1" },
-                        {
-                            AND: [
-                                { shares: { some: { sharedWithUserId: "u1" } } },
-                                {
-                                    OR: [
-                                        { currentStorageState: "hosted" },
-                                        {
-                                            currentStorageState: "snapshot_complete",
-                                            materializationPublicationId: { not: "" },
-                                            materializedThroughSourceAt: {
-                                                gte: 0,
-                                                lte: BigInt(Number.MAX_SAFE_INTEGER),
-                                            },
-                                            publishedThroughServerSeq: { gte: 0 },
-                                        },
-                                    ],
-                                },
-                            ],
-                        },
-                    ],
-                    currentStorageState: "hosted",
-                    active: true,
-                    lastActiveAt: { gt: expect.any(Date) },
-                }),
                 orderBy: [
                     { lastActiveAt: "desc" },
                     { id: "desc" },
@@ -151,17 +166,43 @@ describe("sessionRoutes v2 active sessions listing", () => {
                     accountId: true,
                     pendingCount: true,
                     pendingVersion: true,
-                    shares: {
-                        where: { sharedWithUserId: "u1" },
-                        select: {
-                            encryptedDataKey: true,
+                    dataKeyEnvelopes: expect.objectContaining({
+                        where: { recipientAccountId: "u1" },
+                        select: expect.objectContaining({ encryptedDataKey: true }),
+                    }),
+                    shares: expect.objectContaining({
+                        // The direct-share relation is filtered to currently
+                        // active recipient Accounts by the access owner.
+                        where: { sharedWithUserId: { in: ["u1"] }, sharedWithUser: { status: "active" } },
+                        select: expect.objectContaining({
                             accessLevel: true,
                             canApprovePermissions: true,
-                        },
-                    },
+                        }),
+                    }),
                 }),
             }),
         );
+        expect(flattenSessionWhereConjuncts(firstQuery?.where)).toEqual(expect.arrayContaining([
+            { archivedAt: null },
+            { currentStorageState: "hosted" },
+            { active: true, lastActiveAt: { gt: expect.any(Date) } },
+            expect.objectContaining({
+                OR: expect.arrayContaining([
+                    { accountId: "u1", account: { status: "active" } },
+                    expect.objectContaining({
+                        AND: expect.arrayContaining([
+                            expect.objectContaining({
+                                OR: expect.arrayContaining([
+                                    expect.objectContaining({
+                                        shares: { some: expect.objectContaining({ sharedWithUserId: "u1" }) },
+                                    }),
+                                ]),
+                            }),
+                        ]),
+                    }),
+                ]),
+            }),
+        ]));
 
         expect(res).toEqual({
             sessions: [
@@ -181,7 +222,7 @@ describe("sessionRoutes v2 active sessions listing", () => {
                     id: "shared-active",
                     encryptionMode: "e2ee",
                     dataEncryptionKey: "BAU=",
-                    lastViewedSessionSeq: 1,
+                    lastViewedSessionSeq: 2,
                     pendingPermissionRequestCount: 0,
                     pendingUserActionRequestCount: 2,
                     pendingCount: 3,
@@ -202,6 +243,7 @@ describe("sessionRoutes v2 active sessions listing", () => {
             id: string,
             publicationId: string | null,
         ) => ({
+            ...createSessionAccessProjectionRelations(),
             id,
             seq: 1,
             currentStorageState: publicationId === null ? "hosted" : "snapshot_complete",
@@ -243,11 +285,19 @@ describe("sessionRoutes v2 active sessions listing", () => {
             dataEncryptionKey: null,
             active: true,
             lastActiveAt: at,
+            accountReadStates: [{ accountId: "u1", lastViewedSessionSeq: 0, unreadSince: null }],
+            accountFollows: [],
+            sessionPins: [],
+            sessionAttentionStandings: [],
             shares: [{
+                id: `${id}-grant`,
+                sharedWithUserId: "u1",
                 encryptedDataKey: null,
                 accessLevel: "view",
                 canApprovePermissions: false,
             }],
+            teamGrants: [],
+            groupGrants: [],
         });
         const malformed = sharedRow("z-malformed", " ");
         const first = sharedRow("y-first", null);
@@ -283,6 +333,7 @@ describe("sessionRoutes v2 active sessions listing", () => {
     it("refuses a released layout-zero shared active-row projection until owner migration", async () => {
         const now = new Date(1_000);
         sessionFindMany.mockResolvedValue([{
+            ...createSessionAccessProjectionRelations(),
             id: "legacy-shared-active",
             seq: 1,
             currentStorageState: "hosted",

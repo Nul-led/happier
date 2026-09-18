@@ -6,6 +6,7 @@ import {
     serializeAutomationRunExecutionRecipeV1,
     serializeAutomationStoredDefinitionExecutionRecipeV1,
 } from "@happier-dev/protocol";
+import releasedV2Wire from "../../../../../packages/protocol/src/automations/fixtures/automation-v2.0.2.11-wire.json";
 
 import {
     isAutomationDefinitionRepresentableInV2,
@@ -236,7 +237,9 @@ function eventStatusProjection() {
 function eventRun() {
     return {
         id: "run-event",
+        originKind: "automation" as const,
         automationId: "automation-event",
+        originSessionId: null,
         accountId: "account-1",
         state: "queued" as const,
         triggerId: "trigger-event",
@@ -414,7 +417,7 @@ describe("Automation API projections", () => {
         expect(isAutomationDefinitionRepresentableInV2({
             ...schedule,
             triggers: [],
-        })).toBe(false);
+        })).toBe(true);
         expect(isAutomationDefinitionRepresentableInV2({
             ...schedule,
             triggers: [schedule.triggers[0], { ...schedule.triggers[0], id: "trigger-schedule-2" }],
@@ -425,13 +428,14 @@ describe("Automation API projections", () => {
         })).toBe(false);
         expect(isAutomationDefinitionRepresentableInV2({
             ...schedule,
+            triggers: [{ ...schedule.triggers[0], scheduleKind: "manual" }],
+        })).toBe(false);
+        expect(isAutomationDefinitionRepresentableInV2({
+            ...schedule,
             templateCiphertext: "not a retained V2 template envelope",
         })).toBe(false);
         const v2 = toAutomationV2ApiDto(schedule);
-        expect(v2).toMatchObject({
-            id: "automation-schedule",
-            schedule: { kind: "interval", everyMs: 60_000 },
-        });
+        expect(v2).toEqual(releasedV2Wire.definition);
         expect(Object.keys(v2).sort()).toEqual(V2_AUTOMATION_KEYS);
         expect(Object.keys(v2.schedule).sort()).toEqual([
             "everyMs",
@@ -439,6 +443,14 @@ describe("Automation API projections", () => {
             "scheduleExpr",
             "timezone",
         ]);
+        const manualV2 = toAutomationV2ApiDto({ ...schedule, triggers: [] });
+        expect(manualV2.schedule).toEqual({
+            kind: "manual",
+            scheduleExpr: null,
+            everyMs: null,
+            timezone: null,
+        });
+        expect(manualV2.nextRunAt).toBeNull();
         expect(toAutomationDefinitionDetailApiDto(
             event,
             ACCOUNT_CURRENTNESS,

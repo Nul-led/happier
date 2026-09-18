@@ -1,0 +1,730 @@
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import Fastify from "fastify";
+import * as privacyKit from "privacy-kit";
+
+import { db } from "@/storage/db";
+import { inTx } from "@/storage/inTx";
+import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { createSha256SecretDigest } from "@/app/auth/secretDigest";
+import {
+    createTeamCredentialExternalApiKeyInTx,
+    revokeTeamCredentialExternalApiKeyInTx,
+    verifyTeamCredentialExternalApiKeyInTx,
+} from "@/app/teams/credentials/externalApiKey";
+import {
+    admitTeamCredentialExternalProviderRequestInTx,
+    recordTeamCredentialExternalProviderTerminalUsageInTx,
+} from "@/app/teams/credentials/externalProviderBrokerAdmission";
+import { removeTeamMemberForActorInTx } from "@/app/teams/memberships/memberAdministration";
+import {
+    registerExternalProviderApiRoutes,
+    type ExternalProviderBrokerDispatch,
+} from "./registerExternalProviderApiRoutes";
+import { formatTeamCredentialExternalApiKeyV1, createTeamCredentialExternalApiKeyDisplayPrefixV1 } from "@happier-dev/protocol/teams";
+import { resolveTeamCredentialExternalBrokerPlacement } from "@/app/teams/credentials/externalBrokerPlacement";
+
+const TEST_AUTHENTICATION = {
+    env: process.env,
+    authenticationAuthority: "present_user",
+    authenticationEvidence: [],
+} as const;
+
+function digestForTest(secret: string): string {
+    return privacyKit.encodeBase64(new Uint8Array(createSha256SecretDigest(secret)), "base64url").replace(/=+$/u, "");
+}
+
+describe("external Provider broker ingress network vertical (SQLite)", () => {
+    let harness: LightSqliteHarness;
+
+    beforeAll(async () => {
+        harness = await createLightSqliteHarness({
+            tempDirPrefix: "team-credential-external-ingress-",
+            initAuth: false,
+            env: {
+                HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+                HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+                HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+                HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            },
+        });
+    }, 180_000);
+
+    afterAll(async () => {
+        await harness?.close();
+    });
+
+    it("resolves a Pool-backed key to one exact broker Machine before public dispatch", async () => {
+        const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: "Pool-backed external ingress" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+        const membership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: recipient.id, role: "member" },
+        });
+        const broker = await db.machine.create({
+            data: {
+                id: `external-pool-broker-${manager.id}`,
+                accountId: manager.id,
+                metadata: "{}",
+                kind: "persistent",
+                active: true,
+                operationProtocolCapabilities: {
+                    providerBrokerIngress: { protocolVersions: [1] },
+                    irohMachineEndpoint: { protocolVersions: [1], endpointId: "a".repeat(64) },
+                },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const fallbackBroker = await db.machine.create({
+            data: {
+                id: `external-pool-fallback-${manager.id}`,
+                accountId: manager.id,
+                metadata: "{}",
+                kind: "persistent",
+                active: true,
+                operationProtocolCapabilities: {
+                    providerBrokerIngress: { protocolVersions: [1] },
+                    irohMachineEndpoint: { protocolVersions: [1], endpointId: "b".repeat(64) },
+                },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const pool = await db.machinePool.create({
+            data: {
+                id: `external-broker-pool-${manager.id}`,
+                accountId: manager.id,
+                name: "External broker Pool",
+                members: { create: [
+                    { machineId: broker.id, priorityTier: 0, enabled: true },
+                    { machineId: fallbackBroker.id, priorityTier: 1, enabled: true },
+                ] },
+            },
+        });
+        const resource = await db.teamCredentialResource.create({
+            data: {
+                teamId: team.id,
+                custodianAccountId: manager.id,
+                displayName: "Pool ingress provider",
+                disclosureCeiling: "brokered_only",
+                sessionUsePolicy: "personal_allowed",
+                sourceBindingJson: JSON.stringify({
+                    v: 1,
+                    kind: "provider_connection",
+                    connectionId: "pool-ingress-connection",
+                    connectionSecurityFingerprint: "connection-security:v1:pool-ingress",
+                    credentialSlotId: "apiKey",
+                }),
+                brokerPoolId: pool.id,
+                memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+            },
+        });
+        const created = await inTx((tx) => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: manager.id,
+            resourceId: resource.id,
+            teamMembershipId: membership.id,
+            label: "Pool-backed client",
+            expiresAt: null,
+        }));
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+
+        const dispatch = vi.fn(async (_input: Parameters<ExternalProviderBrokerDispatch>[0]) => ({
+            ok: true as const,
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            body: (async function* () { yield Buffer.from('{"ok":true}'); })(),
+        }));
+        const app = Fastify();
+        registerExternalProviderApiRoutes(app as never, {
+            env: {
+                ...process.env,
+                HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+                HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+                HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+                HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            },
+            dispatch,
+            readCurrentBrokerPresence: async () => ({
+                state: "known",
+                machineIds: new Set([broker.id, fallbackBroker.id]),
+            }),
+            readPoolSourceEligibility: async () => ({
+                eligibleMachineIds: new Set([broker.id, fallbackBroker.id]),
+            }),
+        });
+        await app.ready();
+        try {
+            const response = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${created.token}` },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(response.statusCode, response.body).toBe(200);
+            expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({
+                target: { custodianAccountId: manager.id, brokerMachineId: broker.id },
+            }));
+            const dispatched = dispatch.mock.calls[0]?.[0];
+            if (!dispatched) throw new Error("expected exact Pool-backed dispatch");
+            const admission = await inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                observedAt: new Date(),
+                request: {
+                    v: 1,
+                    binding: {
+                        v: 1,
+                        kind: "external_api_key",
+                        teamId: team.id,
+                        resourceId: resource.id,
+                        requestId: dispatched.request.requestId,
+                        externalApiKeyId: created.key.keyId,
+                        assignedAccountId: recipient.id,
+                        assignedTeamMembershipId: membership.id,
+                    },
+                    brokerMachineId: broker.id,
+                    expectedResourceRevision: resource.revision,
+                    application: {
+                        agentTargetKey: "agent:happier.agent.codex/codex",
+                        implementationIdentity: { pluginId: "happier.provider.cliproxyapi", localId: "cliproxyapi" },
+                        endpointTemplateId: "cliproxyapi-openai-chat",
+                        protocol: "openai-chat",
+                    },
+                    requestFacts: {
+                        generation: true,
+                        routeKind: "openai_chat_completions",
+                        modelId: "model-1",
+                        reasoningEffort: null,
+                    },
+                },
+            }));
+            expect(admission).toMatchObject({
+                ok: true,
+                brokerMachineId: broker.id,
+                resourceId: resource.id,
+            });
+
+            const resolve = (requestId: string, overrides: Partial<Parameters<typeof resolveTeamCredentialExternalBrokerPlacement>[0]> = {}) => (
+                resolveTeamCredentialExternalBrokerPlacement({
+                    externalApiKeyId: created.key.keyId,
+                    observedAt: new Date(),
+                    signal: new AbortController().signal,
+                    readCurrentPresence: async () => ({
+                        state: "known",
+                        machineIds: new Set([broker.id, fallbackBroker.id]),
+                    }),
+                    readPoolSourceEligibility: async () => ({
+                        eligibleMachineIds: new Set([broker.id, fallbackBroker.id]),
+                    }),
+                    ...overrides,
+                })
+            );
+            await expect(resolve("stable-open")).resolves.toEqual({
+                ok: true,
+                custodianAccountId: manager.id,
+                brokerMachineId: broker.id,
+            });
+            await expect(resolve("stable-open")).resolves.toEqual({
+                ok: true,
+                custodianAccountId: manager.id,
+                brokerMachineId: broker.id,
+            });
+            await expect(resolve("source-ineligible", {
+                readPoolSourceEligibility: async () => ({ eligibleMachineIds: new Set() }),
+            })).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+            await expect(resolve("offline", {
+                readCurrentPresence: async () => ({ state: "known", machineIds: new Set() }),
+            })).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+
+            let presenceReadCount = 0;
+            await expect(resolve("no-mid-open-failover", {
+                readCurrentPresence: async () => {
+                    presenceReadCount += 1;
+                    if (presenceReadCount === 2) {
+                        await db.machinePoolMember.update({
+                            where: { poolId_machineId: { poolId: pool.id, machineId: broker.id } },
+                            data: { enabled: false },
+                        });
+                    }
+                    return { state: "known", machineIds: new Set([broker.id, fallbackBroker.id]) };
+                },
+            })).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+            await expect(inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                observedAt: new Date(),
+                request: {
+                    v: 1,
+                    binding: {
+                        v: 1,
+                        kind: "external_api_key",
+                        teamId: team.id,
+                        resourceId: resource.id,
+                        requestId: "removed-selected-member",
+                        externalApiKeyId: created.key.keyId,
+                        assignedAccountId: recipient.id,
+                        assignedTeamMembershipId: membership.id,
+                    },
+                    brokerMachineId: broker.id,
+                    expectedResourceRevision: resource.revision,
+                    application: {
+                        agentTargetKey: "agent:happier.agent.codex/codex",
+                        implementationIdentity: { pluginId: "happier.provider.cliproxyapi", localId: "cliproxyapi" },
+                        endpointTemplateId: "cliproxyapi-openai-chat",
+                        protocol: "openai-chat",
+                    },
+                    requestFacts: {
+                        generation: true,
+                        routeKind: "openai_chat_completions",
+                        modelId: "model-1",
+                        reasoningEffort: null,
+                    },
+                },
+            }))).resolves.toEqual({ ok: false, reasonCode: "broker_unavailable" });
+
+            await expect(resolve("future-open-after-membership-change")).resolves.toEqual({
+                ok: true,
+                custodianAccountId: manager.id,
+                brokerMachineId: fallbackBroker.id,
+            });
+            await db.machinePoolMember.update({
+                where: { poolId_machineId: { poolId: pool.id, machineId: fallbackBroker.id } },
+                data: { enabled: false },
+            });
+            await expect(resolve("disabled-members")).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+            await db.machinePoolMember.deleteMany({ where: { poolId: pool.id } });
+            await expect(resolve("removed-members")).resolves.toEqual({ ok: false, error: "broker_unavailable" });
+        } finally {
+            await app.close();
+        }
+    }, 180_000);
+
+    it("reaches the real authenticated HTTP handler with a generated underscore key, records admission/terminal/lastUsedAt, then denies after revoke/member removal without leaking", async () => {
+        const enabledEnv: NodeJS.ProcessEnv = {
+            ...process.env,
+            HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+        };
+        const dispatch = vi.fn(async (_input: Parameters<ExternalProviderBrokerDispatch>[0]) => ({
+            ok: true as const,
+            statusCode: 200,
+            headers: { "content-type": "application/json", authorization: "must-not-forward" },
+            body: (async function* () {
+                yield Buffer.from(JSON.stringify({ ok: true, data: "provider-result" }));
+            })(),
+        }));
+
+        const app = Fastify();
+        registerExternalProviderApiRoutes(app as never, { env: enabledEnv, dispatch: dispatch as never });
+        await app.ready();
+        try {
+            const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+            const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+            const team = await db.team.create({ data: { name: "External ingress network" } });
+            await db.teamMembership.create({ data: { teamId: team.id, accountId: manager.id, role: "owner" } });
+            const membership = await db.teamMembership.create({ data: { teamId: team.id, accountId: recipient.id, role: "member" } });
+            expect(membership.id).not.toBe(recipient.id);
+            const broker = await db.machine.create({
+                data: {
+                    id: `external-ingress-broker-${manager.id}`,
+                    accountId: manager.id,
+                    metadata: "{}",
+                    kind: "persistent",
+                    active: true,
+                    operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+                    operationProtocolCapabilitiesRevision: 1,
+                },
+            });
+            const resource = await db.teamCredentialResource.create({
+                data: {
+                    teamId: team.id,
+                    custodianAccountId: manager.id,
+                    displayName: "Ingress provider",
+                    disclosureCeiling: "brokered_only",
+                    sessionUsePolicy: "personal_allowed",
+                    sourceBindingJson: JSON.stringify({
+                        v: 1,
+                        kind: "provider_connection",
+                        connectionId: "ingress-connection-1",
+                        connectionSecurityFingerprint: "connection-security:v1:ingress",
+                        credentialSlotId: "apiKey",
+                    }),
+                    brokerMachineId: broker.id,
+                    memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+                },
+            });
+
+            // Generated key through the real owner (random secret) plus a deterministic
+            // underscore-containing key through the identical digest path. Both must parse.
+            const generated = await inTx((tx) => createTeamCredentialExternalApiKeyInTx(tx, {
+                authentication: TEST_AUTHENTICATION,
+                actorAccountId: manager.id,
+                resourceId: resource.id,
+                teamMembershipId: membership.id,
+                label: "Generated runner",
+                expiresAt: null,
+            }));
+            expect(generated.ok).toBe(true);
+            if (!generated.ok) return;
+            expect(generated.token).toMatch(/^hapek_v1_[0-9a-f-]{36}_[A-Za-z0-9_-]{43}$/u);
+
+            const underscoreKeyId = "550e8400-e29b-41d4-a716-446655440001";
+            const underscoreSecret = "_-A".repeat(14) + "_";
+            expect(underscoreSecret).toHaveLength(43);
+            const underscoreToken = formatTeamCredentialExternalApiKeyV1({ keyId: underscoreKeyId, secret: underscoreSecret });
+            await db.teamCredentialExternalApiKey.create({
+                data: {
+                    id: underscoreKeyId,
+                    resourceId: resource.id,
+                    teamMembershipId: membership.id,
+                    label: "Underscore runner",
+                    displayPrefix: createTeamCredentialExternalApiKeyDisplayPrefixV1(underscoreKeyId),
+                    secretDigest: digestForTest(underscoreSecret),
+                    createdAt: new Date(),
+                    expiresAt: null,
+                },
+            });
+
+            // Verification probes never count as use.
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: underscoreKeyId } })).lastUsedAt).toBeNull();
+            await expect(inTx((tx) => verifyTeamCredentialExternalApiKeyInTx(tx, { token: underscoreToken }))).resolves.toMatchObject({
+                ok: true,
+                keyId: underscoreKeyId,
+                resourceId: resource.id,
+                assignedAccountId: recipient.id,
+            });
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: underscoreKeyId } })).lastUsedAt).toBeNull();
+
+            // Feature-off rejects before key lookup or broker dispatch.
+            const disabledApp = Fastify();
+            const disabledDispatch = vi.fn();
+            registerExternalProviderApiRoutes(disabledApp as never, { env: {}, dispatch: disabledDispatch as never });
+            await disabledApp.ready();
+            try {
+                const off = await disabledApp.inject({
+                    method: "POST",
+                    url: "/api/provider-broker/v1/chat/completions",
+                    headers: { authorization: `Bearer ${underscoreToken}` },
+                    payload: { model: "model-1", messages: [] },
+                });
+                expect(off.statusCode).toBe(404);
+                expect(off.json()).toEqual({ error: "not_found" });
+                expect(disabledDispatch).not.toHaveBeenCalled();
+            } finally {
+                await disabledApp.close();
+            }
+
+            // Master-off with child-on still fails closed through the canonical dependency.
+            const masterOffApp = Fastify();
+            const masterOffDispatch = vi.fn();
+            registerExternalProviderApiRoutes(masterOffApp as never, {
+                env: {
+                    ...process.env,
+                    HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+                    HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "0",
+                    HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+                },
+                dispatch: masterOffDispatch as never,
+            });
+            await masterOffApp.ready();
+            try {
+                const masterOff = await masterOffApp.inject({
+                    method: "POST",
+                    url: "/api/provider-broker/v1/chat/completions",
+                    headers: { authorization: `Bearer ${underscoreToken}` },
+                    payload: { model: "model-1", messages: [] },
+                });
+                expect(masterOff.statusCode).toBe(404);
+                expect(masterOffDispatch).not.toHaveBeenCalled();
+            } finally {
+                await masterOffApp.close();
+            }
+
+            // Malformed, Account PAT, unknown, and tampered bearers share one opaque 401
+            // and never reach the mocked upstream carrier.
+            const malformedBodies: string[] = [];
+            for (const bad of [
+                "not-a-key",
+                `hap_v1_${underscoreKeyId}_${underscoreSecret}`,
+                `hapek_v1_${underscoreKeyId}_!`.padEnd(60, "!"),
+                `hapek_v1_00000000-0000-4000-8000-000000000000_${underscoreSecret}`,
+                `${underscoreToken.slice(0, -1)}B`,
+            ]) {
+                const response = await app.inject({
+                    method: "POST",
+                    url: "/api/provider-broker/v1/chat/completions",
+                    headers: { authorization: `Bearer ${bad}` },
+                    payload: { model: "model-1", messages: [] },
+                });
+                expect(response.statusCode).toBe(401);
+                expect(response.json()).toEqual({
+                    error: { type: "happier_provider_broker_error", code: "invalid_api_key", message: "Invalid API key." },
+                });
+                malformedBodies.push(response.body);
+            }
+            expect(dispatch).not.toHaveBeenCalled();
+            for (const body of malformedBodies) {
+                expect(body).not.toContain(underscoreSecret);
+                expect(body).not.toContain(underscoreKeyId);
+                expect(body).not.toContain(resource.id);
+            }
+            // Conflicting duplicate credentials fail closed as unauthorized.
+            const conflict = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${underscoreToken}`, "x-api-key": generated.token },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(conflict.statusCode).toBe(401);
+            expect(dispatch).not.toHaveBeenCalled();
+
+            // Valid underscore key reaches the mocked upstream with the strict DTO only.
+            const valid = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${underscoreToken}`, "content-type": "application/json" },
+                payload: { model: "model-1", messages: [{ role: "user", content: "hello" }] },
+            });
+            expect(valid.statusCode).toBe(200);
+            expect(valid.headers["cache-control"]).toBe("no-store");
+            expect(valid.headers.authorization).toBeUndefined();
+            expect(valid.json()).toEqual({ ok: true, data: "provider-result" });
+            expect(dispatch).toHaveBeenCalledTimes(1);
+            const call = dispatch.mock.calls[0]?.[0] as unknown as Readonly<{
+                target: Readonly<{ custodianAccountId: string; brokerMachineId: string }>;
+                request: Readonly<Record<string, unknown>>;
+            }>;
+            expect(call.target).toEqual({ custodianAccountId: manager.id, brokerMachineId: broker.id });
+            expect(call.request).toMatchObject({
+                resourceId: resource.id,
+                teamId: team.id,
+                caller: {
+                    kind: "external_api_key",
+                    keyId: underscoreKeyId,
+                    assignedAccountId: recipient.id,
+                    assignedTeamMembershipId: membership.id,
+                },
+                route: "chat_completions",
+                method: "POST",
+                pathAndQuery: "/v1/chat/completions",
+            });
+            expect(call.request).not.toHaveProperty("machineId");
+            expect(call.request).not.toHaveProperty("host");
+            expect(call.request).not.toHaveProperty("bearer");
+            expect(call.request).not.toHaveProperty("secret");
+            expect(JSON.stringify(call.request)).not.toContain(underscoreSecret);
+            expect(call.request.headers).toMatchObject({ "content-type": "application/json" });
+            expect(call.request.headers).not.toHaveProperty("authorization");
+            expect(call.request.headers).not.toHaveProperty("cookie");
+            expect(call.request.headers).not.toHaveProperty("x-api-key");
+
+            // Anthropic-compatible header agrees with the same key.
+            dispatch.mockClear();
+            const anthropic = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/messages",
+                headers: { "x-api-key": underscoreToken, "content-type": "application/json" },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(anthropic.statusCode).toBe(200);
+            expect(dispatch).toHaveBeenCalledTimes(1);
+
+            // Edge verification alone still does not count as admitted use.
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: underscoreKeyId } })).lastUsedAt).toBeNull();
+
+            // Exact resource currentness + request-count admission before any upstream forward.
+            const admittedAt = new Date("2026-09-07T12:34:56.000Z");
+            const application = {
+                agentTargetKey: "agent:happier.agent.codex/codex",
+                implementationIdentity: { pluginId: "happier.provider.cliproxyapi", localId: "cliproxyapi" },
+                endpointTemplateId: "cliproxyapi-openai-responses",
+                protocol: "openai-responses" as const,
+            };
+            const admissionRequest = (requestId: string) => ({
+                v: 1 as const,
+                binding: {
+                    v: 1 as const,
+                    kind: "external_api_key" as const,
+                    teamId: team.id,
+                    resourceId: resource.id,
+                    requestId,
+                    externalApiKeyId: underscoreKeyId,
+                    assignedAccountId: recipient.id,
+                    assignedTeamMembershipId: membership.id,
+                },
+                brokerMachineId: broker.id,
+                expectedResourceRevision: resource.revision,
+                application,
+                requestFacts: { generation: true, routeKind: "openai_responses" as const, modelId: "model-1", reasoningEffort: null },
+            });
+            const admission = await inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: admissionRequest("ingress-request-1"),
+                observedAt: admittedAt,
+            }));
+            expect(admission).toMatchObject({
+                ok: true,
+                resourceId: resource.id,
+                operation: { kind: "external_api_key", externalApiKeyId: underscoreKeyId },
+                usageEventId: expect.any(String),
+                terminalRequestId: `external:${underscoreKeyId}:ingress-request-1`,
+            });
+            if (!admission.ok || !admission.usageEventId || !admission.terminalRequestId) throw new Error("expected admitted ingress request");
+            expect((await db.teamCredentialExternalApiKey.findUniqueOrThrow({ where: { id: underscoreKeyId } })).lastUsedAt).toEqual(admittedAt);
+            expect(await db.usageEvent.count({
+                where: { teamCredentialResourceId: resource.id, source: "team_credential_admission", requestCount: 1 },
+            })).toBe(1);
+
+            // Stale revision and detached broker identity never admit.
+            await expect(inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: { ...admissionRequest("stale-revision"), expectedResourceRevision: resource.revision + 99 },
+                observedAt: new Date(admittedAt.getTime() + 10),
+            }))).resolves.toEqual({ ok: false, reasonCode: "resource_changed" });
+            await expect(inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                authenticatedBrokerAccountId: "someone-else",
+                request: admissionRequest("wrong-broker-owner"),
+                observedAt: new Date(admittedAt.getTime() + 20),
+            }))).resolves.toEqual({ ok: false, reasonCode: "resource_forbidden" });
+
+            // Terminal success, failure, and cancellation each record one immutable fact.
+            // The terminal writer correlates on the admission request identity, so each
+            // distinct outcome needs its own admitted request to keep the fixture honest.
+            const extraAdmissions: Array<{ requestId: string; usageEventId: string; terminalRequestId: string }> = [];
+            for (const suffix of ["failed", "cancelled"]) {
+                const extra = await inTx((tx) => admitTeamCredentialExternalProviderRequestInTx(tx, {
+                    authenticatedBrokerAccountId: manager.id,
+                    request: admissionRequest(`ingress-request-${suffix}`),
+                    observedAt: new Date(admittedAt.getTime() + 30),
+                }));
+                expect(extra.ok).toBe(true);
+                if (!extra.ok || !extra.usageEventId || !extra.terminalRequestId) throw new Error("expected extra admission");
+                extraAdmissions.push({ requestId: `ingress-request-${suffix}`, usageEventId: extra.usageEventId, terminalRequestId: extra.terminalRequestId });
+            }
+            const succeeded = await inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: {
+                    v: 1,
+                    admissionUsageEventId: admission.usageEventId as string,
+                    requestId: admission.terminalRequestId as string,
+                    brokerMachineId: broker.id,
+                    completedAtMs: admittedAt.getTime() + 250,
+                    outcome: "succeeded",
+                    measurement: "unavailable",
+                },
+            }));
+            expect(succeeded).toMatchObject({ ok: true, created: true });
+            const failedAdmission = extraAdmissions[0];
+            if (!failedAdmission) throw new Error("expected failed admission");
+            const failed = await inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: {
+                    v: 1,
+                    admissionUsageEventId: failedAdmission.usageEventId,
+                    requestId: failedAdmission.terminalRequestId,
+                    brokerMachineId: broker.id,
+                    completedAtMs: admittedAt.getTime() + 350,
+                    outcome: "failed",
+                    measurement: "unavailable",
+                },
+            }));
+            expect(failed).toMatchObject({ ok: true, created: true });
+            const cancelledAdmission = extraAdmissions[1];
+            if (!cancelledAdmission) throw new Error("expected cancelled admission");
+            const cancelled = await inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: {
+                    v: 1,
+                    admissionUsageEventId: cancelledAdmission.usageEventId,
+                    requestId: cancelledAdmission.terminalRequestId,
+                    brokerMachineId: broker.id,
+                    completedAtMs: admittedAt.getTime() + 450,
+                    outcome: "cancelled",
+                    measurement: "unavailable",
+                },
+            }));
+            expect(cancelled).toMatchObject({ ok: true, created: true });
+            // Duplicate terminal report is idempotent, not a second fact.
+            await expect(inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: {
+                    v: 1,
+                    admissionUsageEventId: admission.usageEventId as string,
+                    requestId: admission.terminalRequestId as string,
+                    brokerMachineId: broker.id,
+                    completedAtMs: admittedAt.getTime() + 250,
+                    outcome: "succeeded",
+                    measurement: "unavailable",
+                },
+            }))).resolves.toMatchObject({ ok: true, created: false });
+
+            // Disabled resource is currentness-denied at the edge with the same opaque 401.
+            dispatch.mockClear();
+            await db.teamCredentialResource.update({ where: { id: resource.id }, data: { enabled: false } });
+            const disabled = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${underscoreToken}` },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(disabled.statusCode).toBe(401);
+            expect(disabled.json()).toEqual({
+                error: { type: "happier_provider_broker_error", code: "invalid_api_key", message: "Invalid API key." },
+            });
+            expect(dispatch).not.toHaveBeenCalled();
+            await db.teamCredentialResource.update({ where: { id: resource.id }, data: { enabled: true } });
+
+            // Revoke denies the next request indistinguishably and preserves safe activity.
+            await expect(inTx((tx) => revokeTeamCredentialExternalApiKeyInTx(tx, {
+                actorAccountId: manager.id,
+                resourceId: resource.id,
+                keyId: underscoreKeyId,
+                authentication: TEST_AUTHENTICATION,
+            }))).resolves.toEqual({ ok: true, keyId: underscoreKeyId, revoked: true });
+            const afterRevoke = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${underscoreToken}` },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(afterRevoke.statusCode).toBe(401);
+            expect(afterRevoke.json()).toEqual({
+                error: { type: "happier_provider_broker_error", code: "invalid_api_key", message: "Invalid API key." },
+            });
+            expect(afterRevoke.body).not.toContain(underscoreSecret);
+            expect(dispatch).not.toHaveBeenCalled();
+            await expect(inTx((tx) => verifyTeamCredentialExternalApiKeyInTx(tx, { token: underscoreToken }))).resolves.toEqual({
+                ok: false,
+                reason: "invalid_token",
+            });
+
+            // Member removal atomically revokes the generated key and denies it privacy-safely.
+            const removal = await inTx((tx) => removeTeamMemberForActorInTx(tx, {
+                teamId: team.id,
+                actorAccountId: manager.id,
+                membershipId: membership.id,
+            }));
+            expect(removal).toMatchObject({ ok: true, value: { status: "removed" } });
+            expect(await db.teamCredentialExternalApiKey.findUnique({ where: { id: generated.key.keyId } })).toBeNull();
+            dispatch.mockClear();
+            const afterRemoval = await app.inject({
+                method: "POST",
+                url: "/api/provider-broker/v1/chat/completions",
+                headers: { authorization: `Bearer ${generated.token}` },
+                payload: { model: "model-1", messages: [] },
+            });
+            expect(afterRemoval.statusCode).toBe(401);
+            expect(afterRemoval.json()).toEqual({
+                error: { type: "happier_provider_broker_error", code: "invalid_api_key", message: "Invalid API key." },
+            });
+            expect(afterRemoval.body).not.toContain(generated.token.slice(-8));
+            expect(dispatch).not.toHaveBeenCalled();
+            expect(await db.teamCredentialActivityEvent.count({
+                where: { resourceId: resource.id, kind: "external_key_revoked" },
+            })).toBeGreaterThanOrEqual(1);
+        } finally {
+            await app.close();
+        }
+    }, 180_000);
+});

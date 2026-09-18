@@ -47,6 +47,14 @@ describe('redactHttpRequestUrlForLog', () => {
         expect(redacted).not.toContain(correlation);
     });
 
+    it('templates native email bearer paths before request diagnostics are emitted', () => {
+        const bearer = 'SENTINEL_NATIVE_AUTH_BEARER';
+        expect(redactHttpRequestUrlForLog(`/auth/email/verify/${bearer}`))
+            .toBe('/auth/email/verify/:token');
+        expect(redactHttpRequestUrlForLog(`/auth/password/reset/${bearer}?home=private`))
+            .toBe('/auth/password/reset/:token');
+    });
+
     it('preserves plain pathnames, star-request targets, and empty URLs unchanged', () => {
         expect(redactHttpRequestUrlForLog('/health')).toBe('/health');
         expect(redactHttpRequestUrlForLog('/v1/sessions/session-1/public-share')).toBe(

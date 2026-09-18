@@ -8,16 +8,6 @@ vi.mock("@/app/monitoring/metrics/index", () => ({
     databaseUpdatesSkippedCounter: { inc: vi.fn() },
     recordPresenceFlushRetry: vi.fn(),
 }));
-vi.mock("@/app/share/accessControl", () => ({
-    checkSessionAccess: vi.fn(async () => ({
-        userId: "u1",
-        sessionId: "s1",
-        level: "owner",
-        isOwner: true,
-        sessionActive: false,
-        sessionLastActiveAt: new Date("2026-01-01T00:00:00.000Z"),
-    })),
-}));
 
 const dbMocks = createDbMocks({
     session: ["findUnique", "updateMany"],
@@ -39,6 +29,7 @@ describe("ActivityCache session observations", () => {
         dbMocks.reset();
         dbMocks.db.session.findUnique.mockResolvedValue({
             id: "s1",
+            accountId: "u1",
             active: false,
             lastActiveAt: new Date(),
         });

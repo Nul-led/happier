@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
     CRYPTO_GOLDEN_VECTORS,
-    DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
+    ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES,
     encodeBase64,
 } from "@happier-dev/protocol";
 
@@ -19,12 +19,12 @@ describe("tryParseDirectShareEncryptedDataKey", () => {
 
         const result = tryParseDirectShareEncryptedDataKey(encodeBase64(envelope, "base64"));
 
-        expect(envelope).toHaveLength(DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES);
+        expect(envelope).toHaveLength(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES);
         expect(result).toEqual({ type: "ok", encryptedDataKey: envelope });
     });
 
     it("rejects invalid base64, unsupported versions, and wrong envelope lengths", () => {
-        const unsupportedVersion = new Uint8Array(DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES);
+        const unsupportedVersion = new Uint8Array(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES);
         unsupportedVersion[0] = 1;
 
         expect(tryParseDirectShareEncryptedDataKey("not-valid-base64")).toEqual({
@@ -33,8 +33,8 @@ describe("tryParseDirectShareEncryptedDataKey", () => {
         });
         for (const envelope of [
             unsupportedVersion,
-            new Uint8Array(DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES - 1),
-            new Uint8Array(DIRECT_SHARE_ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES + 1),
+            new Uint8Array(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES - 1),
+            new Uint8Array(ENCRYPTED_DATA_KEY_ENVELOPE_V1_BYTES + 1),
         ]) {
             expect(tryParseDirectShareEncryptedDataKey(encodeBase64(envelope, "base64"))).toEqual({
                 type: "error",

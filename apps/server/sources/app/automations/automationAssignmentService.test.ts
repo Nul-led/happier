@@ -23,6 +23,11 @@ import {
 } from "./automationAssignmentService";
 import { AutomationValidationError } from "./automationValidation";
 
+const LEGACY_AUTOMATION_RUN_STATES = [
+    "queued", "claimed", "running", "succeeded", "failed", "cancelled",
+    "expired", "dispatch_failed", "skipped", "missed", "outcome_uncertain",
+] as const;
+
 describe("resolveAutomationAssignmentNextClaimAt", () => {
     beforeEach(() => {
         vi.clearAllMocks();
@@ -322,6 +327,7 @@ describe("resolveAutomationAssignmentNextClaimAt", () => {
         ]);
 
         const runQuery = dbMocks.runAssignments.mock.calls[0]?.[0];
+        expect(runQuery.where.run.state).toEqual({ in: LEGACY_AUTOMATION_RUN_STATES });
         expect(runQuery.select.run.select).toEqual(expect.objectContaining({
             automationId: true,
         }));
@@ -330,6 +336,11 @@ describe("resolveAutomationAssignmentNextClaimAt", () => {
         expect(dbMocks.automations).toHaveBeenCalledWith(expect.objectContaining({
             where: { id: { in: ["automation-1"] }, accountId: "account-1" },
         }));
+
+        const definitionQuery = dbMocks.definitionAssignments.mock.calls[0]?.[0];
+        expect(definitionQuery.select.automation.select.runs.where.state).toEqual({
+            in: LEGACY_AUTOMATION_RUN_STATES,
+        });
     });
 });
 

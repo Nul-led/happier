@@ -11,6 +11,7 @@ import {
     initializeServerIdentityCache,
 } from "@/app/serverIdentity/serverIdentity";
 import {
+    signAccountContentKeyBindingV1,
     createKeyChallengeV2SigningInput,
 } from "@happier-dev/protocol";
 import { registerKeyChallengeAuthRoute } from "./registerKeyChallengeAuthRoute";
@@ -21,6 +22,7 @@ import {
 import { resetHomeConnectionDescriptorRevisionOwnerForTests } from "@/app/features/homeConnectionDescriptorPublication";
 
 const DUAL_ROLE_ENV = {
+    HAPPIER_AUTH_SIGN_IN_SERVICE_MODE: "self",
     HAPPIER_API_RATE_LIMITS_ENABLED: "0",
     HAPPIER_CANONICAL_SERVER_URL: "https://cloud.example.test",
     HAPPIER_PUBLIC_SERVER_URL: "https://cloud.example.test",
@@ -37,11 +39,11 @@ function contentKeyBinding(params: Readonly<{
     signingKeyPair: tweetnacl.SignKeyPair;
     contentKeyPair: tweetnacl.BoxKeyPair;
 }>) {
-    const binding = Buffer.concat([
-        Buffer.from("Happy content key v1\u0000", "utf8"),
-        Buffer.from(params.contentKeyPair.publicKey),
-    ]);
-    const signature = tweetnacl.sign.detached(new Uint8Array(binding), params.signingKeyPair.secretKey);
+
+    const signature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: params.signingKeyPair.secretKey,
+        contentPublicKey: params.contentKeyPair.publicKey,
+    });
     return {
         contentPublicKey: privacyKit.encodeBase64(new Uint8Array(params.contentKeyPair.publicKey)),
         contentPublicKeySig: privacyKit.encodeBase64(new Uint8Array(signature)),
@@ -186,7 +188,7 @@ describe("key-challenge account_directory same-service bootstrap (integration)",
         expect(persisted.preferredHomeServerIdentityId).toBeNull();
     });
 
-    it("never bootstraps trust for an existing key account completing a directory login", async () => {
+    it("links an existing unlinked Account on deliberate self Directory authentication", async () => {
         const serverIdentityId = await getOrCreateServerIdentityId(process.env);
         const signingKeyPair = tweetnacl.sign.keyPair();
         const content = contentKeyBinding({
@@ -210,13 +212,42 @@ describe("key-challenge account_directory same-service bootstrap (integration)",
         const verified = await auth.verifyToken(json.token);
         expect(verified?.userId).toBe(existing.id);
         expect(verified?.authTokenKind).toBe("account_directory");
-        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: existing.id } })).toBe(0);
-        expect(await db.accountDirectoryLink.count({ where: { accountId: existing.id } })).toBe(0);
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: existing.id } })).toBe(1);
+        expect(await db.accountDirectoryLink.count({ where: { accountId: existing.id } })).toBe(1);
         const persisted = await db.account.findUniqueOrThrow({
             where: { id: existing.id },
             select: { preferredHomeServerIdentityId: true },
         });
-        expect(persisted.preferredHomeServerIdentityId).toBeNull();
+        expect(persisted.preferredHomeServerIdentityId).toBe(serverIdentityId);
+    });
+
+    it("returns a typed conflict without replacing an existing different self link", async () => {
+        const serverIdentityId = await getOrCreateServerIdentityId(process.env);
+        const signingKeyPair = tweetnacl.sign.keyPair();
+        const signing = accountDirectorySigningKeyMetadata(process.env);
+        const account = await db.account.create({
+            data: {
+                publicKey: privacyKit.encodeHex(new Uint8Array(signingKeyPair.publicKey)),
+                encryptionMode: "plain",
+            },
+            select: { id: true },
+        });
+        await db.accountDirectoryLink.create({
+            data: {
+                accountId: account.id,
+                issuerServerIdentityId: serverIdentityId,
+                issuerSubjectId: "another-subject",
+                issuerSigningKeyId: signing.keyId,
+                issuerSigningPublicKey: Buffer.from(resolveAccountDirectorySigningKeyPair(process.env).publicKey),
+            },
+        });
+        const result = await authenticateWithKey({ app, signingKeyPair, directoryPurpose: true });
+        expect(result.statusCode).toBe(409);
+        expect(result.json).toEqual({ error: "invalid_request" });
+        expect(await db.accountHomeDirectoryEntry.count({ where: { accountId: account.id } })).toBe(0);
+        expect(await db.accountDirectoryLink.findFirst({ where: { accountId: account.id } })).toMatchObject({
+            issuerSubjectId: "another-subject",
+        });
     });
 
     it("repeats directory key authentication idempotently with exactly one entry and one pinned link", async () => {

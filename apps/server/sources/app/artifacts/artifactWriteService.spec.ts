@@ -60,6 +60,12 @@ describe("artifactWriteService", () => {
         process.env.HAPPIER_FEATURE_ENCRYPTION__PLAIN_ACCOUNT_ARTIFACTS_AT_REST = "none";
         markAccountChanged.mockReset();
         txFixture = createArtifactTxFixture();
+        txFixture.account.findUnique.mockResolvedValue({
+            encryptionMode: "plain",
+            publicKey: null,
+            contentPublicKey: null,
+            contentPublicKeySig: null,
+        });
         currentTx = txFixture as unknown as Tx;
     });
 
@@ -118,14 +124,17 @@ describe("artifactWriteService", () => {
         });
 
         it("is idempotent for same account (no write, no cursor)", async () => {
+            const header = artifactBytes(encodePlainArtifactStoredContent({ title: "existing" }));
+            const body = artifactBytes(encodePlainArtifactStoredContent({ body: "existing" }));
+            const dataEncryptionKey = artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER);
             const existing = {
                 id: "a1",
                 accountId: "u1",
-                header: new Uint8Array([1]),
+                header,
                 headerVersion: 1,
-                body: new Uint8Array([2]),
+                body,
                 bodyVersion: 1,
-                dataEncryptionKey: new Uint8Array([3]),
+                dataEncryptionKey,
                 seq: 0,
                 createdAt: new Date("2020-01-01T00:00:00.000Z"),
                 updatedAt: new Date("2020-01-01T00:00:00.000Z"),
@@ -135,9 +144,10 @@ describe("artifactWriteService", () => {
             const res = await createArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
-                header: new Uint8Array([9]),
-                body: new Uint8Array([9]),
-                dataEncryptionKey: new Uint8Array([9]),
+                header,
+                body,
+                dataEncryptionKey,
+                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(true);
@@ -291,7 +301,7 @@ describe("artifactWriteService", () => {
                 supportsCurrentStoredContentProtocol: false,
             });
             expect(rejectedCreate).toEqual({ ok: false, error: "client-upgrade-required" });
-            expect(txFixture.account.findUnique).not.toHaveBeenCalled();
+            expect(txFixture.account.findUnique).toHaveBeenCalledOnce();
             expect(txFixture.artifact.create).not.toHaveBeenCalled();
             expect(markAccountChanged).not.toHaveBeenCalled();
 
@@ -381,14 +391,17 @@ describe("artifactWriteService", () => {
         });
 
         it("updates via CAS and returns cursor + updated field versions", async () => {
+            const header = artifactBytes(encodePlainArtifactStoredContent({ title: "current" }));
+            const body = artifactBytes(encodePlainArtifactStoredContent({ body: "current" }));
+            const dataEncryptionKey = artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER);
             txFixture.artifact.findFirst.mockResolvedValue({
                 id: "a1",
                 seq: 5,
-                header: new Uint8Array([1]),
+                header,
                 headerVersion: 10,
-                body: new Uint8Array([2]),
+                body,
                 bodyVersion: 20,
-                dataEncryptionKey: new Uint8Array([3]),
+                dataEncryptionKey,
             });
             txFixture.artifact.updateMany.mockResolvedValue({ count: 1 });
             markAccountChanged.mockResolvedValueOnce(123);
@@ -396,8 +409,15 @@ describe("artifactWriteService", () => {
             const res = await updateArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
-                header: { bytes: new Uint8Array([9]), expectedVersion: 10 },
-                body: { bytes: new Uint8Array([8]), expectedVersion: 20 },
+                header: {
+                    bytes: artifactBytes(encodePlainArtifactStoredContent({ title: "updated" })),
+                    expectedVersion: 10,
+                },
+                body: {
+                    bytes: artifactBytes(encodePlainArtifactStoredContent({ body: "updated" })),
+                    expectedVersion: 20,
+                },
+                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(true);
@@ -408,20 +428,26 @@ describe("artifactWriteService", () => {
         });
 
         it("returns version-mismatch with current bytes", async () => {
+            const header = artifactBytes(encodePlainArtifactStoredContent({ title: "current" }));
+            const body = artifactBytes(encodePlainArtifactStoredContent({ body: "current" }));
             txFixture.artifact.findFirst.mockResolvedValue({
                 id: "a1",
                 seq: 5,
-                header: new Uint8Array([1]),
+                header,
                 headerVersion: 10,
-                body: new Uint8Array([2]),
+                body,
                 bodyVersion: 20,
-                dataEncryptionKey: new Uint8Array([3]),
+                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
             });
 
             const res = await updateArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
-                header: { bytes: new Uint8Array([9]), expectedVersion: 9 },
+                header: {
+                    bytes: artifactBytes(encodePlainArtifactStoredContent({ title: "updated" })),
+                    expectedVersion: 9,
+                },
+                supportsCurrentStoredContentProtocol: true,
             });
 
             expect(res.ok).toBe(false);
@@ -503,16 +529,22 @@ describe("artifactWriteService", () => {
             expect(markAccountChanged).not.toHaveBeenCalled();
         });
 
-        it("does not expose a newly marked row after a legacy update loses its CAS race", async () => {
+        it("returns the current valid row after an update loses its CAS race", async () => {
             txFixture.artifact.findFirst
                 .mockResolvedValueOnce({
                     id: "a1",
                     seq: 5,
-                    header: new Uint8Array([1]),
+                    header: artifactBytes(
+                        encodePlainArtifactStoredContent({ title: "before" }),
+                    ),
                     headerVersion: 10,
-                    body: new Uint8Array([2]),
+                    body: artifactBytes(
+                        encodePlainArtifactStoredContent({ body: "before" }),
+                    ),
                     bodyVersion: 20,
-                    dataEncryptionKey: new Uint8Array([3]),
+                    dataEncryptionKey: artifactBytes(
+                        ARTIFACT_PLAIN_DATA_KEY_MARKER,
+                    ),
                 })
                 .mockResolvedValueOnce({
                     id: "a1",
@@ -529,21 +561,27 @@ describe("artifactWriteService", () => {
                     ),
                 });
             txFixture.artifact.updateMany.mockResolvedValue({ count: 0 });
-
             const rejected = await updateArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
                 header: {
-                    bytes: new Uint8Array([9]),
+                    bytes: artifactBytes(
+                        encodePlainArtifactStoredContent({ title: "attempted" }),
+                    ),
                     expectedVersion: 10,
                 },
-                supportsCurrentStoredContentProtocol: false,
+                supportsCurrentStoredContentProtocol: true,
             });
 
-            expect(rejected).toEqual({
+            expect(rejected).toMatchObject({
                 ok: false,
-                error: "client-upgrade-required",
+                error: "version-mismatch",
+                current: {
+                    headerVersion: 11,
+                    bodyVersion: 21,
+                },
             });
+            expect(txFixture.artifact.updateMany).toHaveBeenCalledOnce();
             expect(markAccountChanged).not.toHaveBeenCalled();
         });
 
@@ -607,16 +645,40 @@ describe("artifactWriteService", () => {
             expect(res).toEqual({ ok: false, error: "not-found" });
         });
 
+        it("does not delete a plaintext-marked Artifact from an E2EE Account", async () => {
+            txFixture.account.findUnique.mockResolvedValue({
+                encryptionMode: "e2ee",
+                publicKey: new Uint8Array([1]),
+                contentPublicKey: new Uint8Array([2]),
+                contentPublicKeySig: new Uint8Array([3]),
+            });
+            txFixture.artifact.findFirst.mockResolvedValue({
+                id: "a1",
+                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
+            });
+
+            const result = await deleteArtifact({
+                actorUserId: "u1",
+                artifactId: "a1",
+                supportsCurrentStoredContentProtocol: true,
+            });
+
+            expect(result).toEqual({ ok: false, error: "internal" });
+            expect(txFixture.artifact.delete).not.toHaveBeenCalled();
+            expect(markAccountChanged).not.toHaveBeenCalled();
+        });
+
         it("deletes and marks change", async () => {
             txFixture.artifact.findFirst.mockResolvedValue({
                 id: "a1",
-                dataEncryptionKey: new Uint8Array([3]),
+                dataEncryptionKey: artifactBytes(ARTIFACT_PLAIN_DATA_KEY_MARKER),
             });
             markAccountChanged.mockResolvedValueOnce(77);
 
             const res = await deleteArtifact({
                 actorUserId: "u1",
                 artifactId: "a1",
+                supportsCurrentStoredContentProtocol: true,
             });
             expect(res).toEqual({ ok: true, cursor: 77 });
             expect(txFixture.artifact.delete).toHaveBeenCalledWith({ where: { id: "a1" } });

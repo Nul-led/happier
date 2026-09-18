@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { db, initDbMysql, initDbPostgres } from "@/storage/db";
+import { mutateSessionBoard } from "@/app/session/board/service";
+import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
 import { deriveSessionSystemRecordAddressKeys } from "./sessionSystemRecordAddressKeys";
 import { runSessionSystemRecordBackfillOperator } from "./sessionSystemRecordBackfillOperator";
 import {
@@ -14,6 +16,8 @@ import {
     upsertSessionSystemRecord,
     upsertSessionSystemRecordV1,
 } from "./sessionSystemRecordService";
+
+const authentication = createPresentUserSessionAccessAuthentication();
 
 function resolveContractProvider(): "postgres" | "mysql" {
     const raw = (process.env.HAPPIER_DB_PROVIDER ?? process.env.HAPPY_DB_PROVIDER ?? "postgres")
@@ -56,9 +60,168 @@ async function deleteAccountFixture(accountId: string): Promise<void> {
 describe("SessionSystemRecord native CONTRACT database behavior", () => {
     const provider = resolveContractProvider();
 
+    it("settles concurrent exact Board creation and leaves no item from a losing aggregate", async () => {
+        const exactFixture = await createAccountAndSession(`board-exact-race-${randomUUID()}`);
+        const competingFixture = await createAccountAndSession(`board-competing-race-${randomUUID()}`);
+        const content = (title: string) => ({ t: "plain", v: { v: 1, title, frame: "card",
+            height: { mode: "auto", fallback: "regular" }, source: { kind: "declarative",
+                document: { version: 1, root: { kind: "markdown", text: title } } } } });
+        const mutation = (itemId: string) => ({ operation: "upsert_item", itemId, expectedItemRevision: null,
+            itemContent: content(itemId), placement: { expectedLayoutRevision: null,
+                layoutContent: { t: "plain", v: { v: 1, tabs: [{ id: "overview", title: "Overview", items: [{ itemId, width: "medium" }] }] } } } });
+        const invoke = (fixture: typeof exactFixture, value: unknown) => mutateSessionBoard({ authentication,
+            actorUserId: fixture.account.id, sessionId: fixture.session.id, mutation: value });
+        const settle = async (attempts: ReturnType<typeof invoke>[]) => (await Promise.allSettled(attempts)).map(outcome => {
+            if (outcome.status === "rejected") throw outcome.reason;
+            return outcome.value;
+        });
+        let operationError: unknown;
+        try {
+            const exactCreates = await settle([
+                invoke(exactFixture, mutation("same")),
+                invoke(exactFixture, mutation("same")),
+            ]);
+            expect(exactCreates.every(result => result.ok)).toBe(true);
+            if (!exactCreates[0]?.ok || !exactCreates[1]?.ok) throw new Error("Expected byte-identical create settlement");
+            if (exactCreates[0].result.operation !== "upsert_item" || exactCreates[1].result.operation !== "upsert_item") {
+                throw new Error("Expected upsert-item settlement");
+            }
+            expect(exactCreates[1].result.itemRevision).toBe(exactCreates[0].result.itemRevision);
+            expect(exactCreates[1].result.layoutRevision).toBe(exactCreates[0].result.layoutRevision);
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: exactFixture.session.id } })).toBe(2);
+
+            const firstCreates = await settle([
+                invoke(competingFixture, mutation("first")),
+                invoke(competingFixture, mutation("second")),
+            ]);
+            expect(firstCreates.filter(result => result.ok)).toHaveLength(1);
+            expect(firstCreates.find(result => !result.ok)).toMatchObject({ ok: false, result: { error: "session_board_revision_conflict" } });
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: competingFixture.session.id } })).toBe(2);
+            const winner = firstCreates.find(result => result.ok);
+            if (!winner?.ok || winner.result.operation !== "upsert_item") throw new Error("Expected an acknowledged first create");
+            const winnerItemId = winner.result.itemId;
+            const expectedLayoutRevision = winner.result.layoutRevision;
+            const competing = await settle(["third", "fourth"].map(itemId => invoke(competingFixture, { ...mutation(itemId),
+                placement: { expectedLayoutRevision, layoutContent: { t: "plain", v: { v: 1,
+                    tabs: [{ id: "overview", title: "Overview", items: [{ itemId: winnerItemId, width: "medium" }, { itemId, width: "medium" }] }] } } } })));
+            expect(competing.filter(result => result.ok)).toHaveLength(1);
+            expect(competing.find(result => !result.ok)).toMatchObject({ ok: false, result: { error: "session_board_revision_conflict" } });
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: competingFixture.session.id } })).toBe(3);
+        } catch (error) {
+            operationError = error;
+            throw error;
+        } finally {
+            try {
+                await deleteAccountFixture(exactFixture.account.id);
+                await deleteAccountFixture(competingFixture.account.id);
+            } catch (cleanupError) {
+                if (operationError !== undefined) throw new AggregateError([operationError, cleanupError], "Board operation and fixture cleanup failed");
+                throw cleanupError;
+            }
+        }
+    });
+
+    it("preserves Board aggregate atomicity, source authority, placement deletion, and opaque replay", async () => {
+        const plainFixture = await createAccountAndSession(`board-aggregate-${randomUUID()}`);
+        const encryptedFixture = await createAccountAndSession(`board-encrypted-${randomUUID()}`);
+        const itemContent = (title: string) => ({ t: "plain" as const, v: { v: 1 as const, title, frame: "card" as const,
+            height: { mode: "auto" as const, fallback: "regular" as const }, source: { kind: "declarative" as const,
+                document: { version: 1 as const, root: { kind: "markdown" as const, text: title } } } } });
+        const layoutContent = (title: string, itemIds: readonly string[]) => ({ t: "plain" as const, v: { v: 1 as const,
+            tabs: [{ id: "overview", title, items: itemIds.map(itemId => ({ itemId, width: "medium" as const })) }] } });
+        const invoke = (fixture: typeof plainFixture, mutation: unknown) => mutateSessionBoard({ authentication,
+            actorUserId: fixture.account.id, sessionId: fixture.session.id, mutation });
+        let operationError: unknown;
+        try {
+            const initialItem = itemContent("Initial");
+            const initialLayout = layoutContent("Overview", ["note"]);
+            const created = await invoke(plainFixture, { operation: "upsert_item", itemId: "note",
+                itemContent: initialItem, expectedItemRevision: null,
+                placement: { layoutContent: initialLayout, expectedLayoutRevision: null } });
+            expect(created).toMatchObject({ ok: true, result: { operation: "upsert_item", outcome: "created" } });
+            if (!created.ok || created.result.operation !== "upsert_item") throw new Error("Expected initial Board item creation");
+
+            const converted = await invoke(plainFixture, { operation: "upsert_item", itemId: "note",
+                itemContent: { ...initialItem, v: { ...initialItem.v,
+                    source: { kind: "installedSurface", surface: { pluginId: "com.acme.test", localId: "dashboard" } } } },
+                expectedItemRevision: created.result.itemRevision });
+            expect(converted).toEqual({ ok: false, result: { error: "session_board_source_conflict" } });
+
+            const advancedLayout = layoutContent("Advanced", ["note"]);
+            const advanced = await invoke(plainFixture, { operation: "update_layout", layoutContent: advancedLayout,
+                expectedLayoutRevision: created.result.layoutRevision });
+            expect(advanced).toMatchObject({ ok: true, result: { operation: "update_layout", outcome: "updated" } });
+            if (!advanced.ok || advanced.result.operation !== "update_layout") throw new Error("Expected layout update");
+
+            const rolledBack = await invoke(plainFixture, { operation: "upsert_item", itemId: "note",
+                itemContent: itemContent("Must roll back"), expectedItemRevision: created.result.itemRevision,
+                placement: { layoutContent: layoutContent("Stale", ["note"]), expectedLayoutRevision: created.result.layoutRevision } });
+            expect(rolledBack).toMatchObject({ ok: false, result: { error: "session_board_revision_conflict" } });
+            const afterRollback = await db.sessionSystemRecord.findMany({ where: { sessionId: plainFixture.session.id },
+                orderBy: { localId: "asc" }, select: { localId: true, content: true } });
+            expect(afterRollback).toEqual([
+                { localId: "layout", content: advancedLayout },
+                { localId: "note", content: initialItem },
+            ]);
+
+            const stillPlaced = await invoke(plainFixture, { operation: "remove_item", itemId: "note",
+                expectedItemRevision: created.result.itemRevision, layoutContent: advancedLayout,
+                expectedLayoutRevision: advanced.result.layoutRevision });
+            expect(stillPlaced).toEqual({ ok: false, result: { error: "session_board_invalid" } });
+            expect(await db.sessionSystemRecord.count({ where: { sessionId: plainFixture.session.id, localId: "note" } })).toBe(1);
+
+            const removalLayout = layoutContent("Advanced", []);
+            const removal = { operation: "remove_item", itemId: "note", expectedItemRevision: created.result.itemRevision,
+                layoutContent: removalLayout, expectedLayoutRevision: advanced.result.layoutRevision };
+            const removed = await invoke(plainFixture, removal);
+            expect(removed).toMatchObject({ ok: true, result: { operation: "remove_item", outcome: "removed" } });
+            await expect(invoke(plainFixture, removal)).resolves.toEqual(removed);
+            expect(await db.sessionSystemRecord.findMany({ where: { sessionId: plainFixture.session.id },
+                select: { localId: true, content: true } })).toEqual([{ localId: "layout", content: removalLayout }]);
+
+            await db.session.update({ where: { id: encryptedFixture.session.id }, data: { encryptionMode: "e2ee" } });
+            const encryptedMutation = { operation: "upsert_item", itemId: "sealed", expectedItemRevision: null,
+                itemContent: { t: "encrypted", c: "sealed-item-bytes" },
+                placement: { expectedLayoutRevision: null, layoutContent: { t: "encrypted", c: "sealed-layout-bytes" } } };
+            const encrypted = await invoke(encryptedFixture, encryptedMutation);
+            expect(encrypted).toMatchObject({ ok: true, result: { operation: "upsert_item", outcome: "created" } });
+            if (!encrypted.ok || encrypted.result.operation !== "upsert_item") throw new Error("Expected encrypted Board item creation");
+            await expect(invoke(encryptedFixture, encryptedMutation)).resolves.toEqual({
+                ok: true,
+                result: {
+                    operation: "upsert_item",
+                    outcome: "unchanged",
+                    itemId: "sealed",
+                    itemRevision: encrypted.result.itemRevision,
+                    layoutRevision: encrypted.result.layoutRevision,
+                },
+            });
+            expect(await db.sessionSystemRecord.findMany({ where: { sessionId: encryptedFixture.session.id },
+                orderBy: { localId: "asc" }, select: { localId: true, content: true } })).toEqual([
+                { localId: "layout", content: encryptedMutation.placement.layoutContent },
+                { localId: "sealed", content: encryptedMutation.itemContent },
+            ]);
+            await expect(invoke(encryptedFixture, { ...encryptedMutation,
+                itemContent: { t: "encrypted", c: "different-sealed-item-bytes" } })).resolves
+                .toMatchObject({ ok: false, result: { error: "session_board_revision_conflict" } });
+        } catch (error) {
+            operationError = error;
+            throw error;
+        } finally {
+            try {
+                await deleteAccountFixture(plainFixture.account.id);
+                await deleteAccountFixture(encryptedFixture.account.id);
+            } catch (cleanupError) {
+                if (operationError !== undefined) throw new AggregateError([operationError, cleanupError], "Board operation and fixture cleanup failed");
+                throw cleanupError;
+            }
+        }
+    });
+
     beforeAll(async () => {
         if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL for DB contract test");
         process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY = "optional";
+        process.env.HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED = "1";
         if (provider === "mysql") await initDbMysql();
         else initDbPostgres();
         await db.$connect();
@@ -140,7 +303,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
         const { account, session } = await createAccountAndSession(suffix);
         const localId = `memory:synopsis:v1:${suffix}`;
         try {
-            await expect(upsertSessionSystemRecord({
+            await expect(upsertSessionSystemRecord({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 namespace: "memory",
@@ -149,7 +312,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
                 content: synopsisContent("one"),
             })).resolves.toMatchObject({ ok: true, didCreate: true, didUpdate: false });
 
-            await expect(upsertSessionSystemRecord({
+            await expect(upsertSessionSystemRecord({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 namespace: "memory",
@@ -213,7 +376,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             localId: `note:${suffix}`,
         };
         try {
-            const first = await upsertSessionSystemRecordV1({
+            const first = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -224,7 +387,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             expect(first).toMatchObject({ ok: true, record: { revision: expect.stringMatching(/^ssr1\./) } });
             if (!first.ok) throw new Error("Expected first plugin record write to succeed");
 
-            const secondPlugin = await upsertSessionSystemRecordV1({
+            const secondPlugin = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.other",
@@ -234,7 +397,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             });
             expect(secondPlugin).toMatchObject({ ok: true });
 
-            const updated = await upsertSessionSystemRecordV1({
+            const updated = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -246,21 +409,21 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             if (!updated.ok) throw new Error("Expected conditional plugin record update to succeed");
             expect(updated.record.revision).not.toBe(first.record.revision);
 
-            await expect(deleteSessionSystemRecordV1({
+            await expect(deleteSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
                 address,
                 expectedRevision: first.record.revision,
             })).resolves.toMatchObject({ ok: false, code: "plugin_session_record_revision_conflict" });
-            await expect(deleteSessionSystemRecordV1({
+            await expect(deleteSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
                 address,
                 expectedRevision: updated.record.revision,
             })).resolves.toEqual({ ok: true });
-            await expect(deleteSessionSystemRecordV1({
+            await expect(deleteSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -282,7 +445,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             localId: `note:${suffix}`,
         };
         try {
-            const created = await upsertSessionSystemRecordV1({
+            const created = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -292,7 +455,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             });
             if (!created.ok) throw new Error("Expected create-only plugin record write to succeed");
 
-            const settled = await upsertSessionSystemRecordV1({
+            const settled = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -306,7 +469,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
             if (!settled.ok) throw new Error("Expected omitted revision to settle the current plugin record");
             expect(settled.record.revision).not.toBe(created.record.revision);
 
-            await expect(upsertSessionSystemRecordV1({
+            await expect(upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -318,7 +481,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
                 code: "plugin_session_record_revision_conflict",
                 currentRevision: settled.record.revision,
             });
-            await expect(upsertSessionSystemRecordV1({
+            await expect(upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -331,13 +494,13 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
                 currentRevision: settled.record.revision,
             });
 
-            await expect(deleteSessionSystemRecordV1({
+            await expect(deleteSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
                 address,
             })).resolves.toEqual({ ok: true });
-            const recreated = await upsertSessionSystemRecordV1({
+            const recreated = await upsertSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
@@ -346,7 +509,7 @@ describe("SessionSystemRecord native CONTRACT database behavior", () => {
                 expectedRevision: null,
             });
             expect(recreated).toMatchObject({ ok: true });
-            await expect(deleteSessionSystemRecordV1({
+            await expect(deleteSessionSystemRecordV1({ authentication,
                 actorUserId: account.id,
                 sessionId: session.id,
                 pluginId: "acme.notes",
