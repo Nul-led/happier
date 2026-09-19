@@ -1,8 +1,28 @@
+/**
+ * Claude records a bracketed-paste prompt wrapped in its own paste markers, each on its own line:
+ *
+ *   <pasted_content id="9b65">
+ *   …the pasted text…
+ *   </pasted_content id="9b65">
+ *
+ * The closing marker repeats the id, so this is not XML. The markers describe how the text
+ * reached the composer, never what the prompt says, so prompt identity is the unwrapped text on
+ * both sides of the terminal round-trip. Observed on Claude Code 2.1.259 (live incident
+ * 2026-09-18, session cmtyf86rp1a1ttm237czmr4ts): without this, every multi-line prompt Happier
+ * pastes reads back as different text, so provider acceptance never correlates and the delivered
+ * message stays "delivering" forever.
+ *
+ * Distinct from the collapsed-paste composer marker in `pastedTextMarker.ts`: that one is what
+ * Claude renders in the composer, this one is how the prompt is recorded once submitted.
+ */
+const CLAUDE_PASTED_CONTENT_MARKER_LINE = /^<\/?pasted_content id="[^"]*">$/;
+
 export function normalizeClaudeUnifiedPromptIdentityText(value: string): string {
   return value
     .replace(/\r\n?/gu, '\n')
     .split('\n')
     .map((line) => line.trimEnd())
+    .filter((line) => !CLAUDE_PASTED_CONTENT_MARKER_LINE.test(line))
     .join('\n')
     .trim();
 }
