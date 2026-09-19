@@ -147,6 +147,48 @@ async function recipientForSeed(seedByte: number): Promise<Readonly<{
     };
 }
 
+/**
+ * A modern data-key creator: the device holds the Account content key pair but
+ * no Account signing key, so it cannot re-sign its own content-key binding. The
+ * binding is public material the Account already published and the Home carries
+ * it, exactly as `runnerMaterialization` consumes it for every other recipient.
+ */
+async function dataKeyCreator(seedByte: number): Promise<Readonly<{
+    recipient: RunnerEndpointFactsRecipientV1;
+    encryption: Encryption;
+    credentials: Readonly<{ token: string; encryption: Readonly<{ publicKey: string; machineKey: string }> }>;
+}>> {
+    const contentKeyPair = sodium.crypto_box_seed_keypair(new Uint8Array(32).fill(seedByte));
+    const encryption = await Encryption.createFromContentKeyPair({
+        publicKey: contentKeyPair.publicKey,
+        machineKey: contentKeyPair.privateKey,
+    });
+    // The Account signing identity lives with the Account, never on this device.
+    const signing = sodium.crypto_sign_seed_keypair(new Uint8Array(32).fill(seedByte ^ 0x5a));
+    const signature = signAccountContentKeyBindingV1({
+        accountSigningSecretKey: signing.privateKey,
+        contentPublicKey: contentKeyPair.publicKey,
+    });
+    return {
+        encryption,
+        credentials: {
+            token: 'creator-token',
+            encryption: {
+                publicKey: encodeBase64(contentKeyPair.publicKey),
+                machineKey: encodeBase64(contentKeyPair.privateKey),
+            },
+        },
+        recipient: {
+            mode: 'e2ee',
+            creatorAccountId: 'creator-a',
+            accountSigningPublicKey: encodeBase64(signing.publicKey, 'base64url'),
+            contentPublicKey: encodeBase64(contentKeyPair.publicKey, 'base64url'),
+            contentPublicKeySignature: encodeBase64(signature, 'base64url'),
+            contentPublicKeyFingerprint: computeContentPublicKeyFingerprint(contentKeyPair.publicKey),
+        },
+    };
+}
+
 describe('prepareTemporaryComputerActivation creator recipient authority', () => {
     it.each([
         ['transcriptStorage', { transcriptStorage: 'direct' }],
@@ -433,25 +475,16 @@ describe('prepareTemporaryComputerActivation creator recipient authority', () =>
         expect(readCreatorRecipient).toHaveBeenCalledWith(controller.signal);
     });
 
-    it('fails closed for data-key credentials before consulting Home', async () => {
-        const readCreatorRecipient = vi.fn();
-        const encryption = await Encryption.createFromContentKeyPair({
-            publicKey: new Uint8Array(32).fill(4),
-            machineKey: new Uint8Array(32).fill(5),
-        });
+    it('publishes the Account’s own signed binding for a data-key creator that holds no Account signing key', async () => {
+        const creator = await dataKeyCreator(4);
+        const readCreatorRecipient = vi.fn(async () => creator.recipient);
 
-        await expect(prepareTemporaryComputerActivation({
+        const prepared = await prepareTemporaryComputerActivation({
             client: { readCreatorRecipient } as never,
             custody,
             scope: { serverId: 'home-a', accountId: 'creator-a' },
-            credentials: {
-                token: 'creator-token',
-                encryption: {
-                    publicKey: encodeBase64(new Uint8Array(32).fill(4)),
-                    machineKey: encodeBase64(new Uint8Array(32).fill(5)),
-                },
-            },
-            encryption,
+            credentials: creator.credentials,
+            encryption: creator.encryption,
             draftId: 'draft-a',
             homeServerIdentityId: 'home-a',
             artifact: {
@@ -469,8 +502,38 @@ describe('prepareTemporaryComputerActivation creator recipient authority', () =>
             actionsSettings: preparedAuthoring.actionsSettings,
             mcpMaterial: null,
             selectedAgentProviderOwnedEnvironmentKeys: ['HAPPIER_CODEX_PROVIDER_API_KEY'],
-        })).rejects.toMatchObject({ code: 'runner_account_signing_authority_unavailable' });
+        });
 
-        expect(readCreatorRecipient).not.toHaveBeenCalled();
+        expect(prepared.request.endpointFactsRecipient).toEqual(creator.recipient);
+    });
+
+    it('refuses a data-key recipient bound to a content key this device does not hold', async () => {
+        const creator = await dataKeyCreator(4);
+        const substituted = await dataKeyCreator(9);
+
+        await expect(prepareTemporaryComputerActivation({
+            client: { readCreatorRecipient: vi.fn(async () => substituted.recipient) } as never,
+            custody,
+            scope: { serverId: 'home-a', accountId: 'creator-a' },
+            credentials: creator.credentials,
+            encryption: creator.encryption,
+            draftId: 'draft-a',
+            homeServerIdentityId: 'home-a',
+            artifact: {
+                identity: { product: 'happier-runner', version: '0.3.0', target: 'linux-x64', sha256: 'a'.repeat(64) },
+                channel: 'dev',
+                url: 'https://example.test/runner.zip',
+                checksumsUrl: 'https://example.test/checksums.txt',
+                checksumsSignatureUrl: 'https://example.test/checksums.txt.minisig',
+                sizeBytes: 123, entries: [{ path: 'happier-runner', kind: 'file', sizeBytes: 100, mode: 0o755 }],
+            },
+            authoring: activationAuthoring,
+            composer: composerSnapshot,
+            files: preparedAuthoring.files,
+            attachmentDestination: preparedAuthoring.attachmentDestination,
+            actionsSettings: preparedAuthoring.actionsSettings,
+            mcpMaterial: null,
+            selectedAgentProviderOwnedEnvironmentKeys: ['HAPPIER_CODEX_PROVIDER_API_KEY'],
+        })).rejects.toMatchObject({ code: 'runner_account_encryption_mismatch' });
     });
 });

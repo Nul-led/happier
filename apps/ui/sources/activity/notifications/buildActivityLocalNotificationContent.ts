@@ -2,9 +2,9 @@ import {
     PUSH_NOTIFICATION_ANDROID_CHANNEL_IDS,
     PUSH_NOTIFICATION_CATEGORY_IDS,
     buildReadyNotificationContent,
+    restrictAttentionPreviewBehavior,
     summarizeToolInputForNotification,
     type AgentRequestKind,
-    type AttentionPreviewBehavior,
 } from '@happier-dev/protocol';
 import { buildActivityPreviewText } from '@/activity/attention/buildActivityPreviewText';
 import type { Message } from '@/sync/domains/messages/messageTypes';
@@ -12,6 +12,12 @@ import type { Session } from '@/sync/domains/state/storageTypes';
 import { readSessionDisplayTitleField } from '@/sync/state/selectors';
 import { t } from '@/text';
 import type { ActivityLocalNotificationEvent } from './runtime/activityLocalNotificationBus';
+
+/**
+ * `AttentionPreviewBehavior` is not re-exported from the protocol barrel; derive it
+ * from the exported restrictor that returns it rather than restating the union.
+ */
+type AttentionPreviewBehavior = ReturnType<typeof restrictAttentionPreviewBehavior>;
 
 type ActivityLocalNotificationContent = Readonly<{
     title: string;

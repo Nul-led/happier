@@ -60,8 +60,8 @@ export type ChatListItem =
     | {
         kind: 'pending-queue';
         id: string;
-        pendingMessages: PendingMessage[];
-        discardedMessages: DiscardedPendingMessage[];
+        pendingMessages: readonly PendingMessage[];
+        discardedMessages: readonly DiscardedPendingMessage[];
     }
     | {
         kind: 'pending-user-action';
@@ -249,8 +249,8 @@ function buildPendingUserActionItems(
 export function buildChatListItems(opts: {
     messageIdsOldestFirst: string[];
     messagesById: Record<string, Message>;
-    pendingMessages: PendingMessage[];
-    discardedMessages?: DiscardedPendingMessage[] | null;
+    pendingMessages: readonly PendingMessage[];
+    discardedMessages?: readonly DiscardedPendingMessage[] | null;
     pendingUserActionRequests?: readonly PendingPermissionRequest[] | null;
     actionDrafts?: SessionActionDraft[] | null;
     includeCommittedMessages?: boolean;
@@ -341,8 +341,8 @@ export function buildChatListItemsCached(opts: {
     cache: ChatListItemsBuildCache | null;
     messageIdsOldestFirst: string[];
     messagesById: Record<string, Message>;
-    pendingMessages: PendingMessage[];
-    discardedMessages?: DiscardedPendingMessage[] | null;
+    pendingMessages: readonly PendingMessage[];
+    discardedMessages?: readonly DiscardedPendingMessage[] | null;
     pendingUserActionRequests?: readonly PendingPermissionRequest[] | null;
     actionDrafts?: SessionActionDraft[] | null;
     groupConsecutiveToolCalls?: boolean;

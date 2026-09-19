@@ -555,10 +555,13 @@ because external plugins are less trusted than built-in ones.
 ### Team credential external Provider API (development only)
 
 Current development source defines a separate resource-scoped external Provider API. It is not a
-released Action API extension and remains disabled unless both
-`teams.credentialResources` and `teams.credentialResources.externalApi` are explicitly enabled.
-The narrower gate exists because accepting Provider requests from the public Internet is a distinct
-operator and security decision; its presence does not activate the parent Team credential product.
+released Action API extension. Both `teams.credentialResources` and
+`teams.credentialResources.externalApi` are on by default, with
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED=0` and
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED=0` as the operator opt-outs. The
+separate external-API bit remains because accepting Provider requests from the public Internet is a
+distinct operator and security decision; opting out of it does not disable the parent Team
+credential product.
 
 The one-time-reveal Team credential key resolves exactly one resource and API-client identity. The
 Home verifies the key, current accountable Account membership, audience, resource/source
@@ -978,9 +981,11 @@ bearer Board calls remain Home-readable in transit under the External Action API
 boundary described above, including for E2EE Sessions; Session record storage
 encryption is unchanged by that choice.
 
-This is 0.3 development source. `sessions.board` defaults off, and the composed
-Plain/E2EE client journeys and provider validation remain activation gates rather
-than released availability.
+This is 0.3 development source. `sessions.board` is on by default
+(`HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED=0` is the operator opt-out, and the bit is
+additionally ANDed with the observed Session System Records contract fact). The composed
+Plain/E2EE client journeys and provider validation are release checks, separate from that
+feature decision and from released availability.
 
 #### Temporary-computer activation (0.3 development)
 

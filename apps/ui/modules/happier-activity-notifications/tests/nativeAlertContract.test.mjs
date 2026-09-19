@@ -354,3 +354,49 @@ test('notification processes reuse the canonical native Session crypto owner', (
       `${name} reimplemented the Session payload cipher`);
   }
 });
+
+const kotlinWakeSource = read(
+  moduleRoot, 'android', 'src', 'main', 'java', 'dev', 'happier', 'activitynotifications', 'SessionChangedWake.kt',
+);
+const kotlinHandoffSource = read(
+  moduleRoot, 'android', 'src', 'main', 'java', 'dev', 'happier', 'activitynotifications',
+  'ActivityNotificationMainProcessHandoff.kt',
+);
+const protocolWakeSource = read(repoRoot, 'packages', 'protocol', 'src', 'push', 'sessionChangedWake.ts');
+
+test('the Android wake consumer keys on the canonical Protocol wake discriminator', () => {
+  const canonical = protocolWakeSource.match(/SESSION_CHANGED_WAKE_TYPE = '([^']+)'/)?.[1];
+  assert.ok(canonical, 'canonical wake discriminator not found');
+  const native = kotlinWakeSource.match(/TYPE = "([^"]+)"/)?.[1];
+  assert.equal(native, canonical, 'Android admits a different wake type than the Protocol owner');
+  // Strictness is behavioral, not a spelling: the admitted field set must stay
+  // exactly the canonical one, so no content field can ride into the app process.
+  const canonicalFields = [...protocolWakeSource
+    .matchAll(/^\s{2}(\w+):/gm)].map((match) => match[1]).sort();
+  assert.deepEqual(canonicalFields, ['serverId', 'sessionId', 'type']);
+  assert.deepEqual(
+    [...kotlinWakeSource.matchAll(/setOf\("type", "serverId", "sessionId"\)/g)].length, 1,
+  );
+});
+
+test('the app-process wake arm binds to real expo-notifications entry points', () => {
+  // The handoff runs the incumbent delegate's task arm and nothing else, so a
+  // content-free wake reaches the registered JS consumer without presenting.
+  assert.match(kotlinHandoffSource, /FirebaseMessagingDelegate\.runTaskManagerTasks\(/);
+  assert.match(kotlinHandoffSource, /RemoteMessageSerializer\.toBundle\(/);
+  const delegate = read(
+    dirname(moduleRoot), '..', 'node_modules', 'expo-notifications', 'android', 'src', 'main', 'java',
+    'expo', 'modules', 'notifications', 'service', 'delegates', 'FirebaseMessagingDelegate.kt',
+  );
+  assert.match(delegate, /fun runTaskManagerTasks\(applicationContext: Context, bundle: Bundle\)/,
+    'expo-notifications no longer exposes the background-task arm this handoff calls');
+  const serializer = read(
+    dirname(moduleRoot), '..', 'node_modules', 'expo-notifications', 'android', 'src', 'main', 'java',
+    'expo', 'modules', 'notifications', 'notifications', 'RemoteMessageSerializer.java',
+  );
+  assert.match(serializer, /public static @NonNull Bundle toBundle\(RemoteMessage message\)/,
+    'expo-notifications no longer exposes the canonical message serializer this handoff uses');
+  // The serialized shape the JS wake consumer reads: the Expo data bag arrives
+  // with the payload JSON under `dataString`.
+  assert.match(serializer, /serializedData\.putString\("dataString", data\.getOrDefault\("body", null\)\)/);
+});

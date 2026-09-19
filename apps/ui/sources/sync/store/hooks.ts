@@ -1809,13 +1809,25 @@ export function useWorkspaceReviewCommentsDrafts(scope: WorkspaceScopeBase | nul
   );
 }
 
-export function useSessionActionDrafts(address: import('@/sync/domains/session/sessionAddress').SessionAddress): SessionActionDraft[] {
+/**
+ * Action-draft subscribers address a Session before its Home is always resolved
+ * (`usePreferredServerIdForSession` returns `null` until it is). An unresolved
+ * Home has no draft rows, so the key is simply absent rather than fabricated.
+ */
+type SessionActionDraftAddressLike = Readonly<{ serverId: string | null | undefined; sessionId: string }>;
+
+function readSessionActionDraftAddressKey(address: SessionActionDraftAddressLike): string | null {
+  const normalized = normalizeSessionAddress(address.serverId, address.sessionId);
+  return normalized ? sessionAddressKey(normalized) : null;
+}
+
+export function useSessionActionDrafts(address: SessionActionDraftAddressLike): SessionActionDraft[] {
   const addressKey = React.useMemo(
-    () => sessionAddressKey(address),
+    () => readSessionActionDraftAddressKey(address),
     [address.serverId, address.sessionId],
   );
   return getStorage()(
-    useShallow((state) => state.sessionActionDraftsByAddressKey?.[addressKey] ?? emptyActionDrafts)
+    useShallow((state) => (addressKey ? state.sessionActionDraftsByAddressKey?.[addressKey] ?? emptyActionDrafts : emptyActionDrafts))
   );
 }
 
@@ -1828,13 +1840,13 @@ export function useSessionActionDrafts(address: import('@/sync/domains/session/s
  * (`useSessionActionFieldOptionsForRowHeight`) at all, and it must not itself become a per-keystroke
  * re-render of the whole transcript.
  */
-export function useSessionHasActionDrafts(address: import('@/sync/domains/session/sessionAddress').SessionAddress): boolean {
+export function useSessionHasActionDrafts(address: SessionActionDraftAddressLike): boolean {
   const addressKey = React.useMemo(
-    () => sessionAddressKey(address),
+    () => readSessionActionDraftAddressKey(address),
     [address.serverId, address.sessionId],
   );
   return getStorage()(
-    (state) => (state.sessionActionDraftsByAddressKey?.[addressKey]?.length ?? 0) > 0
+    (state) => (addressKey ? state.sessionActionDraftsByAddressKey?.[addressKey]?.length ?? 0 : 0) > 0
   );
 }
 

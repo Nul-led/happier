@@ -308,10 +308,12 @@ current Follow edge and the source/destination audience relationship. It
 acknowledges only the exact update accepted by the Agent provider, so omitted
 context remains available for a later turn.
 
-The ordinary Account-backed daemon path is wired in current development source.
-The restricted temporary-computer Runner still depends on its separate scoped
-source-key delivery from the Runner and encryption owners, so that Runner path
-must remain unavailable until the composed flow is implemented and validated.
+The ordinary Account-backed daemon path is wired in current development source,
+and the restricted temporary-computer Runner installs the same scoped source key
+through the ordinary preparation contract rather than a separate Runner path.
+Following is on by default (`HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED=0` is the
+operator opt-out); end-to-end validation of the temporary-computer leg is a release
+check, separate from the Home feature decision.
 
 For details, see [Session read and unread state](/organize/session-read-state).
 

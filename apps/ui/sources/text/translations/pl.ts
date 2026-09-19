@@ -674,7 +674,7 @@ function plural({
 export const pl = {
     actionConfirmations: actionConfirmationTranslations.pl,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pl, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pl.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pl.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.pl,
     transferRecovery: {
         title: 'Dokończ przygotowane przesyłanie',
         message: 'Plik dotarł do maszyny, ale końcowy zapis wymaga uwagi. Ponów tylko finalizację albo odrzuć przygotowane przesyłanie.',
@@ -1484,6 +1484,7 @@ export const pl = {
     // Simple string constants
     add: "Dodaj",
     edit: "Edytuj",
+    change: "Zmień",
     duplicate: "Duplikuj",
     actions: "Akcje",
     moreActions: "Więcej działań",
@@ -12186,14 +12187,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "Witaj.",
     welcomeQuestionSubtitle: "Jesteś tu pierwszy raz?",
-    welcomeQuestionBody: "Happier to centrum kontroli twoich agentów kodujących AI. E-mail nie jest potrzebny. Twoje konto to klucz prywatny generowany na tym urządzeniu.",
 
     welcomePrimaryButton: "Pierwszy raz tutaj?",
     welcomePrimarySubtitle: "Jedno dotknięcie. Bez formularzy. Twój klucz zostaje tutaj.",
     newHereHomeSubtitle: ({ home }: { home: string }) => `Utwórz prywatne konto na ${home}.`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `Utwórz konto w ${service}, a następnie znajdź lub dodaj swój Home.`,
 
-    welcomeSecondaryButton: "Zaloguj się — używam już Happier",
     continueWithKey: "Użyj klucza",
     chooseSignInService: "Wybierz usługę logowania",
     accountKeyDescription: ({ service }: { service: string }) => `Wprowadź bezpieczny klucz dla ${service}.`,
@@ -12201,7 +12200,9 @@ settingsSession: {
     signInServiceUrlPrompt: "Zaawansowane: wpisz adres usługi używanej do logowania i wyszukiwania Homes.",
     signInServiceInvalidAddress: "Wpisz prawidłowy adres http lub https.",
     signInServiceUnavailableTitle: "Nie można połączyć się z usługą logowania",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Nie można połączyć się z ${serverUrl}. Spróbuj ponownie lub wybierz inną usługę logowania.`,
+    yourSignInService: "Twoją usługą logowania",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `Nie można połączyć się z ${service}. Spróbuj ponownie lub wybierz inną usługę logowania.`,
+    signInServiceUnavailableHomeBody: 'Nadal możesz korzystać z tego Home. Spróbuj ponownie połączyć się z usługą logowania, gdy zechcesz.',
     signInServiceUnsupportedTitle: "Nieobsługiwana usługa logowania",
     signInServiceMethodlessTitle: "Brak dostępnych metod logowania",
     signInServiceMethodlessBody: "Ta usługa jest dostępna, ale nie oferuje teraz żadnej metody logowania. Spróbuj ponownie lub wybierz inną usługę.",

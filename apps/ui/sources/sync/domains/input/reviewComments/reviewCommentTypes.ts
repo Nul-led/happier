@@ -1,55 +1,20 @@
-import type { WorkspaceAnchorResolutionV1 } from '@happier-dev/protocol';
+import type {
+    ReviewCommentDraftMessageV1,
+    WorkspaceAnchorSnapshotV1,
+    WorkspaceAnchorSourceV1,
+    WorkspaceAnchorV1,
+} from '@happier-dev/protocol';
 
-import type { LineContentHash } from '@/utils/text/lineContentHash';
+/**
+ * The review-comment draft vocabulary is owned by `@happier-dev/protocol`
+ * (`review_comments.v1` and the workspace-anchor schemas it composes). These
+ * aliases keep the UI's local names while the protocol types stay the single
+ * source of truth for the shape.
+ */
+export type ReviewCommentSource = WorkspaceAnchorSourceV1;
 
-export type ReviewCommentSource = 'file' | 'diff';
+export type ReviewCommentAnchor = WorkspaceAnchorV1;
 
-export type ReviewCommentAnchor =
-    | Readonly<{
-        kind: 'fileLine';
-        startLine: number;
-        lineHash?: LineContentHash;
-    }>
-    | Readonly<{
-        kind: 'diffLine';
-        startLine: number;
-        side: 'before' | 'after';
-        oldLine: number | null;
-        newLine: number | null;
-        lineHash?: LineContentHash;
-    }>
-    | Readonly<{
-        kind: 'line';
-        filePath: string;
-        line: number;
-        side?: 'before' | 'after';
-        lineHash?: LineContentHash;
-    }>
-    | Readonly<{
-        kind: 'range';
-        filePath: string;
-        startLine: number;
-        endLine: number;
-        side?: 'before' | 'after';
-        startLineHash?: LineContentHash;
-        endLineHash?: LineContentHash;
-        selectedTextHash?: LineContentHash;
-    }>;
+export type ReviewCommentSnapshot = WorkspaceAnchorSnapshotV1;
 
-export type ReviewCommentSnapshot = Readonly<{
-    selectedLines: readonly string[];
-    beforeContext: readonly string[];
-    afterContext: readonly string[];
-}>;
-
-export type ReviewCommentDraft = Readonly<{
-    id: string;
-    filePath: string;
-    source: ReviewCommentSource;
-    anchor: ReviewCommentAnchor;
-    anchorResolution?: WorkspaceAnchorResolutionV1;
-    snapshot: ReviewCommentSnapshot;
-    body: string;
-    includeInPrompt?: boolean;
-    createdAt: number;
-}>;
+export type ReviewCommentDraft = ReviewCommentDraftMessageV1;

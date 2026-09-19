@@ -14630,17 +14630,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             }, z.core.$strict>, z.ZodTransform<{
                                 v: 2;
                                 bindingsByServiceId: Record<string, {
-                                    source: "native";
-                                } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                } | {
                                     source: "team_resource";
                                     resourceId: string;
                                     deliveryMode: "brokered";
@@ -14656,6 +14645,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                         };
                                         accountId: string;
                                     };
+                                } | {
+                                    source: "native";
+                                } | {
+                                    source: "connected";
+                                    selection: "profile";
+                                    profileId: string;
+                                } | {
+                                    source: "connected";
+                                    selection: "group";
+                                    groupId: string;
+                                    profileId?: string | undefined;
                                 }>;
                             }, {
                                 v: 1;
@@ -14663,13 +14663,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     source: "native";
                                 } | {
                                     source: "connected";
+                                    selection: "profile";
+                                    profileId: string;
+                                } | {
+                                    source: "connected";
                                     selection: "group";
                                     groupId: string;
                                     profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
                                 }>;
                             }>>,
                             z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -14698,14 +14698,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 } | {
                                     [x: string]: unknown;
                                     source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
+                                    selection: "profile";
+                                    profileId: string;
                                 } | {
                                     [x: string]: unknown;
                                     source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
+                                    selection: "group";
+                                    groupId: string;
+                                    profileId?: string | undefined;
                                 }>;
                             }, {
                                 v: 1;
@@ -14713,28 +14713,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     source: "native";
                                 } | {
                                     source: "connected";
+                                    selection: "profile";
+                                    profileId: string;
+                                } | {
+                                    source: "connected";
                                     selection: "group";
                                     groupId: string;
                                     profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
                                 }>;
                             }>>, z.ZodTransform<{
                                 v: 2;
                                 bindingsByServiceId: Record<string, {
-                                    source: "native";
-                                } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                } | {
                                     source: "team_resource";
                                     resourceId: string;
                                     deliveryMode: "brokered";
@@ -14750,6 +14739,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                         };
                                         accountId: string;
                                     };
+                                } | {
+                                    source: "native";
+                                } | {
+                                    source: "connected";
+                                    selection: "profile";
+                                    profileId: string;
+                                } | {
+                                    source: "connected";
+                                    selection: "group";
+                                    groupId: string;
+                                    profileId?: string | undefined;
                                 }>;
                             }, {
                                 v: 1;
@@ -14759,14 +14759,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 } | {
                                     [x: string]: unknown;
                                     source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
+                                    selection: "profile";
+                                    profileId: string;
                                 } | {
                                     [x: string]: unknown;
                                     source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
+                                    selection: "group";
+                                    groupId: string;
+                                    profileId?: string | undefined;
                                 }>;
                             }>>
                         ]>,
@@ -15437,13 +15437,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     source: "native";
                 } | {
                     source: "connected";
+                    selection?: "profile" | undefined;
+                    profileId: string;
+                } | {
+                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
-                } | {
-                    source: "connected";
-                    selection?: "profile" | undefined;
-                    profileId: string;
                 }>;
             } | {
                 v: 1;
@@ -15451,13 +15451,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     source: "native";
                 } | {
                     source: "connected";
+                    selection?: "profile" | undefined;
+                    profileId: string;
+                } | {
+                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
-                } | {
-                    source: "connected";
-                    selection?: "profile" | undefined;
-                    profileId: string;
                 }>;
             } | {
                 v: 2;
@@ -15465,13 +15465,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     source: "native";
                 } | {
                     source: "connected";
+                    selection?: "profile" | undefined;
+                    profileId: string;
+                } | {
+                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
-                } | {
-                    source: "connected";
-                    selection?: "profile" | undefined;
-                    profileId: string;
                 } | {
                     source: "team_resource";
                     resourceId: string;
@@ -15931,17 +15931,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }, z.core.$strict>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "native";
-                    } | {
-                        source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
-                    } | {
                         source: "team_resource";
                         resourceId: string;
                         deliveryMode: "brokered";
@@ -15957,6 +15946,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             };
                             accountId: string;
                         };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -15964,13 +15964,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "native";
                     } | {
                         source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
                     }>;
                 }>>,
                 z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -15999,14 +15999,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
+                        selection: "profile";
+                        profileId: string;
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -16014,28 +16014,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "native";
                     } | {
                         source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
                     }>;
                 }>>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "native";
-                    } | {
-                        source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
-                    } | {
                         source: "team_resource";
                         resourceId: string;
                         deliveryMode: "brokered";
@@ -16051,6 +16040,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             };
                             accountId: string;
                         };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -16060,14 +16060,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
+                        selection: "profile";
+                        profileId: string;
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }>>
             ]>>>;
@@ -17575,17 +17575,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     }, z.core.$strict>, z.ZodTransform<{
                         v: 2;
                         bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
                             source: "team_resource";
                             resourceId: string;
                             deliveryMode: "brokered";
@@ -17601,6 +17590,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 };
                                 accountId: string;
                             };
+                        } | {
+                            source: "native";
+                        } | {
+                            source: "connected";
+                            selection: "profile";
+                            profileId: string;
+                        } | {
+                            source: "connected";
+                            selection: "group";
+                            groupId: string;
+                            profileId?: string | undefined;
                         }>;
                     }, {
                         v: 1;
@@ -17608,13 +17608,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             source: "native";
                         } | {
                             source: "connected";
+                            selection: "profile";
+                            profileId: string;
+                        } | {
+                            source: "connected";
                             selection: "group";
                             groupId: string;
                             profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
                         }>;
                     }>>,
                     z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -17643,14 +17643,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         } | {
                             [x: string]: unknown;
                             source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            selection: "profile";
+                            profileId: string;
                         } | {
                             [x: string]: unknown;
                             source: "connected";
-                            selection: "profile";
-                            profileId: string;
+                            selection: "group";
+                            groupId: string;
+                            profileId?: string | undefined;
                         }>;
                     }, {
                         v: 1;
@@ -17658,28 +17658,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             source: "native";
                         } | {
                             source: "connected";
+                            selection: "profile";
+                            profileId: string;
+                        } | {
+                            source: "connected";
                             selection: "group";
                             groupId: string;
                             profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
                         }>;
                     }>>, z.ZodTransform<{
                         v: 2;
                         bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
                             source: "team_resource";
                             resourceId: string;
                             deliveryMode: "brokered";
@@ -17695,6 +17684,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 };
                                 accountId: string;
                             };
+                        } | {
+                            source: "native";
+                        } | {
+                            source: "connected";
+                            selection: "profile";
+                            profileId: string;
+                        } | {
+                            source: "connected";
+                            selection: "group";
+                            groupId: string;
+                            profileId?: string | undefined;
                         }>;
                     }, {
                         v: 1;
@@ -17704,14 +17704,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         } | {
                             [x: string]: unknown;
                             source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            selection: "profile";
+                            profileId: string;
                         } | {
                             [x: string]: unknown;
                             source: "connected";
-                            selection: "profile";
-                            profileId: string;
+                            selection: "group";
+                            groupId: string;
+                            profileId?: string | undefined;
                         }>;
                     }>>
                 ]>>>;
@@ -21833,17 +21833,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }, z.core.$strict>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "native";
-                            } | {
-                                source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
-                            } | {
                                 source: "team_resource";
                                 resourceId: string;
                                 deliveryMode: "brokered";
@@ -21859,6 +21848,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     };
                                     accountId: string;
                                 };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -21866,13 +21866,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "native";
                             } | {
                                 source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
                             }>;
                         }>>,
                         z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -21901,14 +21901,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
+                                selection: "profile";
+                                profileId: string;
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -21916,28 +21916,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "native";
                             } | {
                                 source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
                             }>;
                         }>>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "native";
-                            } | {
-                                source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
-                            } | {
                                 source: "team_resource";
                                 resourceId: string;
                                 deliveryMode: "brokered";
@@ -21953,6 +21942,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     };
                                     accountId: string;
                                 };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -21962,14 +21962,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
+                                selection: "profile";
+                                profileId: string;
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }>>
                     ]>>;
@@ -22415,17 +22415,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }, z.core.$strict>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "native";
-                            } | {
-                                source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
-                            } | {
                                 source: "team_resource";
                                 resourceId: string;
                                 deliveryMode: "brokered";
@@ -22441,6 +22430,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     };
                                     accountId: string;
                                 };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -22448,13 +22448,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "native";
                             } | {
                                 source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
                             }>;
                         }>>,
                         z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -22483,14 +22483,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
+                                selection: "profile";
+                                profileId: string;
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -22498,28 +22498,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "native";
                             } | {
                                 source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
                             }>;
                         }>>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "native";
-                            } | {
-                                source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
-                            } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
-                            } | {
                                 source: "team_resource";
                                 resourceId: string;
                                 deliveryMode: "brokered";
@@ -22535,6 +22524,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     };
                                     accountId: string;
                                 };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }, {
                             v: 1;
@@ -22544,14 +22544,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "group";
-                                groupId: string;
-                                profileId?: string | undefined;
+                                selection: "profile";
+                                profileId: string;
                             } | {
                                 [x: string]: unknown;
                                 source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
                             }>;
                         }>>
                     ]>>;
@@ -23393,17 +23393,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }, z.core.$strict>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "native";
-                    } | {
-                        source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
-                    } | {
                         source: "team_resource";
                         resourceId: string;
                         deliveryMode: "brokered";
@@ -23419,6 +23408,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             };
                             accountId: string;
                         };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -23426,13 +23426,13 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "native";
                     } | {
                         source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
                     }>;
                 }>>,
                 z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -23461,14 +23461,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
+                        selection: "profile";
+                        profileId: string;
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -23476,28 +23476,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "native";
                     } | {
                         source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
                     }>;
                 }>>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "native";
-                    } | {
-                        source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
-                    } | {
                         source: "team_resource";
                         resourceId: string;
                         deliveryMode: "brokered";
@@ -23513,6 +23502,17 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             };
                             accountId: string;
                         };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }, {
                     v: 1;
@@ -23522,14 +23522,14 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "group";
-                        groupId: string;
-                        profileId?: string | undefined;
+                        selection: "profile";
+                        profileId: string;
                     } | {
                         [x: string]: unknown;
                         source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
                     }>;
                 }>>
             ]>>;
@@ -26292,6 +26292,56 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
             cursor: z.ZodOptional<z.ZodString>;
             limit: z.ZodOptional<z.ZodNumber>;
         }, z.core.$strict>;
+        readonly cli: {
+            commands: {
+                path: string[];
+                positionals?: string[] | undefined;
+                variadicPositional?: string | undefined;
+                visibility: "alias" | "canonical" | "hidden";
+                deprecated?: {
+                    replacement: string;
+                    removalCondition: string;
+                } | undefined;
+            }[];
+            acceptsServerId?: true | undefined;
+            requiresServerId?: true | undefined;
+            requestTimeout?: "session_control" | undefined;
+            inputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            wholeInputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            inputHints?: {
+                title?: string | undefined;
+                description?: string | undefined;
+                submitLabel?: string | undefined;
+                fields: readonly {
+                    path: string;
+                    widget: "boolean" | "integer" | "json" | "multiselect" | "number" | "secret" | "select" | "text" | "text_list" | "textarea" | "url";
+                    required?: boolean | undefined;
+                    requireExplicitSelection?: boolean | undefined;
+                    listSeparator?: "comma" | "newline" | undefined;
+                    maxSelections?: number | undefined;
+                    visibleWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    requiredWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    disabledWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    optionsSourceId?: string | undefined;
+                    connectedAccountOptions?: true | undefined;
+                    resolvedEmptyConnectedAccountOptions?: true | undefined;
+                    title: string;
+                    description?: string | undefined;
+                    placeholder?: string | undefined;
+                    options?: readonly {
+                        value: ActionInputOptionValue;
+                        label: string;
+                        description?: string | undefined;
+                        disabled?: boolean | undefined;
+                    }[] | undefined;
+                }[];
+            } | undefined;
+            flagAliases?: {
+                path: string;
+                aliases: string[];
+            }[] | undefined;
+            bindInput?: import("./actionCliProjection.js").ActionCliBindInput | undefined;
+        };
     },
     {
         readonly id: 'session.board.item.upsert';
@@ -27054,6 +27104,56 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                 }, z.core.$strict>>;
             }, z.core.$strict>>;
         }, z.core.$strict>;
+        readonly cli: {
+            commands: {
+                path: string[];
+                positionals?: string[] | undefined;
+                variadicPositional?: string | undefined;
+                visibility: "alias" | "canonical" | "hidden";
+                deprecated?: {
+                    replacement: string;
+                    removalCondition: string;
+                } | undefined;
+            }[];
+            acceptsServerId?: true | undefined;
+            requiresServerId?: true | undefined;
+            requestTimeout?: "session_control" | undefined;
+            inputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            wholeInputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            inputHints?: {
+                title?: string | undefined;
+                description?: string | undefined;
+                submitLabel?: string | undefined;
+                fields: readonly {
+                    path: string;
+                    widget: "boolean" | "integer" | "json" | "multiselect" | "number" | "secret" | "select" | "text" | "text_list" | "textarea" | "url";
+                    required?: boolean | undefined;
+                    requireExplicitSelection?: boolean | undefined;
+                    listSeparator?: "comma" | "newline" | undefined;
+                    maxSelections?: number | undefined;
+                    visibleWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    requiredWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    disabledWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    optionsSourceId?: string | undefined;
+                    connectedAccountOptions?: true | undefined;
+                    resolvedEmptyConnectedAccountOptions?: true | undefined;
+                    title: string;
+                    description?: string | undefined;
+                    placeholder?: string | undefined;
+                    options?: readonly {
+                        value: ActionInputOptionValue;
+                        label: string;
+                        description?: string | undefined;
+                        disabled?: boolean | undefined;
+                    }[] | undefined;
+                }[];
+            } | undefined;
+            flagAliases?: {
+                path: string;
+                aliases: string[];
+            }[] | undefined;
+            bindInput?: import("./actionCliProjection.js").ActionCliBindInput | undefined;
+        };
     },
     {
         readonly id: 'session.board.item.remove';
@@ -27163,6 +27263,56 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
             expectedItemRevision: z.ZodString;
             expectedLayoutRevision: z.ZodString;
         }, z.core.$strict>;
+        readonly cli: {
+            commands: {
+                path: string[];
+                positionals?: string[] | undefined;
+                variadicPositional?: string | undefined;
+                visibility: "alias" | "canonical" | "hidden";
+                deprecated?: {
+                    replacement: string;
+                    removalCondition: string;
+                } | undefined;
+            }[];
+            acceptsServerId?: true | undefined;
+            requiresServerId?: true | undefined;
+            requestTimeout?: "session_control" | undefined;
+            inputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            wholeInputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            inputHints?: {
+                title?: string | undefined;
+                description?: string | undefined;
+                submitLabel?: string | undefined;
+                fields: readonly {
+                    path: string;
+                    widget: "boolean" | "integer" | "json" | "multiselect" | "number" | "secret" | "select" | "text" | "text_list" | "textarea" | "url";
+                    required?: boolean | undefined;
+                    requireExplicitSelection?: boolean | undefined;
+                    listSeparator?: "comma" | "newline" | undefined;
+                    maxSelections?: number | undefined;
+                    visibleWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    requiredWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    disabledWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    optionsSourceId?: string | undefined;
+                    connectedAccountOptions?: true | undefined;
+                    resolvedEmptyConnectedAccountOptions?: true | undefined;
+                    title: string;
+                    description?: string | undefined;
+                    placeholder?: string | undefined;
+                    options?: readonly {
+                        value: ActionInputOptionValue;
+                        label: string;
+                        description?: string | undefined;
+                        disabled?: boolean | undefined;
+                    }[] | undefined;
+                }[];
+            } | undefined;
+            flagAliases?: {
+                path: string;
+                aliases: string[];
+            }[] | undefined;
+            bindInput?: import("./actionCliProjection.js").ActionCliBindInput | undefined;
+        };
     },
     {
         readonly id: 'session.board.layout.update';
@@ -27354,6 +27504,56 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                 }, z.core.$strict>
             ], "op">;
         }, z.core.$strict>;
+        readonly cli: {
+            commands: {
+                path: string[];
+                positionals?: string[] | undefined;
+                variadicPositional?: string | undefined;
+                visibility: "alias" | "canonical" | "hidden";
+                deprecated?: {
+                    replacement: string;
+                    removalCondition: string;
+                } | undefined;
+            }[];
+            acceptsServerId?: true | undefined;
+            requiresServerId?: true | undefined;
+            requestTimeout?: "session_control" | undefined;
+            inputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            wholeInputSchema?: z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>> | undefined;
+            inputHints?: {
+                title?: string | undefined;
+                description?: string | undefined;
+                submitLabel?: string | undefined;
+                fields: readonly {
+                    path: string;
+                    widget: "boolean" | "integer" | "json" | "multiselect" | "number" | "secret" | "select" | "text" | "text_list" | "textarea" | "url";
+                    required?: boolean | undefined;
+                    requireExplicitSelection?: boolean | undefined;
+                    listSeparator?: "comma" | "newline" | undefined;
+                    maxSelections?: number | undefined;
+                    visibleWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    requiredWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    disabledWhen?: import("./actionInputPredicates.js").ActionInputPredicate | undefined;
+                    optionsSourceId?: string | undefined;
+                    connectedAccountOptions?: true | undefined;
+                    resolvedEmptyConnectedAccountOptions?: true | undefined;
+                    title: string;
+                    description?: string | undefined;
+                    placeholder?: string | undefined;
+                    options?: readonly {
+                        value: ActionInputOptionValue;
+                        label: string;
+                        description?: string | undefined;
+                        disabled?: boolean | undefined;
+                    }[] | undefined;
+                }[];
+            } | undefined;
+            flagAliases?: {
+                path: string;
+                aliases: string[];
+            }[] | undefined;
+            bindInput?: import("./actionCliProjection.js").ActionCliBindInput | undefined;
+        };
     },
     {
         readonly id: 'session.discussion.list';

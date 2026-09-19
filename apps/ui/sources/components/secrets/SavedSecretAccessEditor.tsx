@@ -58,7 +58,9 @@ export const SavedSecretAccessEditor = React.memo(function SavedSecretAccessEdit
     const parsed = entry === null ? null : parseSavedSecretCatalogReferenceV1(entry.ref);
     const [draft, setDraft] = React.useState(() => draftFromTarget(target));
     const [saving, setSaving] = React.useState(false);
-    const [failure, setFailure] = React.useState<'changed' | 'unavailable' | 'failed' | 'outcome_unknown' | null>(null);
+    // Every refusal the save operation can return, so a held promotion is carried
+    // as itself instead of being dropped at the state boundary.
+    const [failure, setFailure] = React.useState<'changed' | 'unavailable' | 'failed' | 'outcome_unknown' | 'update_required' | null>(null);
     const targetKey = entry === null
         ? `${props.scope.serverId}:${props.scope.accountId}:personal:${target.kind === 'personal' ? target.secret.id : ''}`
         : `${props.scope.serverId}:${props.scope.accountId}:${entry.ref}:${entry.revision ?? -1}`;

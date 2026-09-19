@@ -646,7 +646,7 @@ const settingsSessionHandoffTranslationExtensions = {
 export const ja = {
     actionConfirmations: actionConfirmationTranslations.ja,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ja.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.ja,
     transferRecovery: {
         title: '一時アップロードを完了',
         message: 'アップロードはマシンに届きましたが、最後の保存を完了できませんでした。最終処理だけを再試行するか、一時アップロードを破棄してください。',
@@ -1445,6 +1445,7 @@ export const ja = {
     // Simple string constants
     add: "追加",
     edit: "編集",
+    change: "変更",
     duplicate: "複製",
     actions: "操作",
     moreActions: "その他の操作",
@@ -12425,14 +12426,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "ようこそ。",
     welcomeQuestionSubtitle: "初めてですか?",
-    welcomeQuestionBody: "Happier は AI コーディングエージェントのコントロールルームです。メールアドレスは不要。アカウントはこのデバイスで生成される復旧キーです。",
 
     welcomePrimaryButton: "初めてですか？",
     welcomePrimarySubtitle: "ワンタップ。フォーム不要。鍵はこの端末に保管されます。",
     newHereHomeSubtitle: ({ home }: { home: string }) => `${home} にプライベートアカウントを作成します。`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `${service} でアカウントを作成し、Home を検索または追加します。`,
 
-    welcomeSecondaryButton: "ログイン — すでに Happier を使っています",
     continueWithKey: "復旧キーを使う",
     chooseSignInService: "サインインサービスを選択",
     accountKeyDescription: ({ service }: { service: string }) => `${service} のセキュアキーを入力してください。`,
@@ -12440,7 +12439,9 @@ settingsSession: {
     signInServiceUrlPrompt: "詳細: サインインと Home の検索に使用するサービスのアドレスを入力してください。",
     signInServiceInvalidAddress: "有効な http または https アドレスを入力してください。",
     signInServiceUnavailableTitle: "サインインサービスに接続できません",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `${serverUrl} に接続できません。再試行するか、別のサインインサービスを選択してください。`,
+    yourSignInService: "サインインサービス",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `${service} に接続できません。再試行するか、別のサインインサービスを選択してください。`,
+    signInServiceUnavailableHomeBody: 'この Home は引き続き使用できます。準備ができたらサインインサービスを再試行してください。',
     signInServiceUnsupportedTitle: "サインインサービスはサポートされていません",
     signInServiceMethodlessTitle: "ここではサインイン方法を利用できません",
     signInServiceMethodlessBody: "このサービスには接続できますが、現在サインイン方法がありません。再試行するか、別のサービスを選択してください。",

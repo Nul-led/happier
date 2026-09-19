@@ -31,7 +31,7 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 import { Icon } from '@/components/ui/icons/Icon';
 import { useNavigateToSession } from '@/hooks/session/useNavigateToSession';
-import { sessionAddressKey } from '@/sync/domains/session/sessionAddress';
+import { normalizeSessionAddress, sessionAddressKey } from '@/sync/domains/session/sessionAddress';
 
 const styles = StyleSheet.create((theme) => ({
     container: {
@@ -252,10 +252,13 @@ export const FriendsView = React.memo(({}: FriendsViewProps) => {
                     <ItemGroup title={t('friends.sharedSessions')}>
                         {sharedSessions.map((session) => {
                             const title = getSessionName(session);
+                            // A Session row may predate its Home binding; the id alone still
+                            // identifies it, and a bound one keeps the Home-qualified key.
+                            const address = normalizeSessionAddress(session.serverId, session.id);
                             const subtitle = session.ownerProfile?.username ? `@${session.ownerProfile.username}` : undefined;
                             return (
                                 <Item
-                                    key={sessionAddressKey({ serverId: session.serverId, sessionId: session.id })}
+                                    key={address ? sessionAddressKey(address) : session.id}
                                     title={title}
                                     subtitle={subtitle}
                                     onPress={() => void navigateToSession(session.id, { serverId: session.serverId })}

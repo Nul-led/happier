@@ -117,7 +117,7 @@ describe('TeamOverviewScreen Team identity', () => {
         const serverId = await addHome({
             name: 'Acme',
             logo: null,
-            capabilities: teamCapabilitiesFixture(),
+            capabilities: teamCapabilitiesFixture({}),
         });
         const screen = await renderOverview(serverId);
         await waitForTestId(screen, 'team-overview-sessions');
@@ -133,7 +133,7 @@ describe('TeamOverviewScreen Team identity', () => {
         const serverId = await addHome({
             name: 'Acme',
             logo: null,
-            capabilities: teamCapabilitiesFixture(),
+            capabilities: teamCapabilitiesFixture({}),
             recovery: { kind: 'owner_required', canAppointOwner: true },
         });
         const screen = await renderOverview(serverId);
@@ -150,7 +150,7 @@ describe('TeamOverviewScreen Team identity', () => {
         const serverId = await addHome({
             name: 'Acme',
             logo: null,
-            capabilities: teamCapabilitiesFixture(),
+            capabilities: teamCapabilitiesFixture({}),
             recovery: { kind: 'owner_required', canAppointOwner: false },
         });
         const screen = await renderOverview(serverId);

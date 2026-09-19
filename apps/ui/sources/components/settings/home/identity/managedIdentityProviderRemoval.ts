@@ -1,3 +1,5 @@
+import type { ActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
+
 import type { ManagedIdentityProviderActionResult } from './managedIdentityProviderClient';
 
 type RemovalBlockers = Readonly<{
@@ -14,7 +16,7 @@ type RemovalPreflight = Readonly<{
 
 export type ManagedIdentityProviderRemovalOutcome =
     | Readonly<{ kind: 'removed' }>
-    | Readonly<{ kind: 'approval_pending'; artifactId: string }>
+    | Readonly<{ kind: 'approval_pending'; artifactId: string; approval: ActionApprovalContinuation }>
     | Readonly<{ kind: 'cancelled' }>
     | Readonly<{ kind: 'blocked'; blockers: RemovalBlockers }>
     | Readonly<{ kind: 'failed'; code: string }>;

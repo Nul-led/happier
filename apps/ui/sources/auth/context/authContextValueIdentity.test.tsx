@@ -44,7 +44,7 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
         importOriginal,
         tokenStorage: {
             setCredentials: vi.fn(async () => true),
-            removeCredentials: vi.fn(async () => {}),
+            removeCredentials: vi.fn(async () => true),
         },
     });
 });

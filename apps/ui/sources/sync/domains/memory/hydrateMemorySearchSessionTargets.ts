@@ -30,8 +30,12 @@ export async function captureMemorySearchSessionReadAuthority(input: Readonly<{
     serverId: string;
     accountId: string;
 }>): Promise<ServerAccountRequestAuthority> {
+    // The capture owner addresses either an exact scope or a bare Home; an
+    // unusable pair fails closed with the same message the owner raises.
+    const scope = createServerAccountScope(input.serverId, input.accountId);
+    if (!scope) throw new Error('Account-scoped request requires an explicit Home');
     return await captureServerRequestAuthorityForServerAccountScope({
-        scope: createServerAccountScope(input.serverId, input.accountId),
+        scope,
         activeRequest: (path, init) => serverFetch(path, init),
     });
 }

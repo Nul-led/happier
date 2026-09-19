@@ -2885,6 +2885,23 @@ describe("Team credential resource routes (SQLite integration)", () => {
             recipientContentPublicKeyFingerprint: null,
             storedMaterial: Buffer.from("recipient-secret-material-must-not-leak"),
         } });
+        // Nothing is published for direct delivery yet, so an entitled
+        // recipient with no envelope is genuinely "never delivered". The same
+        // recipient becomes "preparing" the moment the custodian publishes the
+        // source versions below — that publication, not the envelope, is what
+        // makes the material owed.
+        const unpublishedGroupRecipientCatalog = await post(
+            "/v1/teams/credential-resources/entitled/list",
+            groupRecipient.id,
+            { teamId: team.id },
+        );
+        expect(unpublishedGroupRecipientCatalog.statusCode, unpublishedGroupRecipientCatalog.body).toBe(200);
+        expect(unpublishedGroupRecipientCatalog.json().resources).toContainEqual(expect.objectContaining({
+            id: resource.id,
+            mayReceiveDirect: true,
+            directMaterialState: "never_delivered",
+        }));
+
         await db.teamCredentialResource.update({
             where: { id: resource.id },
             data: { directSourceVersionsJson: JSON.stringify({ [sourceMemberKey]: sourceVersion }) },
@@ -2983,7 +3000,12 @@ describe("Team credential resource routes (SQLite integration)", () => {
             recoveryAction: null,
             mayBroker: false,
             mayReceiveDirect: true,
-            directMaterialState: "never_delivered",
+            // The custodian has already published this resource's direct source
+            // versions, so envelopes for a newly entitled recipient are owed and
+            // on the way. That is "preparing"; "never delivered" is reserved for
+            // a resource whose direct route was never published at all (the
+            // unpublished resource below).
+            directMaterialState: "preparing",
             sessionUsePolicy: "personal_allowed",
             usageCapabilities: {
                 costUsd: "unavailable",
@@ -3035,7 +3057,8 @@ describe("Team credential resource routes (SQLite integration)", () => {
             id: resource.id,
             mayBroker: false,
             mayReceiveDirect: true,
-            directMaterialState: "never_delivered",
+            // Published for direct, no envelope for this exact-grant recipient yet.
+            directMaterialState: "preparing",
         }));
         expect(exactGuestCatalog.body).not.toContain(custodian.id);
         expect(exactGuestCatalog.body).not.toContain(directGroup.id);

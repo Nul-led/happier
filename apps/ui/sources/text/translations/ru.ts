@@ -678,7 +678,7 @@ function plural({
 export const ru = {
     actionConfirmations: actionConfirmationTranslations.ru,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ru, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ru.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ru.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.ru,
     transferRecovery: {
         title: 'Завершить подготовленную загрузку',
         message: 'Файл загружен на машину, но финальное сохранение требует внимания. Повторите только завершение или удалите подготовленную загрузку.',
@@ -1490,6 +1490,7 @@ export const ru = {
     // Simple string constants
     add: "Добавить",
     edit: "Редактировать",
+    change: "Изменить",
     duplicate: "Дублировать",
     actions: "Действия",
     moreActions: "Другие действия",
@@ -12146,14 +12147,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "Добро пожаловать.",
     welcomeQuestionSubtitle: "Вы здесь впервые?",
-    welcomeQuestionBody: "Happier — это центр управления вашими ИИ-агентами для программирования. Email не нужен. Ваш аккаунт — это приватный ключ, сгенерированный на этом устройстве.",
 
     welcomePrimaryButton: "Впервые здесь?",
     welcomePrimarySubtitle: "Одно касание. Без форм. Ваш ключ хранится здесь.",
     newHereHomeSubtitle: ({ home }: { home: string }) => `Создайте приватную учётную запись на ${home}.`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `Создайте учётную запись через ${service}, затем найдите или добавьте свой Home.`,
 
-    welcomeSecondaryButton: "Войти — я уже пользуюсь Happier",
     continueWithKey: "Войти с ключом",
     chooseSignInService: "Выбрать службу входа",
     accountKeyDescription: ({ service }: { service: string }) => `Введите защищённый ключ для ${service}.`,
@@ -12161,7 +12160,9 @@ settingsSession: {
     signInServiceUrlPrompt: "Дополнительно: введите адрес службы, через которую вы входите и находите свои Homes.",
     signInServiceInvalidAddress: "Введите допустимый адрес http или https.",
     signInServiceUnavailableTitle: "Не удаётся подключиться к службе входа",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Не удаётся подключиться к ${serverUrl}. Повторите попытку или выберите другую службу входа.`,
+    yourSignInService: "вашему сервису входа",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `Не удаётся подключиться к ${service}. Повторите попытку или выберите другую службу входа.`,
+    signInServiceUnavailableHomeBody: 'Вы по-прежнему можете использовать этот Home. Повторите подключение к службе входа, когда будете готовы.',
     signInServiceUnsupportedTitle: "Служба входа не поддерживается",
     signInServiceMethodlessTitle: "Здесь нет доступных способов входа",
     signInServiceMethodlessBody: "Служба доступна, но сейчас не предлагает ни одного способа входа. Повторите попытку или выберите другую службу.",

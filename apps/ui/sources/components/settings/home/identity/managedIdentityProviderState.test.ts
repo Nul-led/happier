@@ -64,6 +64,7 @@ describe('managedIdentityProviderState', () => {
         const state = settleManagedIdentityProviderRefresh(INITIAL_MANAGED_IDENTITY_PROVIDER_STATE, {
             kind: 'approval_pending',
             artifactId: 'approval-1',
+            approval: { artifactId: 'approval-1', onExecuted: async () => 'consumed' as const },
         });
 
         expect(state).toEqual({

@@ -1223,6 +1223,9 @@ function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAu
     if (maybe.serverId !== undefined && !isNonEmptyString(maybe.serverId)) return false;
     if (maybe.serverUrl !== undefined && !isNonEmptyString(maybe.serverUrl)) return false;
     if (maybe.returnTo !== undefined && !isInternalReturnTo(maybe.returnTo)) return false;
+    // Kept from the validated record so the invitation check below reads the
+    // same Team the continuation names rather than re-narrowing the raw value.
+    let continuationTeamId: unknown;
     if (maybe.teamContinuation !== undefined) {
         if (!maybe.teamContinuation || typeof maybe.teamContinuation !== 'object' || Array.isArray(maybe.teamContinuation)) return false;
         const team = maybe.teamContinuation as Record<string, unknown>;
@@ -1255,10 +1258,11 @@ function isPendingExternalAuthRecord(value: unknown): value is PendingExternalAu
             || (destination as Record<string, unknown>).kind !== 'team_sign_in'
             || (destination as Record<string, unknown>).teamId !== team.teamId
         ) return false;
+        continuationTeamId = team.teamId;
     }
     if (maybe.postAuthInvitation !== undefined) {
         const parsed = TeamInvitationPostAuthContinuationV1Schema.safeParse(maybe.postAuthInvitation);
-        if (!parsed.success || maybe.teamContinuation?.teamId !== parsed.data.teamId) return false;
+        if (!parsed.success || continuationTeamId !== parsed.data.teamId) return false;
     }
     if (maybe.accountContinuation !== undefined) {
         const continuation = parseAccountHomeAuthenticationContinuation(maybe.accountContinuation);

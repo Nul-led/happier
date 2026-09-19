@@ -11,6 +11,10 @@ import { refreshAccountHomeDirectory } from './refreshAccountHomeDirectory';
 import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
 import { encodeBase64 } from '@/encryption/base64';
 
+/** Non-secret binding to the Account credential that created the continuation. */
+const TEST_CREDENTIAL_TOKEN_DIGEST = 'sha256:test-account-credential';
+
+
 installTokenStorageWebPlatformMocks();
 const boundary = vi.hoisted(() => ({ request: vi.fn() }));
 vi.mock('@/sync/http/client', () => ({
@@ -45,6 +49,7 @@ describe('exact Directory approval continuation', () => {
         return {
             service,
             session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
+            credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId },
         };
     }

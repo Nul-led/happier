@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { runManagedIdentityProviderRemoval } from './managedIdentityProviderRemoval';
 
 describe('runManagedIdentityProviderRemoval', () => {
+    const approval = { artifactId: 'approval-1', onExecuted: async () => 'consumed' as const };
+    const readApproval = { artifactId: 'approval-read', onExecuted: async () => 'consumed' as const };
     const preflight = {
         provider: { id: 'provider-1', revision: 4 },
         canRemove: true,
@@ -41,7 +43,7 @@ describe('runManagedIdentityProviderRemoval', () => {
         const remove = vi.fn();
         const result = await runManagedIdentityProviderRemoval({
             providerId: 'provider-1',
-            readPreflight: async () => ({ kind: 'approval_pending', artifactId: 'approval-read' }),
+            readPreflight: async () => ({ kind: 'approval_pending', artifactId: 'approval-read', approval: readApproval }),
             confirm,
             remove,
         });
@@ -68,9 +70,9 @@ describe('runManagedIdentityProviderRemoval', () => {
             providerId: 'provider-1',
             readPreflight: async () => ({ kind: 'succeeded', value: preflight }),
             confirm: async () => true,
-            remove: async () => ({ kind: 'approval_pending', artifactId: 'approval-1' }),
+            remove: async () => ({ kind: 'approval_pending', artifactId: 'approval-1', approval }),
         });
 
-        expect(result).toEqual({ kind: 'approval_pending', artifactId: 'approval-1' });
+        expect(result).toEqual({ kind: 'approval_pending', artifactId: 'approval-1', approval });
     });
 });

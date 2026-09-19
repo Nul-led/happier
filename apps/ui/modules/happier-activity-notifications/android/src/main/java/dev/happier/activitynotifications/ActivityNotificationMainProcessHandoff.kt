@@ -9,18 +9,26 @@ import android.os.Handler
 import android.os.HandlerThread
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.RemoteMessage
+import expo.modules.notifications.notifications.RemoteMessageSerializer
 import expo.modules.notifications.service.delegates.FirebaseMessagingDelegate
 import java.util.concurrent.Executors
 
 /**
- * Hands one recognized Home alert to the already-loaded app process.
+ * Hands one recognized Home message to the already-loaded app process.
  *
  * The isolated FCM process cannot observe the app process's Expo foreground
- * handler, visible Session, or in-process local-alert coalescer. An ordered,
- * package-private broadcast lets the dynamically registered app-process owner
- * accept the message when that owner is actually loaded. If there is no such
- * receiver, the isolated process keeps the closed-app fallback. Process
- * liveness is deliberately not used as a proxy for handler availability.
+ * handler, visible Session, in-process local-alert coalescer, or its
+ * `remote-notification` task registry and React host — all of those are
+ * per-process. An ordered, package-private broadcast lets the dynamically
+ * registered app-process owner accept the message when that owner is actually
+ * loaded. Process liveness is deliberately not used as a proxy for handler
+ * availability.
+ *
+ * Two message kinds cross this hop and each keeps exactly one owner: a
+ * recognized Activity alert is presented (by the app process when it accepts
+ * the handoff, otherwise by the isolated fallback), and the Home's content-free
+ * `session_changed` wake only runs the app process's registered wake task. A
+ * wake has nothing to present, so it carries no fallback.
  */
 object ActivityNotificationMainProcessHandoff {
   private const val ACTION_SUFFIX = ".happier.activitynotifications.PRESENT"
@@ -52,11 +60,23 @@ object ActivityNotificationMainProcessHandoff {
         executor.execute {
           try {
             val message = remoteMessage(intent) ?: return@execute
-            val alert = ActivityRemoteAlert.parse(message) ?: return@execute
             val applicationContext = receiveContext.applicationContext
-            val enrichedMessage = ActivityNotificationPresenter.enrichedMessage(applicationContext, message, alert)
-            FirebaseMessagingDelegate(applicationContext).onMessageReceived(enrichedMessage)
-            pending.setResultCode(RESULT_PRESENTED)
+            val alert = ActivityRemoteAlert.parse(message)
+            if (alert != null) {
+              val enrichedMessage = ActivityNotificationPresenter.enrichedMessage(applicationContext, message, alert)
+              FirebaseMessagingDelegate(applicationContext).onMessageReceived(enrichedMessage)
+              pending.setResultCode(RESULT_PRESENTED)
+              return@execute
+            }
+            if (SessionChangedWake.parse(message) != null) {
+              // Only the task arm of the incumbent delegate: a content-free wake
+              // is never presented, and the registered app-process consumer is
+              // the single owner of what the wake makes visible.
+              FirebaseMessagingDelegate.runTaskManagerTasks(
+                applicationContext,
+                RemoteMessageSerializer.toBundle(message),
+              )
+            }
           } catch (_: Throwable) {
             // Keep the ordered result unclaimed so the isolated fallback owns it.
           } finally {
@@ -120,6 +140,21 @@ object ActivityNotificationMainProcessHandoff {
     )
   }
 
+  /**
+   * Offers the Home's content-free wake to the app process.
+   *
+   * There is no fallback arm: the wake renders nothing by itself, so when the
+   * app process is not loaded it is simply dropped, exactly like an undelivered
+   * background notification. Waking a terminated app would require moving the
+   * whole Firebase entry point out of the isolated process.
+   */
+  @JvmStatic
+  fun offerWake(context: Context, remoteMessage: RemoteMessage) {
+    val handoff = Intent(action(context)).setPackage(context.packageName)
+    copy(remoteMessage.data, EXTRA_BODY, handoff)
+    context.sendOrderedBroadcast(handoff, null)
+  }
+
   private fun action(context: Context): String = context.packageName + ACTION_SUFFIX
 
   private fun copy(data: Map<String, String>, key: String, intent: Intent) {
@@ -128,13 +163,15 @@ object ActivityNotificationMainProcessHandoff {
 
   private fun remoteMessage(intent: Intent): RemoteMessage? {
     val body = intent.getStringExtra(EXTRA_BODY) ?: return null
-    val tag = intent.getStringExtra(EXTRA_TAG) ?: return null
-    val data = mutableMapOf(EXTRA_BODY to body, EXTRA_TAG to tag)
-    for (key in listOf(EXTRA_TITLE, EXTRA_MESSAGE, EXTRA_SOUND, EXTRA_CHANNEL_ID)) {
+    val packageName = intent.`package` ?: return null
+    val data = mutableMapOf(EXTRA_BODY to body)
+    // A wake carries no replacement identity or presentation fields; an alert
+    // always carries the tag its presenter replaces on.
+    for (key in listOf(EXTRA_TAG, EXTRA_TITLE, EXTRA_MESSAGE, EXTRA_SOUND, EXTRA_CHANNEL_ID)) {
       intent.getStringExtra(key)?.let { data[key] = it }
     }
-    return RemoteMessage.Builder(intent.`package` ?: return null)
-      .setMessageId(tag)
+    return RemoteMessage.Builder(packageName)
+      .apply { data[EXTRA_TAG]?.let { setMessageId(it) } }
       .setData(data)
       .build()
   }

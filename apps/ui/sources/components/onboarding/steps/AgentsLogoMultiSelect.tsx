@@ -66,11 +66,13 @@ export const AgentsLogoMultiSelect = React.memo(function AgentsLogoMultiSelect(p
     const styles = stylesheet;
     const visibleProviderEntries = React.useMemo(
         () => {
-            const entries = props.agentEntries ?? (props.agentIds?.map((agentId) => ({
-                agentId,
-                iconAgentId: agentId as AgentId,
-                iconName: 'stack-simple',
-            })) ?? []);
+            const entries: readonly AgentsLogoMultiSelectEntry[] = props.agentEntries
+                ?? props.agentIds?.map((agentId) => ({
+                    agentId,
+                    iconAgentId: agentId as AgentId,
+                    iconName: 'stack-simple',
+                }))
+                ?? [];
             // A logo tile carries no name text, so an agent whose icon cannot resolve
             // would render an empty placeholder tile — skip those entries entirely.
             return entries.filter((entry) => {

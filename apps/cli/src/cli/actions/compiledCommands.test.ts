@@ -5,6 +5,7 @@ import type { ActionSpec } from '@happier-dev/protocol';
 import { getActionSpec, listActionCliCommandDeclarations } from '@happier-dev/protocol';
 
 import {
+  compileActionCliCommandSet,
   compileActionCliCommands,
   compileActionCliFields,
   findCompiledActionCliCommand,
@@ -106,6 +107,50 @@ describe('compileActionCliCommands', () => {
       .toEqual(['session', 'send']);
     expect(findCompiledActionCliCommand(['send', 'sess-1'], commands)?.path).toEqual(['send']);
     expect(findCompiledActionCliCommand(['session', 'history'], commands)).toBeNull();
+  });
+
+  it('skips only the spec whose input schema has no JSON Schema projection and keeps every other command', () => {
+    // One Action whose schema the JSON Schema projection cannot represent must
+    // not take down the whole compiled CLI surface: an unrelated command a user
+    // types has nothing to do with it.
+    const unrepresentable = fixtureSpec(
+      { commands: [{ path: ['workflow', 'run'], positionals: [], visibility: 'canonical' }] } as NonNullable<ActionSpec['cli']>,
+      {
+        id: 'workflow.run' as ActionSpec['id'],
+        inputSchema: z.object({ recipe: z.custom<{ kind: string }>(() => true) }).strict(),
+      } as Partial<ActionSpec>,
+    );
+    const healthy = fixtureSpec(SEND_CLI);
+    const declarations = [
+      { spec: unrepresentable, binding: unrepresentable.cli!.commands[0]! },
+      ...healthy.cli!.commands.map((binding) => ({ spec: healthy, binding })),
+    ] as ReturnType<typeof listActionCliCommandDeclarations>;
+
+    const compiled = compileActionCliCommandSet(declarations);
+    expect(compiled.commands.map((command) => command.path.join(' ')))
+      .toEqual(['session send', 'send']);
+    expect(compiled.diagnostics).toEqual([{
+      code: 'action_cli_command_uncompilable',
+      actionId: 'workflow.run',
+      path: ['workflow', 'run'],
+      reason: expect.stringContaining('Custom types cannot be represented in JSON Schema'),
+    }]);
+    expect(compileActionCliCommands(declarations).map((command) => command.actionId))
+      .toEqual(['session.message.send', 'session.message.send']);
+  });
+
+  it('still fails loudly when the declaration itself is mis-authored', () => {
+    const spec = fixtureSpec({
+      commands: [{
+        path: ['session', 'send'],
+        positionals: ['sessionId'],
+        variadicPositional: 'absent',
+        visibility: 'canonical',
+      }],
+    } as NonNullable<ActionSpec['cli']>);
+    expect(() => compileActionCliCommands(
+      (spec.cli?.commands ?? []).map((binding) => ({ spec, binding })) as ReturnType<typeof listActionCliCommandDeclarations>,
+    )).toThrow(/variadic positional absent/);
   });
 
   it('gives an Action without a friendly path its ordinary fields but no command', () => {

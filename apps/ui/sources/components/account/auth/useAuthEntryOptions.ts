@@ -139,6 +139,172 @@ function createUnobservedAuthEntryOptions(): ObservedAuthEntryOptions {
     };
 }
 
+type UsableAuthEntryObservation = Readonly<{
+    serverAvailability: Extract<AuthEntryServerAvailability, 'ready' | 'legacy'>;
+    options: ObservedAuthEntryOptions;
+}>;
+
+function createUsableAuthEntryObservation(input: Readonly<{
+    features: FeaturesResponse | null;
+    entryProjection: Parameters<typeof projectAuthEntryMethodCapabilities>[0] | null;
+    authEntryUnavailable: boolean;
+}>): UsableAuthEntryObservation {
+    const authMethodCapabilities = input.entryProjection
+        ? projectAuthEntryMethodCapabilities(input.entryProjection)
+        : projectAuthenticationMethodCapabilities(input.features);
+    const anonymousEnabled = authMethodCapabilities.anonymousProvisionAvailable;
+    const keylessLoginMethodIds = authMethodCapabilities.keylessLoginMethodIds;
+    const mtlsEnabled = keylessLoginMethodIds.includes('mtls');
+    const keylessProviderIds = keylessLoginMethodIds.filter((id) => id !== 'mtls');
+    const observedHomeServerIdentityId = input.features?.capabilities.serverIdentity?.serverIdentityId ?? undefined;
+
+    if (
+        !authMethodCapabilities.usesStructuredMethods
+        && authMethodCapabilities.legacyEnabledSignupMethodIds.length === 0
+        && authMethodCapabilities.legacyEnabledLoginMethodIds.length === 0
+    ) {
+        return {
+            serverAvailability: 'legacy',
+            options: {
+                authenticationCatalog: authMethodCapabilities.catalog,
+                authenticationActions: [{
+                    method: { id: 'key_challenge', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
+                    action: { id: 'provision', mode: 'keyed' },
+                    execution: { kind: 'generated_key' },
+                }],
+                keyChallengeV2Available: false,
+                signInServicePolicy: input.features?.signInService,
+                ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
+                authEntryUnavailable: input.authEntryUnavailable,
+                showAuthActions: true,
+                showProviderSignup: false,
+                showAnonymousSignup: true,
+                showMtlsLogin: false,
+                showKeylessProviderLogin: false,
+                providerId: null,
+                keylessProviderId: null,
+                providerSignupTitle: '',
+                providerKeylessTitle: '',
+                anonymousSignupTitle: t('welcome.createAccount'),
+                mtlsTitle: t('welcome.signInWithCertificate'),
+                primaryAction: {
+                    kind: 'anonymous',
+                    title: t('welcome.createAccount'),
+                },
+                mtlsPrimary: false,
+                keylessPrimary: false,
+                autoRedirect: {
+                    enabled: false,
+                    providerId: null,
+                    toKeyedProvision: false,
+                    toKeylessLogin: false,
+                    toMtls: false,
+                    toLegacySignupProvider: false,
+                },
+            },
+        };
+    }
+
+    const preferredProviderId = authMethodCapabilities.configuredKeyedProvisionProviderIds[0]
+        ?? authMethodCapabilities.keyedProvisionProviderIds[0]
+        ?? null;
+    const configuredKeylessProviderId = authMethodCapabilities.configuredKeylessProviderIds[0] ?? null;
+    const preferredKeylessProviderId = configuredKeylessProviderId ?? keylessProviderIds[0] ?? null;
+    const providerSignupTitle = preferredProviderId
+        ? t('welcome.signUpWithProvider', {
+            provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredProviderId)
+                ?.presentation?.displayName
+                ?? getAuthProvider(preferredProviderId)?.displayName
+                ?? preferredProviderId,
+        })
+        : '';
+    const providerKeylessTitle = preferredKeylessProviderId
+        ? t('welcome.signUpWithProvider', {
+            provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredKeylessProviderId)
+                ?.presentation?.displayName
+                ?? getAuthProvider(preferredKeylessProviderId)?.displayName
+                ?? preferredKeylessProviderId,
+        })
+        : '';
+    const anonymousSignupTitle = t('welcome.createAccount');
+    const mtlsTitle = t('welcome.signInWithCertificate');
+    const mtlsPrimary = mtlsEnabled && !preferredProviderId && !anonymousEnabled;
+    const keylessPrimary = Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId && !anonymousEnabled && !mtlsEnabled;
+    const primaryAction: AuthEntryPrimaryAction | null = mtlsPrimary
+        ? { kind: 'mtls', title: mtlsTitle }
+        : keylessPrimary
+            ? { kind: 'keyless', title: providerKeylessTitle }
+            : preferredProviderId
+                ? { kind: 'provider-keyed', title: providerSignupTitle }
+                : anonymousEnabled
+                    ? { kind: 'anonymous', title: anonymousSignupTitle }
+                    : null;
+    const entryAutoRedirect = input.entryProjection?.autoRedirect ?? null;
+    const legacyAutoRedirect = input.entryProjection
+        ? null
+        : input.features?.capabilities?.auth?.ui?.autoRedirect ?? null;
+    const autoRedirectProviderId = normalizeAuthenticationProviderId(
+        entryAutoRedirect?.methodId ?? legacyAutoRedirect?.providerId,
+    );
+
+    return {
+        serverAvailability: 'ready',
+        options: {
+            authenticationCatalog: authMethodCapabilities.catalog,
+            authenticationActions: authMethodCapabilities.authenticationActions,
+            // Auth-entry owns the live method/action list. The released feature
+            // contract still owns key-challenge wire-version negotiation.
+            keyChallengeV2Available: input.features?.capabilities?.auth?.keyChallenge?.v2 === true,
+            signInServicePolicy: input.entryProjection
+                ? input.entryProjection.signInService
+                : input.features?.signInService,
+            ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
+            authEntryUnavailable: input.authEntryUnavailable,
+            showAuthActions: true,
+            showProviderSignup: Boolean(preferredProviderId),
+            showAnonymousSignup: anonymousEnabled,
+            showMtlsLogin: mtlsEnabled,
+            showKeylessProviderLogin: Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId,
+            providerId: preferredProviderId,
+            keylessProviderId: preferredKeylessProviderId,
+            providerSignupTitle,
+            providerKeylessTitle,
+            anonymousSignupTitle,
+            mtlsTitle,
+            primaryAction,
+            mtlsPrimary,
+            keylessPrimary,
+            retentionSummary: null,
+            autoRedirect: {
+                enabled: input.entryProjection
+                    ? Boolean(autoRedirectProviderId)
+                    : legacyAutoRedirect?.enabled === true && Boolean(autoRedirectProviderId),
+                providerId: autoRedirectProviderId || null,
+                toKeyedProvision: authMethodCapabilities.usesStructuredMethods
+                    && authMethodCapabilities.keyedProvisionProviderIds.includes(autoRedirectProviderId),
+                toKeylessLogin: authMethodCapabilities.usesStructuredMethods
+                    && authMethodCapabilities.keylessLoginMethodIds.includes(autoRedirectProviderId),
+                toMtls: autoRedirectProviderId === 'mtls' && mtlsEnabled,
+                toLegacySignupProvider: !authMethodCapabilities.usesStructuredMethods
+                    && autoRedirectProviderId.length > 0
+                    && authMethodCapabilities.legacyEnabledSignupMethodIds.includes(autoRedirectProviderId),
+            },
+        },
+    };
+}
+
+function createCachedAuthEntryObservation(
+    snapshot: ServerFeaturesSnapshot | null,
+): UsableAuthEntryObservation | null {
+    if (!snapshot || snapshot.status === 'error') return null;
+    if (snapshot.status === 'unsupported' && snapshot.reason === 'invalid_payload') return null;
+    return createUsableAuthEntryObservation({
+        features: snapshot.status === 'ready' ? snapshot.features : null,
+        entryProjection: null,
+        authEntryUnavailable: false,
+    });
+}
+
 const DEFAULT_WELCOME_SERVER_CHECK_TIMEOUT_MS = 6_000;
 
 function readWelcomeServerCheckTimeoutMs(): number {
@@ -159,17 +325,39 @@ export function resolvePreferredProvisionProviderId(features: FeaturesResponse |
 
 export function useAuthEntryOptions(): AuthEntryOptions {
     const activeServerSnapshot = useActiveServerSnapshot();
+    const readCachedServerFeaturesSnapshot = React.useCallback(
+        () => getCachedServerFeaturesSnapshot({ serverId: activeServerSnapshot.serverId || undefined }),
+        [activeServerSnapshot.serverId],
+    );
     const cachedServerFeaturesSnapshot = React.useSyncExternalStore(
         subscribeServerFeaturesSnapshot,
-        getCachedServerFeaturesSnapshot,
-        getCachedServerFeaturesSnapshot,
+        readCachedServerFeaturesSnapshot,
+        readCachedServerFeaturesSnapshot,
     );
-    const [serverAvailability, setServerAvailability] = React.useState<AuthEntryServerAvailability>('loading');
+    const cachedObservation = React.useMemo(
+        () => createCachedAuthEntryObservation(cachedServerFeaturesSnapshot),
+        [cachedServerFeaturesSnapshot],
+    );
+    const cachedObservationRef = React.useRef(cachedObservation);
+    cachedObservationRef.current = cachedObservation;
+    const activeObservationKey = activeServerSnapshot.serverId || activeServerSnapshot.serverUrl;
+    const initialObservationRef = React.useRef(cachedObservation);
+    const [serverAvailability, setServerAvailability] = React.useState<AuthEntryServerAvailability>(
+        () => initialObservationRef.current?.serverAvailability ?? 'loading',
+    );
     const [serverCheckNonce, setServerCheckNonce] = React.useState(0);
     const [serverFeaturesRecoveryNonce, setServerFeaturesRecoveryNonce] = React.useState(0);
     const consumedForcedServerCheckNonceRef = React.useRef(0);
     const consumedRecoveredServerFeaturesSnapshotRef = React.useRef<ServerFeaturesSnapshot | null>(null);
-    const [options, setOptions] = React.useState<ObservedAuthEntryOptions>(createUnobservedAuthEntryOptions);
+    const [options, setOptions] = React.useState<ObservedAuthEntryOptions>(
+        () => initialObservationRef.current?.options ?? createUnobservedAuthEntryOptions(),
+    );
+    const lastUsableObservationRef = React.useRef<Readonly<{
+        key: string;
+        observation: UsableAuthEntryObservation;
+    }> | null>(initialObservationRef.current
+        ? { key: activeObservationKey, observation: initialObservationRef.current }
+        : null);
 
     const serverUrlForCopy = React.useMemo(() => {
         const raw = activeServerSnapshot?.serverUrl ? String(activeServerSnapshot.serverUrl).trim() : '';
@@ -195,6 +383,27 @@ export function useAuthEntryOptions(): AuthEntryOptions {
         let mounted = true;
         let authEntryController: AbortController | null = null;
         let authEntryTimeout: ReturnType<typeof setTimeout> | null = null;
+        const retainedObservation = lastUsableObservationRef.current?.key === activeObservationKey
+            ? lastUsableObservationRef.current.observation
+            : cachedObservationRef.current;
+        const commitUsableObservation = (observation: UsableAuthEntryObservation) => {
+            if (!mounted) return;
+            lastUsableObservationRef.current = { key: activeObservationKey, observation };
+            setOptions(observation.options);
+            setServerAvailability(observation.serverAvailability);
+        };
+        const commitRetainedUnavailable = (observation: UsableAuthEntryObservation) => {
+            commitUsableObservation({
+                ...observation,
+                options: { ...observation.options, authEntryUnavailable: true },
+            });
+        };
+        const commitTerminalUnavailable = (availability: Extract<AuthEntryServerAvailability, 'unavailable' | 'incompatible'>) => {
+            if (!mounted) return;
+            lastUsableObservationRef.current = null;
+            setOptions(createUnobservedAuthEntryOptions());
+            setServerAvailability(availability);
+        };
         const forceServerCheck = serverCheckNonce > consumedForcedServerCheckNonceRef.current;
         if (forceServerCheck) {
             consumedForcedServerCheckNonceRef.current = serverCheckNonce;
@@ -202,7 +411,9 @@ export function useAuthEntryOptions(): AuthEntryOptions {
 
         void (async () => {
             try {
-                if (mounted) {
+                if (retainedObservation) {
+                    commitUsableObservation(retainedObservation);
+                } else if (mounted) {
                     setServerAvailability('loading');
                     setOptions(createUnobservedAuthEntryOptions());
                 }
@@ -236,36 +447,25 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 }
 
                 if (featuresSnapshot.status === 'error') {
-                    if (mounted) {
-                        setOptions(createUnobservedAuthEntryOptions());
-                        setServerAvailability('unavailable');
-                    }
+                    if (retainedObservation) commitRetainedUnavailable(retainedObservation);
+                    else commitTerminalUnavailable('unavailable');
                     return;
                 }
 
                 if (featuresSnapshot.status === 'unsupported' && featuresSnapshot.reason === 'invalid_payload') {
-                    if (mounted) {
-                        setOptions(createUnobservedAuthEntryOptions());
-                        setServerAvailability('incompatible');
-                    }
+                    commitTerminalUnavailable('incompatible');
                     return;
                 }
 
                 if (authEntry.kind === 'incompatible'
                     || (authEntry.kind === 'ready' && authEntry.projection.state === 'update_required')) {
-                    if (mounted) {
-                        setOptions(createUnobservedAuthEntryOptions());
-                        setServerAvailability('incompatible');
-                    }
+                    commitTerminalUnavailable('incompatible');
                     return;
                 }
                 if (authEntry.kind === 'ready' && authEntry.projection.state !== 'ready') {
                     // The Home answered and refused entry. That is its decision,
                     // not an outage to paper over with the feature catalog.
-                    if (mounted) {
-                        setOptions(createUnobservedAuthEntryOptions());
-                        setServerAvailability('unavailable');
-                    }
+                    commitTerminalUnavailable('unavailable');
                     return;
                 }
                 // A failed live probe (outage or timeout of the request-scoped
@@ -275,163 +475,18 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                 // notice with one retry. The `unavailable` availability is
                 // reserved for a failed feature probe.
                 const authEntryUnavailable = authEntry.kind === 'unavailable';
-
                 const features = featuresSnapshot.status === 'ready' ? featuresSnapshot.features : null;
-                const observedHomeServerIdentityId = features?.capabilities.serverIdentity?.serverIdentityId ?? undefined;
-                const entryProjection = authEntry.kind === 'ready' ? authEntry.projection : null;
-                const authMethodCapabilities = entryProjection?.state === 'ready'
-                    ? projectAuthEntryMethodCapabilities(entryProjection)
-                    : projectAuthenticationMethodCapabilities(features);
-                const anonymousEnabled = authMethodCapabilities.anonymousProvisionAvailable;
-                const keylessLoginMethodIds = authMethodCapabilities.keylessLoginMethodIds;
-
-                const mtlsEnabled = keylessLoginMethodIds.includes('mtls');
-                const keylessProviderIds = keylessLoginMethodIds.filter((id) => id !== 'mtls');
-
-                if (
-                    !authMethodCapabilities.usesStructuredMethods
-                    && authMethodCapabilities.legacyEnabledSignupMethodIds.length === 0
-                    && authMethodCapabilities.legacyEnabledLoginMethodIds.length === 0
-                ) {
-                    if (mounted) {
-                        setOptions({
-                            authenticationCatalog: authMethodCapabilities.catalog,
-                            authenticationActions: [{
-                                method: { id: 'key_challenge', enabledActions: [{ id: 'provision', mode: 'keyed' }] },
-                                action: { id: 'provision', mode: 'keyed' },
-                                execution: { kind: 'generated_key' },
-                            }],
-                            keyChallengeV2Available: false,
-                            signInServicePolicy: features?.signInService,
-                            ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
-                            authEntryUnavailable,
-                            showAuthActions: true,
-                            showProviderSignup: false,
-                            showAnonymousSignup: true,
-                            showMtlsLogin: false,
-                            showKeylessProviderLogin: false,
-                            providerId: null,
-                            keylessProviderId: null,
-                            providerSignupTitle: '',
-                            providerKeylessTitle: '',
-                            anonymousSignupTitle: t('welcome.createAccount'),
-                            mtlsTitle: t('welcome.signInWithCertificate'),
-                            primaryAction: {
-                                kind: 'anonymous',
-                                title: t('welcome.createAccount'),
-                            },
-                            mtlsPrimary: false,
-                            keylessPrimary: false,
-                            autoRedirect: {
-                                enabled: false,
-                                providerId: null,
-                                toKeyedProvision: false,
-                                toKeylessLogin: false,
-                                toMtls: false,
-                                toLegacySignupProvider: false,
-                            },
-                        });
-                        setServerAvailability('legacy');
-                    }
-                    return;
-                }
-
-                const preferredProviderId = authMethodCapabilities.configuredKeyedProvisionProviderIds[0]
-                    ?? authMethodCapabilities.keyedProvisionProviderIds[0]
-                    ?? null;
-
-                const configuredKeylessProviderId = authMethodCapabilities.configuredKeylessProviderIds[0] ?? null;
-                const preferredKeylessProviderId = configuredKeylessProviderId ?? keylessProviderIds[0] ?? null;
-
-                const providerSignupTitle = preferredProviderId
-                    ? t('welcome.signUpWithProvider', {
-                        provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredProviderId)
-                            ?.presentation?.displayName
-                            ?? getAuthProvider(preferredProviderId)?.displayName
-                            ?? preferredProviderId,
-                    })
-                    : '';
-                const providerKeylessTitle = preferredKeylessProviderId
-                    ? t('welcome.signUpWithProvider', {
-                        provider: authMethodCapabilities.catalog.methods.find((method) => method.id === preferredKeylessProviderId)
-                            ?.presentation?.displayName
-                            ?? getAuthProvider(preferredKeylessProviderId)?.displayName
-                            ?? preferredKeylessProviderId,
-                    })
-                    : '';
-                const anonymousSignupTitle = t('welcome.createAccount');
-                const mtlsTitle = t('welcome.signInWithCertificate');
-
-                const mtlsPrimary = mtlsEnabled && !preferredProviderId && !anonymousEnabled;
-                const keylessPrimary = Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId && !anonymousEnabled && !mtlsEnabled;
-                const primaryAction: AuthEntryPrimaryAction | null = mtlsPrimary
-                    ? { kind: 'mtls', title: mtlsTitle }
-                    : keylessPrimary
-                        ? { kind: 'keyless', title: providerKeylessTitle }
-                        : preferredProviderId
-                            ? { kind: 'provider-keyed', title: providerSignupTitle }
-                            : anonymousEnabled
-                                ? { kind: 'anonymous', title: anonymousSignupTitle }
-                                : null;
-
-                const entryAutoRedirect = entryProjection?.state === 'ready'
-                    ? entryProjection.autoRedirect
-                    : null;
-                const legacyAutoRedirect = entryProjection?.state === 'ready'
-                    ? null
-                    : features?.capabilities?.auth?.ui?.autoRedirect ?? null;
-                const autoRedirectProviderId = normalizeAuthenticationProviderId(
-                    entryAutoRedirect?.methodId ?? legacyAutoRedirect?.providerId,
-                );
-                const autoRedirectToKeyedProvision = authMethodCapabilities.usesStructuredMethods
-                    && authMethodCapabilities.keyedProvisionProviderIds.includes(autoRedirectProviderId);
-                const autoRedirectToKeylessLogin = authMethodCapabilities.usesStructuredMethods
-                    && authMethodCapabilities.keylessLoginMethodIds.includes(autoRedirectProviderId);
-                const autoRedirectToMtls = autoRedirectProviderId === 'mtls' && mtlsEnabled;
-                const autoRedirectToLegacySignupProvider =
-                    !authMethodCapabilities.usesStructuredMethods
-                    && autoRedirectProviderId.length > 0
-                    && authMethodCapabilities.legacyEnabledSignupMethodIds.includes(autoRedirectProviderId);
-
-                if (mounted) {
-                    setOptions({
-                        authenticationCatalog: authMethodCapabilities.catalog,
-                        authenticationActions: authMethodCapabilities.authenticationActions,
-                        // Auth-entry owns the live method/action list. The released feature
-                        // contract still owns key-challenge wire-version negotiation.
-                        keyChallengeV2Available: features?.capabilities?.auth?.keyChallenge?.v2 === true,
-                        signInServicePolicy: entryProjection?.state === 'ready'
-                            ? entryProjection.signInService
-                            : features?.signInService,
-                        ...(observedHomeServerIdentityId ? { observedHomeServerIdentityId } : {}),
-                        authEntryUnavailable,
-                        showAuthActions: true,
-                        showProviderSignup: Boolean(preferredProviderId),
-                        showAnonymousSignup: anonymousEnabled,
-                        showMtlsLogin: mtlsEnabled,
-                        showKeylessProviderLogin: Boolean(preferredKeylessProviderId) && preferredKeylessProviderId !== preferredProviderId,
-                        providerId: preferredProviderId,
-                        keylessProviderId: preferredKeylessProviderId,
-                        providerSignupTitle,
-                        providerKeylessTitle,
-                        anonymousSignupTitle,
-                        mtlsTitle,
-                        primaryAction,
-                        mtlsPrimary,
-                        keylessPrimary,
-                        retentionSummary: null,
-                        autoRedirect: {
-                            enabled: entryProjection?.state === 'ready'
-                                ? Boolean(autoRedirectProviderId)
-                                : legacyAutoRedirect?.enabled === true && Boolean(autoRedirectProviderId),
-                            providerId: autoRedirectProviderId || null,
-                            toKeyedProvision: autoRedirectToKeyedProvision,
-                            toKeylessLogin: autoRedirectToKeylessLogin,
-                            toMtls: autoRedirectToMtls,
-                            toLegacySignupProvider: autoRedirectToLegacySignupProvider,
-                        },
-                    });
-                    setServerAvailability('ready');
+                const observation = createUsableAuthEntryObservation({
+                    features,
+                    // Only a Home projection that actually carries entry actions can be
+                    // projected; a terminal refusal is not a method catalog.
+                    entryProjection: authEntry.kind === 'ready' && authEntry.projection.state === 'ready'
+                        ? authEntry.projection
+                        : null,
+                    authEntryUnavailable,
+                });
+                commitUsableObservation(observation);
+                if (observation.serverAvailability === 'ready' && mounted) {
                     void getServerRetentionPolicy({ serverId: activeServerSnapshot.serverId }).then((retentionPolicy) => {
                         if (!mounted) return;
                         const retentionSummary = formatServerRetentionDisclosure(retentionPolicy);
@@ -441,10 +496,8 @@ export function useAuthEntryOptions(): AuthEntryOptions {
                     });
                 }
             } catch {
-                if (mounted) {
-                    setOptions(createUnobservedAuthEntryOptions());
-                    setServerAvailability('unavailable');
-                }
+                if (retainedObservation) commitRetainedUnavailable(retainedObservation);
+                else commitTerminalUnavailable('unavailable');
             }
         })();
 
@@ -458,7 +511,7 @@ export function useAuthEntryOptions(): AuthEntryOptions {
     // snapshot for that server. URL equality alone would retain the previous
     // unavailable result forever. The active-server owner increments generation
     // for that lifecycle transition, so re-run the canonical feature probe.
-    }, [activeServerComparableKey, activeServerGeneration, serverCheckNonce, serverFeaturesRecoveryNonce]);
+    }, [activeObservationKey, activeServerComparableKey, activeServerGeneration, serverCheckNonce, serverFeaturesRecoveryNonce]);
 
     const activeProfile = activeServerSnapshot.serverId
         ? getServerProfileById(activeServerSnapshot.serverId)

@@ -1831,10 +1831,14 @@ export function useSessionListViewStateFromPaneState(
     const handleFocusSessionFolder = React.useCallback((item: Extract<SessionListIndexItem, { type: 'header' }>) => {
         if (!item.folderId || !item.workspace) return;
         if (rowInteractions.consumeFolderFocusPressAfterDrag()) return;
+        // The persisted focus record is Home-scoped (`SessionListFocusedFolderV1Schema`), so a
+        // folder whose Home is not resolved yet has nothing to focus.
+        const focusServerId = item.serverId ?? item.workspace.serverId;
+        if (!focusServerId) return;
         setSessionListFocusedFolderV1({
             folderId: item.folderId,
             workspace: item.workspace,
-            serverId: item.serverId ?? item.workspace.serverId,
+            serverId: focusServerId,
         });
     }, [rowInteractions.consumeFolderFocusPressAfterDrag, setSessionListFocusedFolderV1]);
 
@@ -2179,10 +2183,12 @@ export function useSessionListViewStateFromPaneState(
         const deleteDraft = draftScope
             && (!item.serverId || item.serverId === draftScope.serverId)
             && draft
-            ? () => deleteSessionDraft({
-                scope: draftScope,
-                address: { kind: 'session', sessionId: item.sessionId },
-            })
+            ? async (): Promise<void> => {
+                await deleteSessionDraft({
+                    scope: draftScope,
+                    address: { kind: 'session', sessionId: item.sessionId },
+                });
+            }
             : undefined;
         return (
             <SessionListRowViewModelBoundary
@@ -2462,10 +2468,12 @@ export function useSessionListViewStateFromPaneState(
     const handleSelectFolderBreadcrumb = React.useCallback((folderId: string) => {
         const folder = renderPaneState.folderFocus?.breadcrumbs.find((candidate) => candidate.id === folderId) ?? null;
         if (!folder) return;
+        const focusServerId = folder.workspace.serverId;
+        if (!focusServerId) return;
         setSessionListFocusedFolderV1({
             folderId: folder.id,
             workspace: folder.workspace,
-            serverId: folder.workspace.serverId,
+            serverId: focusServerId,
         });
     }, [renderPaneState.folderFocus?.breadcrumbs, setSessionListFocusedFolderV1]);
     const handleTreeViewportLayout = React.useCallback((event: { nativeEvent?: { layout?: { y?: number; height?: number } } }) => {

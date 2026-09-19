@@ -663,7 +663,7 @@ function plural({
 export const fr = {
     actionConfirmations: actionConfirmationTranslations.fr,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.fr, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.fr.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.fr.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.fr,
     transferRecovery: {
         title: 'Terminer l’upload en attente',
         message: 'L’upload a atteint la machine, mais l’enregistrement final nécessite ton attention. Réessaie uniquement l’étape d’enregistrement final, ou supprime l’upload en attente.',
@@ -1464,6 +1464,7 @@ export const fr = {
     // Simple string constants
     add: "Ajouter",
     edit: "Modifier",
+    change: "Changer",
     duplicate: "Dupliquer",
     actions: "Actions",
     moreActions: "Plus d’actions",
@@ -12179,14 +12180,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "Bienvenue.",
     welcomeQuestionSubtitle: "C’est ta première fois ?",
-    welcomeQuestionBody: "Happier est la salle de contrôle de tes agents de code IA. Pas d’email. Ton compte, c’est une clé privée, générée sur cet appareil.",
 
     welcomePrimaryButton: "Nouveau ici ?",
     welcomePrimarySubtitle: "Un geste. Aucun formulaire. Ta clé reste ici.",
     newHereHomeSubtitle: ({ home }: { home: string }) => `Crée un compte privé sur ${home}.`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `Crée un compte avec ${service}, puis trouve ou ajoute ton Home.`,
 
-    welcomeSecondaryButton: "Connexion — j’utilise déjà Happier",
     continueWithKey: "Utiliser une clé",
     chooseSignInService: "Choisir le service de connexion",
     accountKeyDescription: ({ service }: { service: string }) => `Saisissez la clé sécurisée pour ${service}.`,
@@ -12194,7 +12193,9 @@ settingsSession: {
     signInServiceUrlPrompt: "Avancé : saisissez l’adresse du service utilisé pour vous connecter et trouver vos Homes.",
     signInServiceInvalidAddress: "Saisissez une adresse http ou https valide.",
     signInServiceUnavailableTitle: "Service de connexion injoignable",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Impossible de se connecter à ${serverUrl}. Réessayez ou choisissez un autre service de connexion.`,
+    yourSignInService: "votre service de connexion",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `Impossible de se connecter à ${service}. Réessayez ou choisissez un autre service de connexion.`,
+    signInServiceUnavailableHomeBody: 'Tu peux toujours utiliser ce Home. Réessaie le service de connexion quand tu le souhaites.',
     signInServiceUnsupportedTitle: "Service de connexion non pris en charge",
     signInServiceMethodlessTitle: "Aucune méthode de connexion n’est disponible ici",
     signInServiceMethodlessBody: "Ce service est joignable mais ne propose actuellement aucune méthode de connexion. Réessayez ou choisissez un autre service.",

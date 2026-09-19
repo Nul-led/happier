@@ -653,7 +653,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const ca = {
     actionConfirmations: actionConfirmationTranslations.ca,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ca.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.ca,
     transferRecovery: {
         title: 'Finalitza la pujada preparada',
         message: 'La pujada ha arribat a la màquina, però cal completar el desament final. Torna a provar només la finalització o descarta la pujada preparada.',
@@ -1445,6 +1445,7 @@ export const ca = {
           // Simple string constants
           add: 'Afegeix',
           edit: 'Edita',
+          change: 'Canvia',
           duplicate: 'Duplica',
           actions: 'Accions',
           moreActions: 'Més accions',
@@ -11092,14 +11093,12 @@ settingsSession: {
         // Unified onboarding redesign — welcome decision (right pane)
         welcomeQuestionTitle: 'Et donem la benvinguda.',
         welcomeQuestionSubtitle: 'És el teu primer cop aquí?',
-        welcomeQuestionBody: 'Happier és el centre de control dels teus agents de codificació amb IA. No cal correu electrònic. El teu compte és una clau privada, generada en aquest dispositiu.',
 
         welcomePrimaryButton: 'Ets nou aquí?',
         welcomePrimarySubtitle: 'Un toc. Sense formulari. La teva clau viu aquí.',
         newHereHomeSubtitle: ({ home }: { home: string }) => `Crea un compte privat a ${home}.`,
         newHereServiceSubtitle: ({ service }: { service: string }) => `Crea un compte amb ${service} i després troba o afegeix el teu Home.`,
 
-        welcomeSecondaryButton: 'Inicia sessió — ja faig servir Happier',
         continueWithKey: 'Fes servir una clau',
         chooseSignInService: 'Tria el servei d’inici de sessió',
         accountKeyDescription: ({ service }: { service: string }) => `Introdueix la clau segura de ${service}.`,
@@ -11107,7 +11106,9 @@ settingsSession: {
         signInServiceUrlPrompt: 'Avançat: introdueix l’adreça del servei que fas servir per iniciar sessió i trobar els teus Homes.',
         signInServiceInvalidAddress: 'Introdueix una adreça http o https vàlida.',
         signInServiceUnavailableTitle: 'No es pot connectar al servei d’inici de sessió',
-        signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `No ens podem connectar a ${serverUrl}. Torna-ho a provar o tria un altre servei d’inici de sessió.`,
+        yourSignInService: 'el teu servei d’inici de sessió',
+        signInServiceUnavailableBody: ({ service }: { service: string }) => `No ens podem connectar a ${service}. Torna-ho a provar o tria un altre servei d’inici de sessió.`,
+        signInServiceUnavailableHomeBody: 'Encara pots utilitzar aquest Home. Torna a provar el servei d’inici de sessió quan vulguis.',
         signInServiceUnsupportedTitle: 'Servei d’inici de sessió no compatible',
         signInServiceMethodlessTitle: 'Aquí no hi ha cap mètode d’inici de sessió disponible',
         signInServiceMethodlessBody: 'Aquest servei és accessible però ara mateix no ofereix cap mètode d’inici de sessió. Torna-ho a provar o tria un altre servei.',

@@ -1,7 +1,11 @@
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { ProviderConnectionIdSchema, ProviderConnectionSecurityFingerprintV1Schema, ProviderLocalIdSchema } from '@happier-dev/protocol';
+
 import { renderHook, standardCleanup } from '@/dev/testkit';
+
+import type { TeamCredentialResourceDraft } from './teamCredentialEditorDraft';
 
 const preventRemoveState = vi.hoisted(() => ({ enabled: false }));
 
@@ -73,16 +77,17 @@ describe('useTeamCredentialResourceDraft', () => {
     it('preserves one create/edit draft across validation and conflict rerenders, but resets it at a new scoped target', async () => {
         const { useTeamCredentialResourceDraft } = await import('./teamCredentialEditorDraft');
         const hook = await renderHook(
-            ({ targetKey, initial }) => useTeamCredentialResourceDraft({ targetKey, initial }),
+            ({ targetKey, initial }: Readonly<{ targetKey: string; initial: TeamCredentialResourceDraft }>) =>
+                useTeamCredentialResourceDraft({ targetKey, initial }),
             {
                 initialProps: {
                     targetKey: 'home-a:account-a:team-a:resource-a',
                     initial: {
                         name: 'Saved',
                         source: null,
-                        disclosureCeiling: 'brokered_only' as const,
+                        disclosureCeiling: 'brokered_only',
                         brokerPlacement: null,
-                        sessionUsePolicy: 'personal_allowed' as const,
+                        sessionUsePolicy: 'personal_allowed',
                         audience: { allMembers: null, groups: new Map(), members: new Map() },
                         requestPolicy: {
                             protocols: null,
@@ -168,9 +173,9 @@ describe('useTeamCredentialResourceDraft', () => {
                 source: {
                     v: 1,
                     kind: 'provider_connection',
-                    connectionId: 'connection-a',
-                    connectionSecurityFingerprint: 'connection-security:v1:source-a',
-                    credentialSlotId: 'apiKey',
+                    connectionId: ProviderConnectionIdSchema.parse('connection-a'),
+                    connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:source-a'),
+                    credentialSlotId: ProviderLocalIdSchema.parse('apiKey'),
                 },
                 disclosureCeiling: 'direct_allowed',
                 brokerPlacement: { kind: 'machine', machineId: 'machine-a' },
@@ -210,7 +215,7 @@ describe('useTeamCredentialResourceDraft', () => {
         act(() => hook.getCurrent().setDraft((current) => ({
             ...current,
             source: current.source?.kind === 'provider_connection'
-                ? { ...current.source, connectionSecurityFingerprint: 'connection-security:v1:source-b' }
+                ? { ...current.source, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:source-b') }
                 : current.source,
         })));
         expect(hook.getCurrent().directDisclosureAccepted).toBe(false);

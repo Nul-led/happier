@@ -171,11 +171,12 @@ export class SecretBoxEncryption implements Encryptor, Decryptor {
             { items: data.length },
             async () => {
                 const referenceRun = async () => this.decryptReference(data);
-                if (this.nativeCryptoWorker) {
-                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptSecretboxJsonBatchWithNativeWorker(
+                const nativeCryptoWorker = this.nativeCryptoWorker;
+                if (nativeCryptoWorker) {
+                    return await decryptWithNativeAuthenticationClassification(data, nativeCryptoWorker, () => decryptSecretboxJsonBatchWithNativeWorker(
                         data,
                         this.secretKey,
-                        this.nativeCryptoWorker,
+                        nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
                     ), async (item, onFailure) => this.decryptReference([item], { onAuthenticationFailure: onFailure })[0], options);
@@ -208,11 +209,12 @@ export class SecretBoxEncryption implements Encryptor, Decryptor {
             { items: data.length },
             async () => {
                 const referenceRun = async () => this.decryptBase64Reference(data);
-                if (this.nativeCryptoWorker) {
-                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptSecretboxJsonBase64BatchWithNativeWorker(
+                const nativeCryptoWorker = this.nativeCryptoWorker;
+                if (nativeCryptoWorker) {
+                    return await decryptWithNativeAuthenticationClassification(data, nativeCryptoWorker, () => decryptSecretboxJsonBase64BatchWithNativeWorker(
                         data,
                         this.secretKey,
-                        this.nativeCryptoWorker,
+                        nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
                     ), async (item, onFailure) => this.decryptBase64Reference([item], { onAuthenticationFailure: onFailure })[0], options);
@@ -335,11 +337,12 @@ export class AES256Encryption implements Encryptor, Decryptor {
             { items: data.length, concurrency: this.batchConcurrencyLimit },
             async () => {
                 const referenceRun = async () => this.decryptReference(data);
-                if (this.nativeCryptoWorker) {
-                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptAesGcmJsonBatchWithNativeWorker(
+                const nativeCryptoWorker = this.nativeCryptoWorker;
+                if (nativeCryptoWorker) {
+                    return await decryptWithNativeAuthenticationClassification(data, nativeCryptoWorker, () => decryptAesGcmJsonBatchWithNativeWorker(
                         data,
                         this.secretKey,
-                        this.nativeCryptoWorker,
+                        nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
                     ), (item, onFailure) => this.decryptReference([item], { onAuthenticationFailure: onFailure }), options);
@@ -409,11 +412,12 @@ export class AES256Encryption implements Encryptor, Decryptor {
             { items: data.length, concurrency: this.batchConcurrencyLimit },
             async () => {
                 const referenceRun = async () => this.decryptBase64Reference(data);
-                if (this.nativeCryptoWorker) {
-                    return await decryptWithNativeAuthenticationClassification(data, this.nativeCryptoWorker, () => decryptAesGcmJsonBase64BatchWithNativeWorker(
+                const nativeCryptoWorker = this.nativeCryptoWorker;
+                if (nativeCryptoWorker) {
+                    return await decryptWithNativeAuthenticationClassification(data, nativeCryptoWorker, () => decryptAesGcmJsonBase64BatchWithNativeWorker(
                         data,
                         this.secretKey,
-                        this.nativeCryptoWorker,
+                        nativeCryptoWorker,
                         referenceRun,
                         { signal: options.signal },
                     ), (item, onFailure) => this.decryptBase64Reference([item], { onAuthenticationFailure: onFailure }), options);

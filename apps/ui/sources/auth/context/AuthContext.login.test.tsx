@@ -962,7 +962,7 @@ describe('AuthContext.login', () => {
         await accountDirectoryCredentialStorage.set(directoryTarget, { token: 'account-service-token' });
         await TokenStorage.setPendingAccountDirectoryAuth({
             credentialTarget: 'account_directory',
-            entryIntent: 'connect_service',
+            entryIntent: { kind: 'enter', target: { kind: 'automatic' } },
             ...directoryTarget,
             canonicalServerUrl: directoryTarget.endpoint,
             provider: 'github',

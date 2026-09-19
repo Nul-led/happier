@@ -266,9 +266,14 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
           installationId: claim.payload.installation.installationId,
           launchManifestCommitment,
           reviewedMachineContentKeyBinding: manifest.machineContentKeyBinding,
-          ...(binding.endpointFactsRecipient.mode === 'e2ee'
-            ? { accountSigningPublicKeyBase64Url: binding.endpointFactsRecipient.accountSigningPublicKey }
-            : {}),
+          // The verifier identity comes from this Runner's own activation
+          // package (`binding` is derived locally from it), never from the
+          // Home-relayed recipient facts. Written as an ordinary property, not
+          // a conditional spread, so a renamed field fails excess-property
+          // checking instead of silently arriving as `undefined`.
+          activationSigningPublicKeyBase64Url: binding.endpointFactsRecipient.mode === 'e2ee'
+            ? binding.activationSigningPublicKey
+            : undefined,
         },
       });
       const connectedAccountsAuthority = createRunnerConnectedAccountsAuthorityV1({

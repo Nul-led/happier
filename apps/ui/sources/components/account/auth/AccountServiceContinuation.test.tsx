@@ -25,6 +25,9 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
 
 import { AccountServiceContinuation } from './AccountServiceContinuation';
 
+/** Non-secret binding to the Account credential a continuation was created under. */
+const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
+
 describe('exact invoking-surface continuation', () => {
     let fixture: ReturnType<typeof createDirectoryHttpFixture>;
     let restore: () => void;
@@ -38,6 +41,7 @@ describe('exact invoking-surface continuation', () => {
 
     it('requests exact service reauthentication rather than treating recovery as Back', async () => {
         const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
         let received: unknown;
@@ -50,6 +54,7 @@ describe('exact invoking-surface continuation', () => {
 
     it('explains each typed continuation failure with its own copy instead of one enrollment body', async () => {
         const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
         screen = await renderScreen(<AccountServiceContinuation input={input}
@@ -68,6 +73,7 @@ describe('exact invoking-surface continuation', () => {
 
     it('offers a rejected approval the same fresh attempt expiry already gets', async () => {
         const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
         screen = await renderScreen(<AccountServiceContinuation input={input}
@@ -76,8 +82,34 @@ describe('exact invoking-surface continuation', () => {
         expect(screen.getTextContent()).toContain('Start Again');
     });
 
+    it('keeps a rejected approval on the fresh-attempt action even when the stage is retryable', async () => {
+        const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
+            session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
+            intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
+        screen = await renderScreen(<AccountServiceContinuation input={input}
+            result={{ kind: 'failure', stage: 'enroll', code: { source: 'home', code: 'rejected' }, recovery: 'retry_stage', accountCredentialCommitted: true, homeCredentialCommitted: false }}
+            onResult={() => {}} onBack={() => {}} />);
+
+        expect(screen.getTextContent()).toContain('Start Again');
+        expect(screen.getTextContent()).not.toContain('Retry');
+    });
+
+    it('presents a completed account connection as success rather than warning', async () => {
+        const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
+            session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
+            intent: { kind: 'refresh' as const } };
+        screen = await renderScreen(<AccountServiceContinuation input={input}
+            result={{ kind: 'account_connected' }} onResult={() => {}} onBack={() => {}} />);
+
+        expect(screen.findByTestId('account-service-continuation-account_connected-icon')
+            ?.findByType('Icon').props.name).toBe('tray');
+    });
+
     it('tells the waiting user what to do and confirms the sign-in survived stop-waiting', async () => {
         const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
         let backs = 0;
@@ -100,6 +132,7 @@ describe('exact invoking-surface continuation', () => {
     it('names each choosable Home by address and marks the preferred one', async () => {
         const { service } = fixture;
         const input = { service, session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             intent: { kind: 'enter' as const, target: { kind: 'automatic' as const } } };
         const other = { ...fixture.home, homeServerIdentityId: 'srv_other', label: 'Other Home', canonicalServerUrl: 'https://other.example.test', preferred: false };
         screen = await renderScreen(<AccountServiceContinuation input={input}
@@ -113,12 +146,16 @@ describe('exact invoking-surface continuation', () => {
 
     it('opens exact Home authentication with the current coordinator result', async () => {
         const input = { service: fixture.service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
             intent: { kind: 'enter' as const, target: { kind: 'explicit' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } } };
         const previous = { kind: 'explicit_target_not_linked' as const, homeServerIdentityId: fixture.home.homeServerIdentityId };
         const onOpenHomeAuthentication = vi.fn();
         screen = await renderScreen(<AccountServiceContinuation input={input} result={previous}
             onResult={() => {}} onBack={() => {}} onOpenHomeAuthentication={onOpenHomeAuthentication} />);
+
+        expect(screen.getTextContent()).toContain('Connection failed');
+        expect(screen.getTextContent()).not.toContain('Signed in to');
 
         await screen.pressByTestIdAsync('account-service-direct-home-auth');
 
@@ -129,6 +166,7 @@ describe('exact invoking-surface continuation', () => {
         const { service } = fixture;
         await TokenStorage.accountDirectoryAuthCredentials.set({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { token: 'directory-token' });
         const input = { service, session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             intent: { kind: 'enter' as const, target: { kind: 'automatic' as const } } };
         const other = { ...fixture.home, homeServerIdentityId: 'srv_other', label: 'Other Home' };
         let release!: () => void;
@@ -159,6 +197,7 @@ describe('exact invoking-surface continuation', () => {
         const controller = new AbortController();
         await TokenStorage.accountDirectoryAuthCredentials.set({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { token: 'directory-token' });
         const input = { service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId },
             signal: controller.signal,

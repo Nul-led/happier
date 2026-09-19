@@ -1,4 +1,5 @@
 import { createEphemeralServerSocketClient } from '@/sync/runtime/orchestration/serverScopedRpc/createEphemeralServerSocketClient';
+import { createScopedSocketConnectParams } from '@/sync/runtime/orchestration/serverScopedRpc/createScopedSocketConnectParams';
 import { resolveServerAccountRequestContext } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerAccountRequestContext';
 import { scopedSocketEmitWithAck } from '@/sync/runtime/orchestration/serverScopedRpc/scopedSocketEmitWithAck';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -26,6 +27,7 @@ export async function emitSessionReadCursorUpdateWithServerScope(
     });
     let context: Awaited<ReturnType<typeof resolveServerAccountRequestContext>> | null = null;
     let socket: Awaited<ReturnType<typeof createEphemeralServerSocketClient>> | null = null;
+    let carrierCustodyTransferred = false;
     try {
         context = await resolveServerAccountRequestContext({
             serverId: address.serverId,
@@ -34,13 +36,14 @@ export async function emitSessionReadCursorUpdateWithServerScope(
         if (context.scope !== 'scoped') {
             throw new Error('Exact Session read cursor transport is unavailable');
         }
-        socket = await createEphemeralServerSocketClient({
-            serverUrl: context.runtimeOrigin ?? context.targetServerUrl,
-            reachabilityServerUrl: context.targetServerUrl,
-            ...(context.carrier ? { carrier: context.carrier } : {}),
-            token: context.token,
-            timeoutMs: context.timeoutMs,
-        });
+        // Captured so the narrowed scoped arm survives into the custody callback.
+        const scopedContext = context;
+        socket = await createEphemeralServerSocketClient(
+            createScopedSocketConnectParams(scopedContext, () => {
+                carrierCustodyTransferred = true;
+                return scopedContext.release;
+            }),
+        );
         return await scopedSocketEmitWithAck<SessionReadCursorUpdateAck>({
             socket,
             event: 'update-read-cursor',
@@ -53,7 +56,7 @@ export async function emitSessionReadCursorUpdateWithServerScope(
         });
     } finally {
         socket?.disconnect();
-        if (context?.scope === 'scoped') await context.release?.();
+        if (!carrierCustodyTransferred && context?.scope === 'scoped') await context.release?.();
         unsubscribeCredentials();
     }
 }

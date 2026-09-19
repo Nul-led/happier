@@ -44,7 +44,7 @@ import { AttachmentFilePicker } from '@/components/sessions/attachments/Attachme
 import {
     openAttachmentFilePickerFiles,
     openAttachmentFilePickerImages,
-} from '@/components/sessions/attachments/AttachmentFilePicker.types';
+} from '@/components/sessions/attachments/attachmentFilePickerActions';
 import {
     clearSessionAttachmentDrafts,
     readSessionAttachmentDrafts,
@@ -72,10 +72,12 @@ import {
     type ComposerPresentationDocumentMutation,
     type ComposerPresentationTarget,
 } from '@/components/sessions/presentation/sessionComposerPresentationTargets';
+import { buildSessionDraftSyncStatusBadge } from '@/components/sessions/drafts/sessionDraftStatusPresentation';
 import { useComposerPresentationInputEffects } from '@/components/sessions/presentation/useComposerPresentationInputEffects';
 import { useComposerScopePluginPresentation } from '@/components/sessions/presentation/useComposerScopePluginPresentation';
 import { Modal } from '@/modal';
 import { randomUUID } from '@/platform/randomUUID';
+import { getSessionDraftSnapshot, subscribeSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import { useServerCredentialAccountScopeBindings } from '@/sync/domains/scope/useServerCredentialAccountScopes';
 import { resolveParticipantRoutedSend } from '@/sync/domains/input/participants/resolveParticipantRoutedSend';
 import { usePreferredServerIdForSession } from '@/sync/runtime/orchestration/serverScopedRpc/usePreferredServerIdForSession';
@@ -183,7 +185,8 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
     // Every mounted participant draft has an identity before any upload or
     // network effect. A caller-provided recovery id wins; ordinary known-Run
     // drafts rotate after handoff while rowless launchers own their identity.
-    const initialLocalIdRef = React.useRef(props.initialLocalId?.trim() || randomUUID());
+    // Cleared to `null` after an outbound handoff so the next submission mints a fresh local id.
+    const initialLocalIdRef = React.useRef<string | null>(props.initialLocalId?.trim() || randomUUID());
     const composerInputFocusedRef = React.useRef(false);
     const composerActionBarLayoutRef = React.useRef<ComposerSnapshotV1['layout']>('wrap');
     const composerFocusRequestRef = React.useRef<(() => void) | null>(null);
@@ -206,6 +209,32 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
         isCurrent: isParticipantComposerCurrent,
         onDocumentChange: () => notifyComposerPresentationTargetChanged(composerRef),
     });
+    // The synchronized Run draft says out loud when it is not reaching the
+    // user's other devices; an ephemeral participant draft has nothing to say.
+    const runDraftScope = runDraftAddress ? composerAccountLifetime?.scope ?? null : null;
+    const subscribeRunDraft = React.useCallback((listener: () => void) => (
+        runDraftScope && runDraftAddress
+            ? subscribeSessionDraft(runDraftScope, runDraftAddress, listener)
+            : () => undefined
+    ), [runDraftAddress, runDraftScope]);
+    const readRunDraftSnapshot = React.useCallback(() => (
+        runDraftScope && runDraftAddress
+            ? getSessionDraftSnapshot(runDraftScope, runDraftAddress)
+            : null
+    ), [runDraftAddress, runDraftScope]);
+    const runDraftSnapshot = React.useSyncExternalStore(
+        subscribeRunDraft,
+        readRunDraftSnapshot,
+        readRunDraftSnapshot,
+    );
+    const runDraftStatusBadge = React.useMemo(
+        () => buildSessionDraftSyncStatusBadge(runDraftSnapshot?.status ?? 'clean'),
+        [runDraftSnapshot?.status],
+    );
+    const statusBadges = React.useMemo(
+        () => (runDraftStatusBadge ? [runDraftStatusBadge] : []),
+        [runDraftStatusBadge],
+    );
     const appliedInitialTextRef = React.useRef<string | null>(null);
     React.useEffect(() => {
         const initialText = props.initialText;
@@ -800,6 +829,7 @@ export const SessionParticipantComposer = React.memo((props: Readonly<{
                 isSendDisabled={!props.canSendMessages || composerInputEffects.composerInputLock !== null}
                 disabled={!props.canSendMessages || composerInputEffects.composerInputLock?.mode === 'editAndSubmit'}
                 extraActionChips={extraActionChips}
+                statusBadges={statusBadges}
                 attachmentRowItems={attachmentRowItems}
                 onAttachmentsAdded={attachmentsUploadsEnabled ? transferDraftManager.addWebFiles : undefined}
                 hasSendableAttachments={

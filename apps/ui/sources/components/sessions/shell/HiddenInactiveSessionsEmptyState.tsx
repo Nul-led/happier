@@ -37,7 +37,7 @@ export function HiddenInactiveSessionsEmptyState() {
                   */}
                 <Item
                     testID="sessions-hidden-inactive-empty-state-show-inactive"
-                    title={t('sessionInfo.showInactiveSessions')}
+                    title={t('sessionsList.showInactiveSessions')}
                     icon={<Icon name="eye" size={20} color={theme.colors.text.secondary} />}
                     onPress={handleShowInactiveSessions}
                 />

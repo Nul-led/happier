@@ -172,8 +172,8 @@ export function PendingMessagesTranscriptBlock(props: Readonly<{
      */
     serverId?: string | null;
     recipient?: PendingMessage['recipient'];
-    pendingMessages: PendingMessage[];
-    discardedMessages: DiscardedPendingMessage[];
+    pendingMessages: readonly PendingMessage[];
+    discardedMessages: readonly DiscardedPendingMessage[];
     onEditPendingMessage?: (request: PendingMessageEditRequest) => void | Promise<void>;
     /**
      * The painted height of one queued utterance's message bubble, reported on every layout of the

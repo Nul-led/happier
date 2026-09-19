@@ -33,10 +33,10 @@ const accountDirectoryPending = {
     expiresAt: 2,
     returnTo: '/account-entry',
 };
-const accountDirectoryStartResult = {
+const accountDirectoryStartResult: Readonly<{ url: string; pending: typeof accountDirectoryPending }> = {
     url: `${SELECTED_SERVICE_URL}/v1/auth/external/github/start?pending=abc`,
     pending: accountDirectoryPending,
-} as const;
+};
 
 const discoverAuthenticationMethodsMock = vi.hoisted(() => vi.fn());
 const startOAuthMock = vi.hoisted(() => vi.fn());

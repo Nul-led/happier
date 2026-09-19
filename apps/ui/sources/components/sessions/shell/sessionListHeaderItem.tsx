@@ -118,7 +118,8 @@ export const SessionListHeaderItem = React.memo((props: SessionListHeaderItemPro
                 {folderHeader}
             </SessionListHeaderFrame>
         ) : folderHeader;
-        if (!props.item.folderId || !props.overlayShared || !props.resolveDropResult || !props.onFolderDropResult) {
+        // `rowId` is the drag identity; without a resolved Home there is no stable key to drag under.
+        if (!rowId || !props.item.folderId || !props.overlayShared || !props.resolveDropResult || !props.onFolderDropResult) {
             return framedFolderHeader;
         }
         return (

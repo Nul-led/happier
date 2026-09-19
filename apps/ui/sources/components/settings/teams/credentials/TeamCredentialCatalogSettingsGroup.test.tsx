@@ -14,7 +14,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
             id: 'resource-provider', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
             readiness: { kind: 'available' as const }, recoveryAction: null, deliveryMode: 'brokered' as const,
             mayBroker: true, mayReceiveDirect: false, directMaterialState: 'never_delivered' as const,
-            sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+            sessionUsePolicy: 'personal_allowed' as const, providerModels: [], connectedServiceSelections: [],
             sourcePresentation: {
                 kind: 'provider' as const,
                 provider: { identity: { pluginId: 'openrouter', localId: 'openrouter' }, definitionRevision: 1 as const },
@@ -55,7 +55,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
             id: 'resource-provider', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
             readiness: { kind: 'available' as const }, recoveryAction: 'retry' as const, deliveryMode: 'direct' as const,
             mayBroker: false, mayReceiveDirect: true, directMaterialState: 'stale' as const,
-            sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+            sessionUsePolicy: 'personal_allowed' as const, providerModels: [], connectedServiceSelections: [],
             sourcePresentation: {
                 kind: 'provider' as const,
                 provider: { identity: { pluginId: 'openrouter', localId: 'openrouter' }, definitionRevision: 1 as const },
@@ -83,7 +83,7 @@ describe('TeamCredentialCatalogSettingsGroup', () => {
             id: 'resource-provider', teamId: 'team-1', displayName: 'Acme Provider', resourceRevision: 7,
             readiness: { kind: 'source_unavailable' as const }, recoveryAction: 'retry' as const,
             deliveryMode: 'direct' as const, mayBroker: false, mayReceiveDirect: true,
-            directMaterialState: 'stale' as const, sessionUsePolicy: 'personal_allowed' as const, providerModels: [],
+            directMaterialState: 'stale' as const, sessionUsePolicy: 'personal_allowed' as const, providerModels: [], connectedServiceSelections: [],
             sourcePresentation: {
                 kind: 'provider' as const,
                 provider: { identity: { pluginId: 'openrouter', localId: 'openrouter' }, definitionRevision: 1 as const },

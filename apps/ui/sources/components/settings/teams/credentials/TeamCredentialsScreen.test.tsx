@@ -371,7 +371,7 @@ describe('TeamCredentialsScreen', () => {
                             managePolicy: false,
                             manageLimits: false,
                             updateBrokerPlacement: true,
-                            narrowDisclosure: true,
+                            narrowDisclosure: true, widenDisclosure: false,
                             refreshDirectMaterial: true,
                             disable: true,
                             enable: true,

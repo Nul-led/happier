@@ -11,6 +11,10 @@ import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
 import { cancelPendingDirectoryHomeEnrollment, resumePendingDirectoryHomeEnrollment } from './enrollDirectoryHome';
 import * as activeServerSwitch from '@/sync/domains/server/activeServerSwitch';
 
+/** Non-secret binding to the Account credential that created the continuation. */
+const TEST_CREDENTIAL_TOKEN_DIGEST = 'sha256:test-account-credential';
+
+
 const request = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: () => request,
@@ -41,7 +45,7 @@ describe('exact Account post-auth continuation', () => {
     afterEach(() => vi.restoreAllMocks());
 
     it('rejects mismatched service custody before any request', async () => {
-        expect(await completeAccountServicePostAuth({ service, session: session('srv_other'), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session('srv_other'), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
             .toMatchObject({ kind: 'failure', code: { source: 'local', code: 'session_mismatch' }, recovery: 'stop' });
         expect(request).not.toHaveBeenCalled();
     });
@@ -49,7 +53,7 @@ describe('exact Account post-auth continuation', () => {
     it('stops an aborted intent before any request', async () => {
         const abort = new AbortController();
         abort.abort();
-        expect(await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } }, signal: abort.signal }))
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } }, signal: abort.signal }))
             .toEqual({ kind: 'stopped', reason: 'cancelled' });
         expect(request).not.toHaveBeenCalled();
     });
@@ -65,7 +69,7 @@ describe('exact Account post-auth continuation', () => {
         ));
         const focus = getActiveServerSnapshot();
 
-        expect(await completeAccountServicePostAuth({
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
             service,
             session: session(),
             intent: { kind: 'refresh' },
@@ -85,7 +89,7 @@ describe('exact Account post-auth continuation', () => {
         const focusSwitch = vi.spyOn(activeServerSwitch, 'setActiveServerAndSwitch');
         const focus = getActiveServerSnapshot();
 
-        expect(await completeAccountServicePostAuth({
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
             service,
             session: session(),
             intent: { kind: 'refresh' },
@@ -110,7 +114,7 @@ describe('exact Account post-auth continuation', () => {
             init,
         ));
 
-        expect(await completeAccountServicePostAuth({
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
             service,
             session: session(),
             intent: {
@@ -146,7 +150,7 @@ describe('exact Account post-auth continuation', () => {
             init,
         ));
 
-        const result = await completeAccountServicePostAuth({
+        const result = await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST,
             service,
             session: session(),
             intent: { kind: 'enter', target: { kind: 'automatic' } },
@@ -176,7 +180,7 @@ describe('exact Account post-auth continuation', () => {
             );
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId };
-        const input = { service, session: session(), intent };
+        const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
         const first = await completeAccountServicePostAuth(input);
         expect(first).toMatchObject({ kind: 'failure', stage: 'enroll', recovery: 'retry_stage' });
 
@@ -212,7 +216,7 @@ describe('exact Account post-auth continuation', () => {
         let release!: (response: Response) => void;
         request.mockImplementationOnce(() => new Promise<Response>((resolve) => { release = resolve; }));
         const original = session();
-        const result = completeAccountServicePostAuth({ service, session: original, intent: { kind: 'enter', target: { kind: 'automatic' } } });
+        const result = completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: original, intent: { kind: 'enter', target: { kind: 'automatic' } } });
         await vi.waitFor(() => expect(release).toBeTypeOf('function'));
         const target = { endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId };
         if (replacement) await TokenStorage.accountDirectoryAuthCredentials.set(target, { token: replacement });
@@ -226,7 +230,7 @@ describe('exact Account post-auth continuation', () => {
         expect(await TokenStorage.accountDirectoryAuthCredentials.get(target)).toEqual(replacement ? { token: replacement } : null);
         if (replacement) {
             request.mockResolvedValue(new Response(JSON.stringify({ v: 1, homes: [], preferredHomeServerIdentityId: null })));
-            expect(await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
+            expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
                 .toEqual({ kind: 'account_connected_no_homes' });
         }
     });
@@ -241,7 +245,7 @@ describe('exact Account post-auth continuation', () => {
         const material = mode === 'e2ee' ? { secret: encodeBase64(new Uint8Array(32).fill(7), 'base64url') } : {};
         await TokenStorage.setCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }, { token: oldToken, ...material });
         request.mockImplementation((path: string, init?: RequestInit) => fixture.request(path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : descriptor.canonicalServerUrl, path, init));
-        expect(await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: descriptor.homeServerIdentityId } }))
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: descriptor.homeServerIdentityId } }))
             .toEqual({ kind: 'home_enrolled', homeServerIdentityId: descriptor.homeServerIdentityId });
         expect(await TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }))
             .toEqual(mode === 'plain' ? { token: fixture.token } : { token: fixture.token, ...material });
@@ -270,7 +274,7 @@ describe('exact Account post-auth continuation', () => {
         ));
         const intent = { kind: 'enroll' as const, homeServerIdentityId: descriptor.homeServerIdentityId };
 
-        expect(await resumeAccountServicePostAuth({ service, session: session(), intent }, {
+        expect(await resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
             kind: 'home_material_required',
             homeServerIdentityId: descriptor.homeServerIdentityId,
             intent,
@@ -316,7 +320,7 @@ describe('exact Account post-auth continuation', () => {
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId: descriptor.homeServerIdentityId };
 
-        expect(await resumeAccountServicePostAuth({ service, session: session(), intent }, {
+        expect(await resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
             kind: 'home_material_required',
             homeServerIdentityId: descriptor.homeServerIdentityId,
             intent,
@@ -351,7 +355,7 @@ describe('exact Account post-auth continuation', () => {
         request.mockImplementation((path: string, init?: RequestInit) => fixture.request(path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : descriptor.canonicalServerUrl, path, init));
         const intent = { kind: 'enter' as const, target: { kind: 'explicit' as const, homeServerIdentityId: descriptor.homeServerIdentityId } };
         const focus = getActiveServerSnapshot();
-        expect(await completeAccountServicePostAuth({ service, session: session(), intent })).toEqual({
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent })).toEqual({
             kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, intent, reason: 'invalid_material',
         });
         expect(await TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, { serverId: descriptor.homeServerIdentityId }))
@@ -374,7 +378,7 @@ describe('exact Account post-auth continuation', () => {
             throw new Error(`Unexpected request ${path}`);
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId: descriptor.homeServerIdentityId };
-        const result = resumeAccountServicePostAuth({ service, session: session(), intent }, {
+        const result = resumeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent }, {
             kind: 'home_material_required', homeServerIdentityId: descriptor.homeServerIdentityId, intent, reason: 'missing_material',
         });
         await vi.waitFor(() => expect(release).toBeTypeOf('function'));
@@ -387,7 +391,7 @@ describe('exact Account post-auth continuation', () => {
         await cancelPendingDirectoryHomeEnrollment();
         const fixture = createDirectoryHttpFixture();
         request.mockImplementation((path: string, init?: RequestInit) => fixture.request(path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : fixture.home.canonicalServerUrl, path, init));
-        const enrolled = await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId } });
+        const enrolled = await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId } });
         expect(enrolled.kind).toBe('approval_required');
         fixture.state.approval = 'approved';
         let release!: () => void;
@@ -419,7 +423,7 @@ describe('exact Account post-auth continuation', () => {
         request.mockImplementation((path: string, init?: RequestInit) => path === '/v1/auth/home-login'
             ? Promise.resolve(new Response(JSON.stringify({ error: code }), { status: 403 }))
             : fixture.request(path.startsWith('/v1/account-directory/') ? fixture.service.endpointUrl : fixture.home.canonicalServerUrl, path, init));
-        const result = await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId } });
+        const result = await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId } });
         expect(result).toMatchObject({ kind: 'failure', stage: 'enroll', recovery, targetHomeServerIdentityId: fixture.home.homeServerIdentityId });
         if (code === 'approval_rejected' || code === 'approval_expired') {
             expect(result).toMatchObject({ code: { source: 'home', code: code === 'approval_rejected' ? 'rejected' : 'expired' } });
@@ -438,7 +442,7 @@ describe('exact Account post-auth continuation', () => {
             if (path === '/v1/account/encryption') return new Response(JSON.stringify({ mode: 'plain', updatedAt: 0 }));
             throw new Error(`Unexpected repeated ceremony: ${path}`);
         });
-        const input = { service, session: session(), intent: { kind: 'enroll' as const, homeServerIdentityId } };
+        const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent: { kind: 'enroll' as const, homeServerIdentityId } };
         const previous = { kind: 'explicit_target_not_linked' as const, homeServerIdentityId };
         expect(await resumeAccountServicePostAuth(input, previous, { homeServerIdentityId, credentials }))
             .toEqual({ kind: 'home_enrolled', homeServerIdentityId });
@@ -448,10 +452,10 @@ describe('exact Account post-auth continuation', () => {
     });
 
     it('retains account sign-in with no Homes and preserves an absent explicit target', async () => {
-        expect(await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enter', target: { kind: 'automatic' } } }))
             .toEqual({ kind: 'account_connected_no_homes' });
         request.mockResolvedValue(new Response(JSON.stringify({ v: 1, homes: [], preferredHomeServerIdentityId: null })));
-        expect(await completeAccountServicePostAuth({ service, session: session(), intent: { kind: 'enter', target: { kind: 'explicit', homeServerIdentityId: 'srv_a' } } }))
+        expect(await completeAccountServicePostAuth({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, service, session: session(), intent: { kind: 'enter', target: { kind: 'explicit', homeServerIdentityId: 'srv_a' } } }))
             .toEqual({ kind: 'explicit_target_not_linked', homeServerIdentityId: 'srv_a' });
     });
 
@@ -466,7 +470,7 @@ describe('exact Account post-auth continuation', () => {
         expect(resolveServerProfileForPortableIdentity(homeServerIdentityId).kind).toBe('resolved');
         expect(await TokenStorage.getCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId })).toEqual({ token });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
-        const input = { service, session: session(), intent };
+        const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
         const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
         const features = createRootLayoutFeaturesResponse({ capabilities: {
             serverIdentity: { serverIdentityId: homeServerIdentityId }, auth: { keyChallenge: { v2: true } },
@@ -505,7 +509,7 @@ describe('exact Account post-auth continuation', () => {
             return new Response(JSON.stringify({ mode: 'e2ee', updatedAt: 0 }));
         });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
-        const input = { service, session: session(), intent };
+        const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
         const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
         const secret = encodeBase64(new Uint8Array(32).fill(8), 'base64url');
         expect(await supplyAccountServiceHomeMaterial(input, previous, { homeServerIdentityId,
@@ -526,7 +530,7 @@ describe('exact Account post-auth continuation', () => {
         expect(buildHomeConnectionDescriptorForProfile(profile)?.homeServerIdentityId).toBe(homeServerIdentityId);
         await TokenStorage.setCredentialsForServerUrl(endpoint, { serverId: homeServerIdentityId }, { token: 'plain-token' });
         const intent = { kind: 'enroll' as const, homeServerIdentityId };
-        const input = { service, session: session(), intent };
+        const input = { service, session: session(), credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, intent };
         const previous = { kind: 'home_material_required' as const, homeServerIdentityId, intent, reason: 'missing_material' as const };
         request.mockImplementation(async (path: string) => {
             expect(path).toBe('/v1/account/encryption');

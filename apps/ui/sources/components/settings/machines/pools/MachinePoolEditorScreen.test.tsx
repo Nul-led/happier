@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, type MachinePoolViewV1 } from '@happier-dev/protocol';
+import { ActionsSettingsV1Schema, CURRENT_ACCOUNT_STORED_CONTENT_PROTOCOL_VERSION, type MachinePoolViewV1 } from '@happier-dev/protocol';
 
 import { createMachineFixture, renderScreen } from '@/dev/testkit';
 import { createAccountTokenForTests } from '@/dev/testkit/harness/homeGovernanceHarness';
@@ -104,7 +104,9 @@ vi.mock('expo-router', async () => {
         dismissTo: (href) => {
             const route = String(href);
             boundaries.dismissTo(route);
-            const targetIndex = boundaries.routeStack.findLastIndex((entry) => entry.split('?')[0] === route);
+            const targetIndex = boundaries.routeStack
+                .map((entry: string) => entry.split('?')[0])
+                .lastIndexOf(route);
             boundaries.routeStack.splice(targetIndex >= 0 ? targetIndex + 1 : 0);
             if (targetIndex < 0) boundaries.routeStack.push(route);
         },
@@ -311,9 +313,9 @@ describe('MachinePoolEditorScreen', () => {
         boundaries.update.mockResolvedValue(poolView(2));
         boundaries.remove.mockResolvedValue(undefined);
         await act(async () => publishBoundaryState());
-        getStorage().getState().applySettingsLocal({ actionsSettingsV1: { v: 1, actions: {
+        getStorage().getState().applySettingsLocal({ actionsSettingsV1: ActionsSettingsV1Schema.parse({ v: 1, actions: {
             [actionId]: { approvalRequiredSurfaces: ['ui'] },
-        } } });
+        } }) });
         const [{ MachinePoolsSection }, { MachinePoolEditorScreen }] = await Promise.all([
             import('../sections/MachinePoolsSection'),
             import('./MachinePoolEditorScreen'),
@@ -381,9 +383,9 @@ describe('MachinePoolEditorScreen', () => {
     });
 
     it('preserves a proposed create and opens its pending approval without submitting another request', async () => {
-        getStorage().getState().applySettingsLocal({ actionsSettingsV1: { v: 1, actions: {
+        getStorage().getState().applySettingsLocal({ actionsSettingsV1: ActionsSettingsV1Schema.parse({ v: 1, actions: {
             'machines.pools.create': { approvalRequiredSurfaces: ['ui'] },
-        } } });
+        } }) });
         const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} />);
         await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Development'));
@@ -406,10 +408,10 @@ describe('MachinePoolEditorScreen', () => {
             .mockReturnValueOnce('00000000-0000-4000-8000-000000000002');
         boundaries.pools = [poolView(1)];
         await act(async () => publishBoundaryState());
-        getStorage().getState().applySettingsLocal({ actionsSettingsV1: { v: 1, actions: {
+        getStorage().getState().applySettingsLocal({ actionsSettingsV1: ActionsSettingsV1Schema.parse({ v: 1, actions: {
             'machines.pools.delete': { approvalRequiredSurfaces: ['ui'] },
             'machines.pools.update': { approvalRequiredSurfaces: ['ui'] },
-        } } });
+        } }) });
         const { MachinePoolEditorScreen } = await import('./MachinePoolEditorScreen');
         const screen = await renderScreen(<MachinePoolEditorScreen serverId={boundaries.serverId} poolId={poolView(1).pool.id} />);
         await act(async () => screen.changeTextByTestId('settings.machinePools.editor.name', 'Unsaved change'));

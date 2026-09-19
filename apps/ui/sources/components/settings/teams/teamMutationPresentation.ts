@@ -17,13 +17,13 @@ import { t } from '@/text';
  * Only a settled refusal by the Home falls through to the mutation vocabulary,
  * which is where `forbidden`, `conflict` and the typed codes belong.
  */
-export function teamReadFailureLabel(failure: HomeDomainFailure): string {
+export function teamReadFailureLabel(failure: HomeDomainFailure<string>): string {
     return failure.retryable && failure.code === null
         ? t('teams.unavailable.offline')
         : teamMutationFailureLabel(failure);
 }
 
-export function teamMutationFailureLabel(failure: HomeDomainFailure): string {
+export function teamMutationFailureLabel(failure: HomeDomainFailure<string>): string {
     if (failure.code === 'team_owner_transfer_required') return t('teams.members.lastOwnerBlocked');
     if (failure.code === 'managed_by_directory') return t('teams.members.managedReadOnly');
     if (failure.code === 'management_conflict') return t('teams.members.managementConflict');

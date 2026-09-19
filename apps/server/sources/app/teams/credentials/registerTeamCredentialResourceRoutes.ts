@@ -519,10 +519,11 @@ async function projectTeamCredentialBrokerAdministrationReadiness(
 }
 
 export function registerTeamCredentialResourceRoutes(app: Fastify): void {
-    // Both credential gates answer their disabled state with the one typed
-    // credential error vocabulary these routes declare, so a client decoding any
-    // refusal — feature off, resource missing, or policy refused — reads the same
-    // strict schema instead of a generic body that vocabulary rejects.
+    // The family gate and the external Provider API readiness gate below both
+    // answer their disabled state with the one typed credential error vocabulary
+    // these routes declare, so a client decoding any refusal — feature off,
+    // resource missing, or policy refused — reads the same strict schema instead
+    // of a generic body that vocabulary rejects.
     const routes = createServerFeatureGatedRouteApp(
         app,
         "teams.credentialResources",
@@ -1304,13 +1305,19 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
         return reply.send(TeamCredentialUsageQueryResultV1Schema.parse(result));
     });
 
-    const externalRoutes = createServerFeatureGatedRouteApp(routes, "teams.credentialResources.externalApi", process.env, { error: "feature_disabled" }, 503);
+    // One admission decision for the external Provider API family, taken by the
+    // shared policy owner: it already reads the `teams.credentialResources
+    // .externalApi` bit fail-closed and only narrows further on deployment
+    // readiness (public HTTPS base URL). A second route-app feature gate in
+    // front of it could answer nothing this one does not, so the family keeps a
+    // single decision-maker — the same shape the sibling external Provider API
+    // routes use.
     const requireExternalApiDeploymentReadiness = async (_request: unknown, reply: ErrorReply) => {
         const availability = resolveTeamCredentialExternalApiAvailability(resolveServerFeaturesForGating(process.env));
         if (!availability.available) return reply.code(503).send({ error: "feature_disabled" });
     };
 
-    externalRoutes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.create", "POST"), {
+    routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.create", "POST"), {
         preHandler: [requireExternalApiDeploymentReadiness, app.authenticate], attachValidation: true,
         schema: { body: TeamCredentialExternalApiKeyCreateInputV1Schema, response: { 200: TeamCredentialExternalApiKeyCreateOutputV1Schema, ...errors } },
     }, async (request, reply) => {
@@ -1326,7 +1333,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
         return reply.send(TeamCredentialExternalApiKeyCreateOutputV1Schema.parse({ token: result.token, key: result.key }));
     });
 
-    externalRoutes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.list", "POST"), {
+    routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.list", "POST"), {
         preHandler: [requireExternalApiDeploymentReadiness, app.authenticate], attachValidation: true,
         schema: { body: TeamCredentialExternalApiKeyListInputV1Schema, response: { 200: TeamCredentialExternalApiKeyListOutputV1Schema, ...errors } },
     }, async (request, reply) => {
@@ -1342,7 +1349,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
         return reply.send(TeamCredentialExternalApiKeyListOutputV1Schema.parse({ keys: result.keys }));
     });
 
-    externalRoutes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.revoke", "POST"), {
+    routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.revoke", "POST"), {
         preHandler: [requireExternalApiDeploymentReadiness, app.authenticate], attachValidation: true,
         schema: { body: TeamCredentialExternalApiKeyRevokeInputV1Schema, response: { 200: TeamCredentialExternalApiKeyRevokeOutputV1Schema, ...errors } },
     }, async (request, reply) => {
@@ -1359,7 +1366,7 @@ export function registerTeamCredentialResourceRoutes(app: Fastify): void {
         return reply.send(TeamCredentialExternalApiKeyRevokeOutputV1Schema.parse(result));
     });
 
-    externalRoutes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.revokeAll", "POST"), {
+    routes.post(homeDomainActionPathForMethod("teams.credentials.externalKeys.revokeAll", "POST"), {
         preHandler: [requireExternalApiDeploymentReadiness, app.authenticate], attachValidation: true,
         schema: { body: TeamCredentialExternalApiKeyRevokeAllInputV1Schema, response: { 200: TeamCredentialExternalApiKeyRevokeAllOutputV1Schema, ...errors } },
     }, async (request, reply) => {

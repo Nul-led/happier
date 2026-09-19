@@ -712,7 +712,7 @@ function plural({
 export const pt = {
     actionConfirmations: actionConfirmationTranslations.pt,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pt, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pt.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pt.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.pt,
     transferRecovery: {
         title: 'Concluir envio preparado',
         message: 'O envio chegou à máquina, mas o salvamento final precisa de atenção. Tente novamente apenas a finalização ou descarte o envio preparado.',
@@ -1511,6 +1511,7 @@ export const pt = {
     // Simple string constants
     add: "Adicionar",
     edit: "Editar",
+    change: "Alterar",
     duplicate: "Duplicar",
     actions: "Ações",
     moreActions: "Mais ações",
@@ -12304,14 +12305,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "Bem-vindo.",
     welcomeQuestionSubtitle: "É a sua primeira vez aqui?",
-    welcomeQuestionBody: "Happier é o centro de controle dos seus agentes de programação com IA. Sem precisar de e-mail. Sua conta é uma chave privada, gerada neste dispositivo.",
 
     welcomePrimaryButton: "É a primeira vez aqui?",
     welcomePrimarySubtitle: "Um toque. Sem formulário. Sua chave vive aqui.",
     newHereHomeSubtitle: ({ home }: { home: string }) => `Crie uma conta privada em ${home}.`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `Crie uma conta com ${service} e depois encontre ou adicione seu Home.`,
 
-    welcomeSecondaryButton: "Entrar — já uso o Happier",
     continueWithKey: "Usar uma chave",
     chooseSignInService: "Escolher serviço de início de sessão",
     accountKeyDescription: ({ service }: { service: string }) => `Introduza a chave segura de ${service}.`,
@@ -12319,7 +12318,9 @@ settingsSession: {
     signInServiceUrlPrompt: "Avançado: introduza o endereço do serviço usado para iniciar sessão e encontrar os seus Homes.",
     signInServiceInvalidAddress: "Introduza um endereço http ou https válido.",
     signInServiceUnavailableTitle: "Não é possível ligar ao serviço de início de sessão",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Não foi possível ligar a ${serverUrl}. Tente novamente ou escolha outro serviço.`,
+    yourSignInService: "seu serviço de login",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `Não foi possível ligar a ${service}. Tente novamente ou escolha outro serviço.`,
+    signInServiceUnavailableHomeBody: 'Ainda pode utilizar este Home. Tente novamente o serviço de início de sessão quando quiser.',
     signInServiceUnsupportedTitle: "Serviço de início de sessão não suportado",
     signInServiceMethodlessTitle: "Não existem métodos de início de sessão disponíveis aqui",
     signInServiceMethodlessBody: "Este serviço está acessível mas não oferece agora nenhum método de início de sessão. Tente novamente ou escolha outro serviço.",

@@ -8,7 +8,7 @@ export type SessionFolderFocusScope = Readonly<{
     breadcrumbs: readonly SessionFolderV1[];
 }>;
 
-function collectDescendants(serverId: string, folderId: string, folders: readonly SessionFolderV1[], output: Set<string>): void {
+function collectDescendants(serverId: string | null, folderId: string, folders: readonly SessionFolderV1[], output: Set<string>): void {
     output.add(folderId);
     for (const folder of folders) {
         if (folder.workspace.serverId === serverId && folder.parentId === folderId && !output.has(folder.id)) {

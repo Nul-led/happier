@@ -288,10 +288,11 @@ export function createActionOperationStore(): ActionOperationStore {
             const seenAtByOperationKey = shouldAdvanceSeen
                 ? new Map(state.seenAtByOperationKey).set(key, { seenAt, revision: operation.revision })
                 : state.seenAtByOperationKey;
-            const followUpAttentionByRequestKey = shouldClearFollowUp
+            const clearedFollowUpAttentionByRequestKey = shouldClearFollowUp
                 ? new Map(state.followUpAttentionByRequestKey)
-                : state.followUpAttentionByRequestKey;
-            if (shouldClearFollowUp && followUpKey) followUpAttentionByRequestKey.delete(followUpKey);
+                : null;
+            if (clearedFollowUpAttentionByRequestKey && followUpKey) clearedFollowUpAttentionByRequestKey.delete(followUpKey);
+            const followUpAttentionByRequestKey = clearedFollowUpAttentionByRequestKey ?? state.followUpAttentionByRequestKey;
             publish(Object.freeze({ ...state, seenAtByOperationKey, followUpAttentionByRequestKey }));
             return true;
         },

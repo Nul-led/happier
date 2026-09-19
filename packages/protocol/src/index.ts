@@ -7605,6 +7605,7 @@ export {
   type AccountEncryptionMigrateAutomationStageBatchRequest,
   type AccountEncryptionMigrateAutomationDirective,
   type AccountEncryptionMigrateTransitionActivateRequest,
+  type AccountEncryptionMigrateTransitionPasswordCredential,
   type AccountEncryptionMigrateTransitionAuthorizeResponse,
   type AccountEncryptionMigrateTransitionCancelResponse,
   type AccountEncryptionMigrateCollectionStageBatchResponse,

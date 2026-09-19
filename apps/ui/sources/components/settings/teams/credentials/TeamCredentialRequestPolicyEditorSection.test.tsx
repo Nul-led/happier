@@ -58,7 +58,7 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
     it('deduplicates model ids and intersects support across every allowed model path', async () => {
         const base = AVAILABLE_SUPPORT.status === 'available' ? AVAILABLE_SUPPORT.models[0]! : null;
         if (!base) throw new Error('available support fixture missing');
-        const support = {
+        const support: TeamCredentialRequestPolicySupportOutputV1 = {
             status: 'available',
             models: [
                 {
@@ -85,7 +85,7 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
                     maxOutputTokens: null,
                 },
             ],
-        } as const;
+        };
         const { projectTeamCredentialRequestPolicyEditorSupport } = await import('./TeamCredentialRequestPolicyEditorSection');
         const projection = projectTeamCredentialRequestPolicyEditorSupport({
             models: support.models,

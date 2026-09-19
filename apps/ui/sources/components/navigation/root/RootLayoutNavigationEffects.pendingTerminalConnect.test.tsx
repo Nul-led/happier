@@ -75,7 +75,7 @@ it('resumes a real pre-auth capture when the authenticated account scope hydrate
     const { setPendingTerminalConnect } = await import('@/sync/domains/pending/pendingTerminalConnect.web');
     const { RootLayoutNavigationEffects } = await import('./RootLayoutNavigationEffects');
 
-    const server = upsertAndActivateServer({
+    const server = await upsertAndActivateServer({
         serverUrl: 'https://stack.example.test',
         source: 'manual',
         scope: 'device',

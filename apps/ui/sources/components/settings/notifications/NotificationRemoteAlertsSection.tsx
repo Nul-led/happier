@@ -79,11 +79,9 @@ export function NotificationRemoteAlertsSection({
             subtitleLines={0}
             showChevron={false}
             accessibilityLiveRegion="polite"
-            accessibilityState={{
-                busy: registration.deviceEnrollment === 'loading'
-                    || registration.deviceEnrollment === 'enrolling'
-                    || registration.deviceEnrollment === 'removing',
-            }}
+            loading={registration.deviceEnrollment === 'loading'
+                || registration.deviceEnrollment === 'enrolling'
+                || registration.deviceEnrollment === 'removing'}
             rightElement={<Switch
                 testID="settings-notifications-remote-device-switch"
                 value={deviceEnabled}

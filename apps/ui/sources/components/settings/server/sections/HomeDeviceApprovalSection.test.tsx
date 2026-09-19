@@ -28,6 +28,9 @@ import { HomeDeviceApprovalSection } from './HomeDeviceApprovalSection';
 import { adoptHomeProfile } from '@/sync/domains/server/serverProfiles';
 import { HOME_LOGIN_APPROVALS_HTTP_PATH_V1, buildHomeLoginApprovalDecisionHttpPathV1 } from '@happier-dev/protocol';
 
+/** Non-secret binding to the Account credential a continuation was created under. */
+const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
+
 describe('Home approval visible continuation', () => {
     let fixture: ReturnType<typeof createDirectoryHttpFixture>;
     let restore: () => void;
@@ -40,6 +43,7 @@ describe('Home approval visible continuation', () => {
         await TokenStorage.accountDirectoryAuthCredentials.set({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { token: 'directory-token' });
         const intent = { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId };
         await completeAccountServicePostAuth({ service, intent,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
         });
         screen = await renderScreen(<HomeDeviceApprovalSection homes={[]} />);
@@ -61,6 +65,7 @@ describe('Home approval visible continuation', () => {
         const { service } = fixture;
         await TokenStorage.accountDirectoryAuthCredentials.set({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { token: 'directory-token' });
         expect(await completeAccountServicePostAuth({ service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
             intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId },
         })).toMatchObject({ kind: 'approval_required' });
@@ -95,6 +100,11 @@ describe('Home approval visible continuation', () => {
         });
         screen = await renderScreen(<HomeDeviceApprovalSection homes={[home]} />);
         await vi.waitFor(() => expect(screen?.findByTestId('settings.server.homeApprovals.approval-b.approve')).not.toBeNull());
+        const text = screen.getTextContent();
+        expect(text).toContain('Approve this device');
+        expect(text).toContain('New phone');
+        expect(text).toContain(`Continue on a device already connected to ${home.name}.`);
+        expect(text).toContain('Request-key fingerprint');
         await screen.pressByTestIdAsync('settings.server.homeApprovals.approval-b.approve');
         expect(decided).toBe(true);
         await vi.waitFor(() => expect(screen?.findByTestId('settings.server.homeApprovals.approval-b')).toBeNull());

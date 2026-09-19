@@ -14,6 +14,7 @@ function team(id: string, name: string, overrides?: Partial<TeamSummaryV1>): Tea
         description: null,
         logo: null,
         archivedAt: null,
+        recovery: null,
         policy: {
             v: 1,
             sessionCreationPolicy: 'private_default',
@@ -112,7 +113,7 @@ describe('resolveTeamsDirectoryViewState', () => {
 
     it('keeps a capable Home rendered and reports an unsupported selected Home as update-required', () => {
         const admission = resolveTeamsSettingsAdmission({
-            settings: {},
+            settings: { experiments: false, featureToggles: {} },
             serverIds: ['alpha', 'beta'],
             snapshotsByServerId: {
                 alpha: {

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { act, type ReactTestInstance } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MachinePoolViewV1 } from '@happier-dev/protocol';
+import { ProviderConnectionIdSchema, type MachinePoolViewV1 } from '@happier-dev/protocol';
 
 import {
     collectRenderedTestIds,
@@ -15,6 +15,8 @@ import {
     teamCredentialSourceResourceFixture,
 } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
+
+const CONNECTION_ID = ProviderConnectionIdSchema.parse('connection-1');
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 installSettingsViewCommonModuleMocks();
@@ -75,7 +77,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await vi.waitFor(() => expect(screen.findByTestId('shared-with-teams:load-more')).not.toBeNull());
         harness.answer(serverId, LIST_PATH, { body: {
@@ -99,7 +101,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
             disclosureCeiling: 'direct_allowed',
             capabilities: {
                 manageAudience: false, managePolicy: false, manageLimits: false,
-                updateBrokerPlacement: false, narrowDisclosure: true,
+                updateBrokerPlacement: false, narrowDisclosure: true, widenDisclosure: false,
                 refreshDirectMaterial: false, disable: true, enable: false, delete: true,
             },
         })] } });
@@ -107,7 +109,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
         const ids = collectRenderedTestIds(screen.tree.toJSON());
@@ -127,7 +129,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
             disclosureCeiling: 'direct_allowed',
             capabilities: {
                 manageAudience: false, managePolicy: false, manageLimits: false,
-                updateBrokerPlacement: false, narrowDisclosure: true,
+                updateBrokerPlacement: false, narrowDisclosure: true, widenDisclosure: false,
                 refreshDirectMaterial: false, disable: false, enable: false, delete: true,
             },
         })] } });
@@ -135,7 +137,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
 
@@ -149,7 +151,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
             disclosureCeiling: 'direct_allowed',
             capabilities: {
                 manageAudience: false, managePolicy: false, manageLimits: false,
-                updateBrokerPlacement: false, narrowDisclosure: true,
+                updateBrokerPlacement: false, narrowDisclosure: true, widenDisclosure: false,
                 refreshDirectMaterial: false, disable: true, enable: false, delete: true,
             },
         });
@@ -159,7 +161,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
         await screen.pressByTestIdAsync('shared-with-teams:narrow:resource-1');
@@ -184,7 +186,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
             },
             capabilities: {
                 manageAudience: false, managePolicy: false, manageLimits: false,
-                updateBrokerPlacement: true, narrowDisclosure: false,
+                updateBrokerPlacement: true, narrowDisclosure: false, widenDisclosure: false,
                 refreshDirectMaterial: false, disable: false, enable: false, delete: false,
             },
         });
@@ -193,7 +195,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
         selectBrokerMachine(screen, 'machine-exact');
@@ -211,7 +213,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         }]);
         const capabilities = {
             manageAudience: false, managePolicy: false, manageLimits: false,
-            updateBrokerPlacement: true, narrowDisclosure: true,
+            updateBrokerPlacement: true, narrowDisclosure: true, widenDisclosure: false,
             refreshDirectMaterial: false, disable: false, enable: false, delete: false,
         } as const;
         const initial = teamCredentialSourceResourceFixture({
@@ -232,7 +234,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
         selectBrokerMachine(screen, 'machine-exact');
@@ -271,7 +273,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
             },
             capabilities: {
                 manageAudience: false, managePolicy: false, manageLimits: false,
-                updateBrokerPlacement: true, narrowDisclosure: false,
+                updateBrokerPlacement: true, narrowDisclosure: false, widenDisclosure: false,
                 refreshDirectMaterial: false, disable: false, enable: false, delete: false,
             },
         });
@@ -281,7 +283,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await screen.pressByTestIdAsync('shared-with-teams:resource:resource-1');
         await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON()))
@@ -304,7 +306,7 @@ describe('SharedWithTeamsSourceAdministration', () => {
         const { SharedWithTeamsSourceAdministration } = await import('./SharedWithTeamsSourceAdministration');
         const screen = await renderScreen(<SharedWithTeamsSourceAdministration
             scope={{ serverId, accountId: 'owner' }}
-            source={{ v: 1, kind: 'provider_connection', connectionId: 'connection-1' }}
+            source={{ v: 1, kind: 'provider_connection', connectionId: CONNECTION_ID }}
         />);
         await expect.poll(() => collectRenderedTestIds(screen.tree.toJSON())).toContain('shared-with-teams:empty');
         expect(screen.getTextContent()).toContain('teams.credentials.sourceAdministration.empty');

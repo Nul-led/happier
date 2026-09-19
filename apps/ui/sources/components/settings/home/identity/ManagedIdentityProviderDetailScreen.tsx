@@ -199,7 +199,6 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                 if (!mountedRef.current) return;
                 router.replace(homeAdministrationPoliciesPath(props.context.scope.serverId));
             };
-            let approval: ActionApprovalRegistration | null = null;
             const outcome = await runManagedIdentityProviderRemoval({
                 providerId: provider.id,
                 readPreflight: async () => await client.execute('identity.providers.remove.preview', {
@@ -221,7 +220,6 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
                         onApprovalSucceeded: completeRemoval,
                         onApprovalFailed: reportFailure,
                     });
-                    if (result.kind === 'approval_pending') approval = result.approval;
                     return result;
                 },
             });
@@ -236,7 +234,7 @@ const DetailContent = React.memo(function DetailContent(props: Readonly<{
             } else if (outcome.kind === 'failed') {
                 reportFailure(outcome.code);
             } else if (outcome.kind === 'approval_pending') {
-                reportApprovalPending(approval ?? outcome.artifactId);
+                reportApprovalPending(outcome.approval);
             } else if (outcome.kind === 'removed') {
                 completeRemoval();
             }

@@ -44,6 +44,7 @@ export type { PluginActionWorkflowBlockV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowConditionV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowEvaluatorHistoryModeV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowFailurePolicyV1 } from './actionTypeMap.generated.js';
+export type { PluginActionWorkflowIngressBlockV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowItemExecutionModeV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowParallelBranchV1 } from './actionTypeMap.generated.js';
 export type { PluginActionWorkflowRepetitionV1 } from './actionTypeMap.generated.js';

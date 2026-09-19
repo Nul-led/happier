@@ -13,9 +13,13 @@ import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 import { createDirectoryHttpFixture } from './accountDirectoryTestFixtures';
 
+/** Non-secret binding to the Account credential that created the continuation. */
+const TEST_CREDENTIAL_TOKEN_DIGEST = 'sha256:test-account-credential';
+
+
 const secureStoreValues = new Map<string, string>();
 installTokenStorageWebPlatformMocks({
-    reactNative: () => createReactNativeNativeMock({ Platform: { OS: 'ios' } }),
+    reactNative: () => createReactNativeNativeMock({ platformOS: 'ios' }),
     secureStore: () => ({
         getItemAsync: async (key: string) => secureStoreValues.get(key) ?? null,
         setItemAsync: async (key: string, value: string) => { secureStoreValues.set(key, value); },
@@ -275,7 +279,7 @@ describe('Directory enrollment production composition', () => {
                 source: 'account-directory',
             }),
         ]));
-        const result = await enrollDirectoryHome({ session, service: createDirectoryHttpFixture().service,
+        const result = await enrollDirectoryHome({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, session, service: createDirectoryHttpFixture().service,
             intent: { kind: 'enroll', homeServerIdentityId: home.homeServerIdentityId } },
             {
                 home,
@@ -368,7 +372,7 @@ describe('Directory enrollment production composition', () => {
             })));
         const { enrollDirectoryHome } = await import('./enrollDirectoryHome');
 
-        await expect(enrollDirectoryHome({ session, service: createDirectoryHttpFixture().service,
+        await expect(enrollDirectoryHome({ credentialTokenDigest: TEST_CREDENTIAL_TOKEN_DIGEST, session, service: createDirectoryHttpFixture().service,
             intent: { kind: 'enroll', homeServerIdentityId: home.homeServerIdentityId } }, {
             home, shouldCancel: () => false,
             complete: async () => ({ kind: 'home_enrolled', homeServerIdentityId: home.homeServerIdentityId }),

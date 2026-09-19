@@ -101,7 +101,7 @@ export const SessionRightPanelAgentsView = React.memo((props: Readonly<{
     // can observe a permission prompt — the only way a row reaches `waiting`.
     const { entries, readSubagentForEntry, subagents } = useSessionAgentActivityRoster({
         sessionId: props.sessionId,
-        serverId: sessionServerId,
+        serverId: sessionServerId ?? undefined,
         session,
     });
 

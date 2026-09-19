@@ -2,6 +2,7 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { ProviderConnectionIdSchema, ProviderConnectionSecurityFingerprintV1Schema } from '@happier-dev/protocol';
 
 import {
     collectRenderedTestIds,
@@ -122,8 +123,8 @@ function answerSourceOnlyViewer(serverId: string): void {
 
 function providerOffer(connectionId: string, label: string, fingerprint = `connection-security:v1:${connectionId}`) {
     return {
-        connectionId,
-        connectionSecurityFingerprint: fingerprint,
+        connectionId: ProviderConnectionIdSchema.parse(connectionId),
+        connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse(fingerprint),
         credentialSlotId: 'apiKey',
         label,
     } as const;

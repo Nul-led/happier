@@ -243,7 +243,7 @@ export function buildSessionListFilterEditorModel(input: Readonly<{
                     ],
                 }] : []),
                 ...(input.inactiveVisibilityAvailable !== false ? [{
-                    kind: 'static',
+                    kind: 'static' as const,
                     id: 'inactive',
                     title: input.labels.inactiveSessions,
                     options: [

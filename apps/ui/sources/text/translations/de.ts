@@ -510,7 +510,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 export const de: TranslationStructure = {
     actionConfirmations: actionConfirmationTranslations.de,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.de, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.de.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.de.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.de,
     transferRecovery: {
         title: 'Vorgemerkten Upload abschließen',
         message: 'Der Upload hat den Rechner erreicht, aber das endgültige Speichern braucht Aufmerksamkeit. Wiederhol nur den letzten Speicherschritt oder verwirf den vorgemerkten Upload.',
@@ -1449,6 +1449,7 @@ export const de: TranslationStructure = {
 	        // Simple string constants
 	        add: 'Hinzufügen',
 	        edit: 'Bearbeiten',
+	        change: 'Ändern',
             duplicate: 'Duplizieren',
 	        actions: 'Aktionen',
 	        moreActions: 'Weitere Aktionen',
@@ -1540,6 +1541,7 @@ export const de: TranslationStructure = {
         enabled: 'Aktiviert',
         disabled: 'Deaktiviert',
         requestFailed: 'Anfrage fehlgeschlagen.',
+        saveError: 'Speichern fehlgeschlagen.',
 
 	        more: 'Mehr',
 	        maximize: 'Maximieren',
@@ -12564,14 +12566,12 @@ settingsSession: {
         // Unified onboarding redesign — welcome decision (right pane)
         welcomeQuestionTitle: 'Willkommen.',
         welcomeQuestionSubtitle: 'Zum ersten Mal hier?',
-        welcomeQuestionBody: 'Happier ist die Kommandozentrale für deine KI-Coding-Agents. Keine E-Mail nötig. Dein Konto ist ein privater Schlüssel, erzeugt auf diesem Gerät.',
 
         welcomePrimaryButton: 'Neu hier?',
         welcomePrimarySubtitle: 'Ein Tipp. Kein Formular. Dein Schlüssel bleibt hier.',
         newHereHomeSubtitle: ({ home }: { home: string }) => `Erstelle ein privates Konto auf ${home}.`,
         newHereServiceSubtitle: ({ service }: { service: string }) => `Erstelle ein Konto bei ${service} und finde oder füge dann dein Home hinzu.`,
 
-        welcomeSecondaryButton: 'Anmelden – ich nutze Happier schon',
         continueWithKey: 'Mit Schlüssel fortfahren',
         chooseSignInService: 'Anmeldedienst auswählen',
         accountKeyDescription: ({ service }: { service: string }) => `Gib den Sicherheitsschlüssel für ${service} ein.`,
@@ -12579,7 +12579,9 @@ settingsSession: {
         signInServiceUrlPrompt: 'Erweitert: Gib die Adresse des Dienstes ein, mit dem du dich anmeldest und deine Homes findest.',
         signInServiceInvalidAddress: 'Gib eine gültige HTTP- oder HTTPS-Adresse ein.',
         signInServiceUnavailableTitle: 'Anmeldedienst nicht erreichbar',
-        signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Verbindung zu ${serverUrl} nicht möglich. Versuche es erneut oder wähle einen anderen Anmeldedienst.`,
+        yourSignInService: 'deinem Anmeldedienst',
+        signInServiceUnavailableBody: ({ service }: { service: string }) => `Verbindung zu ${service} nicht möglich. Versuche es erneut oder wähle einen anderen Anmeldedienst.`,
+        signInServiceUnavailableHomeBody: 'Du kannst dieses Home weiterhin verwenden. Versuche den Anmeldedienst erneut, wenn du bereit bist.',
         signInServiceUnsupportedTitle: 'Anmeldedienst nicht unterstützt',
         signInServiceMethodlessTitle: 'Hier sind keine Anmeldemethoden verfügbar',
         signInServiceMethodlessBody: 'Dieser Dienst ist erreichbar, bietet derzeit aber keine Anmeldemethode. Versuche es erneut oder wähle einen anderen Dienst.',

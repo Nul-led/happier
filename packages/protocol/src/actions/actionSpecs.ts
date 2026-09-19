@@ -568,6 +568,12 @@ import {
   EXECUTION_RUN_WAIT_CLI_PROJECTION,
 } from './specs/executionRunCli.js';
 import {
+  SESSION_BOARD_GET_CLI_PROJECTION,
+  SESSION_BOARD_ITEM_REMOVE_CLI_PROJECTION,
+  SESSION_BOARD_ITEM_UPSERT_CLI_PROJECTION,
+  SESSION_BOARD_LAYOUT_UPDATE_CLI_PROJECTION,
+} from './specs/sessionBoardCli.js';
+import {
   SESSION_DISCUSSION_ARCHIVE_CLI_PROJECTION,
   SESSION_DISCUSSION_CREATE_CLI_PROJECTION,
   SESSION_DISCUSSION_GET_CLI_PROJECTION,
@@ -7062,6 +7068,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     },
     outputSchema: SESSION_BOARD_ACTION_OUTPUT_SCHEMAS_V1['session.board.get'],
     inputSchema: SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1['session.board.get'],
+    cli: SESSION_BOARD_GET_CLI_PROJECTION,
   },
   {
     id: 'session.board.item.upsert',
@@ -7097,6 +7104,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     },
     outputSchema: SESSION_BOARD_ACTION_OUTPUT_SCHEMAS_V1['session.board.item.upsert'],
     inputSchema: SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1['session.board.item.upsert'],
+    cli: SESSION_BOARD_ITEM_UPSERT_CLI_PROJECTION,
   },
   {
     id: 'session.board.item.remove',
@@ -7131,6 +7139,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     },
     outputSchema: SESSION_BOARD_ACTION_OUTPUT_SCHEMAS_V1['session.board.item.remove'],
     inputSchema: SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1['session.board.item.remove'],
+    cli: SESSION_BOARD_ITEM_REMOVE_CLI_PROJECTION,
   },
   {
     id: 'session.board.layout.update',
@@ -7164,6 +7173,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX = Object.freeze(defineActionSpecs([
     },
     outputSchema: SESSION_BOARD_ACTION_OUTPUT_SCHEMAS_V1['session.board.layout.update'],
     inputSchema: SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1['session.board.layout.update'],
+    cli: SESSION_BOARD_LAYOUT_UPDATE_CLI_PROJECTION,
   },
 
   // The Session-owned human discussion family. People reach these through the UI

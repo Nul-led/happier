@@ -15,14 +15,14 @@ import expo.modules.notifications.service.ExpoFirebaseMessagingService
  * - A recognized Activity remote alert is offered to an already-loaded app
  *   process so its foreground/privacy handler remains authoritative, otherwise
  *   it is presented here through the same presenter after exact-Home admission.
+ * - The Home's content-free `session_changed` wake is offered to the app
+ *   process only, because the `remote-notification` task-manager registry and
+ *   the React host that owns the wake consumer are per-process and this process
+ *   deliberately has neither. A wake that arrives while the app process is not
+ *   loaded is dropped rather than presented: it carries no content, and waking a
+ *   terminated app would mean moving this entry point out of the isolated
+ *   process.
  * - Everything else is delegated to the incumbent Expo delegate.
- *
- * The delegate also runs `remote-notification` task-manager consumers, whose
- * registry is per-process. This app registers that task only on iOS
- * (`sources/activity/adapters/ios/backgroundWake`), so no Android consumer is
- * lost here. Registering an Android background remote-notification task would
- * invalidate that assumption and require moving the delegation hop back into the
- * app process.
  */
 class ActivityFirebaseMessagingService : ExpoFirebaseMessagingService() {
   override fun onCreate() {
@@ -53,6 +53,10 @@ class ActivityFirebaseMessagingService : ExpoFirebaseMessagingService() {
     val alert = ActivityRemoteAlert.parse(remoteMessage)
     if (alert != null) {
       ActivityNotificationMainProcessHandoff.offer(applicationContext, remoteMessage, alert)
+      return
+    }
+    if (SessionChangedWake.parse(remoteMessage) != null) {
+      ActivityNotificationMainProcessHandoff.offerWake(applicationContext, remoteMessage)
       return
     }
     super.onMessageReceived(remoteMessage)

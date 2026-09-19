@@ -28,7 +28,7 @@ import {
 } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { Modal } from '@/modal';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
-import { createHomeActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
+import { createActionApprovalContinuation } from '@/components/approvals/actionApprovalContinuation';
 import {
     maskEmailForNativeAuthPreview,
     normalizeVerifiedEmail,
@@ -364,7 +364,7 @@ export const AccountEmailPasswordSection = React.memo(function AccountEmailPassw
                     includingClaimed: true,
                     target,
                 });
-                requestApproval(createHomeActionApprovalContinuation({
+                requestApproval(createActionApprovalContinuation({
                     artifactId: cause.artifactId,
                     actionId: 'account.password.enroll',
                     scope: { serverId: activeServer.serverId, accountId: profile.id },

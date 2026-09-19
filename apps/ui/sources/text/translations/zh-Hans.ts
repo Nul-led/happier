@@ -661,7 +661,7 @@ function plural({
 export const zhHans = {
     actionConfirmations: actionConfirmationTranslations['zh-Hans'],
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations['zh-Hans'], error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations['zh-Hans'].error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations['zh-Hans'].resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.zhHans,
     transferRecovery: {
         title: '完成暂存上传',
         message: '上传已到达设备，但最终保存需要处理。仅重试最终保存，或丢弃暂存上传。',
@@ -1446,6 +1446,7 @@ export const zhHans = {
     // Simple string constants
     add: "添加",
     edit: "编辑",
+    change: "更改",
     duplicate: "复制",
     actions: "操作",
     moreActions: "更多操作",
@@ -11804,14 +11805,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "欢迎。",
     welcomeQuestionSubtitle: "第一次使用?",
-    welcomeQuestionBody: "Happier 是你的 AI 编码代理控制中心。无需电子邮件。你的账户是一把在本设备上生成的私钥。",
 
     welcomePrimaryButton: "初次使用？",
     welcomePrimarySubtitle: "一次点击。无需表单。你的密钥就在这里。",
     newHereHomeSubtitle: ({ home }: { home: string }) => `在 ${home} 上创建私人账户。`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `通过 ${service} 创建账户，然后查找或添加你的 Home。`,
 
-    welcomeSecondaryButton: "登录 — 我已在使用 Happier",
     continueWithKey: "使用密钥",
     chooseSignInService: "选择登录服务",
     accountKeyDescription: ({ service }: { service: string }) => `输入 ${service} 的安全密钥。`,
@@ -11819,7 +11818,9 @@ settingsSession: {
     signInServiceUrlPrompt: "高级：输入用于登录和查找 Home 的服务地址。",
     signInServiceInvalidAddress: "请输入有效的 http 或 https 地址。",
     signInServiceUnavailableTitle: "无法连接登录服务",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `无法连接到 ${serverUrl}。请重试或选择其他登录服务。`,
+    yourSignInService: "你的登录服务",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `无法连接到 ${service}。请重试或选择其他登录服务。`,
+    signInServiceUnavailableHomeBody: '你仍然可以使用此 Home。准备好后再重试登录服务。',
     signInServiceUnsupportedTitle: "不支持此登录服务",
     signInServiceMethodlessTitle: "此处没有可用的登录方式",
     signInServiceMethodlessBody: "该服务可以连接，但目前未提供任何登录方式。请重试或选择其他服务。",

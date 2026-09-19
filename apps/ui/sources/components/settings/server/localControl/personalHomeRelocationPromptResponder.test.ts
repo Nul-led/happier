@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
+
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { createDirectoryHttpFixture } from '@/sync/ops/accountDirectory/accountDirectoryTestFixtures';
 import { AccountDirectorySession } from '@/sync/domains/accountDirectory/accountDirectorySession';
@@ -11,7 +13,7 @@ vi.mock('@/sync/http/client', () => ({ createServerFetchAtEndpoint: () => reques
 describe('task-bound relocation Directory publication', () => {
     const fixture = createDirectoryHttpFixture();
     const target = { endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId };
-    const descriptor = { ...fixture.home.connectionDescriptor, revision: 27,
+    const descriptor: HomeConnectionDescriptorV1 = { ...fixture.home.connectionDescriptor, revision: 27,
         endpoints: [{ kind: 'https' as const, url: 'https://destination.test' },
             { kind: 'iroh' as const, endpointId: 'ab'.repeat(32), relayUrls: ['https://relay.test'] }] };
     beforeEach(async () => {

@@ -302,7 +302,7 @@ describe('TeamCredentialDetailScreen', () => {
                     readiness: { kind: 'source_unavailable' }, recoveryAction: 'source_owner_action',
                     capabilities: {
                         manageAudience: true, managePolicy: true, manageLimits: true,
-                        updateBrokerPlacement: false, narrowDisclosure: false,
+                        updateBrokerPlacement: false, narrowDisclosure: false, widenDisclosure: false,
                         refreshDirectMaterial: false, disable: true, enable: true, delete: true,
                     },
                 }),
@@ -332,7 +332,7 @@ describe('TeamCredentialDetailScreen', () => {
                     requestPolicy: null,
                     capabilities: {
                         manageAudience: false, managePolicy: false, manageLimits: false,
-                        updateBrokerPlacement: true, narrowDisclosure: true,
+                        updateBrokerPlacement: true, narrowDisclosure: true, widenDisclosure: false,
                         refreshDirectMaterial: true, disable: true, enable: false, delete: true,
                     },
                 }),
@@ -364,7 +364,7 @@ describe('TeamCredentialDetailScreen', () => {
             body: teamCredentialResourceFixture({
                     capabilities: {
                         manageAudience: false, managePolicy: false, manageLimits: false,
-                        updateBrokerPlacement: true, narrowDisclosure: true,
+                        updateBrokerPlacement: true, narrowDisclosure: true, widenDisclosure: false,
                         refreshDirectMaterial: false, disable: false, enable: false, delete: false,
                     },
                 }),
@@ -411,7 +411,9 @@ describe('TeamCredentialDetailScreen', () => {
         await screen.pressByTestIdAsync('team-credential-preparation-refresh');
 
         await vi.waitFor(() => expect(harness.requestsFor(PREPARATION_LIST_PATH)).toHaveLength(1));
-        expect(JSON.stringify(screen.tree.toJSON())).toContain('sessionAccess.preparationPending(count=1)');
+        // The catalog mounts these strings at `session.access.*`; the old `sessionAccess.*`
+        // spelling resolved to nothing and rendered the raw key to the admin.
+        expect(JSON.stringify(screen.tree.toJSON())).toContain('session.access.preparationPending(count=1)');
     });
 
     it('does not apply a late confirmation to a different resource target', async () => {

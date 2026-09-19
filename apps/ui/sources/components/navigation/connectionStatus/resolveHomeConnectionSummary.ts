@@ -5,16 +5,17 @@ import type { ConnectionHealthKind } from './connectionHealthTypes';
  * right now, and what can I do about it" — machine, socket, and transport facts
  * stay behind the Details disclosure.
  */
-export type HomeConnectionSummaryKind = 'connected' | 'reconnecting' | 'unavailable' | 'sign_in';
+export type HomeConnectionSummaryKind = 'connected' | 'reconnecting' | 'unavailable' | 'sign_in' | 'unknown';
 
 export type HomeConnectionSummaryLabelKey =
     | 'connectionStatus.summary.connected'
     | 'connectionStatus.summary.reconnecting'
     | 'connectionStatus.summary.unavailable'
-    | 'connectionStatus.summary.signInAgain';
+    | 'connectionStatus.summary.signInAgain'
+    | 'status.unknown';
 
 /** Presentation is resolved by the popover's shared status-presentation owner. */
-export type HomeConnectionStatusKey = 'connected' | 'connecting' | 'error' | 'action_required';
+export type HomeConnectionStatusKey = 'connected' | 'connecting' | 'error' | 'action_required' | 'unknown';
 
 export type HomeConnectionSummary = Readonly<{
     kind: HomeConnectionSummaryKind;
@@ -32,7 +33,15 @@ const SUMMARY_PRESENTATION: Readonly<Record<HomeConnectionSummaryKind, Readonly<
     reconnecting: { statusLabelKey: 'connectionStatus.summary.reconnecting', statusKey: 'connecting' },
     unavailable: { statusLabelKey: 'connectionStatus.summary.unavailable', statusKey: 'error' },
     sign_in: { statusLabelKey: 'connectionStatus.summary.signInAgain', statusKey: 'action_required' },
+    unknown: { statusLabelKey: 'status.unknown', statusKey: 'unknown' },
 };
+
+function buildSummary(
+    kind: HomeConnectionSummaryKind,
+    action: HomeConnectionSummary['action'],
+): HomeConnectionSummary {
+    return { kind, ...SUMMARY_PRESENTATION[kind], action };
+}
 
 function resolveSummaryKind(healthKind: ConnectionHealthKind): HomeConnectionSummaryKind {
     switch (healthKind) {
@@ -73,5 +82,47 @@ export function resolveHomeConnectionSummary(params: Readonly<{
                 ? 'retry'
                 : 'none';
 
-    return { kind, ...SUMMARY_PRESENTATION[kind], action };
+    return buildSummary(kind, action);
+}
+
+/**
+ * Normalizes the connection observations available for any Home target. This
+ * keeps secondary projections and the focused socket on the same status
+ * vocabulary without claiming that authentication alone proves reachability.
+ */
+export function resolveHomeTargetSummary(params: Readonly<{
+    authStatus: 'signedIn' | 'signedOut' | 'unknown';
+    projectionStatus?: 'idle' | 'loading' | 'signedOut' | 'error';
+    socketStatus?: 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
+    pending?: boolean;
+}>): HomeConnectionSummary {
+    if (params.authStatus === 'signedOut' || params.projectionStatus === 'signedOut') {
+        return buildSummary('sign_in', 'restore');
+    }
+    if (params.pending) return buildSummary('reconnecting', 'none');
+
+    if (params.socketStatus) {
+        switch (params.socketStatus) {
+            case 'connected':
+                return buildSummary('connected', 'none');
+            case 'connecting':
+                return buildSummary('reconnecting', 'none');
+            case 'disconnected':
+            case 'error':
+                return buildSummary('unavailable', 'none');
+            case 'idle':
+                return buildSummary('unknown', 'none');
+        }
+    }
+
+    switch (params.projectionStatus) {
+        case 'idle':
+            return buildSummary('connected', 'none');
+        case 'loading':
+            return buildSummary('reconnecting', 'none');
+        case 'error':
+            return buildSummary('unavailable', 'none');
+        case undefined:
+            return buildSummary('unknown', 'none');
+    }
 }

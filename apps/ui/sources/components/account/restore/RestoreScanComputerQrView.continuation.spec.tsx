@@ -18,6 +18,9 @@ import { RestoreScanComputerQrView } from './RestoreScanComputerQrView';
 
 installTokenStorageWebPlatformMocks();
 const boundary = vi.hoisted(() => ({ request: vi.fn() }));
+
+/** Non-secret binding to the Account credential a continuation was created under. */
+const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
 vi.mock('@/sync/http/client', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/sync/http/client')>(),
     createServerFetchAtEndpoint: (target: { endpointUrl: string }) => (path: string, init?: RequestInit) => boundary.request(target.endpointUrl, path, init),
@@ -75,6 +78,7 @@ it('resumes no-Homes recovery only after exact QR credentials commit, without en
         return fixture.request(endpoint, path, init);
     });
     const input = { service: fixture.service,
+        credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
         session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
         intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
     let result: AccountPostAuthResult | undefined;

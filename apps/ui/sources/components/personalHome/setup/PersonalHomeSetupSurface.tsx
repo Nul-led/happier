@@ -84,10 +84,14 @@ function phaseCopy(snapshot: PersonalHomeBootstrapSnapshot): string {
     }
 }
 
-type FocusableAction = React.ElementRef<typeof Pressable> & Readonly<{ focus?: () => void }>;
+/**
+ * Anything this surface may move focus to: the portable focus handle a control
+ * exposes through `controlRef`, or a raw view instance rendered here.
+ */
+type FocusableAction = Readonly<{ focus?: () => void }>;
 
 function focusAction(target: FocusableAction | null): void {
-    const focus = (target as FocusableAction | null)?.focus;
+    const focus = target?.focus;
     if (typeof focus === 'function') {
         try {
             focus.call(target);
@@ -109,6 +113,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     const retryRef = React.useRef<FocusableAction | null>(null);
     const detailsRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
     const useExistingRef = React.useRef<FocusableAction | null>(null);
+    const failureDetailsRef = React.useRef<FocusableAction | null>(null);
     const focusedRecoveryStateRef = React.useRef<string | null>(null);
     const progress = derivePersonalHomeSetupProgress(props.snapshot);
     const hasFailure = props.snapshot.phase === 'blocked';
@@ -142,7 +147,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
         } else if (recoveryFocusState === 'retry') {
             focusAction(retryRef.current);
         } else {
-            focusAction(detailsRef.current);
+            focusAction(failureDetailsRef.current ?? detailsRef.current);
         }
     }, [recoveryFocusState]);
 
@@ -214,7 +219,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                         <View style={styles.recovery}>
                             <PersonalHomeSetupFailure
                                 retryControlRef={(instance) => { retryRef.current = instance; }}
-                                detailsControlRef={(instance) => { detailsRef.current = instance as React.ElementRef<typeof Pressable> | null; }}
+                                detailsControlRef={(instance) => { failureDetailsRef.current = instance; }}
                                 {...(blockedBody ? { body: blockedBody } : {})}
                                 onRetry={props.snapshot.action === 'retry' ? props.onRetry : undefined}
                                 onOpenDetails={failureDetailsAction}

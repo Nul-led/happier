@@ -233,8 +233,10 @@ The Team authentication destination includes the narrowed-policy selector/editor
 the administrator's draft across a stale comparison, requires deliberate acknowledgement of
 the refreshed comparison basis before resubmission, and writes only through `teams.policy.set`.
 The editor offers Team-owned enabled connections and preserves already-selected Home methods
-without inventing a second Home-method catalog. Do not interpret source presence as a shipped
-client journey until the composed loaded-runtime gate is complete.
+without inventing a second Home-method catalog. Teams are on by default
+(`HAPPIER_FEATURE_TEAMS__ENABLED=0` is the operator opt-out); the composed loaded-runtime
+journey is a release check owned by release automation and human QA, separate from the Home
+feature decision.
 
 Non-invite admission modes are visible with truthful typed recovery, but activation remains
 blocked in development source: the enterprise-identity lane has not yet published the one

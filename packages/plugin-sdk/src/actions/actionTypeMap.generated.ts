@@ -2301,6 +2301,7 @@ export type PluginActionInputById = {
     readonly "workflow.run.list": {
         cursor?: string | undefined;
         limit?: number | undefined;
+        runId?: string | undefined;
         origin?: 'automation' | 'direct' | undefined;
         states?: ('cancelled' | 'claimed' | 'dispatch_failed' | 'expired' | 'failed' | 'interrupted' | 'missed' | 'outcome_uncertain' | 'pause_requested' | 'paused' | 'queued' | 'running' | 'skipped' | 'succeeded')[] | undefined;
         attention?: 'required' | undefined;

@@ -3,6 +3,7 @@ import { View } from 'react-native';
 import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
 import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
 import { AccountServiceSelectionForm } from '@/components/account/auth/AccountServiceSelectionForm';
+import { describeAccountServiceFailure } from '@/components/account/auth/accountServiceFailurePresentation';
 import { WizardModalShell } from '@/components/onboarding';
 import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { useRouter } from 'expo-router';
@@ -12,7 +13,7 @@ import { useAccountDirectoryActivePolling } from '@/sync/ops/accountDirectory/us
 import { accountDirectoryCredentialStorage } from '@/auth/accountDirectory/accountDirectoryCredentialStorage';
 import { accountDirectoryAuthClient, createVerifiedAccountServiceAuthority, type VerifiedAccountServiceAuthority } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { completeAccountServicePostAuth, confirmAccountServiceHomeRelink, resumeAccountServicePostAuth, type AccountPostAuthInput, type AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
-import { TokenStorage } from '@/auth/storage/tokenStorage';
+import { TokenStorage, digestAccountDirectoryCredentialToken } from '@/auth/storage/tokenStorage';
 import { useServerAuthStatusByServerId } from '@/components/settings/server/hooks/useServerAuthStatusByServerId';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -517,11 +518,23 @@ export function AccountServiceSettingsSection(): React.ReactElement {
             if (result) setContinuationResults((current) => ({ ...current, [homeServerIdentityId]: { input: pendingEnrollment.input, result } }));
             return;
         }
+        // The continuation is bound to the exact Account credential it was started
+        // under, so a credential replaced mid-flow cannot adopt it. Without a stored
+        // credential there is nothing to continue: the section says so instead.
+        const storedCredentials = await TokenStorage.accountDirectoryAuthCredentials
+            .get({ endpoint: directorySessionBinding.service.endpointUrl,
+                serverIdentityId: directorySessionBinding.service.serverIdentityId })
+            .catch(() => null);
+        if (!storedCredentials) {
+            setConnectionView({ kind: 'credential_expired', serviceKey });
+            return;
+        }
+        const credentialTokenDigest = await digestAccountDirectoryCredentialToken(storedCredentials.token);
         continuationAbortRef.current?.abort();
         const controller = new AbortController();
         continuationAbortRef.current = controller;
         const input = { service: directorySessionBinding.service, session: directorySessionBinding.session,
-            intent: { kind, homeServerIdentityId }, signal: controller.signal } as const;
+            credentialTokenDigest, intent: { kind, homeServerIdentityId }, signal: controller.signal } as const;
         setPendingRowActions((current) => ({ ...current, [homeServerIdentityId]: kind }));
         try {
             const previous = continuationResults[homeServerIdentityId]?.result;
@@ -964,19 +977,17 @@ export function AccountServiceSettingsSection(): React.ReactElement {
                                     ? `${testID}-link`
                                     : null;
                         const preferredLabel = t('settingsAccount.accountServicePreferredHome');
+                        // Every enrollment failure reads in the same words here as it
+                        // does on the OAuth return and the continuation card: the
+                        // failure presenter is the one owner of that vocabulary, so a
+                        // fourth copy of these bodies cannot drift away from it.
                         const enrollmentLabel = enrollmentView === 'enrolled'
                             ? t('settingsAccount.accountServiceHomeConnected')
                             : enrollmentView === 'approval_required'
                                 ? t('settingsAccount.accountServiceHomeApprovalRequired')
-                                : enrollmentView === 'rejected'
-                                    ? t('connect.pairingRejectedBody')
-                                    : enrollmentView === 'expired'
-                                        ? t('settingsAccount.accountServiceOAuth.errors.expired.body')
-                                        : enrollmentView === 'partial_commit'
-                                            ? t('connect.homeEnrollmentPartialCommitBody')
-                                            : enrollmentView === 'failed'
-                                                ? t('settingsAccount.accountServiceHomeConnectionFailed')
-                                                : null;
+                                : enrollmentView
+                                    ? describeAccountServiceFailure({ source: 'home', code: enrollmentView }).body
+                                    : null;
                         const statusLabel = [preferred ? preferredLabel : null, enrollmentLabel].filter(Boolean).join(' · ');
                         return (
                             <Item

@@ -505,7 +505,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  */
 export const en = {
     actionConfirmations: actionConfirmationTranslations.en,
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.en,
     transferRecovery: {
         title: 'Finish staged upload',
         message: 'The upload reached the machine, but the final save needs attention. Retry only the final save step, or discard the staged upload.',
@@ -1522,6 +1522,7 @@ export const en = {
 	        // Simple string constants
 	        add: 'Add',
 	        edit: 'Edit',
+	        change: 'Change',
             duplicate: 'Duplicate',
 	        actions: 'Actions',
 	        moreActions: 'More actions',
@@ -1613,6 +1614,7 @@ export const en = {
         enabled: 'Enabled',
         disabled: 'Disabled',
         requestFailed: 'Request failed.',
+        saveError: 'Failed to save.',
 
 	        more: 'More',
 	        maximize: 'Maximize',
@@ -12853,14 +12855,12 @@ settingsSession: {
         // Unified onboarding redesign — welcome decision (right pane)
         welcomeQuestionTitle: 'Welcome.',
         welcomeQuestionSubtitle: 'First time here?',
-        welcomeQuestionBody: 'Happier is the control room for your AI coding agents. No email needed. Your account is a private key, generated on this device.',
 
         welcomePrimaryButton: 'New here?',
         welcomePrimarySubtitle: 'One tap. No form. Your key lives here.',
         newHereHomeSubtitle: ({ home }: { home: string }) => `Create a private account on ${home}.`,
         newHereServiceSubtitle: ({ service }: { service: string }) => `Create an account with ${service}, then find or add your Home.`,
 
-        welcomeSecondaryButton: 'Login — I already use Happier',
         continueWithKey: 'Use a key',
         chooseSignInService: 'Choose sign-in service',
         accountKeyDescription: ({ service }: { service: string }) => `Enter the secure key for ${service}.`,
@@ -12868,8 +12868,10 @@ settingsSession: {
         signInServiceUrlPrompt: 'Advanced: enter the address of the service you use to sign in and find your Homes.',
         signInServiceInvalidAddress: 'Enter a valid http or https address.',
         signInServiceUnavailableTitle: 'Can’t reach your sign-in service',
-        signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) =>
-            `We can’t connect to ${serverUrl}. Retry or choose another sign-in service.`,
+        yourSignInService: 'your sign-in service',
+        signInServiceUnavailableBody: ({ service }: { service: string }) =>
+            `We can't connect to ${service}. Retry or choose another sign-in service.`,
+        signInServiceUnavailableHomeBody: 'You can still use this Home. Retry the sign-in service when you are ready.',
         signInServiceUnsupportedTitle: 'Sign-in service not supported',
         signInServiceMethodlessTitle: 'No sign-in methods are available here',
         signInServiceMethodlessBody: 'This service is reachable but offers no sign-in method right now. Retry, or choose another sign-in service.',

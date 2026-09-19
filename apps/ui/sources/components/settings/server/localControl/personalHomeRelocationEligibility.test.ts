@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { SecretStringSchema } from '@/sync/encryption/secretSettings';
+import type { RemoteHostLocalOverrides } from '@/sync/domains/remoteHosts/remoteHostLocalOverrides';
+
 import { isEligiblePersonalHomeRelocationHost } from './personalHomeRelocationEligibility';
 
-const overrides = vi.hoisted(() => ({ read: vi.fn(() => null) }));
+const overrides = vi.hoisted(() => ({
+    read: vi.fn<(remoteHostId: string) => RemoteHostLocalOverrides | null>(() => null),
+}));
 
 vi.mock('@/sync/domains/remoteHosts/remoteHostLocalOverrides', () => ({
     getRemoteHostLocalOverrides: (hostId: string) => overrides.read(hostId),
@@ -25,7 +30,11 @@ describe('isEligiblePersonalHomeRelocationHost', () => {
         expect(isEligiblePersonalHomeRelocationHost({ ...keyFileHost, ssh: { target: 'ops@server.example.test', authMode: 'agent' } }, false)).toBe(true);
         const passwordHost = {
             ...keyFileHost,
-            ssh: { target: 'ops@server.example.test', authMode: 'password' as const, passwordEnc: 'encrypted-password' },
+            ssh: {
+                target: 'ops@server.example.test',
+                authMode: 'password' as const,
+                passwordEnc: SecretStringSchema.parse({ _isSecretValue: true, value: 'encrypted-password' }),
+            },
         };
         expect(isEligiblePersonalHomeRelocationHost(passwordHost, false)).toBe(false);
         expect(isEligiblePersonalHomeRelocationHost(passwordHost, true)).toBe(true);

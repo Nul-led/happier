@@ -4,6 +4,57 @@ import { buildServerFeaturesResponse } from '@/hooks/server/serverFeaturesTestUt
 import { projectAuthEntryMethodCapabilities, projectAuthenticationMethodCapabilities } from './authMethodCapabilities';
 
 describe('projectAuthenticationMethodCapabilities authentication actions', () => {
+    it('uses one semantic action-to-execution projection for feature and auth-entry catalogs', () => {
+        const base = buildServerFeaturesResponse();
+        const featuresResult = projectAuthenticationMethodCapabilities({
+            ...base,
+            capabilities: {
+                ...base.capabilities,
+                auth: {
+                    ...base.capabilities.auth,
+                    methods: [
+                        { id: 'key_challenge', actions: [
+                            { id: 'login', enabled: true, mode: 'keyed' },
+                            { id: 'provision', enabled: true, mode: 'either' },
+                        ] },
+                        { id: 'mtls', actions: [{ id: 'login', enabled: true, mode: 'either' }] },
+                        { id: 'email_password', actions: [{ id: 'connect', enabled: true, mode: 'keyed' }] },
+                        { id: 'acme', actions: [
+                            { id: 'login', enabled: true, mode: 'either' },
+                            { id: 'provision', enabled: true, mode: 'either' },
+                            { id: 'connect', enabled: true, mode: 'either' },
+                        ] },
+                    ],
+                },
+                oauth: { providers: {} },
+            },
+        });
+        const authEntryResult = projectAuthEntryMethodCapabilities({
+            v: 1,
+            state: 'ready',
+            scope: { kind: 'home' },
+            actions: featuresResult.catalog.methods.flatMap((method) => method.enabledActions.map((action) => ({
+                kind: 'authenticate' as const,
+                methodId: method.id,
+                action: action.id,
+                mode: action.mode,
+                origin: 'home' as const,
+                // Every auth-entry action carries its own presentation; the feature
+                // catalog's method name is what a Home publishes for one without a
+                // richer projection.
+                presentation: method.presentation ?? { displayName: method.id },
+            }))),
+            autoRedirect: null,
+        });
+
+        const semanticProjection = (result: typeof featuresResult) => result.authenticationActions.map(({ method, action, execution }) => ({
+            methodId: method.id,
+            action,
+            execution,
+        }));
+        expect(semanticProjection(featuresResult)).toEqual(semanticProjection(authEntryResult));
+    });
+
     it('dispatches native password login without exposing it as an OAuth provider', () => {
         const result = projectAuthEntryMethodCapabilities({
             v: 1, state: 'ready', scope: { kind: 'home' }, autoRedirect: null,

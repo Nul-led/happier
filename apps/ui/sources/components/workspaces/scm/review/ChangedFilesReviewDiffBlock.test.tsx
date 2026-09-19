@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChangedFilesReviewDiffBlock } from './ChangedFilesReviewDiffBlock';
 import { renderScreen } from '@/dev/testkit';
 import { installFilesContentCommonModuleMocks } from './filesContentTestHelpers';
+import type { ReviewCommentDraft } from '@/sync/domains/input/reviewComments/reviewCommentTypes';
 
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
@@ -224,7 +225,7 @@ describe('ChangedFilesReviewDiffBlock', () => {
             },
         } as any;
 
-        const unrelatedDraft = {
+        const unrelatedDraft: ReviewCommentDraft = {
             id: 'draft-1',
             filePath: 'src/b.ts',
             source: 'diff',
@@ -232,7 +233,7 @@ describe('ChangedFilesReviewDiffBlock', () => {
             snapshot: { selectedLines: [], beforeContext: [], afterContext: [] },
             body: 'first',
             createdAt: 1,
-        } as const;
+        };
 
         const screen = await renderScreen(<ChangedFilesReviewDiffBlock
                     theme={theme}

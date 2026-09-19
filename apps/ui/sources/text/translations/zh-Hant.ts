@@ -17,6 +17,7 @@ import { sessionBoardTranslations } from './sessionBoardTranslations';
 import { pluginMarketplaceDiscoverTranslations } from './pluginMarketplaceDiscoverTranslations';
 import { sessionRemotePermissionGrantTranslations } from './sessionRemotePermissionGrantTranslations';
 import { sessionAgentActivityTranslations } from './sessionAgentActivityTranslations';
+import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { changedFileEvidenceTranslations } from './changedFileEvidenceTranslations';
 import { voiceReadinessTranslations } from './voiceReadinessTranslations';
 import { voiceDiagnosticsTranslations } from './voiceDiagnosticsTranslations';
@@ -738,6 +739,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     },
     pluginPermissions: pluginPermissionTranslations['zh-Hant'],
     sessionBoard: sessionBoardTranslations['zh-Hant'],
+    sessionDrafts: sessionDraftTranslations.zhHant,
     sessionAgentActivity: sessionAgentActivityTranslations.zhHant,
     ...changedFileEvidenceTranslations['zh-Hant'],
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations['zh-Hant'],
@@ -2254,6 +2256,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
       common: {
           // Simple string constants
           cancel: '取消',
+          change: '變更',
           decline: '拒絕',
           submit: '提交',
           close: '關閉',
@@ -9877,14 +9880,12 @@ settingsSession: {
         // Unified onboarding redesign — welcome decision (right pane)
         welcomeQuestionTitle: '歡迎。',
         welcomeQuestionSubtitle: '第一次使用?',
-        welcomeQuestionBody: 'Happier 是你 AI 編碼代理的控制中心。無需電子郵件。你的帳戶是一把在本裝置上產生的私鑰。',
 
         welcomePrimaryButton: '第一次使用？',
         welcomePrimarySubtitle: '一次點擊。無需表單。你的金鑰就在這裡。',
         newHereHomeSubtitle: ({ home }: { home: string }) => `在 ${home} 上建立私人帳戶。`,
         newHereServiceSubtitle: ({ service }: { service: string }) => `透過 ${service} 建立帳戶，然後尋找或加入你的 Home。`,
 
-        welcomeSecondaryButton: '登入 — 我已在使用 Happier',
         continueWithKey: '使用復原金鑰',
         chooseSignInService: '選擇登入服務',
         accountKeyDescription: ({ service }: { service: string }) => `輸入 ${service} 的安全金鑰。`,
@@ -9892,7 +9893,9 @@ settingsSession: {
         signInServiceUrlPrompt: '進階：輸入用於登入及尋找 Home 的服務位址。',
         signInServiceInvalidAddress: '請輸入有效的 http 或 https 位址。',
         signInServiceUnavailableTitle: '無法連線到登入服務',
-        signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `無法連線到 ${serverUrl}。請重試或選擇其他登入服務。`,
+        yourSignInService: '你的登入服務',
+        signInServiceUnavailableBody: ({ service }: { service: string }) => `無法連線到 ${service}。請重試或選擇其他登入服務。`,
+        signInServiceUnavailableHomeBody: '你仍然可以使用此 Home。準備好後再重試登入服務。',
         signInServiceUnsupportedTitle: '不支援此登入服務',
         signInServiceMethodlessTitle: '此處沒有可用的登入方式',
         signInServiceMethodlessBody: '此服務可以連線，但目前未提供任何登入方式。請重試或選擇其他服務。',

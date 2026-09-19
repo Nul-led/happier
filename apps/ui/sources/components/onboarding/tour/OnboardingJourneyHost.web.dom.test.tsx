@@ -185,6 +185,7 @@ function createWizardSurfaceProps(): OnboardingWizardSurfaceProps {
             authenticationCatalog: { provenance: 'legacy', methods: [] },
             authenticationActions: [],
             keyChallengeV2Available: false,
+            authEntryUnavailable: false,
             homeTarget: { kind: 'saved_profile', profileRef: 'relay-profile' },
             homeLabel: 'Relay Home',
             serverAvailability: 'ready',

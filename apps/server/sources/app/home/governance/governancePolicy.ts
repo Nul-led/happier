@@ -174,6 +174,17 @@ export async function setHomeGovernancePolicy(input: Readonly<{
     }
 }
 
+/**
+ * Whether this Home could still be used under the prospective narrowing.
+ *
+ * Usability is a route question, not an Account-mode question: the deployment's
+ * permitted Account modes decide which Accounts may be *constructed*, while an
+ * Account that already exists keeps its stored mode and its login. A narrowing
+ * is refused only when it leaves no enabled login or provision action at all,
+ * names a method this deployment does not have, removes every provisioning
+ * mode, or — through the auth-domain stranding owner — takes away the last
+ * current login route of an Account that has one.
+ */
 async function isProspectiveAuthenticationPolicyValidInTx(
     tx: Tx,
     policy: HomeAuthenticationPolicyV1 | null,

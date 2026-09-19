@@ -484,8 +484,17 @@ describe('Provider broker target application integration', () => {
       expect(admit).toHaveBeenCalledWith(expect.objectContaining({ authority: signedAuthority() }));
 
       // A bearer the Agent invents is neither trusted nor forwarded upstream.
+      // The admission proxy is single-connection by contract
+      // (`startFirstBytesLocalCapabilityProxy`), so the forged attempt needs its
+      // own stream target; reusing the one the first request already consumed
+      // would be refused by the transport before admission is even reached.
+      const forgedTarget = await server.createStreamTarget({
+        authenticatedRemoteEndpointId: payload.initiator.endpointId,
+        authority: signedAuthority(),
+        expected: expectedBinding,
+      });
       const forged = { ...signedAuthority(), payload: { ...payload, resourceId: 'resource-forged' } };
-      const forgedResponse = await requestThroughApplicationTarget({ ...target, authority: forged });
+      const forgedResponse = await requestThroughApplicationTarget({ ...forgedTarget, authority: forged });
       expect(forgedResponse).toContain('HTTP/1.1 204');
       expect(admit).toHaveBeenLastCalledWith(expect.objectContaining({ authority: signedAuthority() }));
       expect(access.request).toHaveBeenLastCalledWith(expect.objectContaining({

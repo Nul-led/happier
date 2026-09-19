@@ -74,7 +74,7 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                 case 'approval_invalid':
                     return oauthError('homeEnrollment');
                 default:
-                    return unreachable(code.code);
+                    return unreachable(code);
             }
         case 'home_auth':
             return oauthError('homeEnrollment');
@@ -93,7 +93,7 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                 case 'cancelled':
                     return oauthError('homeEnrollment');
                 default:
-                    return unreachable(code.code);
+                    return unreachable(code);
             }
         case 'directory_validation':
             return oauthError('identityChanged');
@@ -109,7 +109,7 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                 case 'entry_failed':
                     return oauthError('homeEnrollment');
                 default:
-                    return unreachable(code.code);
+                    return unreachable(code);
             }
         case 'oauth_callback':
             switch (code.code) {
@@ -130,7 +130,7 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                 case 'directory_link_conflict':
                     return oauthError('homeLink');
                 default:
-                    return unreachable(code.code);
+                    return unreachable(code);
             }
         default:
             return unreachable(code);

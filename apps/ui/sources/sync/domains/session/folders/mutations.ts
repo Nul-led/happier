@@ -11,7 +11,7 @@ import type { SessionFolderV1, SessionFoldersV1, SessionFolderWorkspaceRefV1 } f
 import { sessionFolderAddressKey } from './assignmentKeys';
 import { buildSessionFolderWorkspaceRefKey } from './workspaceRefs';
 
-function matchesFolderAddress(folder: SessionFolderV1, serverId: string, folderId: string): boolean {
+function matchesFolderAddress(folder: SessionFolderV1, serverId: string | null, folderId: string): boolean {
     return sessionFolderAddressKey({ serverId: folder.workspace.serverId, folderId: folder.id })
         === sessionFolderAddressKey({ serverId, folderId });
 }

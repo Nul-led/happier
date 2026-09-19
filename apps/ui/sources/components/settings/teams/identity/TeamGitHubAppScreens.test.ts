@@ -14,6 +14,7 @@ function teamContext(overrides?: Partial<TeamSectionContext>): TeamSectionContex
         mutationsAvailable: true,
         archived: false,
         canMutate: true,
+        approvalPending: false,
         refresh: vi.fn(),
         requestApproval: vi.fn(),
         ...overrides,

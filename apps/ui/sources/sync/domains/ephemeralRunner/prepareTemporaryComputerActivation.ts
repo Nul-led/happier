@@ -80,6 +80,8 @@ async function deriveCreatorEndpointFactsRecipient(input: Readonly<{
     scope: ServerAccountScope;
     credentials: AuthCredentials;
     encryption: Encryption | null;
+    /** The Home's projection of this Account's own published recipient. */
+    homeRecipient: RunnerEndpointFactsRecipientV1;
 }>): Promise<RunnerEndpointFactsRecipientV1> {
     // The three credential shapes are mutually exclusive, but token-only is a
     // structural supertype of both key-bearing shapes, so only the exact
@@ -121,7 +123,32 @@ async function deriveCreatorEndpointFactsRecipient(input: Readonly<{
         }
     }
     if (isDataKeyAuthCredentials(input.credentials)) {
-        throw new RunnerCreatorRecipientAuthorityError('runner_account_signing_authority_unavailable');
+        // A data-key Account keeps no Account signing key on the device, so this
+        // creator cannot re-sign its own content-key binding. It does not have to:
+        // that binding is public material the Account already published, and the
+        // Home merely carries it. `RunnerEndpointFactsRecipientV1Schema` verifies
+        // the signature and its fingerprint, and the decisive creator-side fact is
+        // checked here — the bound content key must be the one this device
+        // actually holds, which is exactly what a substituted recipient cannot
+        // satisfy. Nothing downstream trusts the carried signing key as an
+        // authority: every proof verifier resolves the activation signing identity
+        // from its own scope.
+        if (!input.encryption) {
+            throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
+        }
+        if (
+            input.homeRecipient.mode !== 'e2ee'
+            || input.homeRecipient.creatorAccountId !== input.scope.accountId
+        ) {
+            throw new RunnerCreatorRecipientAuthorityError('runner_creator_recipient_mismatch');
+        }
+        if (!equalBytes(
+            decodeBase64(input.homeRecipient.contentPublicKey, 'base64url'),
+            input.encryption.contentDataKey,
+        )) {
+            throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
+        }
+        return input.homeRecipient;
     }
     if (!isTokenOnlyAuthCredentials(input.credentials) || input.encryption !== null) {
         throw new RunnerCreatorRecipientAuthorityError('runner_account_encryption_mismatch');
@@ -199,10 +226,14 @@ export async function prepareTemporaryComputerActivation(input: Readonly<{
         files: input.files,
         attachmentDestination: input.attachmentDestination,
     });
-    const recipient = await deriveCreatorEndpointFactsRecipient(input);
-    // Home is only a currentness/equality witness. It never selects the
-    // recipient placed in creator-local activation custody.
+    // For a creator that can re-derive its own binding the Home is only a
+    // currentness/equality witness and never selects the recipient. A data-key
+    // creator holds no Account signing key, so the Home carries the Account's own
+    // published binding instead; that arm checks it against the content key this
+    // device holds before returning it, and the equality below is then its own
+    // trivial witness.
     const homeRecipient = RunnerEndpointFactsRecipientV1Schema.parse(await input.client.readCreatorRecipient(input.signal));
+    const recipient = await deriveCreatorEndpointFactsRecipient({ ...input, homeRecipient });
     if (createCanonicalJsonSigningInput(homeRecipient) !== createCanonicalJsonSigningInput(recipient)) {
         throw new RunnerCreatorRecipientAuthorityError('runner_creator_recipient_mismatch');
     }

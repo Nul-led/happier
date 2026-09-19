@@ -12,6 +12,7 @@ function team(overrides?: Partial<TeamSummaryV1>): TeamSummaryV1 {
         description: null,
         logo: null,
         archivedAt: null,
+        recovery: null,
         policy: {
             v: 1,
             sessionCreationPolicy: 'team_default',

@@ -540,6 +540,7 @@ const baseAuthOptions = {
     },
     authenticationActions: [generatedKeyAuthenticationAction],
     keyChallengeV2Available: true,
+    authEntryUnavailable: false,
     homeTarget: baseHomeTarget,
     homeLabel: 'Relay Home',
     observedHomeServerIdentityId: 'relay-profile',

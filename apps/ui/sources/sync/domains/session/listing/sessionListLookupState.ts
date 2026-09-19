@@ -8,11 +8,22 @@ import {
     resolveServerIdForSessionIdFromLocalState,
     type SessionAddressLookupState,
 } from '../resolveSessionAddressFromLocalState';
-import { readSessionListRowForServerId } from './sessionListRowStateLookup';
+import { readSessionListRowForServerId, type SessionListRowStateByServerId } from './sessionListRowStateLookup';
+import type { SessionListIndexItem } from '../../sessionList/sessionListIndex';
 import type { ConcurrentSessionListCacheByServerId } from './concurrentSessionListCache';
 
-export type SessionServerLookupStateLike = (SessionAddressLookupState & Readonly<{
+export type SessionServerLookupStateLike = (Omit<
+    SessionAddressLookupState,
+    'sessions' | 'sessionListIndexByServerId' | 'sessionListRowsByServerId'
+> & Readonly<{
     sessions?: Readonly<Record<string, { serverId?: unknown; metadata?: unknown } | null>> | null;
+    /**
+     * The list index and row maps are read here as the canonical store owns them
+     * (`sync/store/types.ts`); the address-lookup base only needs `serverId`, so it
+     * declares them loosely.
+     */
+    sessionListIndexByServerId?: Readonly<Record<string, readonly SessionListIndexItem[] | null | undefined>> | null;
+    sessionListRowsByServerId?: SessionListRowStateByServerId | null;
     concurrentSessionListCacheByServerId?: ConcurrentSessionListCacheByServerId | null;
 }>) | null | undefined;
 export type SessionListLookupStateLike = SessionServerLookupStateLike;

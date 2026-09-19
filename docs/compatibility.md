@@ -564,13 +564,14 @@ by `scripts/pipeline/release/runner-native-shell.test.mjs`.
 Linux x64 is the first publication-eligible build/publish/smoke target. This
 eligibility lets the release owner produce and validate an immutable candidate;
 it is not a Home availability claim. The Home projects only exact records from a
-verified immutable publication, and the default-off `sessions.ephemeralRunner`
-gate stays closed until the composed creator-to-Stop certification passes. Linux
-arm64, Darwin x64/arm64, and Windows x64 retain the same product/manifest target
-identities, but must not be projected as available until their immutable native
-artifact and applicable platform-signing evidence are published. Building a target
-does not make it available:
-the builder can compose the Darwin shell, but only with a real Developer ID
+verified immutable publication. The `sessions.ephemeralRunner` Home feature is on
+by default, with `HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED=0` as the
+operator opt-out; publication eligibility and release checks are separate from
+that feature decision. Linux arm64, Darwin x64/arm64, and Windows x64 retain the
+same product/manifest target identities, but must not be projected as available
+until their immutable native artifact and applicable platform-signing evidence
+are published. Building a target does not make it available: the builder can
+compose the Darwin shell, but only with a real Developer ID
 identity and notarization output, and it fails closed rather than emitting an
 unsigned or ad-hoc signed Runner. Darwin trust is owned by
 `notarize-standalone-binary.mjs`, which signs the JIT-entitled nested core before
@@ -581,14 +582,16 @@ and typed-unavailable: the approved one-shot, no-installer contract has no
 timestamped Authenticode owner, and changing that requires a plan amendment rather
 than a build flag.
 
-This feature is still development-only and must remain disabled until the real
-creator-to-endpoint-to-Session vertical and platform trust pass. Current source
-contains the authenticated pre-Session credential selection, Pool source-eligibility
-and exact-Machine binding, signed broker-readiness authorization, and production
-Runner consumer. Those source paths continue to fail closed on missing or stale
-readiness. They do not replace the still-open composed live journey: schemas, routes,
-UI, an endpoint executable, or focused source checks alone do not make Temporary
-computer available.
+The Home feature decision is on by default;
+`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED=0` is the operator opt-out.
+Current source contains the authenticated pre-Session credential selection, Pool
+source-eligibility and exact-Machine binding, signed broker-readiness
+authorization, and production Runner consumer. Those source paths continue to
+fail closed on missing or stale readiness. The composed creator-to-endpoint-to-Session
+journey on a loaded runtime and the platform-trust evidence above are release
+checks owned by release automation and human QA, separate from the feature
+decision and from an availability projection that still requires an exact
+artifact in a verified immutable publication.
 
 Runner Follow consumes the ordinary Session Follow preparation contract rather
 than defining a Runner protocol. The exact method is

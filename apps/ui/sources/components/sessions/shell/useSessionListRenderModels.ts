@@ -162,7 +162,7 @@ function resolveCachedSessionListRowRenderablesForItems(input: Readonly<{
         const cached = input.cacheByKey.get(key);
         if (cached && retention?.binding !== cached.binding) input.cacheByKey.delete(key);
         const renderable = input.subscribedRowRenderableByKey.get(key)
-            ?? (retention?.binding === cached?.binding ? cached.renderable : null);
+            ?? (cached && retention?.binding === cached.binding ? cached.renderable : null);
         if (!renderable) continue;
         next.set(key, renderable);
     }
@@ -196,7 +196,7 @@ function resolveCachedSessionListReachabilityRenderablesForItems(input: Readonly
         const cached = input.cacheByKey.get(key);
         if (cached && retention?.binding !== cached.binding) input.cacheByKey.delete(key);
         const renderable = input.subscribedReachabilityRenderableByKey.get(key)
-            ?? (retention?.binding === cached?.binding ? cached.renderable : null);
+            ?? (cached && retention?.binding === cached.binding ? cached.renderable : null);
         if (!renderable) continue;
         next.set(key, renderable);
     }

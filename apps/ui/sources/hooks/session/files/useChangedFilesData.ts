@@ -148,7 +148,7 @@ function buildAttributedScope(params: Readonly<{
     for (const file of params.changeSet?.files ?? []) {
         if (!evidenceByPath.has(file.filePath)) evidenceByPath.set(file.filePath, [file]);
     }
-    const qualify = (change: SessionChangeSetFile) => ({
+    const qualify = (change: SessionChangeSetFile): Omit<SessionAttributedFile, 'file'> => ({
         turns: change.turns,
         content: { source: change.source, confidence: change.confidence },
         attribution: change.attribution,

@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveActivityRemoteAlertEventIdentity } from '@happier-dev/protocol';
+import { parseSessionChangedWakeV1, resolveActivityRemoteAlertEventIdentity } from '@happier-dev/protocol';
 
 const testsDir = dirname(fileURLToPath(import.meta.url));
 const moduleRoot = dirname(testsDir);
@@ -299,4 +299,136 @@ test('Android remote alert requests keep distinct terminal turns distinct exactl
   // terminal turns.
   assert.notEqual(tag('v2_ready_seq42'), tag('v2_discussion_mention_seq7'));
   assert.notEqual(tag('v2_ready_seq42'), tag('v2_failed_turnA'));
+});
+
+const kotlinWakeSource = joinPath(
+  moduleRoot, 'android', 'src', 'main', 'java', 'dev', 'happier', 'activitynotifications', 'SessionChangedWake.kt',
+);
+
+// The Home's content-free closed-app wake exactly as it is submitted, beside
+// the neighbors the Android entry point must never hand to the wake consumer.
+const wakeScenarios = [
+  { id: 'wake_with_home', payload: { type: 'session_changed', serverId: SERVER_ID, sessionId: SESSION_ID } },
+  { id: 'wake_without_home', payload: { type: 'session_changed', sessionId: SESSION_ID } },
+  { id: 'wake_padded_ids', payload: { type: 'session_changed', serverId: ` ${SERVER_ID} `, sessionId: ` ${SESSION_ID} ` } },
+  {
+    id: 'wake_carrying_content',
+    payload: { type: 'session_changed', serverId: SERVER_ID, sessionId: SESSION_ID, title: 'Alice mentioned you' },
+  },
+  { id: 'wake_blank_session', payload: { type: 'session_changed', sessionId: '   ' } },
+  { id: 'wake_null_home', payload: { type: 'session_changed', serverId: null, sessionId: SESSION_ID } },
+  { id: 'badge_refresh', payload: { type: 'badge_refresh' } },
+  { id: 'activity_alert', payload: alertPayload(2, { type: 'ready', sequenceDomain: 'session_transcript', messageSeq: 42 }) },
+];
+const ALERT_SCENARIO = 'activity_alert';
+
+// Executes both real Android admission owners against the same wire body and
+// prints "<id>|<wake accepted|rejected>|<sessionId|->|<serverId|->|<alert accepted|rejected>".
+const wakeProbeSource = `
+package dev.happier.activitynotifications
+
+import com.google.firebase.messaging.RemoteMessage
+import org.json.JSONObject
+
+fun main() {
+  val input = JSONObject(readlnOrNull() ?: error("missing scenario input"))
+  for (key in sortedWakeScenarioKeys(input)) {
+    val message = RemoteMessage(mapOf("body" to input.getString(key)))
+    val wake = SessionChangedWake.parse(message)
+    val alert = ActivityRemoteAlert.parse(message)
+    println(
+      listOf(
+        key,
+        if (wake == null) "rejected" else "accepted",
+        wake?.sessionId ?: "-",
+        wake?.serverId ?: "-",
+        if (alert == null) "rejected" else "accepted",
+      ).joinToString("|"),
+    )
+  }
+}
+
+private fun sortedWakeScenarioKeys(input: JSONObject): List<String> =
+  buildList {
+    val keys = input.keys()
+    while (keys.hasNext()) add(keys.next())
+  }.sorted()
+`;
+
+test('Android admits exactly the Protocol content-free wake and never an alert as one', async (t) => {
+  const toolchain = discoverKotlinToolchain();
+  if (!toolchain) {
+    t.skip('local Kotlin toolchain (Gradle distribution) unavailable; the behavioral native admission gate needs it');
+    return;
+  }
+
+  // The canonical Protocol owner decides every expectation; this test restates
+  // none of the wake's admission rules.
+  const expected = new Map(wakeScenarios.map((scenario) => [
+    scenario.id,
+    parseSessionChangedWakeV1(scenario.payload),
+  ]));
+  assert.ok([...expected.values()].some((wake) => wake), 'Protocol must admit at least one wake under test');
+  assert.ok([...expected.values()].some((wake) => !wake), 'Protocol must reject at least one payload under test');
+
+  const work = mkdtempSync(join(tmpdir(), 'activity-session-changed-wake-'));
+  let stdout;
+  try {
+    const jsonStub = join(work, 'OrgJsonStub.kt');
+    const firebaseStubFile = join(work, 'FirebaseStub.kt');
+    const probeFile = join(work, 'SessionChangedWakeProbe.kt');
+    writeFileSync(jsonStub, jsonRuntimeStub);
+    writeFileSync(firebaseStubFile, firebaseStub);
+    writeFileSync(probeFile, wakeProbeSource);
+    const classes = join(work, 'classes');
+    execFileSync(
+      'java',
+      [
+        '-cp', toolchain.compilerJars.join(delimiter),
+        'org.jetbrains.kotlin.cli.jvm.K2JVMCompiler',
+        '-classpath', toolchain.runtimeJars.join(delimiter),
+        '-no-stdlib',
+        '-d', classes,
+        '-nowarn',
+        kotlinWakeSource, kotlinAlertSource, jsonStub, firebaseStubFile, probeFile,
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    const scenarioInput = {};
+    for (const scenario of wakeScenarios) scenarioInput[scenario.id] = JSON.stringify(scenario.payload);
+    stdout = execFileSync(
+      'java',
+      [
+        '-cp', [classes, ...toolchain.runtimeJars].join(delimiter),
+        'dev.happier.activitynotifications.SessionChangedWakeProbeKt',
+      ],
+      { input: JSON.stringify(scenarioInput), encoding: 'utf8' },
+    );
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+
+  const observed = new Map(
+    stdout.trim().split('\n').filter(Boolean).map((line) => {
+      const [id, status, sessionId, serverId, alertStatus] = line.split('|');
+      return [id, { status, sessionId, serverId, alertStatus }];
+    }),
+  );
+
+  for (const scenario of wakeScenarios) {
+    const row = observed.get(scenario.id);
+    assert.ok(row, `missing probe result for ${scenario.id}`);
+    const canonical = expected.get(scenario.id);
+    assert.equal(row.status, canonical ? 'accepted' : 'rejected', `${scenario.id} native admission must equal Protocol`);
+    if (canonical) {
+      assert.equal(row.sessionId, canonical.sessionId, `${scenario.id} native session identity must equal Protocol`);
+      assert.equal(row.serverId, canonical.serverId ?? '-', `${scenario.id} native Home identity must equal Protocol`);
+    }
+    // One message, one native owner: the wake consumer never sees an alert and
+    // the alert consumer never sees a wake.
+    assert.equal(row.alertStatus, scenario.id === ALERT_SCENARIO ? 'accepted' : 'rejected',
+      `${scenario.id} must not be admitted by both native owners`);
+    if (scenario.id === ALERT_SCENARIO) assert.equal(row.status, 'rejected');
+  }
 });

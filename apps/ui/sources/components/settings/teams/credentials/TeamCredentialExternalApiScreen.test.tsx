@@ -393,7 +393,7 @@ describe('TeamCredentialExternalApiScreen', () => {
                 id: 'resource-1',
                 capabilities: {
                     manageAudience: false, managePolicy: false, manageLimits: false,
-                    updateBrokerPlacement: false, narrowDisclosure: false,
+                    updateBrokerPlacement: false, narrowDisclosure: false, widenDisclosure: false,
                     refreshDirectMaterial: false, disable: false, enable: false, delete: false,
                 },
             }),

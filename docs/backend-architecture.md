@@ -181,8 +181,10 @@ Clients authenticate through method modules resolved by one effective Home decis
   E2EE password envelope plus a one-way verifier of the client-derived authentication
   key (see [encryption.md](encryption.md) for the envelope). Password verification is
   admission to the existing token owner; it never mints encryption material or a
-  second credential shape. The method is default-off and unreleased; real SMTP,
-  loaded-client, and mixed-version certification remains an activation gate.
+  second credential shape. The method is unreleased, and a Home administrator enables it
+  through the Home governance policy like any other authentication method. Real SMTP,
+  loaded-client and mixed-version runs are release checks, separate from that policy
+  decision.
 
 One effective authentication-method decision — resolved from deployment policy, the
 persisted Home governance document, and transactional-mail readiness — is the single

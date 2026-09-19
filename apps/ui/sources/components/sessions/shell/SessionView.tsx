@@ -66,6 +66,7 @@ import { SessionHeaderTerminalButton } from '@/components/sessions/actions/Sessi
 import { CurrentSessionPresentationSurface } from '@/components/sessions/presentation/CurrentSessionPresentationSurface';
 import { useComposerScopePluginPresentation } from '@/components/sessions/presentation/useComposerScopePluginPresentation';
 import { useComposerPresentationInputEffects } from '@/components/sessions/presentation/useComposerPresentationInputEffects';
+import { presentSessionTeamCredentialDenial } from '@/components/sessions/presentation/sessionTeamCredentialDenialPresentation';
 import {
     applyComposerPresentationTransaction,
     flushPendingRegisteredSessionComposerFocus,
@@ -2462,7 +2463,6 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
                            openSessionCollaboration={openSessionCollaboration}
                            openSessionAccess={openSessionAccess}
                            companionEdge={companionPreference.preference.edge}
-                           boardDestinationAvailable={boardDestinationAvailable}
                            openWorkStateRequestKey={props.openWorkStateRequestKey ?? null}
                        />
                        </ComposerBannerCollapseProvider>
@@ -2520,7 +2520,6 @@ function SessionViewLoaded({
     openSessionCollaboration,
     openSessionAccess,
     companionEdge,
-    boardDestinationAvailable,
     openWorkStateRequestKey,
 }: {
     authSurfaceState: SessionAuthSurfaceState | null;
@@ -2572,13 +2571,6 @@ function SessionViewLoaded({
     openSessionCollaboration: () => void;
     openSessionAccess: () => void;
     companionEdge: SessionCompanionEdge;
-    /**
-     * The focused surface owns the one exact-Home `sessions.board` decision.
-     * Companion presents Board content and has no feature of its own, so this
-     * single answer admits the Companion rail, host, presentation bridge and
-     * reveal port exactly as it admits the Board destination.
-     */
-    boardDestinationAvailable: boolean;
     openWorkStateRequestKey: number | null;
 }) {
     const sessionAccountLifetime = accountBinding?.isCurrent() === true
@@ -7077,6 +7069,22 @@ function SessionViewLoaded({
                             ?? requestedTransitionSelection.modelId,
                 }
                 : null;
+            // A shared Team credential that refused this request is the most
+            // specific current fact about the binding, so it outranks the
+            // binding's own static states — but never a change the person just
+            // asked for, which is still waiting on them.
+            // Staleness is the usage-limit owner's rule, reused rather than
+            // re-decided: once the runtime has done meaningful work after the
+            // refusal, the refusal is history and its banner must go.
+            if (transitionBanner === null && !hasMeaningfulActivityAfterRuntimeIssue(sessionRuntimeStatusSource)) {
+                const teamCredentialDenial = presentSessionTeamCredentialDenial({
+                    issue: sessionRuntimeStatusSource.lastRuntimeIssue ?? null,
+                    resolveResourceDisplayName: (resourceId) => teamCredentialCatalog.resources.find(
+                        (resource) => resource.id === resourceId,
+                    )?.displayName ?? null,
+                });
+                if (teamCredentialDenial) return teamCredentialDenial;
+            }
             const banner = transitionBanner
                 ?? providerBindingPresentation?.banner
                 ?? pendingProviderSwitchBanner;
@@ -7127,6 +7135,10 @@ function SessionViewLoaded({
             providerLaunchBinding?.displaySnapshot.connectionName,
             providerLaunchBinding?.displaySnapshot.providerName,
             providerModelProjection.data?.groups,
+            sessionRuntimeStatusSource.lastRuntimeIssue,
+            sessionRuntimeStatusSource.latestTurnStatus,
+            sessionRuntimeStatusSource.latestTurnStatusObservedAt,
+            sessionRuntimeStatusSource.meaningfulActivityAt,
             teamCredentialCatalog.resources,
         ]);
         const handleProviderBindingAction = React.useCallback(async () => {
@@ -9168,12 +9180,12 @@ function SessionViewLoaded({
         if (!mountedBoard?.controller.supports('item.remove')) return;
         void mountedBoard.controller.run({ kind: 'item.remove', itemId });
     }, [mountedBoard]);
-    // Companion is a placement for Board content, so the Board destination's
-    // exact-Home decision admits it. A Home that does not serve Board mounts no
-    // Companion host, no presentation bridge and no reveal port — while this
-    // device's saved Companion preference is left untouched for the day that
-    // Home serves Board again.
-    const companion = boardDestinationAvailable ? (
+    // Companion is not a Board placement gate. Its first-party Session Summary
+    // is composed from Session facts alone, so the Companion host, presentation
+    // bridge and reveal port mount on every Home. Where that Home does not serve
+    // the Board destination, `boardBinding` simply stays `unavailable`: the
+    // Summary still renders and `board: null` discloses no shared item content.
+    const companion = (
         <>
             <SessionCompanionPresentationBridge
                 sessionId={sessionId}
@@ -9218,7 +9230,7 @@ function SessionViewLoaded({
                 summaryDestinations={companionSummaryDestinations}
             /> : null}
         </>
-    ) : null;
+    );
 
     const main = (
             <TranscriptMessageSelectionProvider
@@ -9249,10 +9261,7 @@ function SessionViewLoaded({
     );
     const wrapPaneScopeContent = React.useCallback((content: React.ReactElement) => (
         <SessionCompanionRevealOwner
-            // A null address publishes no port, so Board item menus, inline
-            // transcript results and the header find no Companion to reveal
-            // while this Home does not serve the Board destination.
-            address={boardDestinationAvailable ? companionAddress : null}
+            address={companionAddress}
             paneScopeId={paneScopeId}
             openFullSurface={openCompanionFullSurface}
             revealBoardItem={revealCompanionBoardItemThroughPresentation}
@@ -9260,7 +9269,6 @@ function SessionViewLoaded({
             {content}
         </SessionCompanionRevealOwner>
     ), [
-        boardDestinationAvailable,
         companionAddress,
         openCompanionFullSurface,
         paneScopeId,

@@ -17,6 +17,9 @@ import { HomeDeviceApprovalSection } from '../server/sections/HomeDeviceApproval
 
 installTokenStorageWebPlatformMocks();
 const boundary = vi.hoisted(() => ({ request: vi.fn() }));
+
+/** Non-secret binding to the Account credential a continuation was created under. */
+const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
 vi.mock('@/utils/system/runtimeFetch', () => ({
     runtimeFetch: (input: RequestInfo | URL, init?: RequestInit) => {
         const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
@@ -71,6 +74,7 @@ it.each(['account', 'approval'])('%s Settings resumes exact Home authentication 
         return fixture.request(endpoint, path, init);
     });
     await completeAccountServicePostAuth({ service: fixture.service,
+        credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
         session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
         intent: { kind: 'enroll', homeServerIdentityId: fixture.home.homeServerIdentityId } });
     screen = await renderScreen(<AuthProvider initialCredentials={credentialsA}>{surface === 'account'

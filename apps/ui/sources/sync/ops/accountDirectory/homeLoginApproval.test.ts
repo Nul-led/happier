@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import sodium from '@/encryption/libsodium.lib';
 import { encodeBase64 } from '@/encryption/base64';
@@ -26,7 +26,7 @@ let secureStoreWriteError: Error | null = null;
 let secureStoreDeleteError: Error | null = null;
 let secureStoreWriteObserver: (() => void) | null = null;
 installTokenStorageWebPlatformMocks({
-    reactNative: () => createReactNativeNativeMock({ Platform: { OS: 'ios' } }),
+    reactNative: () => createReactNativeNativeMock({ platformOS: 'ios' }),
     secureStore: () => ({
         getItemAsync: async (key: string) => secureStoreValues.get(key) ?? null,
         setItemAsync: async (key: string, value: string) => {
@@ -53,10 +53,10 @@ vi.mock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
 let continueHomeLoginEnrollment: typeof import('./homeLoginApproval')['continueHomeLoginEnrollment'];
 let TokenStorage: typeof import('@/auth/storage/tokenStorage')['TokenStorage'];
 let serverProfiles: typeof import('@/sync/domains/server/serverProfiles');
-let setCredentialsForServerUrlMock: ReturnType<typeof vi.fn>;
-let adoptHomeProfileMock: ReturnType<typeof vi.fn>;
-let preflightHomeProfileAdoptionMock: ReturnType<typeof vi.fn>;
-let reconcileServerProfileHomeConnectionDescriptorMock: ReturnType<typeof vi.fn>;
+let setCredentialsForServerUrlMock: MockInstance<typeof TokenStorage.setCredentialsForServerUrlWithRollback>;
+let adoptHomeProfileMock: MockInstance<typeof import('@/sync/domains/server/serverProfiles').adoptHomeProfile>;
+let preflightHomeProfileAdoptionMock: MockInstance<typeof import('@/sync/domains/server/serverProfiles').preflightHomeProfileAdoption>;
+let reconcileServerProfileHomeConnectionDescriptorMock: MockInstance<typeof import('@/sync/domains/server/serverProfiles').reconcileServerProfileHomeConnectionDescriptor>;
 
 function json(status: number, payload: unknown): Response {
     return new Response(JSON.stringify(payload), {
@@ -786,8 +786,10 @@ describe('Home login approval continuation (explicit target, Home-authoritative)
             kind: 'partial_commit',
             homeServerIdentityId: 'srv_home_b',
             canonicalServerUrl: 'https://home-b.test',
-            adoptionError: { message: 'Home credential adoption cancelled' },
-            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+            error: {
+                adoptionError: { message: 'Home credential adoption cancelled' },
+                rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
+            },
         });
         expect(result).not.toEqual({ kind: 'failed' });
     });

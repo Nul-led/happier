@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { HomeConnectionDescriptorV1 } from '@happier-dev/protocol';
 import { installTokenStorageWebPlatformMocks } from '@/auth/storage/tokenStorage.testHelpers';
 import { installLocalStorageMock } from '@/auth/storage/tokenStorage.web.testHelpers';
 
@@ -20,7 +21,7 @@ describe('relocation without Account Directory', () => {
         });
         await profiles.setActiveServerId(source.id);
         const focus = profiles.getActiveServerSnapshot();
-        const descriptor = { v: 1 as const, homeServerIdentityId: 'srv_move', canonicalServerUrl: 'https://home.test', revision: 27,
+        const descriptor: HomeConnectionDescriptorV1 = { v: 1, homeServerIdentityId: 'srv_move', canonicalServerUrl: 'https://home.test', revision: 27,
             endpoints: [{ kind: 'https' as const, url: 'https://destination.test' },
                 { kind: 'iroh' as const, endpointId: 'ab'.repeat(32), relayUrls: ['https://relay.test'], directAddresses: ['192.168.1.2:4242'] }] };
         const responder = createPersonalHomeRelocationPromptResponderWithPublication({

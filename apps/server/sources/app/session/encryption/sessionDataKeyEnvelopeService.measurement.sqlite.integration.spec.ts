@@ -21,7 +21,7 @@ import {
  * Evidence-only measurement for the incumbent full-page PATCH transaction.
  *
  * This is not a timeout or a product-limit gate. It runs the canonical SQLite
- * owner at the approved 10/100/500-recipient fanout points, verifies every tuple and private
+ * owner at the approved 24/100/500-recipient fanout points, verifies every tuple and private
  * AccountChange, and prints the observed service time so the page bound is
  * based on an implemented persistence path rather than a pre-table estimate.
  */

@@ -165,7 +165,8 @@ describe('SecretsList', () => {
     it('exposes only server-projected capabilities for owner resource rows', async () => {
         const entry = {
             ref: 'happier:shared-secret:v1:shared-a', source: 'shared_resource', relationship: 'owner',
-            name: 'Shared key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 2, materialStatus: 'ready',
+            name: 'Shared key', kind: 'apiKey', encryptionMode: null, owner: null, accessSources: [], audience: null,
+            ownerAccountId: 'owner-a', revision: 2, materialStatus: 'ready',
             capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
         } as const satisfies SavedSecretCatalogEntryV1;
         const callbacks = {
@@ -174,7 +175,7 @@ describe('SecretsList', () => {
         const { screen } = await renderSecretsList({ sharedEntries: [entry], ...callbacks });
         const actions = findTestInstanceByTypeWithProps(screen, 'ItemRowActions', {
             overflowTriggerTestID: `saved-secret:${entry.ref}:more`,
-        });
+        })!;
 
         expect(actions.props.actions.map((action: { id: string }) => action.id))
             .toEqual(['rename', 'rotate', 'manageAccess', 'delete']);
@@ -208,7 +209,7 @@ describe('SecretsList', () => {
         expect(onSelectId).not.toHaveBeenCalled();
         const ownerActions = findTestInstanceByTypeWithProps(screen, 'ItemRowActions', {
             overflowTriggerTestID: 'saved-secret-corrupt:owner:0:more',
-        });
+        })!;
         expect(ownerActions.props.actions.map((action: { id: string }) => action.id)).toEqual(['delete']);
         ownerActions.props.actions[0].onPress();
         expect(onDeleteCorruptShared).toHaveBeenCalledWith(owner);

@@ -99,7 +99,6 @@ export const TeamCredentialResourceFilterPicker = React.memo(function TeamCreden
                 rootStep,
                 selected: props.value,
                 onSelect: props.onChange,
-                onClose: close,
             },
             chrome: {
                 kind: 'card',

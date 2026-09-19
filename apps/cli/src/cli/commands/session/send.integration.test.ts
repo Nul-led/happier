@@ -10,6 +10,7 @@ import {
   bindApiSessionSocketSequenceMock,
   createApiSessionSocketStub,
 } from '@/testkit/backends/apiSessionSocketHarness';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
@@ -114,6 +115,20 @@ describe('happier session send (integration)', () => {
 
     server = createServer(async (req, res) => {
       const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+
+      // Every path to a Session now runs the Account encryption currentness
+      // preflight, so this boundary must answer it exactly like the sibling
+      // integration servers (`list`, `create`, `runList`, `executionRunGet`).
+      if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(createAccountEncryptionCurrentnessFixture({
+          mode: 'e2ee',
+          version: 1,
+          updatedAt: 1,
+        })));
+        return;
+      }
 
       if (req.method === 'GET' && url.pathname === `/v2/sessions/${sessionId}`) {
         res.statusCode = 200;

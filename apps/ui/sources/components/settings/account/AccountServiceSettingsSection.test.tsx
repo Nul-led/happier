@@ -34,6 +34,9 @@ vi.mock('@/modal', async () => (await import('@/dev/testkit/mocks/modal')).creat
 
 import { AccountServiceSettingsSection } from './AccountServiceSettingsSection';
 
+/** Non-secret binding to the Account credential a continuation was created under. */
+const ACCOUNT_CREDENTIAL_TOKEN_DIGEST = 'C0jknAf55a-WIBFlxj8xId4cq00hoNQDzcbt4__9tlM';
+
 describe('Account Service settings continuation composition', () => {
     let fixture: ReturnType<typeof createDirectoryHttpFixture>;
     let restore: () => void;
@@ -113,6 +116,7 @@ describe('Account Service settings continuation composition', () => {
     it('automatically resumes a visible exact pending enrollment through the shared scheduler', async () => {
         const { service } = fixture;
         const input = { service,
+            credentialTokenDigest: ACCOUNT_CREDENTIAL_TOKEN_DIGEST,
             session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
             intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId },
         };

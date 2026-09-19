@@ -127,30 +127,42 @@ function resolveActiveGroupProfileId(params: Readonly<{
     return null;
 }
 
+/**
+ * Connected Account profile/group facts live only on the `connected` arm of the
+ * binding union; a `native` or `team_resource` selection carries none.
+ */
+function readConnectedBinding(
+    binding: ConnectedServicesServiceBinding | undefined,
+): Extract<ConnectedServicesServiceBinding, { source: 'connected' }> | undefined {
+    return binding?.source === 'connected' ? binding : undefined;
+}
+
 function resolveBindingProfile(params: Readonly<{
     optionBinding: ConnectedServicesServiceBinding | undefined;
     payloadBinding: ConnectedServicesServiceBinding | undefined;
     accountProfileConnectedServicesV2: ReadonlyArray<AccountProfileConnectedService>;
     legacyServiceId: ConnectedServiceId | null;
 }>): Readonly<{ profileId: string; groupId?: string }> | null {
+    const optionBinding = readConnectedBinding(params.optionBinding);
+    const payloadBinding = readConnectedBinding(params.payloadBinding);
     const explicitProfileId =
-        readTrimmedString(params.optionBinding?.profileId)
-        ?? readTrimmedString(params.payloadBinding?.profileId);
+        readTrimmedString(optionBinding?.profileId)
+        ?? readTrimmedString(payloadBinding?.profileId);
     if (explicitProfileId) {
-        const selection = params.optionBinding?.selection ?? params.payloadBinding?.selection;
-        const groupId = readTrimmedString(params.optionBinding?.groupId)
-            ?? readTrimmedString(params.payloadBinding?.groupId);
+        const selection = optionBinding?.selection ?? payloadBinding?.selection;
+        const groupId = readTrimmedString(optionBinding?.groupId)
+            ?? readTrimmedString(payloadBinding?.groupId);
         return {
             profileId: explicitProfileId,
             ...(selection === 'group' && groupId ? { groupId } : {}),
         };
     }
 
-    const selection = params.optionBinding?.selection ?? params.payloadBinding?.selection;
+    const selection = optionBinding?.selection ?? payloadBinding?.selection;
     if (selection !== 'group') return null;
 
-    const groupId = readTrimmedString(params.optionBinding?.groupId)
-        ?? readTrimmedString(params.payloadBinding?.groupId);
+    const groupId = readTrimmedString(optionBinding?.groupId)
+        ?? readTrimmedString(payloadBinding?.groupId);
     if (!groupId) return null;
 
     // The V2 account lookup still speaks scalar service ids; convert the

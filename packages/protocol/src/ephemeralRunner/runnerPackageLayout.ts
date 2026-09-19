@@ -8,9 +8,10 @@ import { RUNNER_ARTIFACT_TARGETS, type RunnerArtifactTarget } from './runnerArti
  * the creator-side package assembler must agree on exactly one immutable payload
  * shape per target and on exactly which targets the release pipeline may
  * publish. Publication eligibility is not product availability: the Home still
- * requires an exact artifact in the verified immutable release manifest, and
- * the Temporary-computer feature remains disabled until the composed live
- * certification passes.
+ * requires an exact artifact in the verified immutable release manifest. The
+ * Temporary-computer Home feature itself is on by default
+ * (`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED=0` is the operator
+ * opt-out); release checks are separate from that feature decision.
  */
 
 export const RUNNER_ACTIVATION_FILE_NAME = 'happier-runner.activation.json';

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { accountDirectoryAuthClient, createVerifiedAccountServiceAuthority, type AccountDirectoryAuthMethodDiscovery, type AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { AccountServiceAuthenticationFlow } from '@/components/account/auth/AccountServiceAuthenticationFlow';
+import type { AccountDirectoryKeyLoginOutcome } from '@/components/account/auth/AccountDirectoryKeyLoginForm';
 import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
 import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
@@ -18,7 +19,9 @@ type State =
     | Readonly<{ kind: 'continuation'; input: AccountPostAuthInput; result: AccountPostAuthResult }>
     | Readonly<{ kind: 'home_auth'; input: AccountPostAuthInput; previous: AccountPostAuthResult; homeServerIdentityId: string }>;
 
-function isTerminalResult(result: AccountPostAuthResult): boolean {
+// The key-login form reports its own non-authenticated outcomes alongside the
+// post-auth results, and this surface exits on the same four settled kinds.
+function isTerminalResult(result: AccountDirectoryKeyLoginOutcome): boolean {
     return result.kind === 'account_connected' || result.kind === 'home_entered'
         || result.kind === 'home_enrolled' || result.kind === 'home_linked';
 }

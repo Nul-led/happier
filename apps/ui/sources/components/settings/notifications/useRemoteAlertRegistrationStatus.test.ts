@@ -32,7 +32,7 @@ afterEach(() => {
 
 describe('remote alert registration status', () => {
     it('reads only the captured Home and rejects an old unmarked response', async () => {
-        const home = upsertAndActivateServer({ serverUrl: 'https://remote-alert-status.example', name: 'Home' });
+        const home = await upsertAndActivateServer({ serverUrl: 'https://remote-alert-status.example', name: 'Home' });
         const scope = { serverId: home.id, accountId: 'account-a' };
         getStorage().getState().activateProfileScope(scope);
         getStorage().setState({ settingsScope: scope, settingsVersion: 7 });
@@ -90,7 +90,7 @@ describe('remote alert registration status', () => {
     });
 
     it('re-probes native capability on Refresh so a mounted screen can become enrollable', async () => {
-        const home = upsertAndActivateServer({ serverUrl: 'https://remote-alert-refresh.example', name: 'Home' });
+        const home = await upsertAndActivateServer({ serverUrl: 'https://remote-alert-refresh.example', name: 'Home' });
         const scope = { serverId: home.id, accountId: 'account-refresh' };
         getStorage().getState().activateProfileScope(scope);
         getStorage().setState({ settingsScope: scope, settingsVersion: 8 });
@@ -132,7 +132,7 @@ describe('remote alert registration status', () => {
     });
 
     it('re-probes after the asynchronous Home projection resolves', async () => {
-        const home = upsertAndActivateServer({ serverUrl: 'https://remote-alert-prepared.example', name: 'Home' });
+        const home = await upsertAndActivateServer({ serverUrl: 'https://remote-alert-prepared.example', name: 'Home' });
         const scope = { serverId: home.id, accountId: 'account-prepared' };
         getStorage().getState().activateProfileScope(scope);
         getStorage().setState({ settingsScope: scope, settingsVersion: 9 });

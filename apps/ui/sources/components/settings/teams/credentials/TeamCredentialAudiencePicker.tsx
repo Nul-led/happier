@@ -148,7 +148,7 @@ export const TeamCredentialAudiencePicker = React.memo(function TeamCredentialAu
         const label = props.label ?? t('teams.credentials.audience.add');
         modalIdRef.current = Modal.show({
             component: PickerContent,
-            props: { ...props, allowedKinds: props.allowedKinds ?? ['member', 'group'], onClose: close },
+            props: { ...props, allowedKinds: props.allowedKinds ?? ['member', 'group'] },
             chrome: { kind: 'card', title: label, testID: 'team-credential-audience-picker:modal', scrollHost: 'body', bodyScroll: 'none' },
             closeOnBackdrop: true,
         });

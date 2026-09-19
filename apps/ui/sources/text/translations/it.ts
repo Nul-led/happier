@@ -661,7 +661,7 @@ function plural({
 export const it = {
     actionConfirmations: actionConfirmationTranslations.it,
     workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.it, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.it.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.it.resolve } },
-    ...sessionDraftTranslations,
+    sessionDrafts: sessionDraftTranslations.it,
     transferRecovery: {
         title: 'Completa il caricamento preparato',
         message: 'Il caricamento ha raggiunto la macchina, ma il salvataggio finale richiede attenzione. Riprova solo la finalizzazione oppure elimina il caricamento preparato.',
@@ -1462,6 +1462,7 @@ export const it = {
     // Simple string constants
     add: "Aggiungi",
     edit: "Modifica",
+    change: "Cambia",
     duplicate: "Duplica",
     actions: "Azioni",
     moreActions: "Altre azioni",
@@ -12529,14 +12530,12 @@ settingsSession: {
     // Unified onboarding redesign — welcome decision (right pane)
     welcomeQuestionTitle: "Benvenuto.",
     welcomeQuestionSubtitle: "È la prima volta qui?",
-    welcomeQuestionBody: "Happier è il centro di controllo dei tuoi agenti di codifica IA. Nessuna email richiesta. Il tuo account è una chiave privata, generata su questo dispositivo.",
 
     welcomePrimaryButton: "Nuovo da queste parti?",
     welcomePrimarySubtitle: "Un tocco. Niente moduli. La tua chiave vive qui.",
     newHereHomeSubtitle: ({ home }: { home: string }) => `Crea un account privato su ${home}.`,
     newHereServiceSubtitle: ({ service }: { service: string }) => `Crea un account con ${service}, poi trova o aggiungi il tuo Home.`,
 
-    welcomeSecondaryButton: "Accedi — uso già Happier",
     continueWithKey: "Usa una chiave",
     chooseSignInService: "Scegli il servizio di accesso",
     accountKeyDescription: ({ service }: { service: string }) => `Inserisci la chiave sicura per ${service}.`,
@@ -12544,7 +12543,9 @@ settingsSession: {
     signInServiceUrlPrompt: "Avanzate: inserisci l’indirizzo del servizio che usi per accedere e trovare i tuoi Home.",
     signInServiceInvalidAddress: "Inserisci un indirizzo http o https valido.",
     signInServiceUnavailableTitle: "Impossibile raggiungere il servizio di accesso",
-    signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Impossibile connettersi a ${serverUrl}. Riprova o scegli un altro servizio di accesso.`,
+    yourSignInService: "il tuo servizio di accesso",
+    signInServiceUnavailableBody: ({ service }: { service: string }) => `Impossibile connettersi a ${service}. Riprova o scegli un altro servizio di accesso.`,
+    signInServiceUnavailableHomeBody: 'Puoi continuare a usare questo Home. Riprova il servizio di accesso quando vuoi.',
     signInServiceUnsupportedTitle: "Servizio di accesso non supportato",
     signInServiceMethodlessTitle: "Qui non sono disponibili metodi di accesso",
     signInServiceMethodlessBody: "Questo servizio è raggiungibile ma al momento non offre alcun metodo di accesso. Riprova o scegli un altro servizio.",

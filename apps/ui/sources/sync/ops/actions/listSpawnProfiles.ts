@@ -34,11 +34,11 @@ export function listSpawnProfilesForActions(
     const snapshot = readUiAiLaunchProfileSnapshot(state.settings.profiles);
     const agentIds = new Set<string>(AGENT_IDS);
     for (const profile of snapshot.profiles) {
+        // Only the historical V1 profile shape carries `compatibilityByTargetKey`; a V2
+        // profile's `preferredAgentTargetKey` is unreachable from this branch (see the
+        // lane report's listSpawnProfiles finding).
         if (!('compatibilityByTargetKey' in profile)) continue;
-        const targetKeys = [
-            ...Object.keys(profile.compatibilityByTargetKey),
-            ...(profile.preferredAgentTargetKey ? [profile.preferredAgentTargetKey] : []),
-        ];
+        const targetKeys = Object.keys(profile.compatibilityByTargetKey);
         for (const targetKey of targetKeys) {
             const parsedKey = BackendTargetKeyV2Schema.safeParse(targetKey);
             if (!parsedKey.success) continue;

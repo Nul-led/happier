@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type { SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { SavedSecretResourceOperationResult } from '@/sync/ops/settings/savedSecretResourceOperations';
 
 import { createDeferred, flushHookEffects, renderScreen, standardCleanup } from '@/dev/testkit';
 import { installSettingsViewCommonModuleMocks } from '@/components/settings/settingsViewTestHelpers';
@@ -16,7 +17,7 @@ installSettingsViewCommonModuleMocks({
     },
 });
 
-const setGrants = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const setGrants = vi.hoisted(() => vi.fn<() => Promise<SavedSecretResourceOperationResult>>(async () => ({ ok: true })));
 const promotePersonal = vi.hoisted(() => vi.fn(async () => ({
     ok: true as const, resourceRef: 'happier:shared-secret:v1:resource-promoted',
 })));
@@ -60,7 +61,7 @@ const entry = {
 afterEach(() => {
     standardCleanup();
     setGrants.mockReset();
-    setGrants.mockResolvedValue({ ok: true as const });
+    setGrants.mockResolvedValue({ ok: true });
     promotePersonal.mockReset();
     promotePersonal.mockResolvedValue({ ok: true as const, resourceRef: 'happier:shared-secret:v1:resource-promoted' });
     confirmDisclosure.mockReset();

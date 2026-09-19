@@ -14,9 +14,8 @@ separately from your signed-in sessions.
   `happier self release-channel use dev`.
 
   Ordinary and encryption-capable issuance, wrapping, and protected-call owners
-  exist in source and have focused automated coverage. A current loaded
-  UI/CLI/SDK journey through both direct-daemon and Home-relay origins has not
-  yet been certified.
+  exist in source, with the create → protected invoke → revoke journey covered by
+  automated tests on both the direct-daemon and Home-relay origins.
 </Callout>
 
 ## What you need first
@@ -43,8 +42,7 @@ in this first version; it does not have scopes.
 
 An encryption-capable credential begins with `hapc_v1`. In the development SDK,
 the extra local material protects the complete Action request and result from the
-configured Home while it relays them; this protected direct/relay journey remains
-an activation gate, not a shipped guarantee. Only the embedded bearer is sent for authentication.
+configured Home while it relays them. Only the embedded bearer is sent for authentication.
 Keep the complete compound credential in your secret manager: it grants access
 to Account-encrypted content, and revocation cannot make already opened keys or
 data unknown again.
@@ -138,8 +136,7 @@ The Action API's server-mediated transport is intentionally readable by the
 configured server while it forwards the request to the exact connected daemon.
 That relay works without an inbound public daemon address. Choose the
 daemon-local transport when direct local delivery is required. Both origins are
-implemented only in the current Developer Preview source; neither is published
-or shipped.
+available in the current Developer Preview source.
 
 ## When it goes wrong
 

@@ -617,7 +617,14 @@ describe("Home governance routes", () => {
             })).seq;
             for (const authenticationPolicy of [
                 { v: 1, enabledMethodIds: ["unknown-method"] },
-                { v: 1, enabledMethodIds: ["email_password"] },
+                // Genuinely unusable: this deployment has no forwarded-mTLS
+                // gate, so narrowing to `mtls` alone leaves no enabled login
+                // action for any existing Account and no provision route at
+                // all. Narrowing to `email_password` is deliberately *not*
+                // here: its login stays usable for the Accounts that already
+                // exist even when the deployment permits only E2EE
+                // construction, which the case below commits.
+                { v: 1, enabledMethodIds: ["mtls"] },
                 { v: 1, permittedAccountModes: ["plain"] },
                 {
                     v: 1,
@@ -629,7 +636,7 @@ describe("Home governance routes", () => {
                     expectedRevision: 0,
                     authenticationPolicy,
                 });
-                expect(response.statusCode).toBe(400);
+                expect(response.statusCode, JSON.stringify(authenticationPolicy)).toBe(400);
                 expect(response.json()).toEqual({ error: "home_policy_invalid" });
                 await expect(db.homeGovernancePolicy.count()).resolves.toBe(0);
             }
@@ -724,6 +731,57 @@ describe("Home governance routes", () => {
             expect(response.statusCode, response.body).toBe(400);
             expect(response.json()).toEqual({ error: "home_policy_invalid" });
             await expect(db.homeGovernancePolicy.count()).resolves.toBe(0);
+        } finally {
+            if (previous.keyChallenge === undefined) delete process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
+            else process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = previous.keyChallenge;
+            if (previous.emailPassword === undefined) delete process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED;
+            else process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED = previous.emailPassword;
+            if (previous.keyless === undefined) delete process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED;
+            else process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED = previous.keyless;
+            if (previous.storage === undefined) delete process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY;
+            else process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY = previous.storage;
+        }
+    });
+
+    it("keeps an existing Plain password login usable when the deployment permits only E2EE construction", async () => {
+        const app = createTestApp();
+        const owner = await createAccount("owner");
+        const previous = {
+            keyChallenge: process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED,
+            emailPassword: process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED,
+            keyless: process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED,
+            storage: process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY,
+        };
+        process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = "1";
+        process.env.HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED = "1";
+        delete process.env.HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED;
+        process.env.HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY = "required_e2ee";
+        try {
+            await installPasswordOnlyLogin(owner.accountId);
+
+            // Account-mode narrowing decides which Accounts may be
+            // *constructed*; an Account that already exists keeps its stored
+            // mode and its password login. So this Plain owner still holds a
+            // current email/password route even though the deployment now
+            // constructs E2EE Accounts only, and removing email/password
+            // strands it.
+            const stranding = await post(app, "/v1/home/policy/set", owner.token, {
+                expectedRevision: 0,
+                authenticationPolicy: { v: 1, enabledMethodIds: ["key_challenge"] },
+            });
+            expect(stranding.statusCode, stranding.body).toBe(400);
+            expect(stranding.json()).toEqual({ error: "home_policy_invalid" });
+            await expect(db.homeGovernancePolicy.count()).resolves.toBe(0);
+
+            const retained = await post(app, "/v1/home/policy/set", owner.token, {
+                expectedRevision: 0,
+                authenticationPolicy: { v: 1, enabledMethodIds: ["email_password"] },
+            });
+            expect(retained.statusCode, retained.body).toBe(200);
+            expect(retained.json()).toMatchObject({
+                revision: 1,
+                authentication: { status: "narrowed", enabledMethodIds: ["email_password"] },
+            });
         } finally {
             if (previous.keyChallenge === undefined) delete process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED;
             else process.env.HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED = previous.keyChallenge;
