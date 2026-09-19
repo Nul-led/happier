@@ -359,7 +359,7 @@ export function createApiTokenSettingsController(
                 const context = await readEncryptionContext(lifetime, pending.signal);
                 if (lifetime.isCurrent() && !pending.signal.aborted) {
                     publishEncryptionAvailability(context.currentness.mode === 'e2ee'
-                        && context.currentness.recipientEnvelopeReadiness.status === 'available'
+                        && context.currentness.recipientEnvelopeReadiness?.status === 'available'
                         && ('secret' in context.credentials || 'encryption' in context.credentials));
                 }
             } catch {

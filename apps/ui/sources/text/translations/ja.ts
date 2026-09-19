@@ -645,7 +645,7 @@ const settingsSessionHandoffTranslationExtensions = {
 
 export const ja = {
     actionConfirmations: actionConfirmationTranslations.ja,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ja.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: '一時アップロードを完了',
@@ -658,7 +658,7 @@ export const ja = {
     voice: voiceReadinessTranslations.ja,
     pluginPermissions: pluginPermissionTranslations.ja,
     sessionBoard: sessionBoardTranslations.ja,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.ja,
     ...changedFileEvidenceTranslations.ja,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ja,
     pluginSurfaces: {
@@ -2051,6 +2051,8 @@ export const ja = {
     securingCredentials: "認証情報を保護しています…",
     showQrInstead: "代わりにQRコードを表示",
     addPhoneQrInstructions: "Happier モバイルアプリでこのQRコードをスキャンして、スマホでサインインします。",
+    addPhoneChooseHomeTitle: "Home を選ぶ",
+    addPhoneChooseHomeFooter: "追加した電話は、ここで選んだ Home にアクセスできます。フォーカス中の Home は変わりません。",
     serverUrlNotEmbeddedTitle: "スマホでサーバーを設定",
     serverUrlNotEmbeddedBody:
       "このQRコードにはサーバーのURLを含められません（localhost に設定されているため）。スマホで「設定 → サーバー」を開き、スマホから到達できるURL（LANのIPやTailscaleのURLなど）を追加してから、もう一度スキャンしてください。",
@@ -2062,9 +2064,12 @@ export const ja = {
     expiresAtLabel: "有効期限",
     showPairingLink: "ペアリングリンクを表示",
     pairingLinkSecurityWarning: "この一時リンクを持つ人は、有効期限内にデバイスを追加できます。自分のデバイスだけと共有してください。",
+    pairingLinkFieldLabel: "ペアリングリンク",
+    pairingLinkRequired: "もう一方のデバイスに表示されているペアリングリンクを貼り付けてください。",
     pairingQrTooLargeTitle: "QRコードに収まりません",
     pairingQrTooLargeBody: "この招待には接続情報が多く含まれているため、QRコードとして表示できません。Homeは引き続きペアリングできます。下の安全なリンクをご利用ください。",
     homeAddedPreservedFocusBody: "このHomeを追加しました。現在選択中のHomeは変更されていません。",
+    homeSavedOpenFailedBody: "この Home は保存しましたが、開けませんでした。もう一度試して切り替えてください。",
     requesterDeviceAddedBody: "リクエスト元のデバイスをこのHomeに追加しました。",
     requestingDeviceLabel: "要求元デバイス",
     thisDevice: "このデバイス",
@@ -6011,6 +6016,15 @@ localTailscale: {
             workspaceChoose: 'フォルダーは相手が選びます',
             workspaceHome: '相手のホームフォルダー',
         },
+        workspace: {
+            title: '開始フォルダー',
+            chooseRecommended: '推奨 · パッケージが接続したときに相手がフォルダーを選びます',
+            homeDetail: 'パッケージを実行する人のホームフォルダーで開始します',
+        },
+        otherDevice: {
+            guidance: 'このパッケージは作成したデバイスに保存されています。そのデバイスで続けるか、この依頼をキャンセルしてここで新しいパッケージを作成してください。',
+            createdOn: ({ device }: { device: string }) => `${device} で作成`,
+        },
         endpointFacts: {
             unreadable: 'このデバイスではそのコンピューターが送った情報を読み取れません。',
         },
@@ -7411,8 +7425,9 @@ localTailscale: {
       automationRunEvents: "自動化実行イベント",
     },
     multiServerView: {
-      title: "複数Home同時表示",
-      footer: "複数のHomeを 1 つのセッション一覧にまとめるか選択します。",
+      editMembersAction: "このグループの Home を編集",
+      title: "このビューの Home",
+      footer: "これらの Home をセッション一覧にどう表示するか、どの Home をこのグループに含めるかを選びます。",
       presentationTitle: "表示モード",
       presentation: {
         flatWithBadges: "Homeバッジ付きのフラット一覧",
@@ -11917,7 +11932,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} にリンクされた Home はまだありません。Home をリンクしてから更新してください。` : 'このアカウントにリンクされた Home はまだありません。Home をリンクしてから更新してください。',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'この Home を他のデバイスでも使えるようにする',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `${accountService} を使って、他のデバイスからこの Home を見つけ、アクセスをリクエストできるようにします。` : 'アカウントを使って、他のデバイスからこの Home を見つけ、アクセスをリクエストできるようにします。',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -12428,6 +12443,7 @@ settingsSession: {
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `${serverUrl} に接続できません。再試行するか、別のサインインサービスを選択してください。`,
     signInServiceUnsupportedTitle: "サインインサービスはサポートされていません",
     signInServiceMethodlessTitle: "ここではサインイン方法を利用できません",
+    signInServiceMethodlessBody: "このサービスには接続できますが、現在サインイン方法がありません。再試行するか、別のサービスを選択してください。",
     signInOptionsPartialTitle: "一部のサインイン方法を読み込めませんでした",
     signInServiceUnsupportedBody: "このアドレスは Home であるか、アカウントサインインを提供していません。別のサービスを選択してください。",
     useDifferentHome: "別のHomeを使う",
@@ -13907,6 +13923,15 @@ settingsSession: {
             useExistingDetail: '現在選択中のホームを変更せずに、アクセスを確認して登録を保護します。',
             useAnother: '別のホームを使用',
             useAnotherDetail: 'このローカルホームを変更せず、ホームの一覧から選択します。',
+            blocked: {
+                runtime_unhealthy: 'ローカル Home は起動する前に対応が必要です。',
+                home_auth_invalid: 'Home の認証に対応が必要です。',
+                existing_runtime: 'セットアップを続ける前に、既存のローカル Home についての選択が必要です。',
+                personal_home_erased: 'Personal Home は削除されました。もう一度試して新しく作成してください。',
+            },
+            blockedBody: {
+                personal_home_erased: 'Home のデータは削除されました。ここに復元できるものはありません。新しい Personal Home を作成するか、別の Home を使ってください。',
+            },
         },
     },
     settingsSearch: {

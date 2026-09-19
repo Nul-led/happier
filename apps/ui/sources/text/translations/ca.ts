@@ -652,7 +652,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  */
 export const ca = {
     actionConfirmations: actionConfirmationTranslations.ca,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ca.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Finalitza la pujada preparada',
@@ -665,7 +665,7 @@ export const ca = {
     voice: voiceReadinessTranslations.ca,
     pluginPermissions: pluginPermissionTranslations.ca,
     sessionBoard: sessionBoardTranslations.ca,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.ca,
     ...changedFileEvidenceTranslations.ca,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ca,
     pluginSurfaces: {
@@ -1707,6 +1707,8 @@ export const ca = {
         securingCredentials: 'Protegint les credencials…',
         showQrInstead: 'Mostra un codi QR en el seu lloc',
         addPhoneQrInstructions: 'Escaneja aquest codi QR amb l’app mòbil de Happier per iniciar sessió al teu telèfon.',
+        addPhoneChooseHomeTitle: 'Tria un Home',
+        addPhoneChooseHomeFooter: 'El telèfon que afegeixis tindrà accés al Home que triïs aquí. El teu Home enfocat no canvia.',
         serverUrlNotEmbeddedTitle: 'Configura el servidor al teu telèfon',
         serverUrlNotEmbeddedBody:
             'Aquest codi QR no pot incloure l’adreça del servidor perquè està configurada com a localhost. Al teu telèfon, ves a Configuració → Servidors i afegeix una URL a la qual el telèfon pugui accedir (IP de la LAN o Tailscale) i després torna a escanejar.',
@@ -1718,9 +1720,12 @@ export const ca = {
         expiresAtLabel: 'Caduca',
         showPairingLink: 'Mostra l’enllaç de vinculació',
         pairingLinkSecurityWarning: 'Qualsevol persona amb aquest enllaç temporal pot afegir un dispositiu abans que caduqui. Comparteix-lo només amb el teu propi dispositiu.',
+        pairingLinkFieldLabel: 'Enllaç d’emparellament',
+        pairingLinkRequired: 'Enganxa l’enllaç d’emparellament que es mostra a l’altre dispositiu.',
         pairingQrTooLargeTitle: 'Massa gran per a un codi QR',
         pairingQrTooLargeBody: 'Aquesta invitació conté detalls de connexió addicionals i no es pot mostrar com a codi QR. El teu Home continua a punt per vincular-se: utilitza l\'enllaç segur de sota.',
         homeAddedPreservedFocusBody: 'Aquest Home s’ha afegit. El Home enfocat no ha canviat.',
+        homeSavedOpenFailedBody: 'Aquest Home s’ha desat, però no s’ha pogut obrir. Torna-ho a provar per canviar-hi.',
         requesterDeviceAddedBody: 'El dispositiu sol·licitant s’ha afegit a aquest Home.',
         requestingDeviceLabel: 'Dispositiu sol·licitant',
         thisDevice: 'Aquest dispositiu',
@@ -5001,6 +5006,15 @@ deps: {
                 workspaceChoose: 'La carpeta la trien ells',
                 workspaceHome: 'La seva carpeta personal',
             },
+            workspace: {
+                title: 'Carpeta inicial',
+                chooseRecommended: 'Recomanat · la carpeta es tria quan el paquet es connecta',
+                homeDetail: 'Comença a la carpeta personal de qui executi el paquet',
+            },
+            otherDevice: {
+                guidance: 'Aquest paquet s’ha desat al dispositiu que el va crear. Continua en aquell dispositiu, o cancel·la aquesta sol·licitud i crea un paquet nou aquí.',
+                createdOn: ({ device }: { device: string }) => `Creat a ${device}`,
+            },
             endpointFacts: {
                 unreadable: 'Aquest dispositiu no pot llegir les dades que ha enviat aquell ordinador.',
             },
@@ -6349,8 +6363,9 @@ deps: {
             automationRunEvents: 'Esdeveniments d\'execucio d\'automatitzacio',
         },
         multiServerView: {
-            title: 'Vista concurrent de múltiples Homes',
-            footer: 'Selecciona si vols combinar diversos Homes en una sola llista de sessions.',
+            editMembersAction: 'Edita els Homes d’aquest grup',
+            title: 'Homes en aquesta vista',
+            footer: 'Tria com apareixen aquests Homes a la teva llista de sessions i quins pertanyen a aquest grup.',
             presentationTitle: 'Mode de presentació',
             presentation: {
                 flatWithBadges: 'Llista plana amb insígnies de Home',
@@ -10602,7 +10617,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Encara no hi ha cap llar enllaçada a ${accountService}. Enllaça una llar i actualitza.` : 'Encara no hi ha cap llar enllaçada a aquest compte. Enllaça una llar i actualitza.',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'Fes que aquesta llar estigui disponible als teus altres dispositius',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Permet que ${accountService} ajudi els teus altres dispositius a trobar aquesta llar i sol·licitar-hi accés.` : 'Permet que el teu compte ajudi els altres dispositius a trobar aquesta llar i sol·licitar-hi accés.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -11095,6 +11110,7 @@ settingsSession: {
         signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `No ens podem connectar a ${serverUrl}. Torna-ho a provar o tria un altre servei d’inici de sessió.`,
         signInServiceUnsupportedTitle: 'Servei d’inici de sessió no compatible',
         signInServiceMethodlessTitle: 'Aquí no hi ha cap mètode d’inici de sessió disponible',
+        signInServiceMethodlessBody: 'Aquest servei és accessible però ara mateix no ofereix cap mètode d’inici de sessió. Torna-ho a provar o tria un altre servei.',
         signInOptionsPartialTitle: 'No s’han pogut carregar algunes opcions d’inici de sessió',
         signInServiceUnsupportedBody: 'Aquesta adreça és un Home o no ofereix inici de sessió de compte. Tria un altre servei.',
         useDifferentHome: 'Fes servir una altra Home',
@@ -12741,6 +12757,15 @@ settingsSession: {
             useExistingDetail: 'Verifica’n l’accés i protegeix el registre sense canviar la Llar seleccionada.',
             useAnother: 'Fes servir una altra Llar',
             useAnotherDetail: 'Deixa intacta aquesta Llar local i tria entre les teves Llars.',
+            blocked: {
+                runtime_unhealthy: 'El teu Home local necessita atenció abans de poder iniciar-se.',
+                home_auth_invalid: 'L’autenticació del Home necessita atenció.',
+                existing_runtime: 'Un Home local existent necessita una decisió abans de continuar la configuració.',
+                personal_home_erased: 'El teu Personal Home s’ha esborrat. Torna-ho a provar per crear-ne un de nou.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Les dades del teu Home s’han esborrat. Aquí no queda res per recuperar: crea un Personal Home nou o fes servir un altre Home.',
+            },
         },
     },
     settingsSearch: {

@@ -91,7 +91,9 @@ export const PairingLinkEntryForm = React.memo(function PairingLinkEntryForm(pro
         if (submittingRef.current) return;
         const trimmed = link.trim();
         if (!trimmed) {
-            setError(t('modals.invalidAuthUrl'));
+            // An empty field is not a rejected link; saying "invalid" for it hides
+            // what the user is actually being asked for.
+            setError(t('connect.pairingLinkRequired'));
             inputRef.current?.focus();
             return;
         }
@@ -119,11 +121,11 @@ export const PairingLinkEntryForm = React.memo(function PairingLinkEntryForm(pro
             <Text style={styles.title}>{props.title ?? t('connect.enterUrlManually')}</Text>
             <Text style={styles.description}>{description}</Text>
             <View style={styles.field}>
-                <Text style={styles.label}>{t('connect.enterUrlManually')}</Text>
+                <Text style={styles.label}>{t('connect.pairingLinkFieldLabel')}</Text>
                 <TextInput
                     ref={inputRef}
                     testID="restore-pairing-link-input"
-                    accessibilityLabel={t('connect.enterUrlManually')}
+                    accessibilityLabel={t('connect.pairingLinkFieldLabel')}
                     accessibilityHint={description}
                     style={styles.input}
                     placeholder={props.placeholder ?? t('common.urlPlaceholder')}

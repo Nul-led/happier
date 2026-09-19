@@ -29,6 +29,7 @@ afterEach(async () => { await screen?.unmount(); screen = undefined; restore(); 
 
 async function renderEntry(
     actions: readonly Readonly<{ action: 'login' | 'provision' | 'connect'; mode: 'keyed' | 'keyless' | 'either' }>[],
+    options: Readonly<{ mailboxProven?: boolean }> = {},
 ) {
     const fixture = createDirectoryHttpFixture();
     const capabilities = projectAuthEntryMethodCapabilities({
@@ -41,6 +42,9 @@ async function renderEntry(
     screen = await renderScreen(<AuthProvider initialCredentials={null}>
         <HomeAuthenticationFlow
             target={{ kind: 'descriptor', descriptor: fixture.home.connectionDescriptor, authority: 'current_connection' }}
+            {...(options.mailboxProven
+                ? { nativeAdmission: { kind: 'native_email_verification' as const, token: 'V'.repeat(43) } }
+                : {})}
             actions={capabilities.authenticationActions} returnTo="/" onAuthenticated={vi.fn()} onBack={vi.fn()} />
     </AuthProvider>);
     return screen;
@@ -55,15 +59,26 @@ it('opens the account-creation controller — not the login form — for a publi
     await rendered.pressByTestIdAsync('home-auth-email_password-provision-either');
 
     expect(rendered.findByTestId('email-password-create')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-confirm')).not.toBeNull();
-    // Both Account modes are permitted here, so the protection choice is offered.
-    expect(rendered.findByTestId('email-password-protection-plain')).not.toBeNull();
-    expect(rendered.findByTestId('email-password-protection-e2ee')).not.toBeNull();
+    expect(rendered.findByTestId('email-password-submit')).toBeNull();
+    // This Home has not seen proof of the mailbox yet, so the Account is created
+    // on the verification landing. Collecting a password here would discard it.
+    expect(rendered.findByTestId('email-password-confirm')).toBeNull();
+    expect(rendered.findByTestId('email-password-verify-first')).not.toBeNull();
     expect(boundary.request).not.toHaveBeenCalled();
 });
 
+it('offers both Account protections once the mailbox is proven and both modes are permitted', async () => {
+    const rendered = await renderEntry([{ action: 'provision', mode: 'either' }], { mailboxProven: true });
+
+    await rendered.pressByTestIdAsync('home-auth-email_password-provision-either');
+
+    expect(rendered.findByTestId('email-password-confirm')).not.toBeNull();
+    expect(rendered.findByTestId('email-password-protection-plain')).not.toBeNull();
+    expect(rendered.findByTestId('email-password-protection-e2ee')).not.toBeNull();
+});
+
 it('omits the protection choice and states the outcome when the Home permits one Account mode', async () => {
-    const rendered = await renderEntry([{ action: 'provision', mode: 'keyed' }]);
+    const rendered = await renderEntry([{ action: 'provision', mode: 'keyed' }], { mailboxProven: true });
 
     await rendered.pressByTestIdAsync('home-auth-email_password-provision-keyed');
 

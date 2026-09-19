@@ -54,6 +54,13 @@ vi.mock('@/components/ui/buttons/IconButton', () => ({
     IconButton: (props: Record<string, unknown>) => React.createElement('IconButton', props),
 }));
 
+const desktopHostState = vi.hoisted(() => ({ isDesktop: false }));
+const invokeDesktopHostSpy = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock('@/utils/platform/desktopHost', () => ({
+    isDesktopHost: () => desktopHostState.isDesktop,
+    invokeDesktopHost: invokeDesktopHostSpy,
+}));
+
 function createSummary(
     conflictCount: number,
     mode: WorkspaceSyncRelationshipSummary['relationship']['mode'] = 'keep_both_in_sync',
@@ -170,5 +177,27 @@ describe('WorkspaceSyncRelationshipRow', () => {
 
         await screen.pressByTestIdAsync('workspace-sync-relationship-relationship-1');
         expect(openDefaultDetailsSpy).toHaveBeenCalledWith(summary, 'workspace-alpha');
+    });
+
+    it('reveals only the endpoint rooted on this computer in the OS file manager', async () => {
+        desktopHostState.isDesktop = true;
+        invokeDesktopHostSpy.mockClear();
+        const { WorkspaceSyncRelationshipRow } = await import('./WorkspaceSyncRelationshipList');
+        const summary = createSummary(0);
+        const screen = await renderScreen(
+            <WorkspaceSyncRelationshipRow summary={summary} localMachineId="machine-alpha" />,
+        );
+
+        const menu = screen.findAllByType('DropdownMenu')[0];
+        const items = menu?.props.items as ReadonlyArray<{ id: string; title: string }>;
+        expect(items).toEqual(expect.arrayContaining([
+            expect.objectContaining({ id: 'reveal-alpha', title: 'workspaceSync.actions.openFolder:{"label":"Alpha Mac"}' }),
+        ]));
+        expect(items.some((item) => item.id === 'reveal-beta')).toBe(false);
+
+        menu?.props.onSelect('reveal-alpha');
+        expect(invokeDesktopHostSpy).toHaveBeenCalledWith('system_tasks_open_log_path', { path: '/alpha' });
+
+        desktopHostState.isDesktop = false;
     });
 });

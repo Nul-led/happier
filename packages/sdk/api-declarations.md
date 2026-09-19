@@ -232,7 +232,9 @@ type HappierMachineActionExecute = <K extends PublicActionId>(actionId: K, input
 Declared by `dist/connect.d.ts` as `HappierMachineActionExecutionOptions`.
 
 ```ts
-type HappierMachineActionExecutionOptions = Readonly<Omit<ActionExecutionOptions, 'target'>>;
+type HappierMachineActionExecutionOptions = Readonly<Omit<ActionExecutionOptions, 'target'> & {
+    project?: WorkflowProjectTargetV1;
+}>;
 ```
 
 
@@ -14628,22 +14630,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             }, z.core.$strict>, z.ZodTransform<{
                                 v: 2;
                                 bindingsByServiceId: Record<string, {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "direct";
-                                    disclosedMember: {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    };
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "brokered";
-                                    disclosedMember?: undefined;
-                                } | {
                                     source: "native";
                                 } | {
                                     source: "connected";
@@ -14654,6 +14640,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     source: "connected";
                                     selection: "profile";
                                     profileId: string;
+                                } | {
+                                    source: "team_resource";
+                                    resourceId: string;
+                                    deliveryMode: "brokered";
+                                    disclosedMember?: undefined;
+                                } | {
+                                    source: "team_resource";
+                                    resourceId: string;
+                                    deliveryMode: "direct";
+                                    disclosedMember: {
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    };
                                 }>;
                             }, {
                                 v: 1;
@@ -14722,22 +14724,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             }>>, z.ZodTransform<{
                                 v: 2;
                                 bindingsByServiceId: Record<string, {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "direct";
-                                    disclosedMember: {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    };
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "brokered";
-                                    disclosedMember?: undefined;
-                                } | {
                                     source: "native";
                                 } | {
                                     source: "connected";
@@ -14748,6 +14734,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                     source: "connected";
                                     selection: "profile";
                                     profileId: string;
+                                } | {
+                                    source: "team_resource";
+                                    resourceId: string;
+                                    deliveryMode: "brokered";
+                                    disclosedMember?: undefined;
+                                } | {
+                                    source: "team_resource";
+                                    resourceId: string;
+                                    deliveryMode: "direct";
+                                    disclosedMember: {
+                                        service: {
+                                            pluginId: string;
+                                            localId: string;
+                                        };
+                                        accountId: string;
+                                    };
                                 }>;
                             }, {
                                 v: 1;
@@ -15460,22 +15462,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
             } | {
                 v: 2;
                 bindingsByServiceId?: Record<string, {
-                    source: "team_resource";
-                    resourceId: string;
-                    deliveryMode: "direct";
-                    disclosedMember: {
-                        service: {
-                            pluginId: string;
-                            localId: string;
-                        };
-                        accountId: string;
-                    };
-                } | {
-                    source: "team_resource";
-                    resourceId: string;
-                    deliveryMode: "brokered";
-                    disclosedMember?: undefined;
-                } | {
                     source: "native";
                 } | {
                     source: "connected";
@@ -15486,6 +15472,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     source: "connected";
                     selection?: "profile" | undefined;
                     profileId: string;
+                } | {
+                    source: "team_resource";
+                    resourceId: string;
+                    deliveryMode: "brokered";
+                    disclosedMember?: undefined;
+                } | {
+                    source: "team_resource";
+                    resourceId: string;
+                    deliveryMode: "direct";
+                    disclosedMember: {
+                        service: {
+                            pluginId: string;
+                            localId: string;
+                        };
+                        accountId: string;
+                    };
                 }> | undefined;
             } | undefined;
         }>, z.ZodObject<{
@@ -15929,22 +15931,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }, z.core.$strict>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "direct";
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
                         source: "native";
                     } | {
                         source: "connected";
@@ -15955,6 +15941,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "connected";
                         selection: "profile";
                         profileId: string;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
                     }>;
                 }, {
                     v: 1;
@@ -16023,22 +16025,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }>>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "direct";
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
                         source: "native";
                     } | {
                         source: "connected";
@@ -16049,6 +16035,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "connected";
                         selection: "profile";
                         profileId: string;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
                     }>;
                 }, {
                     v: 1;
@@ -17573,22 +17575,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     }, z.core.$strict>, z.ZodTransform<{
                         v: 2;
                         bindingsByServiceId: Record<string, {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
-                            };
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
                             source: "native";
                         } | {
                             source: "connected";
@@ -17599,6 +17585,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             source: "connected";
                             selection: "profile";
                             profileId: string;
+                        } | {
+                            source: "team_resource";
+                            resourceId: string;
+                            deliveryMode: "brokered";
+                            disclosedMember?: undefined;
+                        } | {
+                            source: "team_resource";
+                            resourceId: string;
+                            deliveryMode: "direct";
+                            disclosedMember: {
+                                service: {
+                                    pluginId: string;
+                                    localId: string;
+                                };
+                                accountId: string;
+                            };
                         }>;
                     }, {
                         v: 1;
@@ -17667,22 +17669,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     }>>, z.ZodTransform<{
                         v: 2;
                         bindingsByServiceId: Record<string, {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
-                            };
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
                             source: "native";
                         } | {
                             source: "connected";
@@ -17693,6 +17679,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             source: "connected";
                             selection: "profile";
                             profileId: string;
+                        } | {
+                            source: "team_resource";
+                            resourceId: string;
+                            deliveryMode: "brokered";
+                            disclosedMember?: undefined;
+                        } | {
+                            source: "team_resource";
+                            resourceId: string;
+                            deliveryMode: "direct";
+                            disclosedMember: {
+                                service: {
+                                    pluginId: string;
+                                    localId: string;
+                                };
+                                accountId: string;
+                            };
                         }>;
                     }, {
                         v: 1;
@@ -21831,22 +21833,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }, z.core.$strict>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "direct";
-                                disclosedMember: {
-                                    service: {
-                                        pluginId: string;
-                                        localId: string;
-                                    };
-                                    accountId: string;
-                                };
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
                                 source: "native";
                             } | {
                                 source: "connected";
@@ -21857,6 +21843,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "connected";
                                 selection: "profile";
                                 profileId: string;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
                             }>;
                         }, {
                             v: 1;
@@ -21925,22 +21927,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }>>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "direct";
-                                disclosedMember: {
-                                    service: {
-                                        pluginId: string;
-                                        localId: string;
-                                    };
-                                    accountId: string;
-                                };
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
                                 source: "native";
                             } | {
                                 source: "connected";
@@ -21951,6 +21937,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "connected";
                                 selection: "profile";
                                 profileId: string;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
                             }>;
                         }, {
                             v: 1;
@@ -22413,22 +22415,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }, z.core.$strict>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "direct";
-                                disclosedMember: {
-                                    service: {
-                                        pluginId: string;
-                                        localId: string;
-                                    };
-                                    accountId: string;
-                                };
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
                                 source: "native";
                             } | {
                                 source: "connected";
@@ -22439,6 +22425,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "connected";
                                 selection: "profile";
                                 profileId: string;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
                             }>;
                         }, {
                             v: 1;
@@ -22507,22 +22509,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         }>>, z.ZodTransform<{
                             v: 2;
                             bindingsByServiceId: Record<string, {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "direct";
-                                disclosedMember: {
-                                    service: {
-                                        pluginId: string;
-                                        localId: string;
-                                    };
-                                    accountId: string;
-                                };
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
                                 source: "native";
                             } | {
                                 source: "connected";
@@ -22533,6 +22519,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 source: "connected";
                                 selection: "profile";
                                 profileId: string;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
                             }>;
                         }, {
                             v: 1;
@@ -23391,22 +23393,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }, z.core.$strict>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "direct";
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
                         source: "native";
                     } | {
                         source: "connected";
@@ -23417,6 +23403,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "connected";
                         selection: "profile";
                         profileId: string;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
                     }>;
                 }, {
                     v: 1;
@@ -23485,22 +23487,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }>>, z.ZodTransform<{
                     v: 2;
                     bindingsByServiceId: Record<string, {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "direct";
-                        disclosedMember: {
-                            service: {
-                                pluginId: string;
-                                localId: string;
-                            };
-                            accountId: string;
-                        };
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
                         source: "native";
                     } | {
                         source: "connected";
@@ -23511,6 +23497,22 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         source: "connected";
                         selection: "profile";
                         profileId: string;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
                     }>;
                 }, {
                     v: 1;
@@ -109415,478 +109417,389 @@ Reached from a published signature; not itself a published export.
 ```ts
 const WorkflowActionInputSchemasV1: {
     readonly 'workflow.validate': z.ZodObject<{
-        definition: z.ZodObject<{
-            version: z.ZodOptional<z.ZodLiteral<1>>;
-            inputs: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                name: z.ZodString;
-                valueType: z.ZodEnum<{
-                    boolean: "boolean";
-                    json: "json";
-                    number: "number";
-                    string: "string";
-                }>;
-                required: z.ZodBoolean;
-                default: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+        definition: z.ZodCustom<{
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
                     readonly [key: string]: import("./workflowV1.js").JsonValue;
-                } | null, unknown>>>;
-                description: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>>;
-            defaults: z.ZodOptional<z.ZodObject<{
-                agentTarget: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    kind: z.ZodLiteral<"agent">;
-                    identity: z.ZodType<{
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
                         pluginId: string;
                         localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }, z.core.$ZodTypeInternals<{
-                        pluginId: string;
-                        localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }>>;
-                }, z.core.$strict>>>;
-                modelSelection: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    ref: z.ZodUnion<readonly [
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.ZodNull;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.core.$ZodBranded<z.ZodString, "ProviderConnectionId", "out">;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>
-                    ]>;
-                    updatedAt: z.ZodNumber;
-                }, z.core.$strict>>>;
-                profileId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                permissionMode: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                acpSessionModeId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                sessionConfigOptionOverrides: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    updatedAt: z.ZodNumber;
-                    overrides: z.ZodRecord<z.ZodString, z.ZodObject<{
-                        updatedAt: z.ZodNumber;
-                        value: z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNumber,
-                            z.ZodBoolean,
-                            z.ZodNull
-                        ]>;
-                    }, z.core.$loose>>;
-                }, z.core.$loose>>>;
-                mcpSelection: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodObject<{
-                    v: z.ZodDefault<z.ZodLiteral<1>>;
-                    managedServersEnabled: z.ZodDefault<z.ZodBoolean>;
-                    forceIncludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                    forceExcludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                }, z.core.$strict>, z.ZodTransform<{
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }, {
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
+                            };
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }, {
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+                    readonly [key: string]: import("./workflowV1.js").JsonValue;
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }>>>>;
-                connectedServices: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                    z.ZodObject<{
-                        v: z.ZodLiteral<2>;
-                        bindingsByServiceId: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodUnion<readonly [
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"direct">;
-                                    disclosedMember: z.ZodType<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, z.core.$ZodTypeInternals<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"brokered">;
-                                    disclosedMember: z.ZodOptional<z.ZodNever>;
-                                }, z.core.$strict>
-                            ]>
-                        ]>>>;
-                    }, z.core.$strict>,
-                    z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>,
-                    z.ZodPipe<z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>
-                ]>>>;
-                transcriptStorage: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    direct: "direct";
-                    persisted: "persisted";
-                }>>>;
-                terminal: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    mode: z.ZodOptional<z.ZodEnum<{
-                        integrated: "integrated";
-                        plain: "plain";
-                        tmux: "tmux";
-                        windows_console: "windows_console";
-                        windows_terminal: "windows_terminal";
-                    }>>;
-                    tmux: z.ZodOptional<z.ZodObject<{
-                        sessionName: z.ZodOptional<z.ZodString>;
-                        isolated: z.ZodOptional<z.ZodBoolean>;
-                        tmpDir: z.ZodOptional<z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNull
-                        ]>>;
-                    }, z.core.$strict>>;
-                    windows: z.ZodOptional<z.ZodObject<{
-                        launchMode: z.ZodOptional<z.ZodEnum<{
-                            console: "console";
-                            hidden: "hidden";
-                            windows_terminal: "windows_terminal";
-                        }>>;
-                        console: z.ZodOptional<z.ZodEnum<{
-                            hidden: "hidden";
-                            visible: "visible";
-                        }>>;
-                        windowName: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
-                    }, z.core.$strict>>;
-                }, z.core.$strict>>>;
-                windowsRemoteSessionLaunchMode: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    console: "console";
-                    hidden: "hidden";
-                    windows_terminal: "windows_terminal";
-                }>>>;
-                windowsRemoteSessionConsole: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    hidden: "hidden";
-                    visible: "visible";
-                }>>>;
-                windowsTerminalWindowName: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>>;
-                runtimeDescriptorV1: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    agentId: z.ZodString;
-                    agent: z.ZodObject<{
-                        backendMode: z.ZodString;
-                        home: z.ZodOptional<z.ZodEnum<{
-                            connectedService: "connectedService";
-                            user: "user";
-                        }>>;
-                        connectedServiceId: z.ZodOptional<z.ZodString>;
-                        connectedServiceProfileId: z.ZodOptional<z.ZodString>;
-                        connectedServiceGroupId: z.ZodOptional<z.ZodString>;
-                    }, z.core.$strict>;
-                }, z.core.$strict>>>;
-                conversation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"shared_run">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"fresh">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"existing_session">;
-                        sessionId: z.ZodString;
-                        machineId: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-                workspace: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"inherit">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"project_checkout">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"new_worktree">;
-                        source: z.ZodDiscriminatedUnion<[
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"original">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"workflow">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"step">;
-                                producer: z.ZodObject<{
-                                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"current">;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"previous_iteration">;
-                                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"outer">;
-                                            levels: z.ZodNumber;
-                                        }, z.core.$strict>
-                                    ], "kind">>;
-                                }, z.core.$strict>;
-                            }, z.core.$strict>
-                        ], "kind">;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
-            blocks: z.ZodArray<z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>>;
-            finalOutput: z.ZodOptional<z.ZodObject<{
-                kind: z.ZodLiteral<"result">;
-                producer: z.ZodObject<{
-                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"current">;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"previous_iteration">;
-                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"outer">;
-                            levels: z.ZodNumber;
-                        }, z.core.$strict>
-                    ], "kind">>;
-                }, z.core.$strict>;
-                path: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [
-                    z.ZodString,
-                    z.ZodNumber
-                ]>>>;
-            }, z.core.$strict>>;
-        }, z.core.$strict>;
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }>;
         inputs: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
             readonly [key: string]: import("./workflowV1.js").JsonValue;
         } | null, unknown>>>>;
@@ -109899,478 +109812,389 @@ const WorkflowActionInputSchemasV1: {
         source: z.ZodDiscriminatedUnion<[
             z.ZodObject<{
                 kind: z.ZodLiteral<"inline">;
-                definition: z.ZodObject<{
-                    version: z.ZodOptional<z.ZodLiteral<1>>;
-                    inputs: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                        name: z.ZodString;
-                        valueType: z.ZodEnum<{
-                            boolean: "boolean";
-                            json: "json";
-                            number: "number";
-                            string: "string";
-                        }>;
-                        required: z.ZodBoolean;
-                        default: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+                definition: z.ZodCustom<{
+                    version?: 1 | undefined;
+                    inputs?: {
+                        name: string;
+                        valueType: "boolean" | "json" | "number" | "string";
+                        required: boolean;
+                        default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
                             readonly [key: string]: import("./workflowV1.js").JsonValue;
-                        } | null, unknown>>>;
-                        description: z.ZodOptional<z.ZodString>;
-                    }, z.core.$strict>>>;
-                    defaults: z.ZodOptional<z.ZodObject<{
-                        agentTarget: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                            kind: z.ZodLiteral<"agent">;
-                            identity: z.ZodType<{
+                        } | null | undefined;
+                        description?: string | undefined;
+                    }[] | undefined;
+                    defaults?: {
+                        agentTarget?: {
+                            kind: "agent";
+                            identity: {
                                 pluginId: string;
                                 localId: string;
-                            }, {
-                                pluginId: string;
-                                localId: string;
-                            }, z.core.$ZodTypeInternals<{
-                                pluginId: string;
-                                localId: string;
-                            }, {
-                                pluginId: string;
-                                localId: string;
-                            }>>;
-                        }, z.core.$strict>>>;
-                        modelSelection: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                            v: z.ZodLiteral<1>;
-                            ref: z.ZodUnion<readonly [
-                                z.ZodObject<{
-                                    agentTargetKey: z.ZodString;
-                                    providerConnectionId: z.ZodNull;
-                                    modelId: z.ZodString;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    agentTargetKey: z.ZodString;
-                                    providerConnectionId: z.core.$ZodBranded<z.ZodString, "ProviderConnectionId", "out">;
-                                    modelId: z.ZodString;
-                                }, z.core.$strict>
-                            ]>;
-                            updatedAt: z.ZodNumber;
-                        }, z.core.$strict>>>;
-                        profileId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                        permissionMode: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                        acpSessionModeId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                        sessionConfigOptionOverrides: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                            v: z.ZodLiteral<1>;
-                            updatedAt: z.ZodNumber;
-                            overrides: z.ZodRecord<z.ZodString, z.ZodObject<{
-                                updatedAt: z.ZodNumber;
-                                value: z.ZodUnion<readonly [
-                                    z.ZodString,
-                                    z.ZodNumber,
-                                    z.ZodBoolean,
-                                    z.ZodNull
-                                ]>;
-                            }, z.core.$loose>>;
-                        }, z.core.$loose>>>;
-                        mcpSelection: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodObject<{
-                            v: z.ZodDefault<z.ZodLiteral<1>>;
-                            managedServersEnabled: z.ZodDefault<z.ZodBoolean>;
-                            forceIncludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                            forceExcludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                        }, z.core.$strict>, z.ZodTransform<{
+                            };
+                        } | null | undefined;
+                        modelSelection?: {
+                            v: 1;
+                            ref: {
+                                agentTargetKey: string;
+                                providerConnectionId: null;
+                                modelId: string;
+                            } | {
+                                agentTargetKey: string;
+                                providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                                modelId: string;
+                            };
+                            updatedAt: number;
+                        } | null | undefined;
+                        profileId?: string | null | undefined;
+                        permissionMode?: string | null | undefined;
+                        acpSessionModeId?: string | null | undefined;
+                        sessionConfigOptionOverrides?: {
+                            [x: string]: unknown;
+                            v: 1;
+                            updatedAt: number;
+                            overrides: Record<string, {
+                                [x: string]: unknown;
+                                updatedAt: number;
+                                value: string | number | boolean | null;
+                            }>;
+                        } | null | undefined;
+                        mcpSelection?: {
                             v: 1;
                             managedServersEnabled: boolean;
                             forceIncludeServerIds: string[];
                             forceExcludeServerIds: string[];
-                        }, {
+                        } | null | undefined;
+                        connectedServices?: {
+                            v: 2;
+                            bindingsByServiceId: Record<string, {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
+                                    };
+                                    accountId: string;
+                                };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
+                            }>;
+                        } | null | undefined;
+                        transcriptStorage?: "direct" | "persisted" | null | undefined;
+                        terminal?: {
+                            mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                            tmux?: {
+                                sessionName?: string | undefined;
+                                isolated?: boolean | undefined;
+                                tmpDir?: string | null | undefined;
+                            } | undefined;
+                            windows?: {
+                                launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                                console?: "hidden" | "visible" | undefined;
+                                windowName?: string | undefined;
+                            } | undefined;
+                        } | null | undefined;
+                        windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                        windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                        windowsTerminalWindowName?: string | null | undefined;
+                        runtimeDescriptorV1?: {
+                            v: 1;
+                            agentId: string;
+                            agent: {
+                                backendMode: string;
+                                home?: "connectedService" | "user" | undefined;
+                                connectedServiceId?: string | undefined;
+                                connectedServiceProfileId?: string | undefined;
+                                connectedServiceGroupId?: string | undefined;
+                            };
+                        } | null | undefined;
+                        conversation?: {
+                            kind: "shared_run";
+                        } | {
+                            kind: "fresh";
+                        } | {
+                            kind: "from_step";
+                            producer: {
+                                blockId: string;
+                                scope: {
+                                    kind: "current";
+                                } | {
+                                    kind: "previous_iteration";
+                                    loopBlockId: string;
+                                } | {
+                                    kind: "outer";
+                                    levels: number;
+                                };
+                            };
+                        } | {
+                            kind: "existing_session";
+                            sessionId: string;
+                            machineId: string;
+                        } | undefined;
+                        workspace?: {
+                            kind: "inherit";
+                        } | {
+                            kind: "project_checkout";
+                        } | {
+                            kind: "from_step";
+                            producer: {
+                                blockId: string;
+                                scope: {
+                                    kind: "current";
+                                } | {
+                                    kind: "previous_iteration";
+                                    loopBlockId: string;
+                                } | {
+                                    kind: "outer";
+                                    levels: number;
+                                };
+                            };
+                        } | {
+                            kind: "new_worktree";
+                            source: {
+                                kind: "original";
+                            } | {
+                                kind: "workflow";
+                            } | {
+                                kind: "step";
+                                producer: {
+                                    blockId: string;
+                                    scope: {
+                                        kind: "current";
+                                    } | {
+                                        kind: "previous_iteration";
+                                        loopBlockId: string;
+                                    } | {
+                                        kind: "outer";
+                                        levels: number;
+                                    };
+                                };
+                            };
+                        } | undefined;
+                    } | undefined;
+                    blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+                    finalOutput?: {
+                        kind: "result";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
+                            };
+                        };
+                        path: (string | number)[];
+                    } | undefined;
+                }, {
+                    version?: 1 | undefined;
+                    inputs?: {
+                        name: string;
+                        valueType: "boolean" | "json" | "number" | "string";
+                        required: boolean;
+                        default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+                            readonly [key: string]: import("./workflowV1.js").JsonValue;
+                        } | null | undefined;
+                        description?: string | undefined;
+                    }[] | undefined;
+                    defaults?: {
+                        agentTarget?: {
+                            kind: "agent";
+                            identity: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                        } | null | undefined;
+                        modelSelection?: {
+                            v: 1;
+                            ref: {
+                                agentTargetKey: string;
+                                providerConnectionId: null;
+                                modelId: string;
+                            } | {
+                                agentTargetKey: string;
+                                providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                                modelId: string;
+                            };
+                            updatedAt: number;
+                        } | null | undefined;
+                        profileId?: string | null | undefined;
+                        permissionMode?: string | null | undefined;
+                        acpSessionModeId?: string | null | undefined;
+                        sessionConfigOptionOverrides?: {
+                            [x: string]: unknown;
+                            v: 1;
+                            updatedAt: number;
+                            overrides: Record<string, {
+                                [x: string]: unknown;
+                                updatedAt: number;
+                                value: string | number | boolean | null;
+                            }>;
+                        } | null | undefined;
+                        mcpSelection?: {
                             v: 1;
                             managedServersEnabled: boolean;
                             forceIncludeServerIds: string[];
                             forceExcludeServerIds: string[];
-                        }>>>>;
-                        connectedServices: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                v: z.ZodLiteral<2>;
-                                bindingsByServiceId: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"native">;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodLiteral<"group">;
-                                        groupId: z.ZodString;
-                                        profileId: z.ZodOptional<z.ZodString>;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                        profileId: z.ZodString;
-                                    }, z.core.$strict>,
-                                    z.ZodUnion<readonly [
-                                        z.ZodObject<{
-                                            source: z.ZodLiteral<"team_resource">;
-                                            resourceId: z.ZodString;
-                                            deliveryMode: z.ZodLiteral<"direct">;
-                                            disclosedMember: z.ZodType<{
-                                                service: {
-                                                    pluginId: string;
-                                                    localId: string;
-                                                };
-                                                accountId: string;
-                                            }, {
-                                                service: {
-                                                    pluginId: string;
-                                                    localId: string;
-                                                };
-                                                accountId: string;
-                                            }, z.core.$ZodTypeInternals<{
-                                                service: {
-                                                    pluginId: string;
-                                                    localId: string;
-                                                };
-                                                accountId: string;
-                                            }, {
-                                                service: {
-                                                    pluginId: string;
-                                                    localId: string;
-                                                };
-                                                accountId: string;
-                                            }>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            source: z.ZodLiteral<"team_resource">;
-                                            resourceId: z.ZodString;
-                                            deliveryMode: z.ZodLiteral<"brokered">;
-                                            disclosedMember: z.ZodOptional<z.ZodNever>;
-                                        }, z.core.$strict>
-                                    ]>
-                                ]>>>;
-                            }, z.core.$strict>,
-                            z.ZodPipe<z.ZodObject<{
-                                v: z.ZodLiteral<1>;
-                                bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"native">;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                        profileId: z.ZodString;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodLiteral<"group">;
-                                        groupId: z.ZodString;
-                                        profileId: z.ZodOptional<z.ZodString>;
-                                    }, z.core.$strict>
-                                ]>>;
-                            }, z.core.$strict>, z.ZodTransform<{
-                                v: 2;
-                                bindingsByServiceId: Record<string, {
-                                    source: "native";
-                                } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "brokered";
-                                    disclosedMember?: undefined;
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "direct";
-                                    disclosedMember: {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
+                        } | null | undefined;
+                        connectedServices?: {
+                            v: 2;
+                            bindingsByServiceId: Record<string, {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
+                            } | {
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "direct";
+                                disclosedMember: {
+                                    service: {
+                                        pluginId: string;
+                                        localId: string;
                                     };
-                                }>;
-                            }, {
-                                v: 1;
-                                bindingsByServiceId: Record<string, {
-                                    source: "native";
+                                    accountId: string;
+                                };
+                            } | {
+                                source: "native";
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
+                            } | {
+                                source: "connected";
+                                selection: "group";
+                                groupId: string;
+                                profileId?: string | undefined;
+                            }>;
+                        } | null | undefined;
+                        transcriptStorage?: "direct" | "persisted" | null | undefined;
+                        terminal?: {
+                            mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                            tmux?: {
+                                sessionName?: string | undefined;
+                                isolated?: boolean | undefined;
+                                tmpDir?: string | null | undefined;
+                            } | undefined;
+                            windows?: {
+                                launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                                console?: "hidden" | "visible" | undefined;
+                                windowName?: string | undefined;
+                            } | undefined;
+                        } | null | undefined;
+                        windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                        windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                        windowsTerminalWindowName?: string | null | undefined;
+                        runtimeDescriptorV1?: {
+                            v: 1;
+                            agentId: string;
+                            agent: {
+                                backendMode: string;
+                                home?: "connectedService" | "user" | undefined;
+                                connectedServiceId?: string | undefined;
+                                connectedServiceProfileId?: string | undefined;
+                                connectedServiceGroupId?: string | undefined;
+                            };
+                        } | null | undefined;
+                        conversation?: {
+                            kind: "shared_run";
+                        } | {
+                            kind: "fresh";
+                        } | {
+                            kind: "from_step";
+                            producer: {
+                                blockId: string;
+                                scope: {
+                                    kind: "current";
                                 } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
+                                    kind: "previous_iteration";
+                                    loopBlockId: string;
                                 } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                }>;
-                            }>>,
-                            z.ZodPipe<z.ZodPipe<z.ZodObject<{
-                                v: z.ZodLiteral<1>;
-                                bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"native">;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                        profileId: z.ZodString;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        source: z.ZodLiteral<"connected">;
-                                        selection: z.ZodLiteral<"group">;
-                                        groupId: z.ZodString;
-                                        profileId: z.ZodOptional<z.ZodString>;
-                                    }, z.core.$strict>
-                                ]>>;
-                            }, z.core.$strict>, z.ZodTransform<{
-                                v: 1;
-                                bindingsByServiceId: Record<string, {
-                                    [x: string]: unknown;
-                                    source: "native";
+                                    kind: "outer";
+                                    levels: number;
+                                };
+                            };
+                        } | {
+                            kind: "existing_session";
+                            sessionId: string;
+                            machineId: string;
+                        } | undefined;
+                        workspace?: {
+                            kind: "inherit";
+                        } | {
+                            kind: "project_checkout";
+                        } | {
+                            kind: "from_step";
+                            producer: {
+                                blockId: string;
+                                scope: {
+                                    kind: "current";
                                 } | {
-                                    [x: string]: unknown;
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
+                                    kind: "previous_iteration";
+                                    loopBlockId: string;
                                 } | {
-                                    [x: string]: unknown;
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                }>;
-                            }, {
-                                v: 1;
-                                bindingsByServiceId: Record<string, {
-                                    source: "native";
-                                } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                }>;
-                            }>>, z.ZodTransform<{
-                                v: 2;
-                                bindingsByServiceId: Record<string, {
-                                    source: "native";
-                                } | {
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "brokered";
-                                    disclosedMember?: undefined;
-                                } | {
-                                    source: "team_resource";
-                                    resourceId: string;
-                                    deliveryMode: "direct";
-                                    disclosedMember: {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
+                                    kind: "outer";
+                                    levels: number;
+                                };
+                            };
+                        } | {
+                            kind: "new_worktree";
+                            source: {
+                                kind: "original";
+                            } | {
+                                kind: "workflow";
+                            } | {
+                                kind: "step";
+                                producer: {
+                                    blockId: string;
+                                    scope: {
+                                        kind: "current";
+                                    } | {
+                                        kind: "previous_iteration";
+                                        loopBlockId: string;
+                                    } | {
+                                        kind: "outer";
+                                        levels: number;
                                     };
-                                }>;
-                            }, {
-                                v: 1;
-                                bindingsByServiceId: Record<string, {
-                                    [x: string]: unknown;
-                                    source: "native";
-                                } | {
-                                    [x: string]: unknown;
-                                    source: "connected";
-                                    selection: "group";
-                                    groupId: string;
-                                    profileId?: string | undefined;
-                                } | {
-                                    [x: string]: unknown;
-                                    source: "connected";
-                                    selection: "profile";
-                                    profileId: string;
-                                }>;
-                            }>>
-                        ]>>>;
-                        transcriptStorage: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                            direct: "direct";
-                            persisted: "persisted";
-                        }>>>;
-                        terminal: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                            mode: z.ZodOptional<z.ZodEnum<{
-                                integrated: "integrated";
-                                plain: "plain";
-                                tmux: "tmux";
-                                windows_console: "windows_console";
-                                windows_terminal: "windows_terminal";
-                            }>>;
-                            tmux: z.ZodOptional<z.ZodObject<{
-                                sessionName: z.ZodOptional<z.ZodString>;
-                                isolated: z.ZodOptional<z.ZodBoolean>;
-                                tmpDir: z.ZodOptional<z.ZodUnion<readonly [
-                                    z.ZodString,
-                                    z.ZodNull
-                                ]>>;
-                            }, z.core.$strict>>;
-                            windows: z.ZodOptional<z.ZodObject<{
-                                launchMode: z.ZodOptional<z.ZodEnum<{
-                                    console: "console";
-                                    hidden: "hidden";
-                                    windows_terminal: "windows_terminal";
-                                }>>;
-                                console: z.ZodOptional<z.ZodEnum<{
-                                    hidden: "hidden";
-                                    visible: "visible";
-                                }>>;
-                                windowName: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
-                            }, z.core.$strict>>;
-                        }, z.core.$strict>>>;
-                        windowsRemoteSessionLaunchMode: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                            console: "console";
-                            hidden: "hidden";
-                            windows_terminal: "windows_terminal";
-                        }>>>;
-                        windowsRemoteSessionConsole: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                            hidden: "hidden";
-                            visible: "visible";
-                        }>>>;
-                        windowsTerminalWindowName: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>>;
-                        runtimeDescriptorV1: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                            v: z.ZodLiteral<1>;
-                            agentId: z.ZodString;
-                            agent: z.ZodObject<{
-                                backendMode: z.ZodString;
-                                home: z.ZodOptional<z.ZodEnum<{
-                                    connectedService: "connectedService";
-                                    user: "user";
-                                }>>;
-                                connectedServiceId: z.ZodOptional<z.ZodString>;
-                                connectedServiceProfileId: z.ZodOptional<z.ZodString>;
-                                connectedServiceGroupId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>;
-                        }, z.core.$strict>>>;
-                        conversation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"shared_run">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"fresh">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"from_step">;
-                                producer: z.ZodObject<{
-                                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"current">;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"previous_iteration">;
-                                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"outer">;
-                                            levels: z.ZodNumber;
-                                        }, z.core.$strict>
-                                    ], "kind">>;
-                                }, z.core.$strict>;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"existing_session">;
-                                sessionId: z.ZodString;
-                                machineId: z.ZodString;
-                            }, z.core.$strict>
-                        ], "kind">>;
-                        workspace: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"inherit">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"project_checkout">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"from_step">;
-                                producer: z.ZodObject<{
-                                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"current">;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"previous_iteration">;
-                                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"outer">;
-                                            levels: z.ZodNumber;
-                                        }, z.core.$strict>
-                                    ], "kind">>;
-                                }, z.core.$strict>;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"new_worktree">;
-                                source: z.ZodDiscriminatedUnion<[
-                                    z.ZodObject<{
-                                        kind: z.ZodLiteral<"original">;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        kind: z.ZodLiteral<"workflow">;
-                                    }, z.core.$strict>,
-                                    z.ZodObject<{
-                                        kind: z.ZodLiteral<"step">;
-                                        producer: z.ZodObject<{
-                                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                                z.ZodObject<{
-                                                    kind: z.ZodLiteral<"current">;
-                                                }, z.core.$strict>,
-                                                z.ZodObject<{
-                                                    kind: z.ZodLiteral<"previous_iteration">;
-                                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                                }, z.core.$strict>,
-                                                z.ZodObject<{
-                                                    kind: z.ZodLiteral<"outer">;
-                                                    levels: z.ZodNumber;
-                                                }, z.core.$strict>
-                                            ], "kind">>;
-                                        }, z.core.$strict>;
-                                    }, z.core.$strict>
-                                ], "kind">;
-                            }, z.core.$strict>
-                        ], "kind">>;
-                    }, z.core.$strict>>;
-                    blocks: z.ZodArray<z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>>;
-                    finalOutput: z.ZodOptional<z.ZodObject<{
-                        kind: z.ZodLiteral<"result">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                        path: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNumber
-                        ]>>>;
-                    }, z.core.$strict>>;
-                }, z.core.$strict>;
+                                };
+                            };
+                        } | undefined;
+                    } | undefined;
+                    blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+                    finalOutput?: {
+                        kind: "result";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
+                            };
+                        };
+                        path: (string | number)[];
+                    } | undefined;
+                }>;
             }, z.core.$strict>,
             z.ZodObject<{
                 kind: z.ZodLiteral<"saved">;
@@ -110665,6 +110489,7 @@ const WorkflowActionInputSchemasV1: {
         invocation: z.ZodObject<{
             recordId: z.ZodString;
         }, z.core.$strict>;
+        causalInvocationIds: z.ZodArray<z.ZodString>;
         conversation: z.ZodEnum<{
             fresh_agent: "fresh_agent";
             same_conversation: "same_conversation";
@@ -110761,478 +110586,389 @@ const WorkflowActionInputSchemasV1: {
     }, z.core.$strict>;
     readonly 'workflow.definition.create': z.ZodObject<{
         definitionId: z.ZodString;
-        definition: z.ZodObject<{
-            version: z.ZodOptional<z.ZodLiteral<1>>;
-            inputs: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                name: z.ZodString;
-                valueType: z.ZodEnum<{
-                    boolean: "boolean";
-                    json: "json";
-                    number: "number";
-                    string: "string";
-                }>;
-                required: z.ZodBoolean;
-                default: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+        definition: z.ZodCustom<{
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
                     readonly [key: string]: import("./workflowV1.js").JsonValue;
-                } | null, unknown>>>;
-                description: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>>;
-            defaults: z.ZodOptional<z.ZodObject<{
-                agentTarget: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    kind: z.ZodLiteral<"agent">;
-                    identity: z.ZodType<{
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
                         pluginId: string;
                         localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }, z.core.$ZodTypeInternals<{
-                        pluginId: string;
-                        localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }>>;
-                }, z.core.$strict>>>;
-                modelSelection: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    ref: z.ZodUnion<readonly [
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.ZodNull;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.core.$ZodBranded<z.ZodString, "ProviderConnectionId", "out">;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>
-                    ]>;
-                    updatedAt: z.ZodNumber;
-                }, z.core.$strict>>>;
-                profileId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                permissionMode: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                acpSessionModeId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                sessionConfigOptionOverrides: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    updatedAt: z.ZodNumber;
-                    overrides: z.ZodRecord<z.ZodString, z.ZodObject<{
-                        updatedAt: z.ZodNumber;
-                        value: z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNumber,
-                            z.ZodBoolean,
-                            z.ZodNull
-                        ]>;
-                    }, z.core.$loose>>;
-                }, z.core.$loose>>>;
-                mcpSelection: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodObject<{
-                    v: z.ZodDefault<z.ZodLiteral<1>>;
-                    managedServersEnabled: z.ZodDefault<z.ZodBoolean>;
-                    forceIncludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                    forceExcludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                }, z.core.$strict>, z.ZodTransform<{
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }, {
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
+                            };
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }, {
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+                    readonly [key: string]: import("./workflowV1.js").JsonValue;
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }>>>>;
-                connectedServices: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                    z.ZodObject<{
-                        v: z.ZodLiteral<2>;
-                        bindingsByServiceId: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodUnion<readonly [
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"direct">;
-                                    disclosedMember: z.ZodType<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, z.core.$ZodTypeInternals<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"brokered">;
-                                    disclosedMember: z.ZodOptional<z.ZodNever>;
-                                }, z.core.$strict>
-                            ]>
-                        ]>>>;
-                    }, z.core.$strict>,
-                    z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>,
-                    z.ZodPipe<z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>
-                ]>>>;
-                transcriptStorage: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    direct: "direct";
-                    persisted: "persisted";
-                }>>>;
-                terminal: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    mode: z.ZodOptional<z.ZodEnum<{
-                        integrated: "integrated";
-                        plain: "plain";
-                        tmux: "tmux";
-                        windows_console: "windows_console";
-                        windows_terminal: "windows_terminal";
-                    }>>;
-                    tmux: z.ZodOptional<z.ZodObject<{
-                        sessionName: z.ZodOptional<z.ZodString>;
-                        isolated: z.ZodOptional<z.ZodBoolean>;
-                        tmpDir: z.ZodOptional<z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNull
-                        ]>>;
-                    }, z.core.$strict>>;
-                    windows: z.ZodOptional<z.ZodObject<{
-                        launchMode: z.ZodOptional<z.ZodEnum<{
-                            console: "console";
-                            hidden: "hidden";
-                            windows_terminal: "windows_terminal";
-                        }>>;
-                        console: z.ZodOptional<z.ZodEnum<{
-                            hidden: "hidden";
-                            visible: "visible";
-                        }>>;
-                        windowName: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
-                    }, z.core.$strict>>;
-                }, z.core.$strict>>>;
-                windowsRemoteSessionLaunchMode: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    console: "console";
-                    hidden: "hidden";
-                    windows_terminal: "windows_terminal";
-                }>>>;
-                windowsRemoteSessionConsole: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    hidden: "hidden";
-                    visible: "visible";
-                }>>>;
-                windowsTerminalWindowName: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>>;
-                runtimeDescriptorV1: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    agentId: z.ZodString;
-                    agent: z.ZodObject<{
-                        backendMode: z.ZodString;
-                        home: z.ZodOptional<z.ZodEnum<{
-                            connectedService: "connectedService";
-                            user: "user";
-                        }>>;
-                        connectedServiceId: z.ZodOptional<z.ZodString>;
-                        connectedServiceProfileId: z.ZodOptional<z.ZodString>;
-                        connectedServiceGroupId: z.ZodOptional<z.ZodString>;
-                    }, z.core.$strict>;
-                }, z.core.$strict>>>;
-                conversation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"shared_run">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"fresh">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"existing_session">;
-                        sessionId: z.ZodString;
-                        machineId: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-                workspace: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"inherit">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"project_checkout">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"new_worktree">;
-                        source: z.ZodDiscriminatedUnion<[
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"original">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"workflow">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"step">;
-                                producer: z.ZodObject<{
-                                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"current">;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"previous_iteration">;
-                                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"outer">;
-                                            levels: z.ZodNumber;
-                                        }, z.core.$strict>
-                                    ], "kind">>;
-                                }, z.core.$strict>;
-                            }, z.core.$strict>
-                        ], "kind">;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
-            blocks: z.ZodArray<z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>>;
-            finalOutput: z.ZodOptional<z.ZodObject<{
-                kind: z.ZodLiteral<"result">;
-                producer: z.ZodObject<{
-                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"current">;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"previous_iteration">;
-                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"outer">;
-                            levels: z.ZodNumber;
-                        }, z.core.$strict>
-                    ], "kind">>;
-                }, z.core.$strict>;
-                path: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [
-                    z.ZodString,
-                    z.ZodNumber
-                ]>>>;
-            }, z.core.$strict>>;
-        }, z.core.$strict>;
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }>;
         metadata: z.ZodObject<{
             title: z.ZodString;
             description: z.ZodOptional<z.ZodString>;
@@ -111244,478 +110980,389 @@ const WorkflowActionInputSchemasV1: {
             headerVersion: z.ZodNumber;
             bodyVersion: z.ZodNumber;
         }, z.core.$strict>;
-        definition: z.ZodObject<{
-            version: z.ZodOptional<z.ZodLiteral<1>>;
-            inputs: z.ZodOptional<z.ZodArray<z.ZodObject<{
-                name: z.ZodString;
-                valueType: z.ZodEnum<{
-                    boolean: "boolean";
-                    json: "json";
-                    number: "number";
-                    string: "string";
-                }>;
-                required: z.ZodBoolean;
-                default: z.ZodOptional<z.ZodPipe<z.ZodUnknown, z.ZodTransform<string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+        definition: z.ZodCustom<{
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
                     readonly [key: string]: import("./workflowV1.js").JsonValue;
-                } | null, unknown>>>;
-                description: z.ZodOptional<z.ZodString>;
-            }, z.core.$strict>>>;
-            defaults: z.ZodOptional<z.ZodObject<{
-                agentTarget: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    kind: z.ZodLiteral<"agent">;
-                    identity: z.ZodType<{
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
                         pluginId: string;
                         localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }, z.core.$ZodTypeInternals<{
-                        pluginId: string;
-                        localId: string;
-                    }, {
-                        pluginId: string;
-                        localId: string;
-                    }>>;
-                }, z.core.$strict>>>;
-                modelSelection: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    ref: z.ZodUnion<readonly [
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.ZodNull;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            agentTargetKey: z.ZodString;
-                            providerConnectionId: z.core.$ZodBranded<z.ZodString, "ProviderConnectionId", "out">;
-                            modelId: z.ZodString;
-                        }, z.core.$strict>
-                    ]>;
-                    updatedAt: z.ZodNumber;
-                }, z.core.$strict>>>;
-                profileId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                permissionMode: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                acpSessionModeId: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-                sessionConfigOptionOverrides: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    updatedAt: z.ZodNumber;
-                    overrides: z.ZodRecord<z.ZodString, z.ZodObject<{
-                        updatedAt: z.ZodNumber;
-                        value: z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNumber,
-                            z.ZodBoolean,
-                            z.ZodNull
-                        ]>;
-                    }, z.core.$loose>>;
-                }, z.core.$loose>>>;
-                mcpSelection: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodObject<{
-                    v: z.ZodDefault<z.ZodLiteral<1>>;
-                    managedServersEnabled: z.ZodDefault<z.ZodBoolean>;
-                    forceIncludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                    forceExcludeServerIds: z.ZodDefault<z.ZodArray<z.ZodString>>;
-                }, z.core.$strict>, z.ZodTransform<{
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }, {
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
+                            };
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
+                        } | {
+                            kind: "previous_iteration";
+                            loopBlockId: string;
+                        } | {
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
+                            };
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }, {
+            version?: 1 | undefined;
+            inputs?: {
+                name: string;
+                valueType: "boolean" | "json" | "number" | "string";
+                required: boolean;
+                default?: string | number | boolean | readonly import("./workflowV1.js").JsonValue[] | {
+                    readonly [key: string]: import("./workflowV1.js").JsonValue;
+                } | null | undefined;
+                description?: string | undefined;
+            }[] | undefined;
+            defaults?: {
+                agentTarget?: {
+                    kind: "agent";
+                    identity: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                } | null | undefined;
+                modelSelection?: {
+                    v: 1;
+                    ref: {
+                        agentTargetKey: string;
+                        providerConnectionId: null;
+                        modelId: string;
+                    } | {
+                        agentTargetKey: string;
+                        providerConnectionId: string & z.$brand<"ProviderConnectionId">;
+                        modelId: string;
+                    };
+                    updatedAt: number;
+                } | null | undefined;
+                profileId?: string | null | undefined;
+                permissionMode?: string | null | undefined;
+                acpSessionModeId?: string | null | undefined;
+                sessionConfigOptionOverrides?: {
+                    [x: string]: unknown;
+                    v: 1;
+                    updatedAt: number;
+                    overrides: Record<string, {
+                        [x: string]: unknown;
+                        updatedAt: number;
+                        value: string | number | boolean | null;
+                    }>;
+                } | null | undefined;
+                mcpSelection?: {
                     v: 1;
                     managedServersEnabled: boolean;
                     forceIncludeServerIds: string[];
                     forceExcludeServerIds: string[];
-                }>>>>;
-                connectedServices: z.ZodOptional<z.ZodNullable<z.ZodUnion<readonly [
-                    z.ZodObject<{
-                        v: z.ZodLiteral<2>;
-                        bindingsByServiceId: z.ZodDefault<z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodUnion<readonly [
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"direct">;
-                                    disclosedMember: z.ZodType<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, z.core.$ZodTypeInternals<{
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }, {
-                                        service: {
-                                            pluginId: string;
-                                            localId: string;
-                                        };
-                                        accountId: string;
-                                    }>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    source: z.ZodLiteral<"team_resource">;
-                                    resourceId: z.ZodString;
-                                    deliveryMode: z.ZodLiteral<"brokered">;
-                                    disclosedMember: z.ZodOptional<z.ZodNever>;
-                                }, z.core.$strict>
-                            ]>
-                        ]>>>;
-                    }, z.core.$strict>,
-                    z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                } | null | undefined;
+                connectedServices?: {
+                    v: 2;
+                    bindingsByServiceId: Record<string, {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
+                    } | {
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "direct";
+                        disclosedMember: {
+                            service: {
+                                pluginId: string;
+                                localId: string;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
+                            accountId: string;
+                        };
+                    } | {
+                        source: "native";
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
+                    } | {
+                        source: "connected";
+                        selection: "group";
+                        groupId: string;
+                        profileId?: string | undefined;
+                    }>;
+                } | null | undefined;
+                transcriptStorage?: "direct" | "persisted" | null | undefined;
+                terminal?: {
+                    mode?: "integrated" | "plain" | "tmux" | "windows_console" | "windows_terminal" | undefined;
+                    tmux?: {
+                        sessionName?: string | undefined;
+                        isolated?: boolean | undefined;
+                        tmpDir?: string | null | undefined;
+                    } | undefined;
+                    windows?: {
+                        launchMode?: "console" | "hidden" | "windows_terminal" | undefined;
+                        console?: "hidden" | "visible" | undefined;
+                        windowName?: string | undefined;
+                    } | undefined;
+                } | null | undefined;
+                windowsRemoteSessionLaunchMode?: "console" | "hidden" | "windows_terminal" | null | undefined;
+                windowsRemoteSessionConsole?: "hidden" | "visible" | null | undefined;
+                windowsTerminalWindowName?: string | null | undefined;
+                runtimeDescriptorV1?: {
+                    v: 1;
+                    agentId: string;
+                    agent: {
+                        backendMode: string;
+                        home?: "connectedService" | "user" | undefined;
+                        connectedServiceId?: string | undefined;
+                        connectedServiceProfileId?: string | undefined;
+                        connectedServiceGroupId?: string | undefined;
+                    };
+                } | null | undefined;
+                conversation?: {
+                    kind: "shared_run";
+                } | {
+                    kind: "fresh";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>,
-                    z.ZodPipe<z.ZodPipe<z.ZodObject<{
-                        v: z.ZodLiteral<1>;
-                        bindingsByServiceId: z.ZodRecord<z.ZodString, z.ZodUnion<readonly [
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"native">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodDefault<z.ZodOptional<z.ZodLiteral<"profile">>>;
-                                profileId: z.ZodString;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                source: z.ZodLiteral<"connected">;
-                                selection: z.ZodLiteral<"group">;
-                                groupId: z.ZodString;
-                                profileId: z.ZodOptional<z.ZodString>;
-                            }, z.core.$strict>
-                        ]>>;
-                    }, z.core.$strict>, z.ZodTransform<{
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "existing_session";
+                    sessionId: string;
+                    machineId: string;
+                } | undefined;
+                workspace?: {
+                    kind: "inherit";
+                } | {
+                    kind: "project_checkout";
+                } | {
+                    kind: "from_step";
+                    producer: {
+                        blockId: string;
+                        scope: {
+                            kind: "current";
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
+                            kind: "previous_iteration";
+                            loopBlockId: string;
                         } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>, z.ZodTransform<{
-                        v: 2;
-                        bindingsByServiceId: Record<string, {
-                            source: "native";
-                        } | {
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "brokered";
-                            disclosedMember?: undefined;
-                        } | {
-                            source: "team_resource";
-                            resourceId: string;
-                            deliveryMode: "direct";
-                            disclosedMember: {
-                                service: {
-                                    pluginId: string;
-                                    localId: string;
-                                };
-                                accountId: string;
+                            kind: "outer";
+                            levels: number;
+                        };
+                    };
+                } | {
+                    kind: "new_worktree";
+                    source: {
+                        kind: "original";
+                    } | {
+                        kind: "workflow";
+                    } | {
+                        kind: "step";
+                        producer: {
+                            blockId: string;
+                            scope: {
+                                kind: "current";
+                            } | {
+                                kind: "previous_iteration";
+                                loopBlockId: string;
+                            } | {
+                                kind: "outer";
+                                levels: number;
                             };
-                        }>;
-                    }, {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            [x: string]: unknown;
-                            source: "native";
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "group";
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            [x: string]: unknown;
-                            source: "connected";
-                            selection: "profile";
-                            profileId: string;
-                        }>;
-                    }>>
-                ]>>>;
-                transcriptStorage: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    direct: "direct";
-                    persisted: "persisted";
-                }>>>;
-                terminal: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    mode: z.ZodOptional<z.ZodEnum<{
-                        integrated: "integrated";
-                        plain: "plain";
-                        tmux: "tmux";
-                        windows_console: "windows_console";
-                        windows_terminal: "windows_terminal";
-                    }>>;
-                    tmux: z.ZodOptional<z.ZodObject<{
-                        sessionName: z.ZodOptional<z.ZodString>;
-                        isolated: z.ZodOptional<z.ZodBoolean>;
-                        tmpDir: z.ZodOptional<z.ZodUnion<readonly [
-                            z.ZodString,
-                            z.ZodNull
-                        ]>>;
-                    }, z.core.$strict>>;
-                    windows: z.ZodOptional<z.ZodObject<{
-                        launchMode: z.ZodOptional<z.ZodEnum<{
-                            console: "console";
-                            hidden: "hidden";
-                            windows_terminal: "windows_terminal";
-                        }>>;
-                        console: z.ZodOptional<z.ZodEnum<{
-                            hidden: "hidden";
-                            visible: "visible";
-                        }>>;
-                        windowName: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
-                    }, z.core.$strict>>;
-                }, z.core.$strict>>>;
-                windowsRemoteSessionLaunchMode: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    console: "console";
-                    hidden: "hidden";
-                    windows_terminal: "windows_terminal";
-                }>>>;
-                windowsRemoteSessionConsole: z.ZodOptional<z.ZodNullable<z.ZodEnum<{
-                    hidden: "hidden";
-                    visible: "visible";
-                }>>>;
-                windowsTerminalWindowName: z.ZodOptional<z.ZodNullable<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>>;
-                runtimeDescriptorV1: z.ZodOptional<z.ZodNullable<z.ZodObject<{
-                    v: z.ZodLiteral<1>;
-                    agentId: z.ZodString;
-                    agent: z.ZodObject<{
-                        backendMode: z.ZodString;
-                        home: z.ZodOptional<z.ZodEnum<{
-                            connectedService: "connectedService";
-                            user: "user";
-                        }>>;
-                        connectedServiceId: z.ZodOptional<z.ZodString>;
-                        connectedServiceProfileId: z.ZodOptional<z.ZodString>;
-                        connectedServiceGroupId: z.ZodOptional<z.ZodString>;
-                    }, z.core.$strict>;
-                }, z.core.$strict>>>;
-                conversation: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"shared_run">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"fresh">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"existing_session">;
-                        sessionId: z.ZodString;
-                        machineId: z.ZodString;
-                    }, z.core.$strict>
-                ], "kind">>;
-                workspace: z.ZodOptional<z.ZodDiscriminatedUnion<[
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"inherit">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"project_checkout">;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"from_step">;
-                        producer: z.ZodObject<{
-                            blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                            scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"current">;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"previous_iteration">;
-                                    loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                }, z.core.$strict>,
-                                z.ZodObject<{
-                                    kind: z.ZodLiteral<"outer">;
-                                    levels: z.ZodNumber;
-                                }, z.core.$strict>
-                            ], "kind">>;
-                        }, z.core.$strict>;
-                    }, z.core.$strict>,
-                    z.ZodObject<{
-                        kind: z.ZodLiteral<"new_worktree">;
-                        source: z.ZodDiscriminatedUnion<[
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"original">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"workflow">;
-                            }, z.core.$strict>,
-                            z.ZodObject<{
-                                kind: z.ZodLiteral<"step">;
-                                producer: z.ZodObject<{
-                                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"current">;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"previous_iteration">;
-                                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                                        }, z.core.$strict>,
-                                        z.ZodObject<{
-                                            kind: z.ZodLiteral<"outer">;
-                                            levels: z.ZodNumber;
-                                        }, z.core.$strict>
-                                    ], "kind">>;
-                                }, z.core.$strict>;
-                            }, z.core.$strict>
-                        ], "kind">;
-                    }, z.core.$strict>
-                ], "kind">>;
-            }, z.core.$strict>>;
-            blocks: z.ZodArray<z.ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>>;
-            finalOutput: z.ZodOptional<z.ZodObject<{
-                kind: z.ZodLiteral<"result">;
-                producer: z.ZodObject<{
-                    blockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                    scope: z.ZodDefault<z.ZodDiscriminatedUnion<[
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"current">;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"previous_iteration">;
-                            loopBlockId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-                        }, z.core.$strict>,
-                        z.ZodObject<{
-                            kind: z.ZodLiteral<"outer">;
-                            levels: z.ZodNumber;
-                        }, z.core.$strict>
-                    ], "kind">>;
-                }, z.core.$strict>;
-                path: z.ZodDefault<z.ZodArray<z.ZodUnion<readonly [
-                    z.ZodString,
-                    z.ZodNumber
-                ]>>>;
-            }, z.core.$strict>>;
-        }, z.core.$strict>;
+                        };
+                    };
+                } | undefined;
+            } | undefined;
+            blocks: import("./workflowV1.js").WorkflowIngressBlock[];
+            finalOutput?: {
+                kind: "result";
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: "current";
+                    } | {
+                        kind: "previous_iteration";
+                        loopBlockId: string;
+                    } | {
+                        kind: "outer";
+                        levels: number;
+                    };
+                };
+                path: (string | number)[];
+            } | undefined;
+        }>;
         metadata: z.ZodObject<{
             title: z.ZodString;
             description: z.ZodOptional<z.ZodString>;
@@ -111827,9 +111474,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -111901,9 +111548,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -111984,9 +111631,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -112173,29 +111820,6 @@ const WorkflowActionOutputSchemasV1: {
             costUsd: z.ZodOptional<z.ZodNumber>;
         }, z.core.$strict>>;
         finalOutputInvocationId: z.ZodOptional<z.ZodString>;
-        availability: z.ZodObject<{
-            pause: z.ZodBoolean;
-            resumeBoundary: z.ZodBoolean;
-            recoverSameConversation: z.ZodBoolean;
-            recoverFreshAgent: z.ZodBoolean;
-            retry: z.ZodBoolean;
-            restoreWorkspace: z.ZodBoolean;
-            cancel: z.ZodBoolean;
-            inspectExecution: z.ZodBoolean;
-            disabledReasons: z.ZodArray<z.ZodObject<{
-                operation: z.ZodEnum<{
-                    cancel: "cancel";
-                    inspect_execution: "inspect_execution";
-                    pause: "pause";
-                    recover_fresh_agent: "recover_fresh_agent";
-                    recover_same_conversation: "recover_same_conversation";
-                    restore_workspace: "restore_workspace";
-                    resume_boundary: "resume_boundary";
-                    retry: "retry";
-                }>;
-                code: z.ZodString;
-            }, z.core.$strict>>;
-        }, z.core.$strict>;
     }, z.core.$strict>;
     readonly 'workflow.run.wait': z.ZodObject<{
         observation: z.ZodEnum<{
@@ -112249,9 +111873,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -112322,9 +111946,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -112401,9 +112025,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -112480,9 +112104,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -112920,17 +112544,6 @@ const WorkflowActionOutputSchemasV1: {
                                 }, z.core.$strict>, z.ZodTransform<{
                                     v: 2;
                                     bindingsByServiceId: Record<string, {
-                                        source: "native";
-                                    } | {
-                                        source: "connected";
-                                        selection: "group";
-                                        groupId: string;
-                                        profileId?: string | undefined;
-                                    } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
                                         source: "team_resource";
                                         resourceId: string;
                                         deliveryMode: "brokered";
@@ -112946,6 +112559,17 @@ const WorkflowActionOutputSchemasV1: {
                                             };
                                             accountId: string;
                                         };
+                                    } | {
+                                        source: "native";
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
+                                    } | {
+                                        source: "connected";
+                                        selection: "group";
+                                        groupId: string;
+                                        profileId?: string | undefined;
                                     }>;
                                 }, {
                                     v: 1;
@@ -112953,13 +112577,13 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
+                                    } | {
+                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
-                                    } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
                                     }>;
                                 }>>,
                                 z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -112988,14 +112612,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "group";
-                                        groupId: string;
-                                        profileId?: string | undefined;
+                                        selection: "profile";
+                                        profileId: string;
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        selection: "group";
+                                        groupId: string;
+                                        profileId?: string | undefined;
                                     }>;
                                 }, {
                                     v: 1;
@@ -113003,28 +112627,17 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
+                                    } | {
+                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
-                                    } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
                                     }>;
                                 }>>, z.ZodTransform<{
                                     v: 2;
                                     bindingsByServiceId: Record<string, {
-                                        source: "native";
-                                    } | {
-                                        source: "connected";
-                                        selection: "group";
-                                        groupId: string;
-                                        profileId?: string | undefined;
-                                    } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
                                         source: "team_resource";
                                         resourceId: string;
                                         deliveryMode: "brokered";
@@ -113040,6 +112653,17 @@ const WorkflowActionOutputSchemasV1: {
                                             };
                                             accountId: string;
                                         };
+                                    } | {
+                                        source: "native";
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
+                                    } | {
+                                        source: "connected";
+                                        selection: "group";
+                                        groupId: string;
+                                        profileId?: string | undefined;
                                     }>;
                                 }, {
                                     v: 1;
@@ -113049,14 +112673,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "group";
-                                        groupId: string;
-                                        profileId?: string | undefined;
+                                        selection: "profile";
+                                        profileId: string;
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        selection: "group";
+                                        groupId: string;
+                                        profileId?: string | undefined;
                                     }>;
                                 }>>
                             ]>>>;
@@ -113270,6 +112894,77 @@ const WorkflowActionOutputSchemasV1: {
                 logicalInvocationRecordId: z.ZodString;
             }, z.core.$strict>;
             parentRevision: z.ZodNumber;
+            recoveryAvailability: z.ZodOptional<z.ZodObject<{
+                reattach: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"available">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"unavailable">;
+                        reason: z.ZodEnum<{
+                            causal_set_requires_batch_review: "causal_set_requires_batch_review";
+                            execution_not_admitted: "execution_not_admitted";
+                            invocation_not_recoverable: "invocation_not_recoverable";
+                            recovery_not_prepared: "recovery_not_prepared";
+                            run_not_interrupted: "run_not_interrupted";
+                            stop_pending: "stop_pending";
+                            workspace_unavailable: "workspace_unavailable";
+                        }>;
+                    }, z.core.$strict>
+                ], "kind">;
+                retry: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"available">;
+                        causalInvocationIds: z.ZodArray<z.ZodString>;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"unavailable">;
+                        reason: z.ZodEnum<{
+                            causal_set_requires_batch_review: "causal_set_requires_batch_review";
+                            execution_not_admitted: "execution_not_admitted";
+                            invocation_not_recoverable: "invocation_not_recoverable";
+                            recovery_not_prepared: "recovery_not_prepared";
+                            run_not_interrupted: "run_not_interrupted";
+                            stop_pending: "stop_pending";
+                            workspace_unavailable: "workspace_unavailable";
+                        }>;
+                    }, z.core.$strict>
+                ], "kind">;
+                continueSameConversation: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"available">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"unavailable">;
+                        reason: z.ZodEnum<{
+                            causal_set_requires_batch_review: "causal_set_requires_batch_review";
+                            execution_not_admitted: "execution_not_admitted";
+                            invocation_not_recoverable: "invocation_not_recoverable";
+                            recovery_not_prepared: "recovery_not_prepared";
+                            run_not_interrupted: "run_not_interrupted";
+                            stop_pending: "stop_pending";
+                            workspace_unavailable: "workspace_unavailable";
+                        }>;
+                    }, z.core.$strict>
+                ], "kind">;
+                continueFreshAgent: z.ZodDiscriminatedUnion<[
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"available">;
+                    }, z.core.$strict>,
+                    z.ZodObject<{
+                        kind: z.ZodLiteral<"unavailable">;
+                        reason: z.ZodEnum<{
+                            causal_set_requires_batch_review: "causal_set_requires_batch_review";
+                            execution_not_admitted: "execution_not_admitted";
+                            invocation_not_recoverable: "invocation_not_recoverable";
+                            recovery_not_prepared: "recovery_not_prepared";
+                            run_not_interrupted: "run_not_interrupted";
+                            stop_pending: "stop_pending";
+                            workspace_unavailable: "workspace_unavailable";
+                        }>;
+                    }, z.core.$strict>
+                ], "kind">;
+            }, z.core.$strict>>;
         }, z.core.$strict>;
     }, z.core.$strict>;
     readonly 'workflow.run.invocations.retry': z.ZodObject<{
@@ -113318,9 +113013,9 @@ const WorkflowActionOutputSchemasV1: {
             availability: z.ZodObject<{
                 pause: z.ZodBoolean;
                 resumeBoundary: z.ZodBoolean;
-                recoverSameConversation: z.ZodBoolean;
-                recoverFreshAgent: z.ZodBoolean;
-                retry: z.ZodBoolean;
+                recoverSameConversation: z.ZodOptional<z.ZodBoolean>;
+                recoverFreshAgent: z.ZodOptional<z.ZodBoolean>;
+                retry: z.ZodOptional<z.ZodBoolean>;
                 restoreWorkspace: z.ZodBoolean;
                 cancel: z.ZodBoolean;
                 inspectExecution: z.ZodBoolean;
@@ -113753,6 +113448,30 @@ type WorkflowFailurePolicy = (typeof WORKFLOW_FAILURE_POLICIES)[number];
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/workflows/workflowV1.d.ts` — `WorkflowIngressBlock`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type WorkflowIngressBlock = string | WorkflowStep | (Omit<Extract<WorkflowBlock, {
+    kind: 'parallel';
+}>, 'branches'> & Readonly<{
+    branches: readonly (Omit<WorkflowParallelBranch, 'blocks'> & Readonly<{
+        blocks: readonly WorkflowIngressBlock[];
+    }>)[];
+}>) | (Omit<Extract<WorkflowBlock, {
+    kind: 'loop';
+}>, 'body'> & Readonly<{
+    body: readonly WorkflowIngressBlock[];
+}>) | (Omit<Extract<WorkflowBlock, {
+    kind: 'if';
+}>, 'then' | 'otherwise'> & Readonly<{
+    then: readonly WorkflowIngressBlock[];
+    otherwise: readonly WorkflowIngressBlock[];
+}>);
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/workflows/workflowV1.d.ts` — `WorkflowInputDefinition`
 
 Reached from a published signature; not itself a published export.
@@ -113999,6 +113718,17 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
         }, z.core.$strict>, z.ZodTransform<{
             v: 2;
             bindingsByServiceId: Record<string, {
+                source: "native";
+            } | {
+                source: "connected";
+                selection: "group";
+                groupId: string;
+                profileId?: string | undefined;
+            } | {
+                source: "connected";
+                selection: "profile";
+                profileId: string;
+            } | {
                 source: "team_resource";
                 resourceId: string;
                 deliveryMode: "brokered";
@@ -114014,17 +113744,6 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                     };
                     accountId: string;
                 };
-            } | {
-                source: "native";
-            } | {
-                source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                source: "connected";
-                selection: "group";
-                groupId: string;
-                profileId?: string | undefined;
             }>;
         }, {
             v: 1;
@@ -114032,13 +113751,13 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                 source: "native";
             } | {
                 source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                source: "connected";
                 selection: "group";
                 groupId: string;
                 profileId?: string | undefined;
+            } | {
+                source: "connected";
+                selection: "profile";
+                profileId: string;
             }>;
         }>>,
         z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -114067,14 +113786,14 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
             } | {
                 [x: string]: unknown;
                 source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                [x: string]: unknown;
-                source: "connected";
                 selection: "group";
                 groupId: string;
                 profileId?: string | undefined;
+            } | {
+                [x: string]: unknown;
+                source: "connected";
+                selection: "profile";
+                profileId: string;
             }>;
         }, {
             v: 1;
@@ -114082,17 +113801,28 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                 source: "native";
             } | {
                 source: "connected";
+                selection: "group";
+                groupId: string;
+                profileId?: string | undefined;
+            } | {
+                source: "connected";
                 selection: "profile";
                 profileId: string;
+            }>;
+        }>>, z.ZodTransform<{
+            v: 2;
+            bindingsByServiceId: Record<string, {
+                source: "native";
             } | {
                 source: "connected";
                 selection: "group";
                 groupId: string;
                 profileId?: string | undefined;
-            }>;
-        }>>, z.ZodTransform<{
-            v: 2;
-            bindingsByServiceId: Record<string, {
+            } | {
+                source: "connected";
+                selection: "profile";
+                profileId: string;
+            } | {
                 source: "team_resource";
                 resourceId: string;
                 deliveryMode: "brokered";
@@ -114108,17 +113838,6 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
                     };
                     accountId: string;
                 };
-            } | {
-                source: "native";
-            } | {
-                source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                source: "connected";
-                selection: "group";
-                groupId: string;
-                profileId?: string | undefined;
             }>;
         }, {
             v: 1;
@@ -114128,14 +113847,14 @@ const WorkflowStepExecutionSelectionSchema: z.ZodObject<{
             } | {
                 [x: string]: unknown;
                 source: "connected";
-                selection: "profile";
-                profileId: string;
-            } | {
-                [x: string]: unknown;
-                source: "connected";
                 selection: "group";
                 groupId: string;
                 profileId?: string | undefined;
+            } | {
+                [x: string]: unknown;
+                source: "connected";
+                selection: "profile";
+                profileId: string;
             }>;
         }>>
     ]>>>;
@@ -114505,6 +114224,17 @@ const WorkflowStepSchema: z.ZodObject<{
             }, z.core.$strict>, z.ZodTransform<{
                 v: 2;
                 bindingsByServiceId: Record<string, {
+                    source: "native";
+                } | {
+                    source: "connected";
+                    selection: "group";
+                    groupId: string;
+                    profileId?: string | undefined;
+                } | {
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
+                } | {
                     source: "team_resource";
                     resourceId: string;
                     deliveryMode: "brokered";
@@ -114520,17 +114250,6 @@ const WorkflowStepSchema: z.ZodObject<{
                         };
                         accountId: string;
                     };
-                } | {
-                    source: "native";
-                } | {
-                    source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    source: "connected";
-                    selection: "group";
-                    groupId: string;
-                    profileId?: string | undefined;
                 }>;
             }, {
                 v: 1;
@@ -114538,13 +114257,13 @@ const WorkflowStepSchema: z.ZodObject<{
                     source: "native";
                 } | {
                     source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
+                } | {
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
                 }>;
             }>>,
             z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -114573,14 +114292,14 @@ const WorkflowStepSchema: z.ZodObject<{
                 } | {
                     [x: string]: unknown;
                     source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    [x: string]: unknown;
-                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
+                } | {
+                    [x: string]: unknown;
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
                 }>;
             }, {
                 v: 1;
@@ -114588,17 +114307,28 @@ const WorkflowStepSchema: z.ZodObject<{
                     source: "native";
                 } | {
                     source: "connected";
+                    selection: "group";
+                    groupId: string;
+                    profileId?: string | undefined;
+                } | {
+                    source: "connected";
                     selection: "profile";
                     profileId: string;
+                }>;
+            }>>, z.ZodTransform<{
+                v: 2;
+                bindingsByServiceId: Record<string, {
+                    source: "native";
                 } | {
                     source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
-                }>;
-            }>>, z.ZodTransform<{
-                v: 2;
-                bindingsByServiceId: Record<string, {
+                } | {
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
+                } | {
                     source: "team_resource";
                     resourceId: string;
                     deliveryMode: "brokered";
@@ -114614,17 +114344,6 @@ const WorkflowStepSchema: z.ZodObject<{
                         };
                         accountId: string;
                     };
-                } | {
-                    source: "native";
-                } | {
-                    source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    source: "connected";
-                    selection: "group";
-                    groupId: string;
-                    profileId?: string | undefined;
                 }>;
             }, {
                 v: 1;
@@ -114634,14 +114353,14 @@ const WorkflowStepSchema: z.ZodObject<{
                 } | {
                     [x: string]: unknown;
                     source: "connected";
-                    selection: "profile";
-                    profileId: string;
-                } | {
-                    [x: string]: unknown;
-                    source: "connected";
                     selection: "group";
                     groupId: string;
                     profileId?: string | undefined;
+                } | {
+                    [x: string]: unknown;
+                    source: "connected";
+                    selection: "profile";
+                    profileId: string;
                 }>;
             }>>
         ]>>>;

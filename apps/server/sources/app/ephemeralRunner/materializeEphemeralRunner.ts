@@ -288,7 +288,12 @@ export async function materializeEphemeralRunner(params: Readonly<{
                         installationId: claim.data.payload.installation.installationId,
                         machineContentKeyFingerprint: binding.machineContentKeyFingerprint,
                     },
-                    expectedAccountSigningPublicKey: current.endpointFactsRecipient.accountSigningPublicKey,
+                    // The creator-generated activation signing identity is the
+                    // proof root, so a DataKey or token-only creator needs no
+                    // Account signing authority. The public half is the value
+                    // this Home recorded when the creator created the
+                    // activation, never a field of the submitted request.
+                    expectedAccountSigningPublicKey: row.activationSigningPublicKey,
                 });
                 if (!verified) return { status: "conflict", reason: "encryption_mismatch" };
             }

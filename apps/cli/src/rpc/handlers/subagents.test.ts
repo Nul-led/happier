@@ -58,6 +58,7 @@ describe('subagent RPC handlers', () => {
                 actionId: 'sessions.subagents.list',
                 input: { parentSessionId: 'session-1' },
                 context: {
+                    authority: 'account_automation',
                     defaultSessionId: 'session-1',
                     surface: 'rpc',
                 },
@@ -71,6 +72,7 @@ describe('subagent RPC handlers', () => {
                     kind: 'custom',
                 },
                 context: {
+                    authority: 'account_automation',
                     defaultSessionId: 'session-1',
                     surface: 'rpc',
                 },

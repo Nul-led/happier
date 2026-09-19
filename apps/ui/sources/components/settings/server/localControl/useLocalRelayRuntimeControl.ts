@@ -10,6 +10,11 @@ import {
     type LocalRelayRuntimeTaskOptions,
 } from '@/components/systemTasks/specs/localControl/buildLocalRelayRuntimeSystemTaskSpec';
 import { readRelayRuntimeStatusData, type RelayRuntimeStatusData } from './relayRuntimeStatus';
+import { removeServerProfileUiAction } from '@/components/serverProfiles/removeServerProfileUiAction';
+import {
+    findPersonalHomeBootstrapCompletedProfile,
+    listServerProfiles,
+} from '@/sync/domains/server/serverProfiles';
 
 type RelayRuntimeActionKind =
     | 'relay.runtime.installOrUpdate.v1'
@@ -598,6 +603,23 @@ export function useLocalRelayRuntimeControl(options: Readonly<{
                 error: typeof data?.error === 'string' ? data.error : null,
             };
             setLastOperation({ operation: 'erase', erase });
+            // The Home's data is gone. Leaving this device's saved profile, credential and
+            // Personal Home completion receipt behind would keep the shell reporting the
+            // erased Home as ready, so the same completion path drops that binding through
+            // the canonical profile-removal owner. A guard refusal is not fatal: the erase
+            // already succeeded and the explicit "Remove Home from Happier" action remains.
+            const erasedIdentity = inspectionRef.current?.homeServerIdentityId ?? null;
+            const completedProfile = findPersonalHomeBootstrapCompletedProfile(listServerProfiles());
+            if (completedProfile && (!erasedIdentity || completedProfile.serverIdentityId === erasedIdentity)) {
+                try {
+                    await removeServerProfileUiAction({
+                        profileId: completedProfile.id,
+                        serverUrl: completedProfile.serverUrl,
+                    });
+                } catch {
+                    // Keep the erase result; the profile row stays removable by hand.
+                }
+            }
             refreshAfterMutation();
             return erase;
         }, [refreshAfterMutation, runPersonalHomeTask]),

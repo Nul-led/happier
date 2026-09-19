@@ -8,7 +8,11 @@ import {
   readMachineTransferFeatureEnv,
   readPluginsFeatureEnv,
   readSessionAgentSwitchingFeatureEnv,
+  readSessionBoardFeatureEnv,
+  readSessionCollaborationFeatureEnv,
   readSessionConversationsFeatureEnv,
+  readSessionEphemeralRunnerFeatureEnv,
+  readSessionFilteredListingFeatureEnv,
   readSessionFollowingFeatureEnv,
   readSessionHandoffFeatureEnv,
   readSessionUsageLimitRecoveryFeatureEnv,
@@ -75,29 +79,62 @@ describe('readTeamsFeatureEnv', () => {
     expect(readTeamsFeatureEnv({}).enabled).toBe(true);
     expect(readTeamsFeatureEnv({ HAPPIER_FEATURE_TEAMS__ENABLED: 'false' }).enabled).toBe(false);
   });
-});
 
-describe('readSessionConversationsFeatureEnv', () => {
-  it('defaults off, accepts explicit enablement, and treats malformed input as disabled', () => {
-    expect(readSessionConversationsFeatureEnv({}).conversationsEnabled).toBe(false);
-    expect(readSessionConversationsFeatureEnv({
-      HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '1',
-    }).conversationsEnabled).toBe(true);
-    expect(readSessionConversationsFeatureEnv({
-      HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: 'not-a-boolean',
-    }).conversationsEnabled).toBe(false);
+  it('defaults the Team credential-resource bits on and honors their operator opt-outs', () => {
+    expect(readTeamsFeatureEnv({}).credentialResourcesEnabled).toBe(true);
+    expect(readTeamsFeatureEnv({}).credentialResourcesExternalApiEnabled).toBe(true);
+    expect(readTeamsFeatureEnv({
+      HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: '0',
+    }).credentialResourcesEnabled).toBe(false);
+    expect(readTeamsFeatureEnv({
+      HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: '0',
+    }).credentialResourcesExternalApiEnabled).toBe(false);
   });
 });
 
-describe('readSessionFollowingFeatureEnv', () => {
-  it('defaults off, accepts explicit enablement, and treats malformed input as disabled', () => {
-    expect(readSessionFollowingFeatureEnv({}).followingEnabled).toBe(false);
+describe('shipped Session program feature env readers', () => {
+  // Every one of these is a shipped capability, not a staged rollout: the env
+  // variable is the operator opt-out, exactly like `teams` and `search`.
+  it('defaults Session conversations on and honors the operator opt-out', () => {
+    expect(readSessionConversationsFeatureEnv({}).conversationsEnabled).toBe(true);
+    expect(readSessionConversationsFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '0',
+    }).conversationsEnabled).toBe(false);
+  });
+
+  it('defaults Session following on and honors the operator opt-out', () => {
+    expect(readSessionFollowingFeatureEnv({}).followingEnabled).toBe(true);
     expect(readSessionFollowingFeatureEnv({
-      HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'true',
-    }).followingEnabled).toBe(true);
-    expect(readSessionFollowingFeatureEnv({
-      HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'not-a-boolean',
+      HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'false',
     }).followingEnabled).toBe(false);
+  });
+
+  it('defaults Session collaboration on and honors the operator opt-out', () => {
+    expect(readSessionCollaborationFeatureEnv({}).enabled).toBe(true);
+    expect(readSessionCollaborationFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
+    }).enabled).toBe(false);
+  });
+
+  it('defaults the Session Board on and honors the operator opt-out', () => {
+    expect(readSessionBoardFeatureEnv({}).enabled).toBe(true);
+    expect(readSessionBoardFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '0',
+    }).enabled).toBe(false);
+  });
+
+  it('defaults filtered Session listing on and honors the operator opt-out', () => {
+    expect(readSessionFilteredListingFeatureEnv({}).filteredListingEnabled).toBe(true);
+    expect(readSessionFilteredListingFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED: '0',
+    }).filteredListingEnabled).toBe(false);
+  });
+
+  it('defaults the temporary-computer Runner on and honors the operator opt-out', () => {
+    expect(readSessionEphemeralRunnerFeatureEnv({}).ephemeralRunnerEnabled).toBe(true);
+    expect(readSessionEphemeralRunnerFeatureEnv({
+      HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: '0',
+    }).ephemeralRunnerEnabled).toBe(false);
   });
 });
 

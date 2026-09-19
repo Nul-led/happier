@@ -52,87 +52,61 @@ describe('features/serverFeatureRegistry', () => {
         expect(failures).toEqual([]);
     });
 
-    it('keeps collaboration closed until explicitly enabled and enforces its sharing dependency', () => {
-        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        const enabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
+    it('publishes collaboration by default and enforces its sharing dependency', () => {
+        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        const operatorDisabled = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
         }, serverFeatureRegistry);
         const sharingDisabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
             HAPPIER_BUILD_FEATURES_DENY: 'sharing.session',
         }, serverFeatureRegistry);
         const teamsDisabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
             HAPPIER_FEATURE_TEAMS__ENABLED: '0',
         }, serverFeatureRegistry);
         expect(readServerEnabledBit(teamsDisabled, 'sessions.collaboration')).toBe(true);
-        expect(readServerEnabledBit(disabled, 'sessions.collaboration')).toBe(false);
-        expect(readServerEnabledBit(enabled, 'sessions.collaboration')).toBe(true);
+        expect(readServerEnabledBit(byDefault, 'sessions.collaboration')).toBe(true);
+        expect(readServerEnabledBit(operatorDisabled, 'sessions.collaboration')).toBe(false);
         expect(readServerEnabledBit(sharingDisabled, 'sessions.collaboration')).toBe(false);
     });
 
-    it('keeps conversations closed until explicitly enabled and enforces the collaboration dependency', () => {
-        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        const enabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
-            HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '1',
+    it('publishes conversations by default and enforces the collaboration dependency', () => {
+        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        const operatorDisabled = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '0',
         }, serverFeatureRegistry);
-        const missingDependency = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '1',
-        }, serverFeatureRegistry);
-        const malformedDependency = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: 'not-a-boolean',
-            HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: '1',
-        }, serverFeatureRegistry);
-        const malformedConversations = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '1',
-            HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: 'not-a-boolean',
+        const dependencyDisabled = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED: '0',
         }, serverFeatureRegistry);
 
-        expect(readServerEnabledBit(disabled, 'sessions.conversations')).toBe(false);
-        expect(readServerEnabledBit(enabled, 'sessions.conversations')).toBe(true);
-        expect(readServerEnabledBit(missingDependency, 'sessions.conversations')).toBe(false);
-        expect(readServerEnabledBit(malformedDependency, 'sessions.conversations')).toBe(false);
-        expect(readServerEnabledBit(malformedConversations, 'sessions.conversations')).toBe(false);
+        expect(readServerEnabledBit(byDefault, 'sessions.conversations')).toBe(true);
+        expect(readServerEnabledBit(operatorDisabled, 'sessions.conversations')).toBe(false);
+        expect(readServerEnabledBit(dependencyDisabled, 'sessions.conversations')).toBe(false);
     });
 
-    it('keeps Following fail-closed independently of its diagnostic protocol capability', () => {
-        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        const enabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: '1',
-        }, serverFeatureRegistry);
-        const malformed = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: 'not-a-boolean',
+    it('publishes Following by default, independently of its diagnostic protocol capability', () => {
+        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        const operatorDisabled = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: '0',
         }, serverFeatureRegistry);
         const sessionsDenied = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: '1',
             HAPPIER_BUILD_FEATURES_DENY: 'sessions',
         }, serverFeatureRegistry);
 
-        expect(disabled.capabilities.session.follow).toEqual({ contextVersion: 1 });
-        expect(readServerEnabledBit(disabled, 'sessions.following')).toBe(false);
-        expect(readServerEnabledBit(enabled, 'sessions.following')).toBe(true);
-        expect(readServerEnabledBit(malformed, 'sessions.following')).toBe(false);
+        expect(byDefault.capabilities.session.follow).toEqual({ contextVersion: 1 });
+        expect(readServerEnabledBit(byDefault, 'sessions.following')).toBe(true);
+        expect(readServerEnabledBit(operatorDisabled, 'sessions.following')).toBe(false);
         expect(readServerEnabledBit(sessionsDenied, 'sessions.following')).toBe(false);
     });
 
-    it('keeps Session Board closed until explicitly enabled', () => {
-        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        const enabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '1',
-        }, serverFeatureRegistry);
-        const malformed = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: 'not-a-boolean',
-        }, serverFeatureRegistry);
+    it('keeps Session Board closed only while System Records v1 is inactive', () => {
+        const systemRecordsInactive = resolveServerFeaturePayload({}, serverFeatureRegistry);
 
-        expect(readServerEnabledBit(disabled, 'sessions.board')).toBe(false);
-        expect(readSessionBoardFeatureEnv({}).enabled).toBe(false);
-        expect(readSessionBoardFeatureEnv({ HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '1' }).enabled).toBe(true);
-        expect(readServerEnabledBit(enabled, 'sessions.board')).toBe(false);
-        expect(readServerEnabledBit(malformed, 'sessions.board')).toBe(false);
+        expect(readSessionBoardFeatureEnv({}).enabled).toBe(true);
+        expect(readSessionBoardFeatureEnv({ HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '0' }).enabled).toBe(false);
+        expect(readServerEnabledBit(systemRecordsInactive, 'sessions.board')).toBe(false);
     });
 
-    it('publishes Session Board only when the operator enables it and System Records v1 is active', async () => {
+    it('publishes Session Board by default once System Records v1 is active', async () => {
         await initializeSessionSystemRecordsProtocolV1Activation({
             $queryRawUnsafe: async () => [{ migration_name: SESSION_SYSTEM_RECORDS_CONTRACT_MIGRATION }],
             sessionSystemRecord: {
@@ -140,21 +114,21 @@ describe('features/serverFeatureRegistry', () => {
             },
         } as never);
 
-        const enabled = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '1',
+        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        const operatorDisabled = resolveServerFeaturePayload({
+            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '0',
         }, serverFeatureRegistry);
         const buildDenied = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '1',
             HAPPIER_BUILD_FEATURES_DENY: 'sessions.board',
         }, serverFeatureRegistry);
-        // The catalog owns the dependency closure: an explicitly enabled Board on a
-        // Home without Sessions is still closed, and no call site reconstructs that.
+        // The catalog owns the dependency closure: a Board on a Home without
+        // Sessions is still closed, and no call site reconstructs that.
         const dependencyDenied = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: '1',
             HAPPIER_BUILD_FEATURES_DENY: 'sessions',
         }, serverFeatureRegistry);
 
-        expect(readServerEnabledBit(enabled, 'sessions.board')).toBe(true);
+        expect(readServerEnabledBit(byDefault, 'sessions.board')).toBe(true);
+        expect(readServerEnabledBit(operatorDisabled, 'sessions.board')).toBe(false);
         expect(readServerEnabledBit(buildDenied, 'sessions.board')).toBe(false);
         expect(readServerEnabledBit(dependencyDenied, 'sessions.board')).toBe(false);
     });

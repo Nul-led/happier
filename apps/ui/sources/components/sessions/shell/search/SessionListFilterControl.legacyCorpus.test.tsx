@@ -85,6 +85,27 @@ describe('SessionListFilterControl legacy corpus presentation', () => {
         expect(props.editor.queryEnabled).toBe(true);
     });
 
+    it('names the attention scope in the collapsed control label', async () => {
+        const { SessionListFilterControl } = await import('./SessionListFilterControl');
+        const base = createSessionListViewFilterDefaults({ homeServerIds: ['home-a'] });
+        await renderScreen(
+            <SessionListFilterControl
+                controller={controller({
+                    queryEnabled: true,
+                    corpusPresentation: 'semantic_query',
+                    filters: { ...base, attention: 'needs_my_attention' },
+                })}
+                organizationProjectionsByServerId={{}}
+            />,
+        );
+
+        const props = editorControlSpy.mock.lastCall?.[0] as Readonly<{ label: string; active: boolean }>;
+        // The collapsed chrome is the only place a compact host can say which facet
+        // shortened the list, and it is the control's accessible name as well.
+        expect(props.label).toBe('My work · Needs me');
+        expect(props.active).toBe(true);
+    });
+
     it('marks the inactive preference unavailable for the archived corpus', async () => {
         const { SessionListFilterControl } = await import('./SessionListFilterControl');
         await renderScreen(

@@ -2,7 +2,7 @@ import * as React from 'react';
 import { Pressable, View } from 'react-native';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
-import { readSessionAgentTransitionDividerV1 } from '@happier-dev/protocol';
+import { readSessionAgentTransitionDividerV1, SESSION_FOLLOW_WAKE_EVENT_MESSAGE } from '@happier-dev/protocol';
 
 import { ActivitySpinner, iconMatchedSpinnerSize } from '@/components/ui/feedback/ActivitySpinner';
 import { AgentTransitionDividerRow } from '@/components/sessions/transcript/agentTransition/AgentTransitionDividerRow';
@@ -322,7 +322,13 @@ export const TranscriptEventRow = React.memo(function TranscriptEventRow(props: 
         text = t('message.switchedToMode', { mode: props.event.mode });
     } else if (props.event.type === 'message') {
         iconName = 'info';
-        text = props.event.message;
+        // The Follow wake commits one fixed Protocol sentence as the persisted
+        // event content so every host recognises it; the reader localizes it the
+        // same way it localizes the blocked-draft notice. The stored marker stays
+        // untranslated and is shown verbatim on a host without the key.
+        text = props.event.message === SESSION_FOLLOW_WAKE_EVENT_MESSAGE
+            ? t('session.follow.wakeEventExplanation')
+            : props.event.message;
     } else if (props.event.type === 'runtime-config-outcome') {
         testID = `transcript-event-runtime-config-outcome-${props.event.status}`;
         const pendingTiming = isPendingRuntimeConfigOutcomeTiming(props.event.timing);

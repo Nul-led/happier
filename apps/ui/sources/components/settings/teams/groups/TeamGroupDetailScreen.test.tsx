@@ -466,6 +466,11 @@ describe('TeamGroupDetailScreen', () => {
         }
         expect(ancestor).not.toBeNull();
         expect(ancestor?.props.accessibilityLabel ?? ancestor?.props['aria-label']).toBe('teams.history.label');
+        // The horizon this choice mints is the Group's own, so both options name the
+        // Group. The generic Team wording describes a different, broader audience.
+        const historyText = screen.getTextContent();
+        expect(historyText).toContain('teams.history.fromMembershipNamed(name=Developers)');
+        expect(historyText).toContain('teams.history.allExistingNamed(name=Developers)');
 
         await waitForTestId(screen, 'team-group-candidates-retry');
         expect(screen.getTextContent()).toContain('teams.unavailable.offline');

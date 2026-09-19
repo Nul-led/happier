@@ -217,9 +217,13 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                                     rowActionInFlightRef.current = true;
                                     try {
                                     // One press offers the actions this row
-                                    // actually has, as explicit choices.
-                                    // Chaining two confirmations would turn
-                                    // "cancel" into a different question.
+                                    // actually has, as explicit choices. The
+                                    // chooser's body describes reissuing
+                                    // whenever reissue is offered, so the one
+                                    // irreversible choice states its own
+                                    // consequence in its own confirmation
+                                    // below — the same two step the Team logo
+                                    // and member removals already use.
                                     let chosen: 'revoke' | 'retry' | 'change_email' | null = null;
                                     await Modal.alertAsync(
                                         presentation.recipientLabel ?? t('teams.invitations.linkRow'),
@@ -242,6 +246,12 @@ const InvitationsList = React.memo(function InvitationsList(props: Readonly<{
                                         ],
                                     );
                                     if (chosen === null) return;
+
+                                    if (chosen === 'revoke' && !await Modal.confirm(
+                                        t('teams.invitations.revokeTitle'),
+                                        t('teams.invitations.revokeBody'),
+                                        { confirmText: t('teams.invitations.revoke'), destructive: true },
+                                    )) return;
 
                                     setBusy(true);
                                     setNotice(null);

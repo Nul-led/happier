@@ -260,6 +260,22 @@ HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID=srv_accounts
 
 The recommendation is discovery policy, not authorization: it does not link an Account or allow that service to issue Home credentials without the normal verified enrollment flow.
 
+Three details decide whether this configuration takes effect:
+
+- `disabled` and `self` reject `HAPPIER_AUTH_SIGN_IN_SERVICE_URL` and
+  `HAPPIER_AUTH_SIGN_IN_SERVICE_SERVER_IDENTITY_ID`. Setting either alongside them
+  is recorded as a configuration error and no recommendation is published — the
+  server does not guess which half you meant.
+- `HAPPIER_ACCOUNT_SERVICE_DISPLAY_NAME` is published only by a server that is
+  itself Account-Directory capable, and it is what clients render in the sign-in
+  copy ("Create an account with Acme, then find or add your Home"). It must be
+  non-empty, free of control characters, and within the directory label's UTF-8
+  byte limit.
+- A Home owner can switch this recommendation **off** from
+  [Home administration](/self-hosting/home-administration) when the deployment
+  offers one. They cannot point the Home at a different service: the endpoint is
+  yours to set here.
+
 ## Auth methods (discovery)
 
 The current 0.2 client path discovers authentication methods through `GET /v1/features`.

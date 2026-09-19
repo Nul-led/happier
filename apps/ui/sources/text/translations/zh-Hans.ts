@@ -1,6 +1,7 @@
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
+import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
@@ -659,7 +660,7 @@ function plural({
 
 export const zhHans = {
     actionConfirmations: actionConfirmationTranslations['zh-Hans'],
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations['zh-Hans'], resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations['zh-Hans'].resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations['zh-Hans'], error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations['zh-Hans'].error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations['zh-Hans'].resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: '完成暂存上传',
@@ -672,7 +673,7 @@ export const zhHans = {
     voice: voiceReadinessTranslations['zh-Hans'],
     pluginPermissions: pluginPermissionTranslations['zh-Hans'],
     sessionBoard: sessionBoardTranslations['zh-Hans'],
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.zhHans,
     ...changedFileEvidenceTranslations['zh-Hans'],
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations['zh-Hans'],
     pluginSurfaces: {
@@ -1706,6 +1707,8 @@ export const zhHans = {
     securingCredentials: "正在保护凭据…",
     showQrInstead: "改为显示二维码",
     addPhoneQrInstructions: "用 Happier 手机应用扫描此二维码，在手机上登录。",
+    addPhoneChooseHomeTitle: "选择一个 Home",
+    addPhoneChooseHomeFooter: "你添加的手机将获得此处所选 Home 的访问权限。当前聚焦的 Home 不会改变。",
     serverUrlNotEmbeddedTitle: "在手机上设置服务器",
     serverUrlNotEmbeddedBody:
       "此二维码无法包含服务器地址，因为服务器被设置为 localhost。请在手机上前往 设置 → 服务器，添加一个手机可访问的 URL（例如局域网 IP 或 Tailscale URL），然后再扫描一次。",
@@ -1717,9 +1720,12 @@ export const zhHans = {
     expiresAtLabel: "过期时间",
     showPairingLink: "显示配对链接",
     pairingLinkSecurityWarning: "任何拥有此临时链接的人都可以在链接过期前添加设备。请只与您自己的设备共享。",
+    pairingLinkFieldLabel: "配对链接",
+    pairingLinkRequired: "粘贴另一台设备上显示的配对链接。",
     pairingQrTooLargeTitle: "内容过长，无法显示为二维码",
     pairingQrTooLargeBody: "此邀请包含额外的连接信息，无法以二维码显示。您的 Home 仍可继续配对——请改用下方的安全链接。",
     homeAddedPreservedFocusBody: "已添加此 Home。当前选中的 Home 未发生变化。",
+    homeSavedOpenFailedBody: "此 Home 已保存，但无法打开。请重试以切换到它。",
     requesterDeviceAddedBody: "已将发起请求的设备添加到此 Home。",
     requestingDeviceLabel: "请求设备",
     thisDevice: "此设备",
@@ -5558,6 +5564,15 @@ export const zhHans = {
             workspaceChoose: '由对方选择文件夹',
             workspaceHome: '对方的主文件夹',
         },
+        workspace: {
+            title: '起始文件夹',
+            chooseRecommended: '推荐 · 软件包连接时由对方选择文件夹',
+            homeDetail: '在运行该软件包的人的主文件夹中启动',
+        },
+        otherDevice: {
+            guidance: '该软件包保存在创建它的设备上。请在那台设备上继续，或取消此请求并在这里创建新的软件包。',
+            createdOn: ({ device }: { device: string }) => `创建于 ${device}`,
+        },
         endpointFacts: {
             unreadable: '此设备无法读取那台电脑发来的信息。',
         },
@@ -5818,6 +5833,7 @@ export const zhHans = {
 
   session: {
         access: sessionAccessTranslations['zh-Hans'],
+        ...sessionResponsibilityTranslations['zh-Hans'],
         collaboration: sessionCollaborationTranslations['zh-Hans'],
         follow: sessionFollowTranslations['zh-Hans'],
         homeFreshness: sessionHomeFreshnessTranslations['zh-Hans'],
@@ -6935,8 +6951,9 @@ export const zhHans = {
         automationRunEvents: "自动化运行事件",
     },
     multiServerView: {
-      title: "多 Home 并行视图",
-      footer: "选择是否将多个 Home 合并到一个会话列表中显示。",
+      editMembersAction: "编辑此分组中的 Home",
+      title: "此视图中的 Home",
+      footer: "选择这些 Home 在会话列表中的显示方式，以及哪些 Home 属于此分组。",
       presentationTitle: "展示模式",
       presentation: {
         flatWithBadges: "扁平列表（带 Home 徽标）",
@@ -11302,7 +11319,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `尚未有 Home 关联到 ${accountService}。请关联一个 Home，然后刷新。` : '尚未有 Home 关联到此账户。请关联一个 Home，然后刷新。',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: '让此 Home 在你的其他设备上可用',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `允许 ${accountService} 帮助你的其他设备查找此 Home 并请求访问权限。` : '允许你的账户帮助其他设备查找此 Home 并请求访问权限。',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -11805,6 +11822,7 @@ settingsSession: {
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `无法连接到 ${serverUrl}。请重试或选择其他登录服务。`,
     signInServiceUnsupportedTitle: "不支持此登录服务",
     signInServiceMethodlessTitle: "此处没有可用的登录方式",
+    signInServiceMethodlessBody: "该服务可以连接，但目前未提供任何登录方式。请重试或选择其他服务。",
     signInOptionsPartialTitle: "部分登录方式无法加载",
     signInServiceUnsupportedBody: "此地址是 Home，或不提供账户登录。请选择其他服务。",
     useDifferentHome: "使用其他 Home",
@@ -13576,6 +13594,15 @@ settingsSession: {
             useExistingDetail: '验证其访问权限并保护注册流程，同时不更改当前选中的之家。',
             useAnother: '使用另一个之家',
             useAnotherDetail: '保持此本地之家不变，并从你的之家中选择。',
+            blocked: {
+                runtime_unhealthy: '本地 Home 需要处理后才能启动。',
+                home_auth_invalid: 'Home 认证需要处理。',
+                existing_runtime: '继续设置前，需要先对已存在的本地 Home 做出选择。',
+                personal_home_erased: '你的 Personal Home 已被删除。重试以创建一个新的。',
+            },
+            blockedBody: {
+                personal_home_erased: 'Home 数据已被删除。这里没有可恢复的内容——请创建新的 Personal Home，或使用其他 Home。',
+            },
         },
     },
     settingsSearch: {

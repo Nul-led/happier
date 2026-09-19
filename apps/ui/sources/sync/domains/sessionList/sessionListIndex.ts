@@ -191,20 +191,22 @@ function buildSessionListIndexHeaderNodeId(item: Extract<SessionListIndexItem, {
     const hintMachineId = String(workspaceScopeHint?.machineId ?? '').trim();
     const hintRootPath = String(workspaceScopeHint?.rootPath ?? '').trim();
 
-    if (groupKey) return `header:${headerKind}:${groupKey}${folderId ? `:${folderId}` : ''}`;
+    // Header ids are React keys and collapsed-state keys, and every component here is
+    // caller-supplied text — a Home URL, a workspace key, a filesystem root — that can
+    // contain any delimiter. The tuple is serialized the way the Session address owner
+    // already does it, so two different headers can never alias into one id.
+    if (groupKey) return `header:${JSON.stringify([headerKind, groupKey, folderId])}`;
 
-    const parts = [
-        `header:${headerKind}`,
-        serverId ? `server:${serverId}` : null,
-        workspaceKey ? `workspace:${workspaceKey}` : null,
-        folderId ? `folder:${folderId}` : null,
-        machineId ? `machine:${machineId}` : null,
-        hintServerId ? `hintServer:${hintServerId}` : null,
-        hintMachineId ? `hintMachine:${hintMachineId}` : null,
-        hintRootPath ? `hintRootPath:${hintRootPath}` : null,
-    ].filter((part): part is string => Boolean(part));
-
-    return parts.join('|');
+    return `header:${JSON.stringify([
+        headerKind,
+        serverId,
+        workspaceKey,
+        folderId,
+        machineId,
+        hintServerId,
+        hintMachineId,
+        hintRootPath,
+    ])}`;
 }
 
 export function buildSessionListIndexNodeId(item: SessionListIndexItem): string {

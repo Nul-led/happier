@@ -34,7 +34,7 @@ describe('composeWelcomeEntryModel', () => {
             'authenticate', 'authenticate', 'scan_or_paste_home', 'choose_home',
         ]);
         expect(model.actions.filter((row) => row.emphasis === 'primary')).toHaveLength(1);
-        expect(model.notice).toMatchObject({ kind: 'service_loading', hasUsableHomeMethods: true });
+        expect(model.notice).toEqual({ kind: 'service_loading', serviceName: 'Happier' });
     });
 
     it('preserves every service provider and its exact authority tuple', () => {

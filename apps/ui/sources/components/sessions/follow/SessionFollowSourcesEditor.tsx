@@ -1,6 +1,7 @@
 import * as React from 'react';
 import {
     supportsMachineSessionFollowWakeOnHumanChangeV1,
+    type SessionFollowSourceKeyPreparationWaitingReasonV1,
     type SessionFollowSourceModeV1,
     type SessionFollowSourceV1,
 } from '@happier-dev/protocol';
@@ -28,40 +29,14 @@ import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/ser
 import { subscribeHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
 import {
+    refineSessionFollowSourceStateWithPreparationReason,
     resolveSessionFollowSourceRuntimeState,
+    sessionFollowSourceRuntimeStateLabel,
 } from './sessionFollowSourcePresentation';
 import { openSessionFollowSourcePicker } from './openSessionFollowDestinationPicker';
 import {
     prepareSessionFollowSourceKey,
-    type SessionFollowSourceKeyPreparationResult,
 } from './prepareSessionFollowSourceKey';
-
-type SourceKeyWaitingReason = Extract<
-    SessionFollowSourceKeyPreparationResult,
-    Readonly<{ kind: 'waiting' }>
->['reason'];
-
-function withPreparationWaitingReason(
-    state: ReturnType<typeof resolveSessionFollowSourceRuntimeState>,
-    reason: SourceKeyWaitingReason | undefined,
-): ReturnType<typeof resolveSessionFollowSourceRuntimeState> {
-    if (state !== 'waiting_for_source_key') return state;
-    if (reason === 'runner_unreachable') return 'waiting_for_runtime';
-    if (reason === 'unsupported') return 'runtime_unsupported';
-    return state;
-}
-
-function statusLabel(state: ReturnType<typeof resolveSessionFollowSourceRuntimeState>): string {
-    if (state === 'paused_archived') return t('session.follow.sources.pausedArchived');
-    if (state === 'waiting_for_runtime') return t('session.follow.sources.waitingRuntime');
-    if (state === 'runtime_unsupported') return t('session.follow.sources.unsupported');
-    if (state === 'waiting_for_source_key') return t('session.follow.sources.sourceKeyWaiting');
-    if (state === 'catch_up_pending') return t('session.follow.sources.catchUpPending');
-    // `eligible` is the nominal state: the source is included with the
-    // destination's next turn. The Account-Follow word "Following" describes a
-    // different relationship and must not reach a screen reader here.
-    return t('session.follow.sources.nextTurn');
-}
 
 function sourcePreparationKey(preparationTargetKey: string, sourceSessionId: string): string {
     return `${preparationTargetKey}\u0000${sourceSessionId}`;
@@ -90,7 +65,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
     const [failed, setFailed] = React.useState(false);
     const [preparedSourceKeys, setPreparedSourceKeys] = React.useState<ReadonlySet<string>>(() => new Set());
     const [preparingFlightKeys, setPreparingFlightKeys] = React.useState<ReadonlySet<string>>(() => new Set());
-    const [preparationWaitingReasons, setPreparationWaitingReasons] = React.useState<ReadonlyMap<string, SourceKeyWaitingReason>>(() => new Map());
+    const [preparationWaitingReasons, setPreparationWaitingReasons] = React.useState<ReadonlyMap<string, SessionFollowSourceKeyPreparationWaitingReasonV1>>(() => new Map());
     const addSourceRef = React.useRef<React.ComponentRef<typeof Pressable>>(null);
     const requestVersionRef = React.useRef(0);
     const targetKey = `${props.serverId ?? ''}\u0000${props.destination.id}`;
@@ -358,7 +333,7 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                 const currentFlightKey = `${preparationSourceKey}\u0000${edgeVersionBySourceIdRef.current.get(source.sourceSessionId) ?? 0}`;
                 const preparing = preparingFlightKeys.has(currentFlightKey);
                 const preparationWaitingReason = preparationWaitingReasons.get(preparationSourceKey);
-                const presentedRuntimeState = withPreparationWaitingReason(runtimeState, preparationWaitingReason);
+                const presentedRuntimeState = refineSessionFollowSourceStateWithPreparationReason(runtimeState, preparationWaitingReason);
                 const canRetryPreparation = presentedRuntimeState === 'waiting_for_source_key'
                     || preparationWaitingReason === 'runner_unreachable';
                 const canChooseWake = supportsMachineSessionFollowWakeOnHumanChangeV1(
@@ -368,7 +343,9 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                 const modeLabel = source.mode === 'wake_on_human_change'
                     ? t('session.follow.sources.wakeOnHumanChange')
                     : t('session.follow.sources.nextTurn');
-                const statusText = presentedRuntimeState === 'eligible' ? modeLabel : statusLabel(presentedRuntimeState);
+                const statusText = presentedRuntimeState === 'eligible'
+                    ? modeLabel
+                    : sessionFollowSourceRuntimeStateLabel(presentedRuntimeState);
                 // The row press is never destructive: it retries preparation or
                 // toggles the delivery mode, and is inert when neither applies.
                 // Stopping updates always has its own labelled control, so one

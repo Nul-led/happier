@@ -3,10 +3,13 @@
   "pages": [
     "index",
     "account-security",
+    "teams",
     "team-invitations",
     "connected-services",
+    "team-credentials",
     "team-credential-external-api",
     "multi-server",
+    "your-homes",
     "file-transfer",
     "device-linking-and-restore",
     "session-sharing",

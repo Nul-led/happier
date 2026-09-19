@@ -444,6 +444,14 @@ export async function dispatchCli(params: Readonly<{
       if (await tryHandleWorkflowDocumentCliCommand({ argv: args, ...(signal ? { signal } : {}) })) return;
     }
 
+    // A Team logo is inline bytes on the wire, so the terminal's local-file
+    // form is adapted to that same input before the compiled command runs. Kept
+    // lazy for the same reason the workflow document path is.
+    if (subcommand === 'teams') {
+      const { tryHandleTeamLogoFileCliCommand } = await import('@/cli/commands/teams/teamLogoCommand');
+      if (await tryHandleTeamLogoFileCliCommand({ argv: args, ...(signal ? { signal } : {}) })) return;
+    }
+
     // An exact compiled Action leaf wins only once the one registry has resolved
     // its path owner; every other spelling under the same root — including
     // multi-step workflows and help — still reaches the dedicated root handler.

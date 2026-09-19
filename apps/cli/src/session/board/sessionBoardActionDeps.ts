@@ -264,50 +264,55 @@ export function createSessionBoardActionDeps(options: Readonly<{
     }
     if (args.item.source.kind === 'installedSurface' && !current) {
       const owner = resolveSessionOwningMachineId({ credentials: options.credentials, rawSession });
-      if (!owner.ok || !owner.machineId) return failure('unsupported_action');
+      // Each refusal below names its own cause through the Board family's existing
+      // closed vocabulary, which the shared presentation owner already renders as a
+      // distinct message. Collapsing them into `unsupported_action` told the author
+      // "that isn't supported" whether the plugin was absent, declared twice, unable
+      // to render here, or simply unreachable for a moment.
+      if (!owner.ok || !owner.machineId) return failure('not_found');
       if (
         context.externalActionExecutionAuthorization
         && (!options.externalActionMachineInstallationId || !options.externalActionMachineRequestPrivateKey)
       ) return failure('not_authenticated');
-      try {
-        const response = DaemonContributionRegistryProjectionDescribeResponseSchema.safeParse(await callExactMachineRpc({
-          credentials: options.credentials, serverUrl, machineId: owner.machineId,
-          method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
-          request: DaemonContributionRegistryProjectionDescribeRequestSchema.parse({ machineId: owner.machineId }), signal,
-          ...(context.externalActionExecutionAuthorization
-            && options.externalActionMachineInstallationId
-            && options.externalActionMachineRequestPrivateKey
-            ? {
-                externalAction: {
-                  context,
-                  effectActionId: actionId,
-                  installationId: options.externalActionMachineInstallationId,
-                  privateKey: options.externalActionMachineRequestPrivateKey,
-                },
-              }
-            : {}),
-        }));
-        if (!response.success || response.data.projection.v !== 2) return failure('unsupported_action');
-        const surface = args.item.source.surface;
-        const placements = Object.values(response.data.projection.familiesById.pluginUi?.entriesById ?? {}).filter((entry) => {
-          if (!entry || typeof entry !== 'object' || !('binding' in entry) || !entry.binding || entry.contributionKind !== 'surfacePlacement') return false;
-          return isPluginUiInlineSurfaceBindingForSurfaceV1(entry.binding, surface, 'sessionWidget');
-        });
-        const placement = placements[0];
-        if (placements.length !== 1 || !placement || placement.contributionKind !== 'surfacePlacement') return failure('unsupported_action');
-        const availability = DaemonPluginUiTargetedSurfaceRendererAvailabilityV1Schema.safeParse(placement.availability);
-        if (!availability.success || availability.data.state !== 'available') return failure('unsupported_action');
-        const latest = await fetchSessionById({
-          token: options.credentials.token,
-          serverUrl,
-          sessionId,
-          ...(serverSnapshot ? { serverFeaturesSnapshot: serverSnapshot } : {}),
-          resolveAuthorizationHeaders,
-          signal,
-        });
-        const latestOwner = latest?.id === sessionId ? resolveSessionOwningMachineId({ credentials: options.credentials, rawSession: latest }) : null;
-        if (!latestOwner?.ok || latestOwner.machineId !== owner.machineId) return failure('unsupported_action');
-      } catch { return failure('unsupported_action'); }
+      const response = DaemonContributionRegistryProjectionDescribeResponseSchema.safeParse(await callExactMachineRpc({
+        credentials: options.credentials, serverUrl, machineId: owner.machineId,
+        method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
+        request: DaemonContributionRegistryProjectionDescribeRequestSchema.parse({ machineId: owner.machineId }), signal,
+        ...(context.externalActionExecutionAuthorization
+          && options.externalActionMachineInstallationId
+          && options.externalActionMachineRequestPrivateKey
+          ? {
+              externalAction: {
+                context,
+                effectActionId: actionId,
+                installationId: options.externalActionMachineInstallationId,
+                privateKey: options.externalActionMachineRequestPrivateKey,
+              },
+            }
+          : {}),
+      }));
+      if (!response.success) return failure('invalid_response');
+      if (response.data.projection.v !== 2) return failure('unsupported_version');
+      const surface = args.item.source.surface;
+      const placements = Object.values(response.data.projection.familiesById.pluginUi?.entriesById ?? {}).filter((entry) => {
+        if (!entry || typeof entry !== 'object' || !('binding' in entry) || !entry.binding || entry.contributionKind !== 'surfacePlacement') return false;
+        return isPluginUiInlineSurfaceBindingForSurfaceV1(entry.binding, surface, 'sessionWidget');
+      });
+      const placement = placements[0];
+      if (placements.length !== 1 || !placement || placement.contributionKind !== 'surfacePlacement') return failure('session_board_invalid');
+      const availability = DaemonPluginUiTargetedSurfaceRendererAvailabilityV1Schema.safeParse(placement.availability);
+      if (!availability.success) return failure('invalid_response');
+      if (availability.data.state !== 'available') return failure('unsupported_action');
+      const latest = await fetchSessionById({
+        token: options.credentials.token,
+        serverUrl,
+        sessionId,
+        ...(serverSnapshot ? { serverFeaturesSnapshot: serverSnapshot } : {}),
+        resolveAuthorizationHeaders,
+        signal,
+      });
+      const latestOwner = latest?.id === sessionId ? resolveSessionOwningMachineId({ credentials: options.credentials, rawSession: latest }) : null;
+      if (!latestOwner?.ok || latestOwner.machineId !== owner.machineId) return failure('server_target_mismatch');
     }
     let layout: SessionBoardLayoutV1 | null = null;
     let expectedLayoutRevision: string | null = null;

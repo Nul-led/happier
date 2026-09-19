@@ -234,6 +234,8 @@ const HeaderRight = React.memo(({ activeTab }: { activeTab: ActiveTabType }) => 
                 <Pressable
                     onPress={() => router.push('/settings/server')}
                     hitSlop={15}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('server.serverConfiguration')}
                     style={styles.headerButton}
                 >
                     <Icon name="hard-drives" size={24} color={theme.colors.chrome.header.foreground} />

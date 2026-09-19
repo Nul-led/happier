@@ -27,6 +27,9 @@ const modalChoice = vi.hoisted(() => ({
 const modalBoundary = vi.hoisted(() => ({
     calls: 0,
     wait: null as Promise<void> | null,
+    /** Every destructive confirmation this screen raised, in order. */
+    confirmations: [] as Array<Readonly<{ title: string; body: string }>>,
+    confirmed: true,
 }));
 
 const promptSpy = vi.hoisted(() => vi.fn(async () => modalChoice.promptAnswer));
@@ -100,6 +103,10 @@ installSettingsViewCommonModuleMocks({
                     chosen?.onPress?.();
                 }) as never,
                 prompt: promptSpy as never,
+                confirm: (async (title: string, body: string) => {
+                    modalBoundary.confirmations.push({ title, body });
+                    return modalBoundary.confirmed;
+                }) as never,
             },
         }).module;
     },
@@ -154,6 +161,8 @@ beforeEach(async () => {
     modalChoice.promptAnswer = null;
     modalBoundary.calls = 0;
     modalBoundary.wait = null;
+    modalBoundary.confirmations = [];
+    modalBoundary.confirmed = true;
     promptSpy.mockClear();
     shareTextSafeMock.mockReset();
     shareTextSafeMock.mockResolvedValue('shared');
@@ -194,6 +203,48 @@ describe('TeamInvitationsScreen', () => {
         expect(modalBoundary.calls).toBe(1);
         await act(async () => releaseChoice());
         await vi.waitFor(() => expect(harness.requestsFor(INVITATION_REISSUE_PATH)).toHaveLength(1));
+    });
+
+    it('confirms a revoke with revoke copy before it calls the Home', async () => {
+        modalChoice.press = 'teams.invitations.revoke';
+        const serverId = await addManagedHome();
+        harness.answer(serverId, INVITATIONS_LIST_PATH, {
+            body: { items: [teamInvitationRowFixture()], nextCursor: null, emailDelivery: 'available', linkDelivery: 'available' },
+        });
+        harness.answer(serverId, INVITATION_REVOKE_PATH, {
+            body: teamInvitationRowFixture({ state: 'revoked' }),
+        });
+
+        const screen = await renderInvitations(serverId);
+        await waitForTestId(screen, 'team-invitations-row:invitation-1');
+        await screen.pressByTestIdAsync('team-invitations-row:invitation-1');
+
+        await vi.waitFor(() => expect(harness.requestsFor(INVITATION_REVOKE_PATH)).toHaveLength(1));
+        // The chooser's body describes reissuing whenever reissue is offered, so
+        // the destructive branch must state its own consequence itself.
+        expect(modalBoundary.confirmations).toEqual([{
+            title: 'teams.invitations.revokeTitle',
+            body: 'teams.invitations.revokeBody',
+        }]);
+    });
+
+    it('leaves the invitation live when the revoke confirmation is declined', async () => {
+        modalChoice.press = 'teams.invitations.revoke';
+        modalBoundary.confirmed = false;
+        const serverId = await addManagedHome();
+        harness.answer(serverId, INVITATIONS_LIST_PATH, {
+            body: { items: [teamInvitationRowFixture()], nextCursor: null, emailDelivery: 'available', linkDelivery: 'available' },
+        });
+
+        const screen = await renderInvitations(serverId);
+        await waitForTestId(screen, 'team-invitations-row:invitation-1');
+        await screen.pressByTestIdAsync('team-invitations-row:invitation-1');
+
+        expect(modalBoundary.confirmations).toHaveLength(1);
+        expect(harness.requestsFor(INVITATION_REVOKE_PATH)).toHaveLength(0);
+        // A declined confirmation must not strand the row's action guard.
+        await screen.pressByTestIdAsync('team-invitations-row:invitation-1');
+        expect(modalBoundary.confirmations).toHaveLength(2);
     });
 
     it('renders a large invitation ledger as stable chunks in the canonical virtualized list', async () => {

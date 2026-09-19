@@ -17,7 +17,12 @@ import {
     teamPolicyFixture,
     teamSummaryFixture,
 } from '@/dev/testkit';
-import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit/fixtures/featureFixtures';
+import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
+import {
+    primeServerFeaturesSnapshot,
+    resetServerFeaturesClientForTests,
+} from '@/sync/api/capabilities/serverFeaturesClient';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
 vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
@@ -674,6 +679,86 @@ describe('TeamAuthenticationPolicySections', () => {
         expect(screen.findByTestId('team-authentication-policy-mode:inherit')?.props.accessibilityState)
             .toMatchObject({ checked: true });
         expect(harness.requestsFor(TEAM_POLICY_PATH)).toHaveLength(0);
+    });
+
+    it('authors the Home-method arm of the accepted-authentication OR, not only Team connections', async () => {
+        // `TeamAuthenticationPolicyV1` is an OR over `home_method` and
+        // `team_connection`. The Home methods come from the same capability
+        // projection the Home already publishes on its own sign-in page, so a
+        // Team administrator can compose "accept this SSO **or** the Home's own
+        // sign-in" without a second Home-method owner or any new disclosure.
+        const team = teamSummaryFixture({
+            capabilities: teamCapabilitiesFixture({ manageAuthentication: true }),
+            policy: teamPolicyFixture({ authenticationPolicy: null, authenticationPolicyStatus: 'available' }),
+        });
+        const serverId = await addHomeWithTeam(team);
+        harness.answer(serverId, TEAM_POLICY_PATH, { body: team });
+        // The Home publishes its own sign-in methods to every client; this is
+        // the exact payload its Welcome screen reads.
+        const features = createRootLayoutFeaturesResponse({
+            capabilities: {
+                auth: {
+                    methods: [{
+                        id: 'email_password',
+                        actions: [
+                            { id: 'login', enabled: true, mode: 'either' },
+                            { id: 'provision', enabled: true, mode: 'either' },
+                        ],
+                        ui: { displayName: 'Email and password' },
+                    }, {
+                        // Offered for provisioning only: it cannot admit anybody
+                        // to a Team, so it must not become an accepted reference.
+                        id: 'signup_only',
+                        actions: [{ id: 'provision', enabled: true, mode: 'keyed' }],
+                        ui: { displayName: 'Sign-up only' },
+                    }],
+                },
+            },
+        });
+        if (!tryWriteServerEnabledBitInPlace(features, 'teams', true)) {
+            throw new Error('The teams feature bit could not be written by its own writer');
+        }
+        harness.answer(serverId, '/v1/features', { body: features });
+        harness.answer(serverId, '/v1/features/authenticated', { body: features });
+        primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
+
+        const screen = await renderAuthentication(serverId);
+        await waitForPressable(screen, 'team-authentication-policy-mode:restricted');
+        await screen.pressByTestIdAsync('team-authentication-policy-mode:restricted');
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())
+                .some((id) => id.startsWith('team-authentication-policy-home-method:'))).toBe(true);
+        }, { timeout: 10_000 });
+
+        const homeMethodTestId = 'team-authentication-policy-home-method:email_password';
+        const methodId = 'email_password';
+        // A method the Home offers only for provisioning can never admit anybody,
+        // so it is not offered as an accepted reference.
+        expect(collectRenderedTestIds(screen.tree.toJSON()))
+            .not.toContain('team-authentication-policy-home-method:signup_only');
+        // `findByTestId` prefers the host node that painted, which never holds
+        // `Item`'s own semantics, so the composite is selected explicitly.
+        const row = screen.findAllByTestId(homeMethodTestId)
+            .find((node) => typeof node.props?.accessibilityRole === 'string');
+        // It is a real choice, not the read-only informational row the Team
+        // surface used to render for a method it could not author.
+        expect(row?.props.accessibilityRole).toBe('checkbox');
+        expect(row?.props.accessibilityChecked).toBe(false);
+
+        await screen.pressByTestIdAsync(homeMethodTestId);
+        await waitForTestId(screen, 'team-authentication-policy-save');
+        await screen.pressByTestIdAsync('team-authentication-policy-save');
+
+        await vi.waitFor(() => expect(harness.requestsFor(TEAM_POLICY_PATH)).toHaveLength(1));
+        const written = harness.requestsFor(TEAM_POLICY_PATH)[0]?.input as {
+            authenticationPolicy?: { accepted?: readonly Record<string, unknown>[] };
+        };
+        expect(written.authenticationPolicy?.accepted)
+            .toContainEqual({ kind: 'home_method', methodId });
+        // The Team's own connection stays in the same OR; adding the Home method
+        // must not replace it.
+        expect(written.authenticationPolicy?.accepted)
+            .toContainEqual({ kind: 'team_connection', connectionId: 'connection-okta' });
     });
 
     it('names the exact connection when two share a provider display name', async () => {

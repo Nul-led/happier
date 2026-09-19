@@ -1,7 +1,7 @@
 import type { FeaturesPayloadDelta } from './types';
 import { readSessionFilteredListingFeatureEnv } from './catalog/readFeatureEnv';
 
-/** Default off until the composed V1 vertical is proven; explicit QA/development activation is allowed. */
+/** The one server bit for structurally filtered Session listing; the env variable is the operator opt-out. */
 export function resolveSessionFilteredListingFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
     return {
         features: {

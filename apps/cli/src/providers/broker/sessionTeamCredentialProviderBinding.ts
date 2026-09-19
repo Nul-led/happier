@@ -275,7 +275,13 @@ export async function openExactSessionTeamCredentialProviderBinding(
         materialization: composed.launchMaterialization,
       },
       environmentOverlay: composed.providerEnvironmentOverlay,
-      additionalRedactionValues: composed.additionalRedactionValues,
+      // The one-shot local capability is the Agent's bearer and also travels in
+      // the endpoint's public headers, so it is redacted from transcripts and
+      // logs exactly like a direct source credential.
+      additionalRedactionValues: Object.freeze([
+        tunnel.localCapability,
+        ...composed.additionalRedactionValues,
+      ]),
       cleanup() {
         if (closed) return Promise.resolve();
         cleanupInFlight ??= (async () => {

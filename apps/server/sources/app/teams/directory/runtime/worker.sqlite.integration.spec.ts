@@ -3,7 +3,12 @@ import { db } from "@/storage/db";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 import type { DirectoryProjectionCatchUp, DirectoryProjectionScan } from "../directoryReconciler";
 import { runEnterpriseIdentitySyncWorkerPass, startEnterpriseIdentitySyncWorker } from "./worker";
-import { stageActiveWorkosGroupMemberEventPage } from "../directoryProjectionRepository";
+import {
+    DirectoryProjectionInvariantError,
+    stageActiveWorkosGroupMemberEventPage,
+} from "../directoryProjectionRepository";
+import { NON_RETRYABLE_DIRECTORY_ERRORS } from "../directorySourceProjection";
+import type { TeamDirectorySafeErrorCodeV1 } from "@happier-dev/protocol/teams";
 
 describe("enterprise identity sync worker", () => {
     let harness: LightSqliteHarness;
@@ -314,6 +319,41 @@ describe("enterprise identity sync worker", () => {
                 activeReconcileRunId: null,
                 lastErrorCode: "directory_sync_unavailable",
             });
+    });
+
+    it("quarantines a broken projection invariant instead of retrying it forever", async () => {
+        const broken = await createRunnableSource("invariant-broken");
+        const healthy = await createRunnableSource("after-invariant");
+        await db.teamDirectorySource.update({
+            where: { id: broken.id },
+            data: { lastAttemptAt: new Date("2026-09-05T08:00:00.000Z") },
+        });
+        await db.teamDirectorySource.update({
+            where: { id: healthy.id },
+            data: { lastAttemptAt: new Date("2026-09-05T09:00:00.000Z") },
+        });
+        // The repository raises this exact class when its own ownership model is
+        // broken (a bound identity that lost its source, a Group binding that
+        // vanished mid-reconcile). Another provider read cannot repair any of
+        // them, so the worker must not record a retryable outage.
+        const scan = vi.fn(async ({ source }: Parameters<DirectoryProjectionScan>[0]) => {
+            if (source.id === broken.id) {
+                throw new DirectoryProjectionInvariantError("bound identity lost its directory source");
+            }
+            return { ok: true } as const;
+        });
+
+        await expect(runEnterpriseIdentitySyncWorkerPass({
+            scan,
+            catchUp: async () => ({ ok: true }),
+        })).resolves.toEqual({ status: "completed", sourceId: healthy.id });
+        const recorded = await db.teamDirectorySource.findUniqueOrThrow({ where: { id: broken.id } });
+        expect(recorded).toMatchObject({
+            state: "needs_attention",
+            activeReconcileRunId: null,
+            lastErrorCode: "directory_source_identity_mismatch",
+        });
+        expect(NON_RETRYABLE_DIRECTORY_ERRORS.has(recorded.lastErrorCode as TeamDirectorySafeErrorCodeV1)).toBe(true);
     });
 
     it("records an incomplete provider scan and drains the next runnable source", async () => {

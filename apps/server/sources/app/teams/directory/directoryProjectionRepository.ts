@@ -425,7 +425,13 @@ export async function stageActiveWorkosGroupMemberEventPage(
 }
 
 class StaleProjectionRunError extends Error {}
-class DirectoryProjectionInvariantError extends Error {}
+/**
+ * A projection write found its own ownership model broken — a bound identity
+ * that lost its source, a Group binding that disappeared mid-reconcile. Retrying
+ * the same provider read cannot repair any of these, so the worker classifies it
+ * as a non-retryable source refusal rather than an upstream outage.
+ */
+export class DirectoryProjectionInvariantError extends Error {}
 
 async function hasCurrentProjectionRun(tx: Tx, params: Pick<DirectoryProjectionPage, "sourceId" | "reconcileRunId">) {
     const source = await tx.teamDirectorySource.findFirst({

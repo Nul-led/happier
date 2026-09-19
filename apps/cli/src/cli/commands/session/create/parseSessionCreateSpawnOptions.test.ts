@@ -83,7 +83,10 @@ describe('parseSessionCreateSpawnOptions', () => {
         FEATURE_FLAG: 'enabled',
         EMPTY_VALUE: '',
       },
-      connectedServices,
+      // The ingress accepts the released `v: 1` spelling and writes the canonical
+      // current one: `{ v: 2, bindingsByServiceId }` is the documented power form
+      // (packages/protocol/src/connect/normalizeConnectedServiceSelectionInput.ts:35).
+      connectedServices: { ...connectedServices, v: 2 },
       mcpSelection,
       transcriptStorage: 'direct',
       terminal: { mode: 'tmux' },

@@ -9,6 +9,8 @@ import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { identityAdministrationFailureMessage } from '@/components/settings/identity/identityAdministrationFailure';
+import { projectAuthenticationMethodCapabilities } from '@/auth/capabilities/authMethodCapabilities';
+import { useServerFeaturesSnapshotForServerId } from '@/sync/domains/features/featureDecisionRuntime';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { t } from '@/text';
 
@@ -63,6 +65,24 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
     const [pendingProviderId, setPendingProviderId] = React.useState<string | null>(null);
     const [providerFailure, setProviderFailure] = React.useState<string | null>(null);
 
+    // The Home's own sign-in methods, read from the capability projection the
+    // Home already publishes to every client that opens its sign-in page. A Team
+    // administrator therefore learns nothing about Home configuration that a
+    // visitor could not already see, and no second Home-method owner is created:
+    // this is the same canonical projector the Welcome and Team entry surfaces
+    // consume. Only methods that can *log in* can be an accepted reference.
+    const homeFeatures = useServerFeaturesSnapshotForServerId(props.scope.serverId);
+    const homeMethods = React.useMemo(() => (
+        homeFeatures.status === 'ready'
+            ? projectAuthenticationMethodCapabilities(homeFeatures.features).catalog.methods
+                .filter((method) => method.enabledActions.some((action) => action.id === 'login'))
+                .map((method) => Object.freeze({
+                    methodId: method.id,
+                    displayName: method.presentation?.displayName ?? method.id,
+                }))
+            : []
+    ), [homeFeatures]);
+
     // A typed Home outcome becomes one localized sentence, announced as well as
     // shown because it lands away from the control that was pressed.
     const reportProviderFailure = React.useCallback((code: string) => {
@@ -95,6 +115,8 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                     connections={[]}
                     connectionsCurrent={false}
                     admissionModeApplicability={null}
+                    homeMethods={homeMethods}
+                    homeMethodsCurrent={homeFeatures.status === 'ready'}
                 />
             </>
         );
@@ -120,6 +142,8 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                     connections={[]}
                     connectionsCurrent={false}
                     admissionModeApplicability={null}
+                    homeMethods={homeMethods}
+                    homeMethodsCurrent={homeFeatures.status === 'ready'}
                 />
             </>
         );
@@ -260,6 +284,8 @@ const AuthorizedAuthenticationContent = React.memo(function AuthorizedAuthentica
                 connections={state.items}
                 connectionsCurrent={projectionCurrent}
                 admissionModeApplicability={state.admissionModeApplicability}
+                homeMethods={homeMethods}
+                homeMethodsCurrent={homeFeatures.status === 'ready'}
             />
             {/* Existing registrations remain inspectable when policy later
                 disables new setup; only the create affordance is unavailable. */}

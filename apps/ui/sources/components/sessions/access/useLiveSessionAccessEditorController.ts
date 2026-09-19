@@ -76,7 +76,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
                     }
                 } catch (error) {
                     if (lifetime.current && currentScope.current === scopeKey && revision === requestRevision.current) {
-                        dispatch({type:'preparationFailed',scopeKey,error:presentSessionAccessFailure(error)});
+                        dispatch({type:'preparationFailed',scopeKey,origin:'discovery',error:presentSessionAccessFailure(error)});
                     }
                 }
             }
@@ -204,7 +204,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
                         // The grant was already acknowledged. Key preparation is a separate
                         // obligation, so its failure stays in this Session-scoped encryption
                         // state and never re-labels that committed mutation as failed.
-                        dispatch({type:'preparationFailed',scopeKey,error:presentSessionAccessFailure(error)});
+                        dispatch({type:'preparationFailed',scopeKey,origin:'pass',error:presentSessionAccessFailure(error)});
                     }
                     // A grant added during explicit repair schedules the ordinary audience pass,
                     // not another repair of the previously selected recipient.
@@ -215,7 +215,12 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             }
         })();
     },[availability,currentRecipientsView,input.scope.accountId,input.scope.serverId,input.sessionId,lifetime,loadRecipientPage,scopeKey]);
-    const mutate=React.useCallback(async(subject:PrincipalRefV1,mutation:SessionGrantMutationV1|null)=>{
+    /**
+     * @param adds True only for the action that turned a searched-for candidate into a
+     *   grant row. That action, and only that one, consumed the typed query; editing a
+     *   live row must not rebuild the candidate list the person is reading.
+     */
+    const mutate=React.useCallback(async(subject:PrincipalRefV1,mutation:SessionGrantMutationV1|null,adds=false)=>{
         if (!lifetime.current || currentScope.current!==scopeKey) return;
         const snapshot=stateRef.current.scopeKey===scopeKey?stateRef.current.snapshot:null;
         if (!snapshot?.effectiveAccess.capabilities.manageAccess) return;
@@ -232,7 +237,8 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             if(!lifetime.current||currentScope.current!==scopeKey)return;
             dispatch({type:'operation',scopeKey,key,operation:{kind:'idle'}});
             dispatch({type:'confirm',scopeKey,key:null});
-            setQuery('');setDirectoryRevision(value=>value+1);
+            if(adds)setQuery('');
+            setDirectoryRevision(value=>value+1);
             // A newly authorized recipient can hold a grant long before it can open
             // anything, so the key owner's pass starts from the acknowledged audience.
             // Removing a grant leaves its stored tuple inert at that owner and needs
@@ -336,7 +342,7 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         setQuery,retryContent:()=>{void refresh();},
         retryDirectory:(kind)=>{directory.retry(kind);setDirectoryRevision(value=>value+1);},
         loadMore:(kind)=>directory.loadMore(kind),
-        addPrincipal:(subject)=>{void mutate(subject,sessionAccessGrantMutation(subject,{accessLevel:'view',canApprovePermissions:false}));},
+        addPrincipal:(subject)=>{void mutate(subject,sessionAccessGrantMutation(subject,{accessLevel:'view',canApprovePermissions:false}),true);},
         setAccessLevel:(subject,level)=>{
             const row=stateRef.current.snapshot?.grants.find(row=>sessionAccessSubjectKey(row.grant.subject)===sessionAccessSubjectKey(subject));
             if(!row?.allowedTransitions.accessLevels.includes(level))return;

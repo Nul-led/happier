@@ -52,8 +52,7 @@ describe('resolveScopedMachineTransport', () => {
                 installationId: 'installation-1',
                 machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
             },
-            accountSigningPublicKey: signing.publicKey,
-            accountSigningSecretKey: signing.secretKey,
+            activationSigningSecretKey: signing.secretKey,
         });
         vi.stubGlobal('fetch', vi.fn(async (url: string) => {
             if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {

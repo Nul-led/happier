@@ -553,15 +553,27 @@ export function useMachineSelectionListModel(
             candidate: TemporaryComputerSelection & { artifactTarget: RunnerArtifactTarget },
         ): SelectionListStep => ({
             id: `temporary-computer-workspace:${temporaryComputerTargetOptionKey(candidate.serverId, candidate.artifactTarget)}`,
-            title: t('newSession.selectWorkingDirectoryTitle'),
+            title: t('newSession.temporaryComputer.workspace.title'),
             sections: [temporaryComputerExpirySection(candidate), {
                 kind: 'static',
                 id: 'workspace',
-                title: t('newSession.selectWorkingDirectoryTitle'),
+                // The folder belongs to the endpoint, not to the author: the
+                // generic working-directory copy read as if the creator were
+                // picking their own, on the one screen where the distinction
+                // decides who chooses.
+                title: t('newSession.temporaryComputer.workspace.title'),
+                // Same contract as the expiry section above — one rendered
+                // indicator of the committed answer, because `SelectionListOption`
+                // carries no per-row selected flag.
+                ...(candidate.workspace === null ? {} : {
+                    resultHint: candidate.workspace.kind === 'endpoint_home'
+                        ? t('newSession.temporaryComputer.target.workspaceHome')
+                        : t('newSession.temporaryComputer.target.workspaceChoose'),
+                }),
                 options: [{
                     id: `temporary-computer-workspace:${candidate.serverId}:${candidate.artifactTarget}:choose_on_endpoint`,
-                    label: t('newSession.selectWorkingDirectoryTitle'),
-                    subtitle: t('newSession.selectWorkingDirectoryDescription'),
+                    label: t('newSession.temporaryComputer.target.workspaceChoose'),
+                    subtitle: t('newSession.temporaryComputer.workspace.chooseRecommended'),
                     icon: <Icon name="folder" size={24} color={theme.colors.text.secondary} />,
                     onSelect: () => selectTemporaryComputer(
                         candidate.serverId,
@@ -570,7 +582,8 @@ export function useMachineSelectionListModel(
                     ),
                 }, {
                     id: `temporary-computer-workspace:${candidate.serverId}:${candidate.artifactTarget}:endpoint_home`,
-                    label: t('machine.homeDirectory'),
+                    label: t('newSession.temporaryComputer.target.workspaceHome'),
+                    subtitle: t('newSession.temporaryComputer.workspace.homeDetail'),
                     icon: <Icon name="house" size={24} color={theme.colors.text.secondary} />,
                     onSelect: () => selectTemporaryComputer(
                         candidate.serverId,

@@ -118,7 +118,8 @@ afterEach(() => {
 
 describe('TeamMembersScreen', () => {
     it('renders a large roster as stable chunks in the canonical virtualized list', async () => {
-        virtualizedBoundary.mountLimit = 2;
+        // Search box, filter group, then the member chunks.
+        virtualizedBoundary.mountLimit = 3;
         const serverId = await addHome(teamSummaryFixture({
             viewerRole: 'member',
             capabilities: teamCapabilitiesFixture({}),
@@ -184,6 +185,45 @@ describe('TeamMembersScreen', () => {
         expect(routerPush).toHaveBeenCalledWith(
             `/settings/teams/${encodeURIComponent(serverId)}/team-1/members/add`,
         );
+    });
+
+    it('narrows the loaded roster to the searched person and keeps paging available', async () => {
+        const serverId = await addHome(teamSummaryFixture({
+            viewerRole: 'member',
+            capabilities: teamCapabilitiesFixture({}),
+        }));
+        harness.answer(serverId, MEMBERS_LIST_PATH, {
+            body: {
+                items: [
+                    teamMembershipFixture(),
+                    teamMembershipFixture({
+                        id: 'membership-grace',
+                        accountId: 'account-grace',
+                        account: accountDisplayProfileFixture('Grace'),
+                    }),
+                ],
+                nextCursor: 'cursor-2',
+            },
+        });
+
+        const screen = await renderMembers(serverId);
+        await waitForTestId(screen, 'team-members-row:membership-grace');
+
+        screen.changeTextByTestId('team-members-search', 'gra');
+
+        await vi.waitFor(() => {
+            const ids = collectRenderedTestIds(screen.tree.toJSON());
+            expect(ids).toContain('team-members-row:membership-grace');
+            expect(ids).not.toContain('team-members-row:membership-1');
+            // A narrowed view must not claim the roster is exhausted: the
+            // unread pages may still hold the person being looked for.
+            expect(ids).toContain('team-members-load-more');
+        });
+
+        screen.changeTextByTestId('team-members-search', 'nobody-here');
+        await vi.waitFor(() => {
+            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-members-empty');
+        });
     });
 
     it('exposes the roster filters as one keyboard-operable radio group', async () => {

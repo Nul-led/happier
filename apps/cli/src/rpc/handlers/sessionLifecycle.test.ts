@@ -134,6 +134,10 @@ describe('session lifecycle RPC handlers', () => {
                 context: {
                     ...(typeof defaultSessionId === 'string' ? { defaultSessionId } : {}),
                     surface: 'rpc',
+                    // The lifecycle registrar narrows the RPC surface's authority
+                    // to the present user; dispatchActionFromRpc stamps whatever
+                    // the registrar supplies (_actionDispatchAdapter.ts:73).
+                    authority: 'present_user',
                 },
             };
         }));
@@ -195,7 +199,7 @@ describe('session lifecycle RPC handlers', () => {
         expect(actionExecutor.execute).toHaveBeenCalledWith(
             'session.spawn_new',
             input,
-            { surface: 'rpc', signal: controller.signal },
+            { surface: 'rpc', authority: 'present_user', signal: controller.signal },
         );
         expect(rawSpawnLifecycleHandler).not.toHaveBeenCalled();
 
@@ -269,12 +273,18 @@ describe('session lifecycle RPC handlers', () => {
       type: 'success',
       sessionId: 'session-1',
     });
+    // The registrar forwards the RPC handler context (the cancellation carrier)
+    // as the handler's second argument; invoking the handler without one leaves
+    // it undefined (sessionLifecycle.ts:232-245).
     expect(spawnLifecycleHandler).toHaveBeenCalledWith(expect.objectContaining({
       type: 'spawn-in-directory',
       directory: '/tmp/project',
       backendTarget: { kind: 'backend', backendId: 'codex', sourceKind: 'built_in' },
-    }));
-    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('spawn-nonce-1');
+    }), undefined);
+    // awaitSpawnedSessionId hands the resolver its remaining budget
+    // (awaitSpawnedSessionId.ts:26 DEFAULT_TIMEOUT_MS, overridable through
+    // HAPPIER_SPAWN_SESSION_ID_RESOLVE_TIMEOUT_MS).
+    expect(resolveSpawnSessionByNonce).toHaveBeenCalledWith('spawn-nonce-1', 90_000);
   });
 
   it('preserves raw resume success on both private spawn transports without nonce settlement', async () => {
@@ -306,7 +316,7 @@ describe('session lifecycle RPC handlers', () => {
     expect(spawnLifecycleHandler).toHaveBeenCalledWith(expect.objectContaining({
       type: 'resume-session',
       sessionId: 'session-1',
-    }));
+    }), undefined);
     expect(resolveSpawnSessionByNonce).not.toHaveBeenCalled();
   });
 

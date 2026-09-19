@@ -70,6 +70,19 @@ function submittedPayloads(): Array<Record<string, unknown>> {
         .flatMap(([chunk]) => chunk as Array<Record<string, unknown>>);
 }
 
+function payloadDataType(message: Record<string, unknown>): string | undefined {
+    return (message.data as { type?: string } | undefined)?.type;
+}
+
+/** OS-visible alerts only; the content-free wake is a separate delivery leg. */
+function submittedAlertPayloads(): Array<Record<string, unknown>> {
+    return submittedPayloads().filter((message) => payloadDataType(message) === "activity_alert");
+}
+
+function submittedWakePayloads(): Array<Record<string, unknown>> {
+    return submittedPayloads().filter((message) => payloadDataType(message) === "session_changed");
+}
+
 describe("Home remote alert submission (SQLite)", () => {
     let harness: LightSqliteHarness;
     beforeAll(async () => {
@@ -257,7 +270,13 @@ describe("Home remote alert submission (SQLite)", () => {
         });
         if (delivery === "suppress") {
             expect(submitted).toEqual([]);
-            expect(submittedPayloads()).toEqual([]);
+            // Quiet hours remove the OS-visible alert before submission. The device
+            // still receives the content-free wake and applies the same policy to
+            // its own local notification, so suppression is never an OS fallback.
+            expect(submittedAlertPayloads()).toEqual([]);
+            expect(submittedWakePayloads()).toHaveLength(1);
+            expect(submittedWakePayloads()[0]).not.toHaveProperty("body");
+            expect(submittedWakePayloads()[0]).not.toHaveProperty("sound");
             return;
         }
         expect(submitted).toEqual([follower.id]);
@@ -281,7 +300,7 @@ describe("Home remote alert submission (SQLite)", () => {
         })]);
     });
 
-    it("never submits without a current Account projection or an enabled device registration", async () => {
+    it("never submits an OS-visible alert without a current Account projection or an enabled device registration", async () => {
         const { follower, session } = await fixture();
         await enrollRemoteAlerts(follower.id, accountSettingsWithRemoteAlerts());
         // A later settings write advances the version and retires the old binding.
@@ -289,7 +308,7 @@ describe("Home remote alert submission (SQLite)", () => {
         expect(await submitSessionActivityRemoteAlerts({
             sessionId: session.id, event: "ready", committedMessage: { domain: "session_transcript", seq: 3 },
         })).toEqual([]);
-        expect(submittedTokens()).toEqual([]);
+        expect(submittedAlertPayloads()).toEqual([]);
 
         const fresh = await fixture();
         await enrollRemoteAlerts(fresh.follower.id, accountSettingsWithRemoteAlerts(), { ...DEVICE_POLICY, enabled: false });
@@ -302,7 +321,7 @@ describe("Home remote alert submission (SQLite)", () => {
         expect(await submitSessionActivityRemoteAlerts({
             sessionId: unregistered.session.id, event: "ready", committedMessage: { domain: "session_transcript", seq: 3 },
         })).toEqual([]);
-        expect(submittedTokens()).toEqual([]);
+        expect(submittedAlertPayloads()).toEqual([]);
     });
 
     it("applies the recipient's own mute before submission rather than at an OS fallback", async () => {
@@ -316,7 +335,44 @@ describe("Home remote alert submission (SQLite)", () => {
         expect(await submitSessionActivityRemoteAlerts({
             sessionId: session.id, event: "ready", committedMessage: { domain: "session_transcript", seq: 4 },
         })).toEqual([]);
-        expect(submittedTokens()).toEqual([]);
+        expect(submittedAlertPayloads()).toEqual([]);
+        // The wake carries no copy, so a muted channel can never become an OS alert.
+        expect(submittedWakePayloads()[0]).not.toHaveProperty("body");
+    });
+
+    it("wakes an eligible recipient device this leg cannot alert, content-free", async () => {
+        const { follower, session } = await fixture();
+        const followerToken = await enrollRemoteAlerts(follower.id, accountSettingsWithRemoteAlerts());
+        // No current projection: the Home cannot decide this recipient's policy, so
+        // it must hand the decision back to the device instead of staying silent.
+        await db.account.update({ where: { id: follower.id }, data: { settingsVersion: { increment: 1 } } });
+
+        expect(await submitSessionActivityRemoteAlerts({
+            sessionId: session.id, event: "ready", committedMessage: { domain: "session_transcript", seq: 21 },
+        })).toEqual([]);
+        expect(submittedTokens()).toEqual([followerToken]);
+        const payload = submittedPayloads()[0];
+        expect(payload?.data).toEqual({
+            type: "session_changed", serverId: "srv_home_a", sessionId: session.id,
+        });
+        expect(payload?._contentAvailable).toBe(true);
+        expect(payload?.priority).toBe("normal");
+        for (const field of ["title", "body", "sound", "channelId", "badge", "mutableContent"]) {
+            expect(payload).not.toHaveProperty(field);
+        }
+        expect(JSON.stringify(payload)).not.toContain(session.tag);
+    });
+
+    it("gives one device exactly one leg for one committed event", async () => {
+        const { follower, session } = await fixture();
+        const followerToken = await enrollRemoteAlerts(follower.id, accountSettingsWithRemoteAlerts());
+
+        expect(await submitSessionActivityRemoteAlerts({
+            sessionId: session.id, event: "ready", committedMessage: { domain: "session_transcript", seq: 22 },
+        })).toEqual([follower.id]);
+        expect(submittedTokens()).toEqual([followerToken]);
+        expect(submittedWakePayloads()).toEqual([]);
+        expect(submittedAlertPayloads()).toHaveLength(1);
     });
 
     it("alerts an assignment target through the follow_update family, including the Session owner", async () => {

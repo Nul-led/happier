@@ -1,4 +1,8 @@
-import { SessionViewerProjectionV1Schema, type SessionViewerProjectionV1 } from '@happier-dev/protocol';
+import {
+    SessionViewerProjectionV1Schema,
+    type SessionPersonalAttentionReasonV1,
+    type SessionViewerProjectionV1,
+} from '@happier-dev/protocol';
 import {
     isSessionAccessOwner,
     type NormalizedSessionAccessProjection,
@@ -55,8 +59,29 @@ export function isSessionPersonallyTrackedForViewer(session: SessionViewerTracki
         || (normalized.kind === 'current' && normalized.viewer.readState.state === 'tracking');
 }
 
+/**
+ * The one derivation of "this Session carries new content this viewer has not
+ * seen", shared by the Session row, Activity, Inbox and the badge counts. New
+ * Discussion content and a mention of the viewer are unread facts exactly like
+ * transcript unread — Lane 09B coalesces transcript and Discussion reasons onto
+ * one Session, so no consumer may re-compose that set locally.
+ *
+ * `ready_after_read`, `reminder_due` and `manual` are deliberately excluded:
+ * they are attention without new content and carry their own presentation.
+ */
+const UNREAD_CONTENT_ATTENTION_REASONS_V1: ReadonlySet<SessionPersonalAttentionReasonV1> = new Set([
+    'unread',
+    'unread_discussion',
+    'mentioned',
+]);
+
+export function isUnreadContentAttentionReason(reason: SessionPersonalAttentionReasonV1): boolean {
+    return UNREAD_CONTENT_ATTENTION_REASONS_V1.has(reason);
+}
+
 export function hasUnreadActivityForSessionViewer(viewer: SessionViewerProjectionV1): boolean {
-    return viewer.readState.state === 'tracking' && viewer.attention.reasons.includes('unread');
+    return viewer.readState.state === 'tracking'
+        && viewer.attention.reasons.some(isUnreadContentAttentionReason);
 }
 
 export function resolveSessionViewerProjectionUpdate(

@@ -284,9 +284,14 @@ describe('SessionAccessEditor', () => {
                 recipientsView: 'all',
                 recipients: {
                     rows: [{
-                        recipientAccountId: 'account-pending', state: 'prepared',
-                        label: 'Ada Lovelace', stateLabel: 'Prepared',
-                        accessibilityLabel: 'Ada Lovelace: Prepared',
+                        recipientAccountId: 'account-pending', state: 'pending',
+                        label: 'Ada Lovelace', stateLabel: 'Encrypted access pending',
+                        accessibilityLabel: 'Ada Lovelace: Encrypted access pending',
+                        actionLabel: 'Prepare now',
+                    }, {
+                        recipientAccountId: 'account-ready', state: 'prepared',
+                        label: 'Grace Hopper', stateLabel: 'Encrypted access ready',
+                        accessibilityLabel: 'Grace Hopper: Encrypted access ready',
                     }],
                     hasMore: true,
                     loading: false,
@@ -296,10 +301,31 @@ describe('SessionAccessEditor', () => {
             presentation="full"
         />);
         expect(screen.findByTestId('session-access-recipient-account-pending')).toBeTruthy();
+        // The affordance belongs to the rows that need it; a delivered recipient needs nothing.
         await screen.pressByTestIdAsync('session-access-reprepare-account-pending');
         expect(intent.prepareAccess).toHaveBeenCalledWith('account-pending');
+        expect(screen.findByTestId('session-access-reprepare-account-ready')).toBeNull();
         await screen.pressByTestIdAsync('session-access-recipients-more');
         expect(intent.loadMoreRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it('marks a retained roster stale while the Home is unreachable instead of reading as current', async () => {
+        const screen = await renderScreen(<SessionAccessEditor
+            model={model({ content: {
+                phase: 'error',
+                hasLastAcknowledgedSnapshot: true,
+                issue: { code: 'session_access_failed', message: 'Something went wrong', retryable: true },
+            } })}
+            actions={actions()}
+            presentation="full"
+        />);
+
+        // Last-good rows stay (never an authoritative empty roster), but they must not
+        // read as the current answer — the same de-emphasis presence already uses.
+        expect(screen.findByTestId('session-access-grant-account:alice')).toBeTruthy();
+        // The shared list primitive owns section-title casing, so the contract is the
+        // projected content, not how ItemGroup renders its heading.
+        expect(screen.getTextContent().toLowerCase()).toContain('may be out of date');
     });
 
     it('gives every principal row its identity visual without adding a second accessible name', async () => {

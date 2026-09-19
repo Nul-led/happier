@@ -23,6 +23,12 @@ vi.mock('@/components/ui/selectionList', async () => {
     };
 });
 
+// The platform screen-reader live region is a genuine OS/DOM boundary.
+const announceAccessibilityMessage = vi.hoisted(() => vi.fn());
+vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
+    announceAccessibilityMessage: (message: string) => announceAccessibilityMessage(message),
+}));
+
 const responsibilityApi = vi.hoisted(() => ({
     setSessionResponsibleAccount: vi.fn(),
     listSessionResponsibilityCandidates: vi.fn(),
@@ -145,6 +151,7 @@ describe('SessionResponsibilitySection', () => {
         storeState.applied = [];
         storeState.scopedSessionHookCalls = 0;
         selectionListProps.current = null;
+        announceAccessibilityMessage.mockClear();
     });
 
     it('reserves a stable section row while the scoped Session has no cached projection', async () => {
@@ -205,6 +212,31 @@ describe('SessionResponsibilitySection', () => {
         await screen.pressByTestIdAsync('session-responsibility-picker.list:root:option:session-responsibility:account:account-alice');
         await vi.waitFor(() => expect(resolved).toHaveBeenCalled());
         expect(storeState.applied).toEqual(['account-alice']);
+    });
+
+    it('announces a committed responsibility change and never the value already on screen', async () => {
+        storeState.session = {
+            id: 'session-1', responsibleAccountId: null, responsibleAccount: null,
+            access: { capabilities: { assignResponsibility: true } },
+        };
+        const screen = await renderScreen(
+            <MountedResponsibilitySection sessionId="session-1" scope={scope} actingAccountId="account-owner" />,
+        );
+        // Arriving on a Session that already has an assignee is not a change.
+        expect(announceAccessibilityMessage).not.toHaveBeenCalled();
+
+        storeState.session = {
+            ...storeState.session,
+            responsibleAccountId: 'account-bob',
+            responsibleAccount: summary('account-bob', 'Bob', 'bob'),
+        };
+        await screen.update(
+            <MountedResponsibilitySection sessionId="session-1" scope={scope} actingAccountId="account-owner" />,
+        );
+
+        // A quiet subtitle a screen reader has already passed must still reach it.
+        await vi.waitFor(() => expect(announceAccessibilityMessage)
+            .toHaveBeenCalledWith(t('session.responsibilityA11yReadOnly', { name: 'Bob' })));
     });
 
     it('keeps the opened production modal subscribed to candidate, projection, and capability updates', async () => {

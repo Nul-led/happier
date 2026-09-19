@@ -116,6 +116,44 @@ The five moving parts and their canonical owners:
 | Relay transport (framed envelopes over the existing Socket.IO connection) | `apps/server/sources/app/api/socket/peer/mediation/**` |
 | Observability (sequenced ring buffer of flow lifecycle events, with metadata redaction) | **One** engine: `createPeerMediationObservabilityFlowStore` in `packages/protocol/src/machines/peer/mediation/observability/`. The daemon and server modules named `observability/store.ts` are ~50-line bindings that only adapt their own call signature to it (DEC-8) — they are not second owners. The UI keeps its own read-side store for subscriptions and selectors. |
 
+### 1.1 Machine-RPC route policy, and the restricted Runner's authority
+
+The `machine_rpc` flow has one extra classifier, because "may this method leave the server
+path at all" is a per-method decision rather than a per-flow one.
+`packages/protocol/src/machines/peer/mediation/rpc/routePolicyV1.ts` is that owner. Each
+deployed method carries one row naming its **route class**:
+
+| Route class | Meaning |
+| --- | --- |
+| `server_required` | Must travel the server path. The row also carries a `serverRequiredReason` — durable or transcript writes, pending-queue and sequence assignment, reconnect catch-up, cross-device fanout, auth, sharing, billing, automation, account change, destructive or recovery mutations, or simply `unclassified`. |
+| `direct_ephemeral` | May go direct; nothing durable depends on it. |
+| `direct_medium_risk_receipted` | May go direct, but the command receipt is not optional. |
+
+`resolveMachineRpcRoutePolicy` **fails closed for an unknown method**: a method with no
+deployed row resolves to `server_required` with reason `unclassified`, so adding an RPC method
+without classifying it denies direct routing rather than inheriting a neighbour's answer.
+`isMachineRpcDirectRoutePolicy` is the one predicate callers use, and the relay fallback for
+`daemon_voice_audio` is declared on the row rather than negotiated per call.
+
+The same module carries the restricted Runner's authority map, and it augments the route
+policy rather than replacing it. `resolveEphemeralRunnerMachineRpcAuthority` answers which
+Session capability a reusable Machine service installed in a restricted Runner needs —
+`readTranscript` for reads (filesystem listing, stat, downloads, terminal stream reads, local
+service inventory), `submitAgentInput` for writes (file mutation, uploads, terminal input and
+lifecycle, preview open/revoke), `manageAccess` for public-preview create and revoke,
+`stopSession`, and `followSourceKeyPreparation`. Two rules follow from the map's shape and are
+worth stating plainly: a method **absent** from the map acquires no Runner authority at all,
+and a method present in it does **not** thereby become direct — its route class still decides
+that. Both the daemon ingress (`apps/cli/src/ephemeralRunner/**`) and the server socket
+admission (`apps/server/sources/app/api/socket/**`) consult this single map.
+
+The Runner's own principal is a Session-scoped credential, not a sharing relationship: it
+projects as a capped `edit` recipient with no sources, and the server revalidates the
+persisted activation, Session, Machine and AccessKey binding on every sensitive operation
+through `verifyCurrentMaterializedRunnerPrincipalInTx`, so teardown, Machine replacement, or
+AccessKey revocation takes effect without waiting for a reconnect. See
+[session-collaboration.md](session-collaboration.md) for the access half.
+
 ## 2. The enablement contract
 
 This is the part that surprises people: **on a default deployment none of the substrate is

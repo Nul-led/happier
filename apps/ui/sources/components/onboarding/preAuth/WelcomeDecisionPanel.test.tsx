@@ -123,6 +123,7 @@ function renderPanel(
             <WelcomeDecisionPanel
                 authEntryOptions={options}
                 accountServiceEntry={accountServiceEntry}
+                canScanQr
                 {...callbacks}
             />,
         ),
@@ -451,6 +452,22 @@ describe('WelcomeDecisionPanel', () => {
         expect(callbacks.onOpenRestore).toHaveBeenCalledTimes(1);
     });
 
+    it('does not advertise scan or paste navigation when the caller reports no capability', async () => {
+        const callbacks = {
+            onContinueWithHomeAuthentication: vi.fn(),
+            onOpenRestore: vi.fn(),
+            onChangeRelay: vi.fn(),
+        };
+        const screen = await renderScreen(<WelcomeDecisionPanel
+            authEntryOptions={baseOptions}
+            {...callbacks}
+            canScanQr={false}
+        />);
+
+        expect(screen.findAllByTestId('welcome-scan-existing-home')).toHaveLength(0);
+        expect(screen.findByTestId('welcome-use-different-home')).toBeTruthy();
+    });
+
     it('uses semantic action identity for accessibility descriptions and pending state', async () => {
         let resolveAction: (() => void) | null = null;
         const pending = new Promise<void>((resolve) => { resolveAction = resolve; });
@@ -459,7 +476,7 @@ describe('WelcomeDecisionPanel', () => {
             onOpenRestore: vi.fn(),
             onChangeRelay: vi.fn(),
         };
-        const screen = await renderScreen(<WelcomeDecisionPanel authEntryOptions={baseOptions} {...callbacks} />);
+        const screen = await renderScreen(<WelcomeDecisionPanel authEntryOptions={baseOptions} {...callbacks} canScanQr />);
         const primary = screen.findByTestId('welcome-primary-start');
         const subtitle = screen.findByTestId('welcome-primary-start-subtitle');
         expect(primary?.props['aria-describedby']).toBe(subtitle?.props.nativeID);
@@ -585,7 +602,7 @@ describe('WelcomeDecisionPanel', () => {
         });
         const screen = await screenPromise;
 
-        expect(screen.findByTestId('welcome-auth-loading')).toBeTruthy();
+        expect(screen.findByTestId('welcome-account-service-loading')).toBeTruthy();
         expect(screen.findByTestId('welcome-primary-start')).toBeTruthy();
     });
 
@@ -613,6 +630,38 @@ describe('WelcomeDecisionPanel', () => {
         expect(retry).toHaveBeenCalledTimes(1);
         expect(callbacks.onChooseAccountService).not.toHaveBeenCalled();
         expect(callbacks.onContinueWithAccountServiceProvider).not.toHaveBeenCalled();
+    });
+
+    it('explains and announces a failed sign-in service instead of showing a bare title', async () => {
+        const { screenPromise } = renderPanel({}, {
+            effectiveSignInService: { kind: 'no_target_default', endpoint: 'https://accounts.company.test' },
+            endpoint: { url: 'https://accounts.company.test', displayName: 'Acme ID', source: 'user' },
+            status: 'unavailable',
+            discovery: null,
+            transport: {},
+            retry: vi.fn(),
+        });
+        const screen = await screenPromise;
+
+        const notice = screen.findByTestId('welcome-account-service-recovery');
+        expect(notice?.props.accessibilityLiveRegion).toBe('polite');
+        expect(screen.getTextContent()).toContain('Acme ID');
+        expect(screen.getTextContent()).toContain('Retry or choose another sign-in service');
+    });
+
+    it('shows one Loading block while both first-paint probes are in flight', async () => {
+        const { screenPromise } = renderPanel({ serverAvailability: 'loading' }, {
+            effectiveSignInService: { kind: 'no_target_default', endpoint: 'https://api.happier.dev' },
+            endpoint: { url: 'https://api.happier.dev', source: 'default' },
+            status: 'loading',
+            discovery: null,
+            transport: {},
+            retry: vi.fn(),
+        });
+        const screen = await screenPromise;
+
+        expect(screen.findAllByTestId('welcome-auth-loading')).toHaveLength(1);
+        expect(screen.findAllByTestId('welcome-account-service-loading')).toHaveLength(0);
     });
 
     it('keeps Home authentication usable when the optional service is unsupported', async () => {

@@ -1,0 +1,127 @@
+---
+title: Temporary computer
+description: Run one session on a computer that is not yours, by sending a verified Happier Runner package that the other person reviews and approves.
+---
+
+Sometimes the machine you need is not one of yours. A colleague's laptop, a
+freshly imaged box, a customer's workstation. A **temporary computer** lets you
+start one session there without installing Happier on it or signing anybody in:
+you prepare a package, they run it, they see exactly what is being asked and
+approve it, and the session appears in your Happier like any other.
+
+Nothing runs until the person at that computer says yes, and access ends when the
+session stops.
+
+## Availability
+
+Temporary computers are a per-Home capability. A self-hosted Home offers them
+unless its operator sets `HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED` to
+a false value.
+
+Beyond the Home's decision, the package itself comes from a published, verified
+Happier Runner release. If no package is published for your Home, or none for the
+platform you pick, the picker says **No verified Happier Runner package is
+published for this home yet** or **This platform is no longer published** — there
+is nothing to configure your way around.
+
+Because approval is a person pressing a button, **a temporary computer needs
+someone to approve the request, so automations can't use one.**
+
+## Prepare the package
+
+In **New Session**, choose **Temporary computer** as the destination instead of a
+machine, then set up the session as usual — agent, model, prompt, permissions,
+and any files you want to send.
+
+Two choices are specific to this destination:
+
+**Choose the computer platform** — Windows · x64, macOS · Apple silicon, macOS ·
+Intel, Linux · x64, or Linux · ARM64. Pick the platform of the computer that will
+run it; the package is a single verified executable for that target.
+
+**Starting folder** — either **Recommended · they pick a folder when the package
+connects**, or start in the home folder of whoever runs the package.
+
+**Package expiry** decides how long the request stays open before anybody claims
+it: **Never** (the default — it waits until it connects or you cancel), **In 24
+hours**, **In 7 days**, or a date and time you choose.
+
+If the session uses a shared Team credential, **Restricted Team access** decides
+whether this exact temporary computer may use your current sign-in proof for
+restricted Team operations. Revoking or unlinking that sign-in removes the access.
+
+Then **Save or share package** and get it to the other person however you
+normally would. A package can only be claimed once: after a computer has
+connected, Happier tells you **A computer already has this package, so it can't be
+sent again.** The package is saved on the device that created it, so continue on
+that device or cancel and create a new one.
+
+## What happens on the other computer
+
+They run the file. It opens **Happier Runner**, connects to your Home, and walks
+through a short sequence they control:
+
+1. **Choose the Agent working folder** — if you left the folder to them.
+2. **Review the exact request** — the whole request, in plain terms, before
+   anything runs.
+3. **Allow this exact request?** — **Allow** or **Decline**.
+
+The review lists the application and publisher, the release artifact, the Home and
+its ID, who requested it and their ID, the Team where one applies, the working
+folder, the agent and model, permissions, profile, environment variables, MCP
+servers, connected services, session configuration, transcript storage, the prompt
+itself, references, and any attached files with their sizes. Secret values are
+never shown: a sealed value appears as its name with **(value sealed)**.
+
+The review also carries the warning that matters most, and Happier does not soften
+it: **The Agent runs with the current OS user's permissions. The selected folder
+is not a sandbox, and the Agent may access other files that this OS user can
+access.**
+
+Declining creates nothing. Your draft stays where it is, and you can create a new
+package.
+
+## After they approve
+
+Happier Runner shows its progress — installing the selected agent, checking AI
+access, preparing the encrypted session, creating the session — and then the
+session is live. From your side you see the same sequence, ending at **Session is
+ready**, and from then on it is an ordinary session: same transcript, same
+steering, same approvals.
+
+## Lifetime, and stopping it
+
+Access lasts until the session is stopped. Happier Runner keeps **Stop Session**
+available for the whole run, and states the consequence before it acts:
+**Stopping ends the Session on this computer and revokes this Runner's access.
+Keeping Happier Runner open leaves the Agent working and Stop Session available.**
+In a terminal, typing `S` then Enter does the same thing, and Ctrl-C requests the
+same decision.
+
+Either side can end it. You can cancel from Happier before it is claimed, and
+after the other computer has connected, cancelling **closes this request for both
+sides, while keeping your current draft here**.
+
+A request that never became a session says why: it was **canceled**, the other
+computer **declined** it, it **expired** before the temporary computer connected,
+access changed so the package **can no longer be used**, or setup **could not
+finish** — and in every one of those cases nothing was created.
+
+## When it goes wrong
+
+| What you see | What to do |
+| --- | --- |
+| **This agent can't install itself on a temporary computer** | Choose another agent. |
+| **Choose a team model for this agent before sending** | Select a model the shared credential allows. |
+| **The selected team model isn't available for this agent** | Choose another model. |
+| **AI access for this temporary computer couldn't be prepared** | Try again; the request is preserved. |
+| **The selected profile changed or was removed** | Review the session's setup before sending again. |
+| **A secret this profile needs isn't available for this account** | Add the Saved Secret, then send again. |
+| **The request could not be prepared** (on the Runner) | Check the activation and try again, or exit. |
+| **The local Agent has stopped** (on the Runner) | Open the ordinary session in Happier for details. |
+
+## Related
+
+- [Start a session](/sessions/start-a-session) — the ordinary destination picker this sits inside.
+- [Shared credentials for a Team](/accounts/team-credentials) — the Team credential a temporary computer can use.
+- [Permissions](/sessions/permissions) — what the agent may do without asking, on any machine.

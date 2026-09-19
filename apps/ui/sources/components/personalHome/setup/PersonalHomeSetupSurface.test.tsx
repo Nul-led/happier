@@ -179,8 +179,8 @@ describe('PersonalHomeSetupSurface', () => {
             const filled = 1 - Number(arc.props.strokeDashoffset) / circumference;
 
             expect(filled).toBeCloseTo(derivePersonalHomeSetupProgress(state).fraction, 5);
-            // One of exactly four quantised values: a time-based or event-counted fill cannot land here.
-            expect([0, 1 / 3, 2 / 3, 1].some((allowed) => Math.abs(allowed - filled) < 1e-5)).toBe(true);
+            // One of exactly six quantised values: a time-based or event-counted fill cannot land here.
+            expect([0, 1 / 5, 2 / 5, 3 / 5, 4 / 5, 1].some((allowed) => Math.abs(allowed - filled) < 1e-5)).toBe(true);
         }
     });
 
@@ -189,6 +189,12 @@ describe('PersonalHomeSetupSurface', () => {
             ...snapshot,
             phase: 'blocked',
             action: 'retry',
+            progressMilestones: {
+                runtimeHealthy: true,
+                identityVerified: false,
+                authenticated: false,
+                signupClosed: false,
+            },
             detail: { code: 'auth', message: 'Needs attention', retryable: true },
         };
         const screen = await renderScreen(<PersonalHomeSetupSurface snapshot={blocked} onRetry={() => {}} />);
@@ -197,7 +203,7 @@ describe('PersonalHomeSetupSurface', () => {
         expect(screen.findAllHostsByTestId('personal-home-bootstrap-mark')).toHaveLength(1);
         const arc = screen.root.findByProps({ testID: 'personal-home-bootstrap-progress-arc' });
         const circumference = Number(String(arc.props.strokeDasharray).split(' ')[0]);
-        expect(1 - Number(arc.props.strokeDashoffset) / circumference).toBeCloseTo(1 / 3, 5);
+        expect(1 - Number(arc.props.strokeDashoffset) / circumference).toBeCloseTo(1 / 5, 5);
     });
 
     it('never announces or displays a percentage', async () => {
@@ -225,6 +231,36 @@ describe('PersonalHomeSetupSurface', () => {
         expect(typeof background).toBe('string');
         expect(background).not.toMatch(/transparent|rgba\([^)]*,\s*0?\.\d+\)/);
         expect(screen.root.findAll((node) => typeof node.type === 'string' && /blur/i.test(node.type))).toHaveLength(0);
+    });
+    it('names the erased Home distinctly and never promotes raw diagnostic text to primary copy', async () => {
+        const erased: PersonalHomeBootstrapSnapshot = {
+            ...snapshot,
+            phase: 'blocked',
+            action: 'retry',
+            detail: {
+                code: 'personal_home_erased',
+                message: 'Your Personal Home was erased. Try again to create a new one.',
+                retryable: true,
+            },
+        };
+        const erasedScreen = await renderScreen(<PersonalHomeSetupSurface snapshot={erased} onRetry={() => {}} />);
+        const erasedText = erasedScreen.getTextContent();
+        expect(erasedText).toContain(tLoose('personalHome.bootstrap.blocked.personal_home_erased'));
+        expect(erasedText).toContain(tLoose('personalHome.bootstrap.blockedBody.personal_home_erased'));
+        // The generic body promises the user's completed setup work is safe, which is
+        // false once the Home's data was deleted.
+        expect(erasedText).not.toContain(tLoose('personalHome.bootstrap.failureBody'));
+
+        const unmapped: PersonalHomeBootstrapSnapshot = {
+            ...snapshot,
+            phase: 'blocked',
+            action: 'retry',
+            detail: { code: 'credential_write_failed', message: 'seed=abcdef0123456789abcdef0123456789', retryable: true },
+        };
+        const unmappedScreen = await renderScreen(<PersonalHomeSetupSurface snapshot={unmapped} onRetry={() => {}} />);
+        const unmappedText = unmappedScreen.getTextContent();
+        expect(unmappedText).toContain(tLoose('personalHome.bootstrap.blockedStatus'));
+        expect(unmappedText).not.toContain('abcdef0123456789abcdef0123456789');
     });
 });
 

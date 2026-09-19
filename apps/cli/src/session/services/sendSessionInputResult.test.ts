@@ -1,12 +1,38 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+// The boundaries are mocked once, hoisted, and each test rebinds their
+// behaviour through these stable spies. The predecessor shape — `vi.doMock`
+// plus `vi.resetModules()` plus a dynamic `import('./sendSessionMessage')` in
+// every test — instantiated this module's (very large) graph once per test and
+// exhausted an 8 GiB heap before the file could report a single result.
+const boundary = vi.hoisted(() => ({
+  enqueuePendingQueueV2MessageViaHttp: vi.fn<(...args: readonly unknown[]) => Promise<unknown>>(),
+  readBlockedPendingQueueV2DeliveryByLocalIdFromServer:
+    vi.fn<(...args: readonly unknown[]) => Promise<unknown>>(),
+  fetchEncryptedTranscriptPageAfterSeq: vi.fn<(...args: readonly unknown[]) => Promise<unknown>>(),
+  waitForTranscriptEncryptedMessageByLocalId: vi.fn<(...args: readonly unknown[]) => Promise<unknown>>(),
+  resolveSessionTransportContext: vi.fn<(...args: readonly unknown[]) => Promise<unknown>>(),
+}));
+
+vi.mock('@/api/session/pendingQueueV2Transport', () => ({
+  enqueuePendingQueueV2MessageViaHttp: boundary.enqueuePendingQueueV2MessageViaHttp,
+  readBlockedPendingQueueV2DeliveryByLocalIdFromServer:
+    boundary.readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
+}));
+vi.mock('@/api/session/fetchEncryptedTranscriptWindow', () => ({
+  fetchEncryptedTranscriptPageAfterSeq: boundary.fetchEncryptedTranscriptPageAfterSeq,
+}));
+vi.mock('@/api/session/transcriptMessageLookup', () => ({
+  waitForTranscriptEncryptedMessageByLocalId: boundary.waitForTranscriptEncryptedMessageByLocalId,
+}));
+vi.mock('./resolveSessionTransportContext', () => ({
+  resolveSessionTransportContext: boundary.resolveSessionTransportContext,
+}));
+
+import { waitForSessionInputResult } from './sendSessionMessage';
+
 describe('waitForSessionInputResult', () => {
   afterEach(() => {
-    vi.doUnmock('@/api/session/fetchEncryptedTranscriptWindow');
-    vi.doUnmock('@/api/session/pendingQueueV2Transport');
-    vi.doUnmock('@/api/session/transcriptMessageLookup');
-    vi.doUnmock('./resolveSessionTransportContext');
-    vi.resetModules();
     vi.clearAllMocks();
   });
 
@@ -95,9 +121,17 @@ describe('waitForSessionInputResult', () => {
         v: { role: 'user', content: { type: 'text', text: 'Please respond' } },
       },
     };
-    const enqueuePendingQueueV2MessageViaHttp = vi.fn(async () => undefined);
-    const readBlockedPendingQueueV2DeliveryByLocalIdFromServer = vi.fn(async () => null);
-    const fetchEncryptedTranscriptPageAfterSeq = vi.fn(async () => [
+    const {
+      enqueuePendingQueueV2MessageViaHttp,
+      readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
+      fetchEncryptedTranscriptPageAfterSeq,
+      waitForTranscriptEncryptedMessageByLocalId,
+      resolveSessionTransportContext,
+    } = boundary;
+
+    enqueuePendingQueueV2MessageViaHttp.mockImplementation(async () => undefined);
+    readBlockedPendingQueueV2DeliveryByLocalIdFromServer.mockImplementation(async () => null);
+    fetchEncryptedTranscriptPageAfterSeq.mockImplementation(async () => [
       inputRow,
       ...params.rowsAfterInput().map((value, index) => ({
         id: `row-${index + 1}`,
@@ -108,34 +142,20 @@ describe('waitForSessionInputResult', () => {
         content: { t: 'plain' as const, v: value },
       })),
     ]);
-    const waitForTranscriptEncryptedMessageByLocalId = vi.fn(async () => inputRow);
-
-    vi.doMock('@/api/session/pendingQueueV2Transport', () => ({
-      enqueuePendingQueueV2MessageViaHttp,
-      readBlockedPendingQueueV2DeliveryByLocalIdFromServer,
-    }));
-    vi.doMock('@/api/session/fetchEncryptedTranscriptWindow', () => ({
-      fetchEncryptedTranscriptPageAfterSeq,
-    }));
-    vi.doMock('@/api/session/transcriptMessageLookup', () => ({
-      waitForTranscriptEncryptedMessageByLocalId,
-    }));
-    vi.doMock('./resolveSessionTransportContext', () => ({
-      resolveSessionTransportContext: vi.fn(async () => ({
-        ok: true,
-        sessionId: 'sess-1',
-        mode: 'plain',
-        ctx: null,
-        accountEncryptionCurrentness: { mode: 'plain' },
-        rawSession: {
-          id: 'sess-1',
-          active: true,
-          metadata: '{}',
-        },
-      })),
+    waitForTranscriptEncryptedMessageByLocalId.mockImplementation(async () => inputRow);
+    resolveSessionTransportContext.mockImplementation(async () => ({
+      ok: true,
+      sessionId: 'sess-1',
+      mode: 'plain',
+      ctx: null,
+      accountEncryptionCurrentness: { mode: 'plain' },
+      rawSession: {
+        id: 'sess-1',
+        active: true,
+        metadata: '{}',
+      },
     }));
 
-    const { waitForSessionInputResult } = await import('./sendSessionMessage');
     const wait = (timeoutMs = 1_000) =>
       waitForSessionInputResult({
         credentials: {

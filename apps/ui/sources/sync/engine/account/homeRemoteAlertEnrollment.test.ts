@@ -117,7 +117,10 @@ async function runEnrollment(params: Readonly<{
  * Pause the reconciliation at its Account-encryption read — the last await
  * before the captured device policy is prepared and published.
  */
-function installHomeResponses(options: Readonly<{ failPublish?: boolean }> = {}): {
+function installHomeResponses(options: Readonly<{
+    failPublish?: boolean;
+    encryptionCurrentness?: Record<string, unknown>;
+}> = {}): {
     releaseEncryptionRead: () => void;
     encryptionReadStarted: Promise<void>;
 } {
@@ -146,7 +149,7 @@ function installHomeResponses(options: Readonly<{ failPublish?: boolean }> = {})
         if (url.endsWith('/v1/account/encryption/currentness')) {
             signalStarted();
             await encryptionRead.promise;
-            return Response.json({
+            return Response.json(options.encryptionCurrentness ?? {
                 mode: 'plain', version: 1, signingKeyFingerprint: null, contentKeyFingerprint: null, updatedAt: 1,
                 recipientEnvelopeReadiness: { status: 'unavailable', reason: 'plain_account' },
             });
@@ -185,6 +188,22 @@ describe('exact-Home remote alert enrollment against device policy mutations', (
         }]);
         expect(preparedPreviewCeilings()).toEqual(['include_preview']);
         expect(scheduleReconciliation).not.toHaveBeenCalled();
+    });
+
+    it('withdraws enrollment instead of crashing when a Home answers without recipient readiness', async () => {
+        // A released Home that predates the readiness projection omits the field. That is
+        // "not ready" — dereferencing it would throw out of the whole enrollment cycle.
+        installHomeResponses({
+            encryptionCurrentness: {
+                mode: 'e2ee', version: 1, signingKeyFingerprint: 'signing', contentKeyFingerprint: 'content', updatedAt: 1,
+            },
+        }).releaseEncryptionRead();
+        const scheduleReconciliation = vi.fn();
+
+        await runEnrollment({ scheduleReconciliation });
+
+        expect(preparedPreviewCeilings()).toEqual([]);
+        expect(native.removeContext.mock.calls).toEqual([[HOME.serverId, HOME.accountId, HOME.registrationId]]);
     });
 
     it('never prepares or publishes a captured policy after a device privacy mutation', async () => {

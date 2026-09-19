@@ -645,6 +645,8 @@ describe('resolveAuthEntry', () => {
         await db.teamInvitation.updateMany({
             where: { teamId: team.id }, data: { revokedAt: new Date() },
         });
+        // The bearer is still valid, so the refusal is about the invitation and
+        // names itself; the bearer itself is untouched.
         await expect(resolveAuthEntry(
             { v: 1, scope: { kind: 'native_email_verification', token: issued.rawBearer } },
             { env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1' }, emailDeliveryReady: true },
@@ -652,7 +654,7 @@ describe('resolveAuthEntry', () => {
             v: 1,
             state: 'unavailable',
             scope: { kind: 'invitation' },
-            reason: 'entry_not_available',
+            reason: 'invitation_unavailable',
             autoRedirect: null,
         });
         expect(await inTx((tx) => readNativeAuthOneTimeOperation(tx, {
@@ -682,27 +684,41 @@ describe('resolveAuthEntry', () => {
         expect(await db.teamMembership.count()).toBe(0);
     });
 
-    it('collapses an inactive invitation and disabled Teams to the same unavailable result', async () => {
-        const expected = {
+    it('answers every unusable invitation identically and keeps a disabled Home opaque', async () => {
+        const unusable = {
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'invitation' },
+            reason: 'invitation_unavailable',
+            autoRedirect: null,
+        } as const;
+        const read = (env: NodeJS.ProcessEnv) => resolveAuthEntry(
+            { v: 1, scope: { kind: 'invitation', token: INVITATION_TOKEN } },
+            { env },
+        );
+
+        // Never issued, revoked and already consumed are one answer, so the
+        // reason can never be used to enumerate which invitations exist.
+        await expect(read({})).resolves.toEqual(unusable);
+        const team = await activeInvitation();
+        await db.teamInvitation.updateMany({ where: { teamId: team.id }, data: { revokedAt: new Date() } });
+        await expect(read({})).resolves.toEqual(unusable);
+        await db.teamInvitation.updateMany({
+            where: { teamId: team.id },
+            data: { revokedAt: null, acceptedAt: new Date() },
+        });
+        await expect(read({})).resolves.toEqual(unusable);
+
+        // A Home that does not run Teams at all has not let this request see any
+        // destination, so its refusal stays the non-enumerating default.
+        await db.teamInvitation.updateMany({ where: { teamId: team.id }, data: { acceptedAt: null } });
+        await expect(read({ HAPPIER_FEATURE_TEAMS__ENABLED: '0' })).resolves.toEqual({
             v: 1,
             state: 'unavailable',
             scope: { kind: 'invitation' },
             reason: 'entry_not_available',
             autoRedirect: null,
-        } as const;
-
-        await expect(resolveAuthEntry(
-            { v: 1, scope: { kind: 'invitation', token: INVITATION_TOKEN } },
-            { env: {} },
-        )).resolves.toEqual(expected);
-
-        await activeInvitation();
-        await expect(resolveAuthEntry(
-            { v: 1, scope: { kind: 'invitation', token: INVITATION_TOKEN } },
-            {
-                env: { HAPPIER_FEATURE_TEAMS__ENABLED: '0' },
-            },
-        )).resolves.toEqual(expected);
+        });
     });
 
     it('fails a restricted Team invitation closed until credential evidence is owned by Homes', async () => {
@@ -788,7 +804,10 @@ describe('resolveAuthEntry', () => {
         expect(projection.state).toBe('ready');
         if (projection.state !== 'ready') throw new Error('expected ready projection');
         expect(projection.actions).toEqual(expect.arrayContaining([
-            expect.objectContaining({ methodId: 'email_password', action: 'login', mode: 'keyed' }),
+            // `either`, not `keyed`: an Account that already exists keeps its own
+            // stored mode, so the Home advertises password login to both Plain and
+            // E2EE Accounts (`emailPasswordAuthMethodModule.ts#existingAccountMode`).
+            expect.objectContaining({ methodId: 'email_password', action: 'login', mode: 'either' }),
             expect.objectContaining({ methodId: 'acme', action: 'connect', mode: 'either' }),
             expect.objectContaining({ methodId: 'acme', action: 'provision', mode: 'keyed' }),
         ]));
@@ -1102,5 +1121,60 @@ describe('resolveAuthEntry', () => {
             origin: 'home',
         }));
         expect(projection.actions).not.toContainEqual(expect.objectContaining({ methodId: provider.id, origin: 'team' }));
+    });
+
+    it('names a spent or unknown invitation to the bearer that presented it', async () => {
+        // The bearer is the only visibility proof an invitation destination has,
+        // and naming a spent one names no Team: the holder learns to ask for a new
+        // invitation instead of reading "not found".
+        await expect(resolveAuthEntry(
+            { v: 1, scope: { kind: 'invitation', token: INVITATION_TOKEN } },
+            { env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1' } },
+        )).resolves.toEqual({
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'invitation' },
+            reason: 'invitation_unavailable',
+            autoRedirect: null,
+        });
+    });
+
+    it('names the required sign-in to a signed-in visitor a restricted Team cannot admit, and stays opaque to everyone else', async () => {
+        const team = await db.team.create({
+            data: {
+                name: 'SSO Only Team',
+                authenticationPolicy: {
+                    v: 1,
+                    mode: 'restricted',
+                    // Accepted, but this Home never offers it: the policy resolves
+                    // restricted with no usable choice.
+                    accepted: [{ kind: 'team_connection', connectionId: 'connection-absent' }],
+                },
+            },
+        });
+        const account = await member(team.id);
+        const entry = (principal?: { accountId: string }) => resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: team.id } },
+            {
+                env: { HAPPIER_FEATURE_TEAMS__ENABLED: '1' },
+                ...(principal ? { principal } : {}),
+            },
+        );
+
+        await expect(entry({ accountId: account.id })).resolves.toEqual({
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'team' },
+            reason: 'sso_required',
+            autoRedirect: null,
+        });
+        // An anonymous visitor proved nothing, so the refusal stays opaque.
+        await expect(entry()).resolves.toEqual({
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'team' },
+            reason: 'entry_not_available',
+            autoRedirect: null,
+        });
     });
 });

@@ -18,7 +18,9 @@ export async function prepareApiTokenEncryptionAccess(params: Readonly<{
     tokenId: string;
 }>): Promise<Readonly<{ encryptionAccess: AccountApiTokenEncryptionAccessV1; wrappingSecret: Uint8Array }>> {
     if (params.currentness.mode !== 'e2ee'
-        || params.currentness.recipientEnvelopeReadiness.status !== 'available'
+        // A Home that predates the readiness projection omits the field entirely.
+        // Absent readiness is "not ready", never an excuse to dereference it.
+        || params.currentness.recipientEnvelopeReadiness?.status !== 'available'
         || !params.currentness.contentKeyFingerprint) {
         throw new Error('api_token_encryption_not_ready');
     }

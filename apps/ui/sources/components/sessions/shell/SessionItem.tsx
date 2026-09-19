@@ -2157,8 +2157,12 @@ function SessionItemFromRowViewModel(props: SessionItemProps) {
     });
     const contentUnavailable = sessionStatus.awareness === undefined
         || !isSessionAwarenessContentReadableV1(sessionStatus.awareness.encryption);
+    // Encryption pending is not a reason to forget a name this device already holds:
+    // the owner keeps a safe cached title and falls back only when none exists, so the
+    // list row and the detail header call the same Session the same thing. Handing it
+    // an empty string discarded that title and made every locked row anonymous.
     const sessionNameResolved = contentUnavailable
-        ? resolveLockedSessionTitle('')
+        ? resolveLockedSessionTitle(getSessionName(session))
         : getSessionName(session);
 
     return (

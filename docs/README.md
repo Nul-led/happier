@@ -7,6 +7,7 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - pending-delivery.md: Durable pending-delivery vocabulary, ownership, compatibility, and receipt boundaries.
 - agent-transition.md: Same-Session Agent transition — wire contract, divider, split cutover, attribution, feature gate, device-local native return, and compatibility. Unreleased.
 - api.md: HTTP endpoints and authentication flows.
+- actions.md: The Actions platform — the spec registry, host-stamped authority/placement/transport, the Q/M/H classes, approval routing, and the CLI result contract.
 - encryption.md: Encryption boundaries, on-wire encoding, and session storage modes.
 - feature-gating.md: Canonical feature catalog, payload, policy, and gate-consumption contracts.
 - peer-mediation.md: Route decision, grants, transports and observability for device↔machine flows; the enablement contract and current reachability.
@@ -15,6 +16,7 @@ This folder documents how Happier works internally, with a focus on protocol, ba
 - binary-runtime.md: Binary-safe runtime rules and bundled internal workspace packaging.
 - backend-architecture.md: Internal backend structure, data flow, and key subsystems.
 - search.md: Universal Search and Commands — owners, data flow, target scoping, feature vs capability roles, privacy/storage, plugin provider seam, and intentional exclusions.
+- session-collaboration.md: Session access evaluation and `effectiveAccess.v=1`, direct/Team/Group grants, recipient key delivery, read state, Follow, awareness, and discussion provenance.
 - teams.md: Team identity, lifecycle, capabilities, closed policy, Team-owned branding, directory paging, and invalidation.
 - teams-membership-and-groups.md: Team membership lifetime, flat Groups, the contribution union, Session-history horizons, and the external-fact seam.
 - teams-invitations.md: Team invitation intent, token custody, admission paths, and the one membership admission owner.

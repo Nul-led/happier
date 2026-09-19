@@ -719,7 +719,8 @@ describe('usePairingSession (pairing deep link server URL)', () => {
             expect(result).toEqual({ ok: false, status: 426, reason: 'update_required' });
             expect(pairingStartMock).not.toHaveBeenCalled();
             expect(hookApi!.deepLink).toBeNull();
-            expect(hookApi!.completionState).toBe('completion_failed');
+            expect(hookApi!.completionState).toBe('update_required');
+            expect(hookApi!.presentation).toEqual({ phase: 'update_required' });
         } finally {
             act(() => screen.tree.unmount());
         }
@@ -1490,6 +1491,33 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         } finally {
             act(() => screen.tree.unmount());
             vi.useRealTimers();
+        }
+    });
+    it('pairs against an explicitly targeted saved Home instead of the focused one', async () => {
+        cachedCanonicalServerUrl = 'https://home-b.test';
+        cachedServerIdentityId = 'srv_home_b';
+        activeServerUrl = 'https://home-a.test';
+
+        const { usePairingSession } = await import('./usePairingSession');
+        let hookApi: ReturnType<typeof usePairingSession> | null = null;
+        function Probe() {
+            hookApi = usePairingSession({ enabled: true, isAuthenticated: true, targetProfileId: 'srv-b' });
+            return null;
+        }
+        const screen = await renderScreen(<Probe />);
+        try {
+            await act(async () => {
+                await expect(hookApi!.startPairing()).resolves.toEqual({ ok: true });
+            });
+
+            expect(serverProfileMocks.getServerProfileById).toHaveBeenCalledWith('srv-b');
+            expect(pairingStartMock).toHaveBeenCalledWith(
+                expect.anything(),
+                expect.objectContaining({ serverId: 'srv-b' }),
+                expect.anything(),
+            );
+        } finally {
+            act(() => screen.tree.unmount());
         }
     });
 });

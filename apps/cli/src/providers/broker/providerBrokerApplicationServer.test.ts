@@ -271,6 +271,27 @@ describe('Provider broker target application integration', () => {
     });
   });
 
+  it('names the selected resource so the recipient Session can attribute the refusal', () => {
+    const send = vi.fn();
+    const reply = { header: vi.fn(), code: vi.fn(() => ({ send })), send };
+
+    writeProviderBrokerApplicationFailure(
+      reply,
+      { ok: false, reasonCode: 'resource_forbidden' },
+      'resource-abc',
+    );
+
+    expect(send).toHaveBeenCalledWith({
+      type: 'error',
+      error: {
+        type: 'permission_error',
+        code: 'resource_forbidden',
+        resourceId: 'resource-abc',
+        message: expect.stringContaining('resource_forbidden'),
+      },
+    });
+  });
+
   it('authenticates private close and awaits idempotent target lifetime retirement before acknowledging', async () => {
     const order: string[] = [];
     let retired = false;

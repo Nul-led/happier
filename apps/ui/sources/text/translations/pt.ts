@@ -711,7 +711,7 @@ function plural({
  */
 export const pt = {
     actionConfirmations: actionConfirmationTranslations.pt,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pt, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pt.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pt, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pt.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pt.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Concluir envio preparado',
@@ -724,7 +724,7 @@ export const pt = {
     voice: voiceReadinessTranslations.pt,
     pluginPermissions: pluginPermissionTranslations.pt,
     sessionBoard: sessionBoardTranslations.pt,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.pt,
     ...changedFileEvidenceTranslations.pt,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.pt,
     pluginSurfaces: {
@@ -1775,6 +1775,8 @@ export const pt = {
     securingCredentials: "A proteger credenciais…",
     showQrInstead: "Mostrar um código QR em vez disso",
     addPhoneQrInstructions: "Escaneie este código QR com o app móvel do Happier para entrar no seu telefone.",
+    addPhoneChooseHomeTitle: "Escolha um Home",
+    addPhoneChooseHomeFooter: "O telefone que você adicionar terá acesso ao Home escolhido aqui. Seu Home em foco não muda.",
     serverUrlNotEmbeddedTitle: "Configure o servidor no seu telefone",
     serverUrlNotEmbeddedBody:
       "Este QR code não pode incluir o endereço do servidor porque ele está definido como localhost. No seu telefone, vá em Configurações → Servidores e adicione uma URL que o telefone consiga acessar (IP da LAN ou Tailscale) e depois escaneie novamente.",
@@ -1786,9 +1788,12 @@ export const pt = {
     expiresAtLabel: "Expira",
     showPairingLink: "Mostrar link de emparelhamento",
     pairingLinkSecurityWarning: "Qualquer pessoa com este link temporário pode adicionar um dispositivo antes de ele expirar. Partilhe-o apenas com o seu próprio dispositivo.",
+    pairingLinkFieldLabel: "Link de emparelhamento",
+    pairingLinkRequired: "Cole o link de emparelhamento mostrado no outro dispositivo.",
     pairingQrTooLargeTitle: "Grande demais para um código QR",
     pairingQrTooLargeBody: "Este convite inclui detalhes de conexão adicionais e não pode ser mostrado como código QR. O seu Home continua pronto para emparelhar — use o link seguro abaixo.",
     homeAddedPreservedFocusBody: "Este Home foi adicionado. O Home selecionado não mudou.",
+    homeSavedOpenFailedBody: "Este Home foi guardado, mas não foi possível abri-lo. Tente novamente para mudar para ele.",
     requesterDeviceAddedBody: "O dispositivo solicitante foi adicionado a este Home.",
     requestingDeviceLabel: "Dispositivo solicitante",
     thisDevice: "Este dispositivo",
@@ -5849,6 +5854,15 @@ export const pt = {
             workspaceChoose: 'A pasta é escolhida por eles',
             workspaceHome: 'A pasta pessoal deles',
         },
+        workspace: {
+            title: 'Pasta inicial',
+            chooseRecommended: 'Recomendado · a pasta é escolhida quando o pacote se liga',
+            homeDetail: 'Começa na pasta pessoal de quem executar o pacote',
+        },
+        otherDevice: {
+            guidance: 'Este pacote foi guardado no dispositivo que o criou. Continue nesse dispositivo ou cancele este pedido e crie um novo pacote aqui.',
+            createdOn: ({ device }: { device: string }) => `Criado em ${device}`,
+        },
         endpointFacts: {
             unreadable: 'Este dispositivo não consegue ler os dados que aquele computador enviou.',
         },
@@ -7262,9 +7276,9 @@ export const pt = {
       automationRunEvents: "Eventos de execucao de automacao",
     },
     multiServerView: {
-      title: "Visualização simultânea de vários Homes",
-      footer:
-        "Escolha se deseja combinar vários Homes em uma única lista de sessões.",
+      editMembersAction: "Editar os Homes deste grupo",
+      title: "Homes nesta visualização",
+      footer: "Escolha como estes Homes aparecem na sua lista de sessões e quais pertencem a este grupo.",
       presentationTitle: "Modo de apresentação",
       presentation: {
         flatWithBadges: "Lista plana com badges de Home",
@@ -11796,7 +11810,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Ainda não existem Homes associados a ${accountService}. Associe um Home e atualize.` : 'Ainda não existem Homes associados a esta conta. Associe um Home e atualize.',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'Tornar este Home disponível nos seus outros dispositivos',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Permita que ${accountService} ajude seus outros dispositivos a encontrar este Home e solicitar acesso.` : 'Permita que a sua conta ajude os outros dispositivos a encontrar este Home e solicitar acesso.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -12308,6 +12322,7 @@ settingsSession: {
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Não foi possível ligar a ${serverUrl}. Tente novamente ou escolha outro serviço.`,
     signInServiceUnsupportedTitle: "Serviço de início de sessão não suportado",
     signInServiceMethodlessTitle: "Não existem métodos de início de sessão disponíveis aqui",
+    signInServiceMethodlessBody: "Este serviço está acessível mas não oferece agora nenhum método de início de sessão. Tente novamente ou escolha outro serviço.",
     signInOptionsPartialTitle: "Não foi possível carregar algumas opções de início de sessão",
     signInServiceUnsupportedBody: "Este endereço é um Home ou não oferece início de sessão da conta. Escolha outro serviço.",
     useDifferentHome: "Usar outra Home",
@@ -14133,6 +14148,15 @@ settingsSession: {
             useExistingDetail: 'Verifique o acesso e proteja o cadastro sem alterar a Casa selecionada.',
             useAnother: 'Usar outra Casa',
             useAnotherDetail: 'Deixe esta Casa local intacta e escolha entre suas Casas.',
+            blocked: {
+                runtime_unhealthy: 'O teu Home local precisa de atenção antes de poder iniciar.',
+                home_auth_invalid: 'A autenticação do Home precisa de atenção.',
+                existing_runtime: 'Um Home local existente precisa de uma escolha antes de a configuração continuar.',
+                personal_home_erased: 'O teu Personal Home foi eliminado. Tenta novamente para criar um novo.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Os dados do teu Home foram eliminados. Não há nada a recuperar aqui — cria um novo Personal Home ou usa outro Home.',
+            },
         },
     },
     settingsSearch: {

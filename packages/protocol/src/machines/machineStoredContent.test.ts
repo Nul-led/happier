@@ -152,8 +152,7 @@ describe('machineStoredContent', () => {
     };
     const binding = signRunnerMachineContentKeyBindingV1({
       payload,
-      accountSigningPublicKey: accountSigning.publicKey,
-      accountSigningSecretKey: accountSigning.secretKey,
+      activationSigningSecretKey: accountSigning.secretKey,
     });
     const projection = {
       id: 'machine-one',

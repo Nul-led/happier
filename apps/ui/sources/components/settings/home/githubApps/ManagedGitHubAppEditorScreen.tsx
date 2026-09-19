@@ -14,6 +14,9 @@ import {
     type RevisionedSettingsDraftOrigin,
 } from '@/components/settings/identity/revisionedSettingsDraft';
 import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
@@ -293,6 +296,15 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
         }
     }, [client, finishManifestSetup, manifestAppName, manifestForOrganization, manifestOrganization, owner, props.surface.mutationsAvailable, reportApprovalFailure, reportApprovalPending]);
 
+    const copyFeedback = useTemporaryCopyFeedback();
+    const copyCallbackUrl = React.useCallback(async (url: string) => {
+        if (!await setClipboardStringSafe(url)) {
+            await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+            return;
+        }
+        copyFeedback.markCopied();
+    }, [copyFeedback]);
+
     const saveBeforeLeave = React.useCallback(
         async () => manifestDirty && !draftDirty ? await startManifestSetup() : await save(),
         [draftDirty, manifestDirty, save, startManifestSetup],
@@ -333,6 +345,10 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
     if (props.registrationId && apps.state.kind === 'loading') return <ItemGroup><Item title={t('common.loading')} leftElement={<ActivitySpinner />} showChevron={false} /></ItemGroup>;
     if (props.registrationId && !registration) return <ItemGroup><Item title={t('identityAdministration.error')} showChevron={false} /></ItemGroup>;
     const edit = Boolean(registration);
+    // Manual setup is the only path that needs this: the manifest flow writes its
+    // own `redirect_url`. The Home derives the value and never persists it, so it
+    // is absent when the Home has no public server URL to derive one from.
+    const callbackUrl = registration?.callbackUrl ?? null;
     return (
         <>
             {!edit ? <ItemGroup title={t('identityAdministration.githubManifestSetup')} footer={t('identityAdministration.githubManifestSetupSubtitle')}>
@@ -348,6 +364,18 @@ export const ManagedGitHubAppEditorContent = React.memo(function ManagedGitHubAp
                 <FieldItem label={t('identityAdministration.githubAppSlug')}><TextInput testID="github-app-slug" accessibilityLabel={t('identityAdministration.githubAppSlug')} value={draft.githubAppSlug} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubAppSlug', value)} /></FieldItem>
                 <FieldItem label={t('identityAdministration.githubOwnerLogin')}><TextInput testID="github-app-owner" accessibilityLabel={t('identityAdministration.githubOwnerLogin')} value={draft.githubOwnerLogin} editable={props.surface.mutationsAvailable} autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('githubOwnerLogin', value)} /></FieldItem>
             </ItemGroup>
+            {callbackUrl ? (
+                <ItemGroup footer={t('identityAdministration.callbackUrlHint')}>
+                    <Item
+                        testID="github-app-callback-url"
+                        title={t('identityAdministration.callbackUrl')}
+                        subtitle={callbackUrl}
+                        rightElement={<CopiedPill visible={copyFeedback.isCopied()} testID="github-app-callback-url-copied" />}
+                        onPress={() => void copyCallbackUrl(callbackUrl)}
+                        showChevron={false}
+                    />
+                </ItemGroup>
+            ) : null}
             <ItemGroup title={t('identityAdministration.advanced')} footer={edit ? t('identityAdministration.githubSecretsRetain') : undefined}>
                 <FieldItem label={t('identityAdministration.clientSecret')}><TextInput testID="github-app-client-secret" accessibilityLabel={t('identityAdministration.clientSecret')} value={draft.clientSecret} editable={props.surface.mutationsAvailable} secureTextEntry autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('clientSecret', value)} /></FieldItem>
                 <FieldItem label={t('identityAdministration.githubPrivateKey')}><TextInput testID="github-app-private-key" accessibilityLabel={t('identityAdministration.githubPrivateKey')} value={draft.privateKey} editable={props.surface.mutationsAvailable} secureTextEntry multiline autoCapitalize="none" autoCorrect={false} onChangeText={(value) => update('privateKey', value)} /></FieldItem>

@@ -1,0 +1,121 @@
+---
+title: Finding your Homes
+description: Use your account on a sign-in service to find the Homes that are yours, make one available on your other devices, and stop delegated sign-in.
+---
+
+By the end of this page you will be able to pick up a new device and reach every
+Home that is yours without typing a single address — and you will know exactly how
+much authority you handed to the service that made that possible.
+
+> **Availability:** Account-based Home discovery is in the current unreleased 0.3 checkout. Stable 0.2 has no Home directory.
+
+## What the directory is, and is not
+
+Your **sign-in service** account — Happier Cloud by default, or whichever service
+your Home recommends — can keep a list of the Homes you have linked to it. That
+list is the directory. It exists so a second phone or a fresh laptop can find your
+Homes instead of making you find them.
+
+Two boundaries are worth stating plainly, because they are what makes this safe to
+use:
+
+- **The service is not the authority over a Home.** It can vouch for you when you
+  sign in, but each Home decides whether to accept that, issues its own credential,
+  and can stop accepting the service at any time.
+- **The service is not in the traffic path.** Sessions, transcripts and files go
+  between your devices and the Home. Linking a Home publishes enough for discovery
+  and delegated sign-in, not its contents.
+
+The directory is also separate from the **saved Homes** on a device. Saved Homes
+are local: what this client knows how to connect to. The directory is what your
+account knows. Removing a Home from one does not touch the other —
+see [Homes](/accounts/multi-server).
+
+## What you need first
+
+- A Home you are already signed in to, on this device.
+- An account on a sign-in service. If you have not chosen one, the Welcome screen's
+  **Choose sign-in service** action and `happier auth service use <endpoint>` both set it.
+
+## Find your Homes
+
+Open **Settings → Account → Account & Home discovery**. The same actions are on the
+connection controls, so you can reach them without leaving what you are doing.
+
+**Find your Homes** discovers linked Homes and opens the selected or preferred one.
+Your existing Homes and current focus stay unchanged while it runs — discovery
+adds, it does not replace. Each Home in the list shows its label and address, and
+carries the state of this device's relationship with it:
+
+| State | Meaning |
+| --- | --- |
+| **Connected** | This device holds a working credential for that Home. |
+| **Approval needed** | The Home wants an explicit decision from an already-signed-in device before admitting this one. |
+| **Connection failed** | The attempt did not complete. **Retry Home connection** tries the same Home again. |
+
+One Home can be marked **Preferred** with **Set as preferred**. A sign-in that does
+not name a Home opens the preferred one, or the only one, and otherwise asks.
+
+If nothing appears, you will see **No linked Homes yet** — link a Home first, then
+refresh. If your service sign-in has lapsed, the section says so and asks you to
+sign in to that service again before it will refresh or connect anything.
+
+## Make a Home available on your other devices
+
+From a device that is signed in to the Home, use **Make this Home available on your
+other devices**. The subtitle says exactly what it grants — *Let … help your other
+devices find this Home and request access*, naming the service. Request, not
+receive: the Home still applies its own admission rules to each new device.
+
+From the Home's own host, the same link is made with:
+
+```bash
+happier home link-account [--home PROFILE]
+```
+
+Linking is optional. A Home works perfectly well as a QR code and an address.
+
+If the account or signing key behind the service changes, Happier stops and asks
+before replacing the trusted sign-in information saved for that Home. Continue only
+if you expected the change.
+
+## Stop delegated sign-in
+
+Linking is reversible, and the reversal is narrower than people expect.
+
+Use **Stop delegated sign-in to this Home** — named for the service when Happier
+knows it — or run this on the Home's host:
+
+```bash
+happier home unlink-account [--home PROFILE]
+```
+
+From then on the Home refuses **new** sign-ins from that service. What it does not
+do:
+
+- It does not revoke credentials the service already helped issue. Devices that are
+  already signed in keep their access until you sign them out on the Home itself.
+- It does not remove the Home from your directory listing. That is the separate
+  **Remove from my … Homes** action, which takes the Home out of the list only and
+  leaves its local profile, credentials, data and current connection untouched.
+
+So: unlink stops future delegation, remove tidies the list, and signing a device out
+on the Home is what actually ends an existing device's access.
+
+## Checking what the service can do
+
+The section's advanced rows report what the selected service actually is, which
+matters when you are pointing Happier at one you run yourself:
+
+- **Sign-in service** — the endpoint in use, and the way to change it.
+- **Service identity** — its verified stable identity.
+- **Home discovery capability** and **Home sign-in capability** — whether this
+  endpoint can hold a directory and whether it can vouch for sign-ins at all. An
+  address that is a Home, rather than a service, reports no.
+
+## Related
+
+- [Signing in](/getting-started/sign-in) — the Welcome screen and the headless CLI path.
+- [Homes](/accounts/multi-server) — saved Homes on a device, and running several.
+- [Device linking and restore](/accounts/device-linking-and-restore) — adding a device to one Home.
+- [Home administration](/self-hosting/home-administration) — deciding, as an owner, which service a Home accepts.

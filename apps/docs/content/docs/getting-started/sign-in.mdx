@@ -1,0 +1,196 @@
+---
+title: Signing in
+description: How the Welcome screen works, why the Home comes first, and how to sign in from a terminal with no browser.
+---
+
+By the end of this page you will be signed in to a specific Home — the one you
+meant, not whichever one the app happened to be pointing at — from a client or
+from a terminal.
+
+> **Availability:** The Home-first Welcome screen and account-based Home discovery are in the current unreleased 0.3 checkout. Stable 0.2 keeps its released Relay-oriented sign-in.
+
+## The one idea behind this screen
+
+Happier signs you in **to a Home**, never just "to Happier". Your Account,
+Sessions and settings live on that Home, so the Home has to be settled before the
+credential is. Everything the Welcome screen offers is one of two things: a way to
+authenticate against the Home that is currently in focus, or a way to change which
+Home that is.
+
+A **sign-in service** is an optional extra on top of that. It is an account you
+hold with one service — Happier Cloud by default — that remembers which Homes are
+yours and can vouch for you when you sign in to them. It is a convenience for
+finding your Homes across devices. It never becomes the authority over a Home, and
+normal Home traffic never goes through it.
+
+## What you need first
+
+- A client: the desktop app, the web app, or a phone. See [Get the apps](/getting-started/get-the-apps).
+- One of: a Home address or pairing link, an account on a sign-in service that already
+  knows your Homes, or a computer you are willing to turn into a
+  [Personal Home](/self-hosting/self-host-runtime).
+
+## The Welcome screen
+
+The first thing Happier shows is **Welcome.** — and, if this device has never
+completed a sign-in, **First time here?** below it. A device that has signed in
+before gets a warmer returning greeting instead, and the ordering of the buttons
+changes with it.
+
+The Home's own sign-in methods always come first, labelled for what they actually
+start:
+
+| You see | It does |
+| --- | --- |
+| **New here?** | Creates a new Account on the Home in focus. Its subtitle names that Home: *Create a private account on …* |
+| **Continue with …** | Signs in through an identity provider this Home enables. |
+| **Email and password** | Signs in with the one email and password held by that Home. See [Account security](/accounts/account-security). |
+| **Use a key** | Enters an existing recovery key instead of authenticating interactively. |
+| **Sign in with certificate** | Client-certificate (mTLS) sign-in, on Homes that require it. |
+
+Underneath those come the sign-in service's own methods, when a service is
+offered. They look the same but are subtitled with the service's name, and the
+"new here" card among them reads *Create an account with …, then find or add your
+Home* — an honest description of what happens next, because creating an account
+with a service is not by itself entry to any Home.
+
+Finally, the navigation actions:
+
+- **Scan a QR or paste a Home link** — enter a Home directly from an invite.
+- **Use a different Home** — switch the Home in focus before signing in.
+- **Choose sign-in service** — only offered when no Home is in focus yet.
+- **Create a Personal Home** — subtitled *Create a Personal Home on this computer*.
+
+A returning device reorders this: its direct Home methods come first, **Scan a QR
+or paste a Home link** moves up beside them, and account creation drops to the
+bottom as **Start fresh — create a new account**. Nothing is hidden; the order
+follows what you are most likely to want.
+
+<Callout type="info">
+  On a Home that is its own sign-in service, the same provider can legitimately
+  appear twice. Happier collapses the duplicate only when the service's identity
+  is exactly the Home's, and it always keeps the direct Home row — so a Home
+  recovery-key action never disappears behind a service one.
+</Callout>
+
+### If the service does not answer
+
+The sign-in service is additive, so a service problem never blocks the Home's own
+methods. You will see one of these, each with a **Retry**, and the Home rows stay
+usable beneath it:
+
+- **Can't reach your sign-in service** — it did not respond.
+- **No sign-in methods are available here** — it answered but offers nothing right now.
+- **Sign-in service not supported** — the address is a Home, or it does not offer account sign-in.
+
+## Entering a Home directly
+
+You never have to go through a service. Three direct routes reach a named Home:
+
+<Steps>
+
+### Paste or scan
+
+Choose **Scan a QR or paste a Home link**. A pairing QR shown by another signed-in
+device, or its **Show Pairing Link** equivalent, carries the exact Home. Pairing
+material is short-lived and single-use — if it expires, generate a new one rather
+than reusing it.
+
+### Type the address
+
+Choose **Use a different Home**, then enter the **Home address**. This is the
+HTTPS route to a Home; the Home's identity is verified separately, so an address
+change does not silently become a different Home.
+
+### Use a descriptor
+
+A Home reachable only over Iroh has no public HTTPS address. Its strict connection
+descriptor is what reaches it — see the CLI path below.
+
+</Steps>
+
+## Signing in from a terminal
+
+`happier setup` is the headless equivalent of the whole journey. What it asks
+depends on what it can already see.
+
+**No usable Home yet** — it offers four choices:
+
+```text
+Find my linked Homes (recommended)   Sign in through your sign-in service
+Connect to an existing Home
+Create a Personal Home on this computer
+Exit
+```
+
+Choosing **Connect to an existing Home** asks how: **Saved Home**, **HTTPS
+address**, or **Home descriptor file** (including Iroh-only Homes).
+
+**A Home already named on the command line** — the menus are skipped entirely:
+
+```bash
+happier setup --home <saved-home>
+happier setup --home-url https://home.example.test
+happier setup --home-descriptor-file ./home.json
+```
+
+**A Home already selected but not answering** — setup says so, keeps your stored
+sign-in, and offers **Retry**, **Choose another Home**, or **Exit and try later**.
+It never substitutes a different Home for the one you chose.
+
+When the Home recommends a sign-in service, setup still asks before contacting it:
+
+```text
+How would you like to continue?
+  d) Sign in directly to this Home
+  s) Use the recommended sign-in service
+  x) Cancel
+```
+
+Directly is the default. If you pick the service, it lists that service's methods
+under **How would you like to find your Homes?**, including **Use an account key**
+and **New here? Create an account key**.
+
+To see the steps without running them:
+
+```bash
+happier setup plan --home-url https://home.example.test
+```
+
+<Callout>
+  `--yes` is not unattended sign-in. With an explicitly named Home it writes that
+  target, prints the interactive continuation and exits nonzero as incomplete;
+  without one it writes nothing. `--non-interactive` and a no-TTY run always write
+  nothing.
+</Callout>
+
+### Choosing the service the CLI uses
+
+```bash
+happier auth service status
+happier auth service use <endpoint>
+happier auth service logout
+```
+
+`status` verifies the selected service's identity and its Account Service role
+before naming it. `logout` drops only this CLI's service credential — Homes you
+already entered keep their own.
+
+## When it goes wrong
+
+- **The Home is unreachable.** Retry re-checks that same Home. In the app, a Home row
+  stays selected while unreachable rather than falling back to another one.
+- **The sign-in service says that Home is not linked to your account.** Connect to that
+  exact Home directly; linking it is a separate step described in
+  [Finding your Homes](/accounts/your-homes).
+- **Sign-in succeeded but this computer still needs encryption material.** Setup continues
+  into device pairing. See [Device linking and restore](/accounts/device-linking-and-restore).
+- **The service answered with a different identity than the one saved here.** Stop and check
+  the address before signing in again; Happier will not adopt the new identity silently.
+
+## Related
+
+- [Homes](/accounts/multi-server) — what a Home holds, and running more than one.
+- [Finding your Homes](/accounts/your-homes) — the account-level directory of Homes.
+- [Account security](/accounts/account-security) — email, password and recovery keys.
+- [Onboarding](/getting-started/onboarding) — the rest of first-time setup after sign-in.

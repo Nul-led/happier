@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "start-a-session",
+    "temporary-computer",
     "new-session-shortcuts",
     "pending-queue",
     "steering",
@@ -10,6 +11,7 @@
     "inbox-and-approvals",
     "session-modes",
     "session-settings",
+    "session-board",
     "continuing-a-session",
     "session-resume",
     "resume-provider-sessions",

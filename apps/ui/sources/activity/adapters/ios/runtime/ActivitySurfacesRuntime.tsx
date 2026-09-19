@@ -67,6 +67,7 @@ import {
     rememberLiveActivityBackgroundWakeSnapshot,
     syncLiveActivityBackgroundWakeTaskRegistration,
 } from '../backgroundWake/defineLiveActivityBackgroundWakeTask';
+import { syncSessionChangedBackgroundWakeTaskRegistration } from '../backgroundWake/defineSessionChangedBackgroundWakeTask';
 
 type ActivitySurfaceWidgetModules = typeof import('./iosActivityWidgetModules');
 type IosActivityInteractionEvent = Readonly<{
@@ -675,6 +676,16 @@ export function ActivitySurfacesRuntime(): React.ReactElement | null {
             fallbackEnabled: backgroundWakeFallbackEnabled,
         });
     }, [backgroundWakeFallbackEnabled]);
+
+    // The closed-app collaborator wake shares this registration point. It is not
+    // tied to the Live Activity fallback: a device that receives the wake only
+    // synchronizes its exact Home, and the incumbent Activity notification
+    // policy on this device decides whether anything is ever shown.
+    React.useEffect(() => {
+        if (Platform.OS !== 'ios') return;
+
+        void syncSessionChangedBackgroundWakeTaskRegistration();
+    }, []);
 
     React.useEffect(() => {
         if (Platform.OS !== 'ios') return;

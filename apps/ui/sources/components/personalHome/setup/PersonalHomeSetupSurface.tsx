@@ -5,10 +5,10 @@ import { StyleSheet } from 'react-native-unistyles';
 import type { SystemTaskRunState } from '@/components/systemTasks/types';
 import { Text } from '@/components/ui/text/Text';
 import { Typography } from '@/constants/Typography';
-import { t } from '@/text';
+import { t, tLoose } from '@/text';
 
 import type { PersonalHomeBootstrapSnapshot } from '../bootstrap/personalHomeBootstrapTypes';
-import { PersonalHomeExistingRuntimeDecision } from './PersonalHomeExistingRuntimeDecision';
+import { PersonalHomeExistingRuntimeDecision, PersonalHomeUseAnotherHomeAction } from './PersonalHomeExistingRuntimeDecision';
 import { PersonalHomeSetupFailure } from './PersonalHomeSetupFailure';
 import { PersonalHomeSetupMark } from './PersonalHomeSetupMark';
 import { PersonalHomeDiagnosticDetails } from './PersonalHomeDiagnosticDetails';
@@ -49,19 +49,44 @@ const styles = StyleSheet.create((theme) => ({
     details: { width: '100%', maxWidth: RECOVERY_MAX_WIDTH },
 }));
 
+/**
+ * A blocked snapshot already carries the specific, actionable reason as a stable
+ * `code`, so recoverable states stop reading identically and the erased Home stops
+ * reading as a reassurance. Only translated copy keyed by that code is promoted to
+ * primary status: `detail.message` is diagnostic text that may carry credentials and
+ * is sanitized before it is shown, and only inside Details. A code with no key falls
+ * back to the generic sentence rather than leaking the raw message.
+ */
+function blockedStatusCopy(snapshot: PersonalHomeBootstrapSnapshot): string | null {
+    const code = snapshot.detail?.code?.trim();
+    if (!code) return null;
+    const key = `personalHome.bootstrap.blocked.${code}`;
+    const value = tLoose(key);
+    return typeof value === 'string' && value !== key ? value : null;
+}
+
+/** State-specific replacement for the generic failure body, when one exists. */
+function blockedFailureBodyCopy(snapshot: PersonalHomeBootstrapSnapshot): string | null {
+    const code = snapshot.detail?.code?.trim();
+    if (!code) return null;
+    const key = `personalHome.bootstrap.blockedBody.${code}`;
+    const value = tLoose(key);
+    return typeof value === 'string' && value !== key ? value : null;
+}
+
 function phaseCopy(snapshot: PersonalHomeBootstrapSnapshot): string {
     switch (snapshot.phase) {
         case 'checking': return t('common.loading');
         case 'ensuring-home': return t('personalHome.bootstrap.ensuringHomeStatus');
         case 'preparing-computer': return t('personalHome.bootstrap.preparingComputerStatus');
-        case 'blocked': return t('personalHome.bootstrap.blockedStatus');
+        case 'blocked': return blockedStatusCopy(snapshot) ?? t('personalHome.bootstrap.blockedStatus');
         case 'ready': return t('personalHome.bootstrap.readyStatus');
     }
 }
 
 type FocusableAction = React.ElementRef<typeof Pressable> & Readonly<{ focus?: () => void }>;
 
-function focusAction(target: React.ElementRef<typeof Pressable> | null): void {
+function focusAction(target: FocusableAction | null): void {
     const focus = (target as FocusableAction | null)?.focus;
     if (typeof focus === 'function') {
         try {
@@ -81,14 +106,18 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
     onUseAnotherHome?: () => void;
 }>) {
     const [detailsOpen, setDetailsOpen] = React.useState(false);
-    const retryRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
+    const retryRef = React.useRef<FocusableAction | null>(null);
     const detailsRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
-    const useExistingRef = React.useRef<React.ElementRef<typeof Pressable>>(null);
+    const useExistingRef = React.useRef<FocusableAction | null>(null);
     const focusedRecoveryStateRef = React.useRef<string | null>(null);
     const progress = derivePersonalHomeSetupProgress(props.snapshot);
     const hasFailure = props.snapshot.phase === 'blocked';
     const showExistingDecision = props.snapshot.action === 'choose-existing-runtime';
     const showFailure = hasFailure && (!showExistingDecision || props.snapshot.detail?.retryable === true);
+    // The status line above already names the reason. The card body stays the generic
+    // guidance unless this state contradicts it — the erased Home must not be told its
+    // completed setup work is safe.
+    const blockedBody = hasFailure ? blockedFailureBodyCopy(props.snapshot) : null;
     const hasLocalDetails = props.activeTask != null || props.snapshot.detail != null;
     const showDetails = detailsOpen && hasLocalDetails;
     const toggleDetails = React.useCallback(() => setDetailsOpen((value) => !value), []);
@@ -162,7 +191,7 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                     {showExistingDecision && props.onUseExisting && props.onUseAnotherHome ? (
                         <View style={styles.recovery}>
                             <PersonalHomeExistingRuntimeDecision
-                                primaryActionRef={useExistingRef}
+                                primaryActionControlRef={(instance) => { useExistingRef.current = instance; }}
                                 onUseExisting={props.onUseExisting}
                                 onUseAnotherHome={props.onUseAnotherHome}
                                 details={hasLocalDetails ? (
@@ -175,11 +204,18 @@ export const PersonalHomeSetupSurface = React.memo(function PersonalHomeSetupSur
                         </View>
                     ) : null}
 
+                    {!showExistingDecision && !hasFailure && props.onUseAnotherHome ? (
+                        <View style={styles.recovery}>
+                            <PersonalHomeUseAnotherHomeAction onUseAnotherHome={props.onUseAnotherHome} />
+                        </View>
+                    ) : null}
+
                     {showFailure ? (
                         <View style={styles.recovery}>
                             <PersonalHomeSetupFailure
-                                retryRef={retryRef}
-                                detailsRef={detailsRef}
+                                retryControlRef={(instance) => { retryRef.current = instance; }}
+                                detailsControlRef={(instance) => { detailsRef.current = instance as React.ElementRef<typeof Pressable> | null; }}
+                                {...(blockedBody ? { body: blockedBody } : {})}
                                 onRetry={props.snapshot.action === 'retry' ? props.onRetry : undefined}
                                 onOpenDetails={failureDetailsAction}
                             />

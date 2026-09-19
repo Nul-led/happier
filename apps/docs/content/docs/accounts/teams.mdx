@@ -1,0 +1,190 @@
+---
+title: Teams
+description: Create a Team on one Home, give people roles, group them, and decide what new sessions do by default.
+---
+
+A Team is one shared place on one Home for sessions, people, and access. Create
+one and you can share a session with everybody in it instead of naming people one
+at a time, hand out shared credentials once, and set what new sessions do by
+default for the whole group.
+
+## Availability
+
+Teams are a per-Home capability, offered unless the Home's operator turns them
+off — on a self-hosted Home, with `HAPPIER_FEATURE_TEAMS__ENABLED`. A client that
+reaches a Home without Teams shows **Teams are not available on this Home**
+rather than half a feature, and everything else on that Home keeps working.
+
+A Team belongs to the Home it was created on and stays there. If you use more
+than one Home, each one has its own Teams, and the Teams list tells you which
+Home each Team came from. When a Home cannot be reached, its Teams are missing
+from the list and Happier says so instead of pretending the list is complete.
+
+## Create a Team
+
+Open **Settings → Teams** and choose **New Team**. Give it a **Name** and, if it
+helps, a **Description**. The Team is created on the Home you are looking at, and
+you become its first owner.
+
+Two Teams may share a name. Names are labels: invitation links and access always
+refer to the Team itself, never to its name.
+
+Some Homes administer Team creation centrally. There you see **Team creation is
+administered on this Home** and an administrator creates the Team and chooses its
+**First owner**. Creating a Team for somebody else does not add you to it.
+
+## Roles
+
+Every membership carries exactly one role, and the role decides what the person
+gets by default:
+
+| Role | What it means |
+| --- | --- |
+| **Owner** | Owns the Team, may manage it, and may change owners. |
+| **Admin** | Receives Member access and may manage the Team. |
+| **Member** | Receives access granted to the Team by default. |
+| **Guest** | Sees only Sessions and resources explicitly shared with this Account or with a Group it belongs to. |
+
+Guest is the role to reach for when somebody should collaborate on a few named
+sessions without seeing the Team's shared work. The invitation screen says so
+before they accept: joining as Guest does not give access to that Team's Team
+Sessions.
+
+A Team always keeps at least one active owner. If you try to remove, suspend, or
+demote the last one, Happier stops you with **A Team keeps at least one active
+owner** and asks you to choose another owner first.
+
+## Members
+
+The **Members** tab lists everybody in the Team with their role and status, and
+filters for owners and admins, members, guests, and suspended people. **Add
+member** adds somebody who already has an Account on this Home; to reach anybody
+else, send an [invitation](/accounts/team-invitations).
+
+Three lifecycle actions, each with a different blast radius:
+
+- **Suspend member** stops Team and Group access immediately while keeping the
+  person's Group membership and resource assignments. Reactivating restores only
+  the access that is still valid. Their Home Account and their other Teams are
+  untouched.
+- **Reactivate member** resumes access where memberships, Groups, and Account
+  state still allow it.
+- **Remove from Team** ends current Team and Group access and removes Group
+  memberships and membership-lifetime grants. It does not erase prior authorship
+  or content the person already saw. Rejoining later starts a new membership.
+
+Where a membership comes from a directory, the row says **Managed through** that
+source and the role is read-only here — change it in the source. You can move a
+membership between Happier and a directory under **Management source**; that
+keeps the membership, its role, status, and session history, and changes only who
+may edit it.
+
+### Encrypted access, and what Prepare does
+
+If your Home stores sessions with end-to-end encryption, a new member's Account
+cannot read existing Team session history until somebody who can read it prepares
+that access for them. The member's detail screen shows this under **Encrypted
+access**:
+
+- **Ready** — nothing to do. They can open the Team's encrypted sessions.
+- **Needs preparing** — the sessions exist, the member cannot read them yet.
+  Choose **Prepare encrypted access** and Happier re-wraps each session's key for
+  that member's Account from your device, showing progress as it goes.
+- **Setup required** — the person has not finished setting up encrypted access on
+  their own Account. Prepare becomes available once they have.
+- **Not encrypted** — their Account does not use end-to-end encryption, so there
+  is nothing to prepare.
+
+Preparing runs from your device, using your own access, so it can only cover
+sessions you can currently read. If some cannot be prepared from this device you
+see **Encrypted access needs repair**: open those sessions once to repair your own
+access, then prepare again. Sessions created in an older encryption format cannot
+be shared with new members at all; they stay readable for the people who already
+have them. If preparation stops partway, whatever was already prepared is kept —
+run it again to finish.
+
+## Groups
+
+A Group is a flat set of Team members you can share with together: **Developers**,
+**Design**, **On-call**. Create one from the **Groups** tab, add members, and from
+then on you can grant a session or a credential to the Group instead of to each
+person.
+
+Groups do not nest and do not carry roles of their own. A person's role comes from
+their Team membership; a Group only decides what gets shared with them as a set.
+
+Archiving a Group stops Group-based access immediately while keeping its
+membership and history, so restoring it can make those grants effective again. A
+Group fed by a directory shows **Managed by** that source: its name and lifecycle
+belong to the source, though you can still add people to it in Happier.
+
+## What new sessions do by default
+
+The **Settings** tab holds the decisions that apply to the whole Team.
+
+**Session defaults** decides what happens to a session somebody starts in this
+Team:
+
+- **Private by default** — nothing is shared until the person shares it.
+- **Shared with the Team by default** — new sessions start visible to the Team,
+  and the person can still make one private.
+- **Always shared with the Team** — new sessions are shared and stay that way.
+
+This applies to new sessions only. Existing private sessions are never exposed by
+changing it.
+
+**External sharing** decides who may share a Team session outside the Team —
+**Anyone who can share**, **Team admins only**, or **Not allowed**. It blocks
+future sharing; it cannot withdraw a copy already shared.
+
+**History default** preselects the **Session history** choice offered when
+somebody joins: **Include sessions already shared with the Team**, or **Only
+sessions shared after they join**. It is a default for new members, not a rewrite
+of the history existing members already have. The choice works at whole-session
+granularity — it does not reveal only the messages created after somebody joined.
+
+A **Logo** replaces the Team's monogram everywhere the Team appears. Team and
+Group names, descriptions, Group membership, and policy are administration data
+the Home can read, including on an end-to-end encrypted Account, so keep secrets
+out of them.
+
+## Archiving a Team
+
+**Archive** moves a Team out of active views. Team- and Group-based access stops
+and outstanding invitation links are revoked, while memberships, Groups, policies,
+and existing grants are retained — restoring the Team may make those retained
+grants effective again. Revoked invitation links do not come back; issue new ones.
+Archived Teams stay listed under **Show archived** and are read-only until
+restored.
+
+## Team sign-in
+
+A Team can require a particular sign-in — your company IdP rather than an email
+and password — and can receive its membership from a directory instead of from
+invitations. That lives on the **Authentication** tab and is set up together with
+the Home operator; see [Enterprise
+identity](/self-hosting/auth-enterprise-identity) for the whole model, including
+the Team's shareable member sign-in page, WorkOS, GitHub organizations, and
+directory sync.
+
+Signing in to a Home never joins a Team by itself. Admission is a separate
+decision the Team's policy makes.
+
+## When it goes wrong
+
+| What you see | What it means |
+| --- | --- |
+| **Teams are not available on this Home** | The Home has Teams turned off, needs an update, or is unreachable. |
+| **Showing the last known data for this Home** | You are looking at cached state because the Home is not reachable right now. |
+| **Someone else changed this first** | Another manager saved first. Review the current values, then apply your change again. |
+| **You do not have permission for this change** | Your role does not allow it. Owners and admins manage the Team. |
+| **This Team is archived** | Restore it before making changes. |
+| **The Home may have completed this change** | The result was lost in transit. Refresh the Team before retrying, rather than repeating the change blind. |
+
+## Related
+
+- [Team invitations](/accounts/team-invitations) — bringing people in by link, QR code, or email.
+- [Shared credentials for a Team](/accounts/team-credentials) — letting the Team use a connected account or provider without copying it.
+- [Session sharing](/accounts/session-sharing) — sharing one session with a Team, a Group, or one person.
+- [Following a session](/organize/following-sessions) — deciding which shared sessions reach your own attention.
+- [Enterprise identity](/self-hosting/auth-enterprise-identity) — Team sign-in connections and directory sync.

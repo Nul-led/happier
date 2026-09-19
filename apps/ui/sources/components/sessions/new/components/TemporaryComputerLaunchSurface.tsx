@@ -262,16 +262,32 @@ export function TemporaryComputerLaunchSurface(props: Readonly<{
                     {t('newSession.temporaryComputer.exportClaimed')}
                 </Text>
             ) : null}
-            {packageExportFailed || (status === 'waiting_for_computer' && props.packageAvailableOnThisDevice === false) ? (
-                <View testID={packageExportFailed ? 'temporary-computer-package-export-error' : 'temporary-computer-package-export-guidance'} style={{ gap: 4 }}>
-                    <Text style={{ color: packageExportFailed ? theme.colors.status.error : theme.colors.text.secondary }}>
-                        {packageExportFailed
-                            ? t('newSession.temporaryComputer.status.failed')
-                            : t('newSession.temporaryComputer.subtitle')}
+            {packageExportFailed ? (
+                <View testID="temporary-computer-package-export-error" style={{ gap: 4 }}>
+                    <Text style={{ color: theme.colors.status.error }}>
+                        {t('newSession.temporaryComputer.status.failed')}
                     </Text>
                     {props.createdOnDeviceLabel ? (
                         <Text testID="temporary-computer-package-export-device" style={{ color: theme.colors.text.secondary }}>
                             {props.createdOnDeviceLabel}
+                        </Text>
+                    ) : null}
+                </View>
+            ) : status === 'waiting_for_computer' && props.packageAvailableOnThisDevice === false ? (
+                // No custody here means this device can neither re-export the
+                // package nor be told to prepare one. The two things it can
+                // actually do are the two the plan names, and Cancel — which is
+                // mounted above for this status — is the second of them.
+                <View testID="temporary-computer-package-export-guidance" style={{ gap: 4 }}>
+                    <Text testID="temporary-computer-other-device-guidance" style={{ color: theme.colors.text.secondary }}>
+                        {t('newSession.temporaryComputer.otherDevice.guidance')}
+                    </Text>
+                    {props.createdOnDeviceLabel ? (
+                        // A bare device name read as an unlabelled string here —
+                        // and the creator's fallback literally says "This device",
+                        // which is false on every other one.
+                        <Text testID="temporary-computer-package-export-device" style={{ color: theme.colors.text.secondary }}>
+                            {t('newSession.temporaryComputer.otherDevice.createdOn', { device: props.createdOnDeviceLabel })}
                         </Text>
                     ) : null}
                 </View>

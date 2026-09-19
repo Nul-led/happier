@@ -11,6 +11,7 @@ import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { VirtualizedList } from '@/components/ui/lists/virtualized';
 import { StatusPill } from '@/components/ui/status/StatusPill';
+import { TextInput } from '@/components/ui/text/Text';
 import { useTeamMembersRoster } from '@/hooks/teams/useTeamMembersRoster';
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { t } from '@/text';
@@ -60,6 +61,7 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
     const router = useRouter();
     const { context } = props;
     const [filter, setFilter] = React.useState<TeamMembersListFilterV1>('all');
+    const [query, setQuery] = React.useState('');
 
     // The Home authorizes this roster on `viewTeam`, so every viewer it would
     // answer sees it. Management is a separate question, asked per control and
@@ -101,6 +103,23 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
         && roster.status === 'ready'
         && roster.error === null;
 
+    // Looking a person up in a long roster is a presentation narrowing over the
+    // pages this screen already holds, not a second roster reader: the member
+    // list contract is a closed filter enum with no query field
+    // (`TeamMembersListInputV1Schema`), so "Load more" stays offered while a
+    // search is active rather than implying the sequence is exhausted.
+    const searchTerm = query.trim().toLocaleLowerCase();
+    const visibleRows = React.useMemo(() => (
+        searchTerm === ''
+            ? roster.rows
+            : roster.rows.filter((membership) => (
+                (formatAccountDisplayName(membership.account) ?? membership.accountId)
+                    .toLocaleLowerCase()
+                    .includes(searchTerm)
+                || membership.accountId.toLocaleLowerCase().includes(searchTerm)
+            ))
+    ), [roster.rows, searchTerm]);
+
     const rows = React.useMemo<readonly MemberVirtualizedRow[]>(() => {
         const result: MemberVirtualizedRow[] = [];
         const add = (key: string, render: () => React.ReactElement) => result.push({ key, render });
@@ -123,6 +142,18 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
                 <TeamOwnerRequiredNotice context={context} noCandidate={noOwnerCandidate} />
             ));
         }
+
+        add('search', () => (
+            <ItemGroup>
+                <TextInput
+                    testID="team-members-search"
+                    value={query}
+                    onChangeText={setQuery}
+                    placeholder={t('teams.members.searchPlaceholder')}
+                    accessibilityLabel={t('teams.members.searchPlaceholder')}
+                />
+            </ItemGroup>
+        ));
 
         add('filters', () => (
             <ItemGroup accessibilityRole="radiogroup" accessibilityLabel={t('teams.tabs.members')}>
@@ -150,7 +181,7 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ));
         }
 
-        if (roster.rows.length === 0 && roster.status === 'ready') {
+        if (visibleRows.length === 0 && roster.status === 'ready') {
             add('empty', () => (
                 <ItemGroup footer={t('teams.members.emptyBody')}>
                     <Item testID="team-members-empty" title={t('teams.members.emptyTitle')} showChevron={false} />
@@ -158,10 +189,10 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ));
         }
 
-        for (let start = 0; start < roster.rows.length; start += MEMBER_CHUNK_SIZE) {
-            const chunk = roster.rows.slice(start, start + MEMBER_CHUNK_SIZE);
+        for (let start = 0; start < visibleRows.length; start += MEMBER_CHUNK_SIZE) {
+            const chunk = visibleRows.slice(start, start + MEMBER_CHUNK_SIZE);
             const first = start === 0;
-            const last = start + MEMBER_CHUNK_SIZE >= roster.rows.length;
+            const last = start + MEMBER_CHUNK_SIZE >= visibleRows.length;
             add(`members:${chunk[0]!.id}`, () => (
                 <ItemGroup
                     title={first ? t('teams.tabs.members') : undefined}
@@ -170,12 +201,24 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
                     {chunk.map((membership) => {
                         const displayName = formatAccountDisplayName(membership.account) ?? membership.accountId;
                         const managedBy = membershipManagementLabel(membership);
+                        // The viewer's own row and the one truthful membership-age
+                        // fact the projection already carries. `scope.accountId` is
+                        // the Account this screen was opened for, so the mark
+                        // follows the Home the roster was read from.
+                        const isViewer = membership.accountId === context.scope.accountId;
                         return (
                             <Item
                                 key={membership.id}
                                 testID={`team-members-row:${membership.id}`}
                                 title={displayName}
-                                subtitle={[teamRoleLabel(membership.role), managedBy]
+                                subtitle={[
+                                    teamRoleLabel(membership.role),
+                                    isViewer ? t('teams.members.you') : null,
+                                    managedBy,
+                                    t('teams.members.joined', {
+                                        when: new Date(membership.joinedAt).toLocaleDateString(),
+                                    }),
+                                ]
                                     .filter((part): part is string => part !== null)
                                     .join(' · ')}
                                 leftElement={(
@@ -241,7 +284,18 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
         }
 
         return result;
-    }, [canAdd, canRead, context, filter, noOwnerCandidate, roster, router, theme.colors.text.secondary]);
+    }, [
+        canAdd,
+        canRead,
+        context,
+        filter,
+        noOwnerCandidate,
+        query,
+        roster,
+        router,
+        theme.colors.text.secondary,
+        visibleRows,
+    ]);
 
     const renderRow = React.useCallback(
         ({ item }: Readonly<{ item: MemberVirtualizedRow }>) => item.render(),

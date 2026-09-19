@@ -181,7 +181,11 @@ export async function storeRunnerActivationReview(params: Readonly<{
                     installationId: claim.data.payload.installation.installationId,
                     machineContentKeyFingerprint: machineBinding.machineContentKeyFingerprint,
                 },
-                expectedAccountSigningPublicKey: activationBinding.endpointFactsRecipient.accountSigningPublicKey,
+                // The creator-generated activation signing identity is the proof
+                // root, so a DataKey or token-only creator needs no Account
+                // signing authority. The public half is the value this Home
+                // recorded at activation creation, not a submitted field.
+                expectedAccountSigningPublicKey: row.activationSigningPublicKey,
             })) return { status: "invalid_proof" } as const;
         }
         await tx.ephemeralRunnerActivation.update({ where: { id: row.id }, data: { review: params.review } });

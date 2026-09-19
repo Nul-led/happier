@@ -105,11 +105,13 @@ function policyFailureLabel(failure: Readonly<{ code: string | null; details?: u
  * advanced by an explicit acknowledgement of the newly observed policy, so the
  * administrator's intent survives the conflict instead of being discarded.
  *
- * Only references this Team owns are offered. A `home_method` already present in
- * the stored policy is shown and preserved, but it cannot be added here: the
- * Team surface has no Home sign-in-method projection, and inventing one would
- * both duplicate the Home policy owner and disclose Home configuration to a Team
- * administrator who may not read it.
+ * Both arms of the OR are authored here: this Team's own connections and the
+ * Home sign-in methods the Home already advertises publicly. The Home methods
+ * arrive from the one canonical capability projector its own sign-in page uses,
+ * so nothing about Home configuration is disclosed that a visitor could not
+ * already see and no second Home-method owner exists. A stored `home_method`
+ * the Home no longer offers is still shown and preserved rather than silently
+ * dropped, but it cannot be re-added once it is gone.
  */
 export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenticationPolicySections(
     props: Readonly<{
@@ -118,9 +120,20 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
         /** False while the connection projection is absent, refreshing or stale. */
         connectionsCurrent: boolean;
         admissionModeApplicability: TeamAdmissionModeApplicabilityV1 | null;
+        /** Home sign-in methods that can currently log somebody in, as the Home advertises them. */
+        homeMethods: readonly Readonly<{ methodId: string; displayName: string }>[];
+        /** False while the Home capability projection has not answered. */
+        homeMethodsCurrent: boolean;
     }>,
 ) {
-    const { context, connections, connectionsCurrent, admissionModeApplicability } = props;
+    const {
+        context,
+        connections,
+        connectionsCurrent,
+        admissionModeApplicability,
+        homeMethods,
+        homeMethodsCurrent,
+    } = props;
     const policy = context.team.policy;
     const repairRequired = policy.authenticationPolicyStatus === 'repair_required';
 
@@ -180,11 +193,13 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
         ? selected.accepted
         : [];
     const acceptedKeys = new Set(accepted.map(acceptedKey));
-    // References the stored policy already carries that this surface cannot
-    // author. They are displayed and preserved rather than silently dropped.
+    const offeredHomeMethodKeys = new Set(homeMethods.map((method) => `home_method:${method.methodId.toLowerCase()}`));
+    // References the stored policy carries that the Home no longer advertises.
+    // They are displayed and preserved rather than silently dropped, but a
+    // method the Home does not offer cannot be re-added once removed.
     const retainedHomeMethods = accepted.filter(
         (reference): reference is Extract<TeamAcceptedAuthenticationV1, { kind: 'home_method' }> =>
-            reference.kind === 'home_method',
+            reference.kind === 'home_method' && !offeredHomeMethodKeys.has(acceptedKey(reference)),
     );
 
     const editable = context.team.capabilities.manageAuthentication
@@ -233,11 +248,13 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
         });
     }, [accepted, beginDraft, connections]);
 
-    const toggleConnection = React.useCallback((connectionId: string) => {
-        const key = `team_connection:${connectionId}`;
+    // One toggle for both arms of the OR: the reference the caller names is the
+    // only difference, so the add/remove rule cannot drift between them.
+    const toggleAccepted = React.useCallback((reference: TeamAcceptedAuthenticationV1) => {
+        const key = acceptedKey(reference);
         const next = acceptedKeys.has(key)
-            ? accepted.filter((reference) => acceptedKey(reference) !== key)
-            : [...accepted, { kind: 'team_connection' as const, connectionId }];
+            ? accepted.filter((existing) => acceptedKey(existing) !== key)
+            : [...accepted, reference];
         beginDraft({ v: 1, mode: 'restricted', accepted: next });
     }, [accepted, acceptedKeys, beginDraft]);
 
@@ -430,7 +447,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                     title={t('teams.authentication.policy.connectionsSection')}
                     footer={restrictedWithoutReferences
                         ? t('teams.authentication.policy.connectionsEmpty')
-                        : t('teams.authentication.policy.homeMethodsUnavailable')}
+                        : t('teams.authentication.policy.acceptedHelp')}
                 >
                     {connections.map((connection) => {
                         const checked = acceptedKeys.has(`team_connection:${connection.id}`);
@@ -457,7 +474,29 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                                 accessibilityChecked={checked}
                                 disabled={!editable || (!connection.enabled && !checked)}
                                 onPress={editable && (connection.enabled || checked)
-                                    ? () => toggleConnection(connection.id)
+                                    ? () => toggleAccepted({ kind: 'team_connection', connectionId: connection.id })
+                                    : undefined}
+                                showChevron={false}
+                            />
+                        );
+                    })}
+                    {homeMethods.map((method) => {
+                        const checked = acceptedKeys.has(`home_method:${method.methodId.toLowerCase()}`);
+                        const owner = t('teams.authentication.policy.connectionOwnerHome');
+                        return (
+                            <Item
+                                key={`home_method:${method.methodId.toLowerCase()}`}
+                                testID={`team-authentication-policy-home-method:${method.methodId}`}
+                                title={method.displayName}
+                                subtitle={owner}
+                                accessibilityLabel={`${method.displayName}, ${owner}`}
+                                accessibilityRole="checkbox"
+                                webRole="checkbox"
+                                selected={checked}
+                                accessibilityChecked={checked}
+                                disabled={!editable || !homeMethodsCurrent}
+                                onPress={editable && homeMethodsCurrent
+                                    ? () => toggleAccepted({ kind: 'home_method', methodId: method.methodId })
                                     : undefined}
                                 showChevron={false}
                             />
@@ -473,7 +512,7 @@ export const TeamAuthenticationPolicySections = React.memo(function TeamAuthenti
                             showChevron={false}
                         />
                     ))}
-                    {connections.length === 0 ? (
+                    {connections.length === 0 && homeMethods.length === 0 ? (
                         <Item
                             testID="team-authentication-policy-connections-empty"
                             mode="info"

@@ -6,7 +6,9 @@ evaluator: which Sessions a member may read is Session access's decision, whethe
 decrypt one is key delivery's, and whether a Session is personally relevant is the personal
 state owner's. Team administration authorizes Team governance and nothing else.
 
-See also [Team membership, flat Groups, and Session-history horizons](teams-membership-and-groups.md),
+See also [Session collaboration: access, key delivery, personal state](session-collaboration.md)
+for the evaluator that answers those Session questions,
+[Team membership, flat Groups, and Session-history horizons](teams-membership-and-groups.md),
 [Team invitations and membership admission](teams-invitations.md), and
 [Enterprise identity](enterprise-identity.md) for managed identity providers, Team identity
 connections, and directory provisioning.

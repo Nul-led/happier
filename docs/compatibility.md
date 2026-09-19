@@ -194,6 +194,17 @@ is unavailable and cannot fall through to released owner/direct inference. Only
 true absence of `effectiveAccess` permits the released `share` translation; that
 translation never represents Team- or Group-only access.
 
+That rule has one implementation: `readSessionAccessProjectionRoleV1` in
+`packages/protocol/src/sessions/access/sessionEffectiveAccessV1.ts`, which maps a Session
+record to `owner`, `recipient`, or `unavailable`. It is representation normalization only
+and never decides authorization. A record with neither field is treated as released owner
+content when `metadataLayoutVersion` is absent or `0`, and as unavailable otherwise, so a
+newer layout a reader does not understand fails closed instead of being read as ownership.
+Persistence keeps the same separation the projection does: `SessionShare` is the direct
+grant table only, while `SessionTeamGrant` and `SessionGroupGrant` hold collective grants
+that a released reader never sees — see
+[session-collaboration.md](session-collaboration.md).
+
 The UI preserves the same distinction through hydration, access events, Voice,
 encryption migration/key resolution, and reconnect state. Its additive warm-cache
 field stores the current effective projection, or `null` for malformed-current
@@ -214,12 +225,12 @@ released branch passes the row it already loaded to that owner rather than
 projecting access itself.
 
 The prospective `../0.2` predecessor inspected at
-`939c6b4fdad19d573dba64b683eb58bda912fdb7` is dirty only in the relevant CLI/UI
+`ac30c50856abd2265c14459e77ee3384da1698ad` (branch `dev`, clean) in the relevant CLI/UI
 Session-detail consumers:
 `apps/cli/src/session/transport/http/sessionsHttp.ts`,
 `apps/ui/sources/sync/engine/sessions/sessionById.ts`, and
 `apps/ui/sources/sync/runtime/orchestration/serverScopedRpc/fetchSessionByIdWithServerScope.ts`.
-Those changes add Account/client encryption requirements without changing listing
+The committed Account/client encryption requirements do not change listing
 or access-projection behavior. The predecessor still has no `effectiveAccess`
 producer or consumer and no ephemeral Runner. Its `V2SessionRecordSchema` and
 `SessionSummarySchema` remain `.passthrough()`, so current additive projection
@@ -280,6 +291,15 @@ released V2 schedule projection. Definitions with multiple, disabled, or non-sch
 triggers are not representable by V2 and remain unavailable through that compatibility surface;
 the adapter never hides one trigger or invents a misleading schedule.
 
+Current servers advertise the additive `capabilities.automations.apiEpoch: 3` family independently
+of the Automation feature bit. Its absence means the released V2-only contract. Current UI and CLI
+clients keep representable one-shot definition reads, lifecycle mutations, assignment replacement,
+deletion, and manual run-now usable through the narrow V2 translation adapter. Operations that
+need current-only semantics—including managed Workflow admission—never downgrade or infer missing
+Run cause/private state; they fail only that operation with typed `update_required` details and
+leave unrelated Automation and Home operations usable. This negotiation adds neither a second
+feature gate nor a client-wide server-version floor.
+
 ### Workflow Session input admission (development)
 
 Workflow child prompts and direct final-result delivery use Session input admission
@@ -299,6 +319,11 @@ workflow snapshot used by origin-neutral Runs. Released V1 recipe and predecesso
 retain their existing claim and execution paths. Released V2 workers remain
 restricted to their predecessor byte discriminator and therefore fail closed
 for workflow Runs.
+
+The internal Workflow storage admission operation accepts only a direct origin,
+and its authenticated publisher Machine must equal the target Machine. An
+Automation occurrence never enters through that route: its canonical Automation
+transaction creates the parent and attaches the Workflow body there.
 
 The workflow caller requires the exact target Machine capability
 `sessionInputAdmission.protocolVersions: [1, 2]` before creating or mutating a
@@ -337,6 +362,8 @@ It never falls back to a suffixed or newly selected checkout. Because managed
 Workflow Runs remain development-only, this closed Action/availability addition
 updates the current protocol in place and establishes no released mixed-version
 compatibility adapter.
+
+Managed Workflow Runs are origin-neutral `WorkflowRun` rows driven from the frozen accepted snapshot; observed Claude activity snapshots remain presentation-only and never drive the coordinator. Schedule and occurrence admission freeze the reviewed definition plus applicable Artifact revision: later library or Automation edits affect only future admissions, never admitted Runs. Deploy the current server before current clients create Workflow rows. Once a Workflow parent or invocation row exists, rolling that database back to an old server is unsupported: current servers exclude Workflow recipes from old workers while an old server would not. Recovery is forward migration only; there is no reverse migration, dual write, Workflow compatibility mode, or rollback-only writer. Released clients remain supported against the current server through the incumbent V2 Automation projection for ordinary representable Automations.
 
 ### Workspace-sync handoff rollout
 
@@ -487,6 +514,24 @@ Runner manifest, token, activation, or socket shape is retained solely for
 unreleased 0.3 work. Existing Machines retain effective `persistent` kind.
 Shared V1 manifests for released non-Runner products remain readable without
 Runner archive metadata; those products neither emit nor interpret these fields.
+
+The `EphemeralRunnerActivation` table is a 0.3-only Home-owned record with no
+predecessor shape to read or write. Its strict V1 lifecycle advances one way —
+`pending → claimed → consented → materialized` — and every pre-materialization
+state can instead reach `closed` carrying one of `canceled`, `declined`,
+`expired`, `revoked`, or `failed`; each closing transition is conditioned on that
+pre-materialization set, so a materialized activation is never retroactively
+closed. `apps/server/sources/app/ephemeralRunner/activationLifecycle.ts` owns
+closure and erasure. Deleting the creator's draft closes that draft's
+pre-materialization activations in the same transaction as the draft tombstone,
+and Account erasure closes every remaining pre-materialization activation as
+`revoked` and then deletes only `closed` rows. A materialized activation is
+deliberately left to the Session deletion owner, which removes the row with its
+Session (`apps/server/sources/app/session/delete/deleteSessionTree.ts`), so an
+orphaned materialized row keeps blocking Account deletion instead of being
+hidden by a cascade. Nothing outside 0.3 reads this table, so rolling back to a
+build without the Runner contract leaves these rows unread rather than
+reinterpreted.
 
 The strict V1 activation-create request may carry the optional literal
 `authorizeUnattendedTeamAccess: true`. Omission is the safe compatibility shape:

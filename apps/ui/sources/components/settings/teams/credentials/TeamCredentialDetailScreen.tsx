@@ -54,8 +54,8 @@ import { useTeamCredentialExternalApiAvailability } from './useTeamCredentialExt
 function directMaterialStateLabel(state: NonNullable<ReturnType<typeof useTeamCredentialResourceView>['catalogResource']>['directMaterialState']): string {
     switch (state) {
         case 'current': return t('teams.credentials.directReadiness.state.ready');
-        case 'preparing':
-        case 'never_delivered': return t('teams.credentials.directReadiness.state.preparing');
+        case 'preparing': return t('teams.credentials.directReadiness.state.preparing');
+        case 'never_delivered': return t('teams.credentials.directReadiness.state.notDelivered');
         case 'stale': return t('teams.credentials.directReadiness.state.sourceChanged');
         case 'revoked': return t('teams.credentials.detail.notFound');
     }
@@ -403,7 +403,7 @@ const CredentialDetail = React.memo(function CredentialDetail(props: Readonly<{
                             ? undefined
                             : preparationPending === 0
                                 ? t('teams.credentials.directReadiness.allReady')
-                                : t('sessionAccess.preparationPending', { count: preparationPending })}
+                                : t('session.access.preparationPending', { count: preparationPending })}
                         loading={preparationBusy}
                         // The census registers its own approval too, so it
                         // shares the same unresolved-approval custody as Test.

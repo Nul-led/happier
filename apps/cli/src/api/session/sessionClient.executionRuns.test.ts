@@ -1,4 +1,9 @@
 import { createTestApiSessionClient } from '@/testkit/backends/createTestApiSessionClient';
+// The socket-stub factory is stateless and every mock below is reset per test,
+// so the registry never needed clearing. Calling vi.resetModules() in beforeEach
+// re-instantiated this file's module graph twenty times and exhausted an 8 GiB
+// heap before a single result was reported.
+import { createApiSessionSocketStub } from '@/testkit/backends/apiSessionSocketHarness';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { RpcHandlerManager } from '@/api/rpc/RpcHandlerManager';
@@ -131,8 +136,6 @@ describe('ApiSessionClient execution-run backend wiring', () => {
   }
 
   beforeEach(async () => {
-    vi.resetModules();
-    const { createApiSessionSocketStub } = await import('@/testkit/backends/apiSessionSocketHarness');
     sessionSocketStubState.sessionSocketStub = createApiSessionSocketStub({ id: 'session-socket', connected: true });
     sessionSocketStubState.userSocketStub = createApiSessionSocketStub({ id: 'user-socket', connected: false });
     sessionSocketStubState.executionRunHandlerContext = null;
@@ -1225,7 +1228,7 @@ describe('ApiSessionClient execution-run backend wiring', () => {
       dataEncryptionKey: null,
     });
 
-    sessionSocketStubState.sessionSocketStub = (await import('@/testkit/backends/apiSessionSocketHarness')).createApiSessionSocketStub({
+    sessionSocketStubState.sessionSocketStub = createApiSessionSocketStub({
       id: 'session-socket',
       connected: true,
       emitWithAck: async (event, payload) => {

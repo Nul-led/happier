@@ -213,8 +213,10 @@ describe('/scan/account', () => {
         const input = screen.findHostByTestId('restore-pairing-link-input');
         expect(input?.props.placeholder).toBe('connect.accountUrlPlaceholder');
         expect(input?.props.autoFocus).toBe(true);
-        expect(input?.props.accessibilityLabel).toBe('connect.enterUrlManually');
+        // The screen title keeps the entry intent; the field owns its own name.
+        expect(input?.props.accessibilityLabel).toBe('connect.pairingLinkFieldLabel');
         expect(screen.getTextContent()).toContain('connect.enterUrlManually');
+        expect(screen.getTextContent()).toContain('connect.pairingLinkFieldLabel');
         expect(screen.findByTestId('restore-pairing-link-submit').props.title).toBe('common.continue');
     });
 

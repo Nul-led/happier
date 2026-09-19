@@ -26,8 +26,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
         installationId: 'installation-1',
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(machineContentKey),
       },
-      accountSigningPublicKey: account.publicKey,
-      accountSigningSecretKey: account.secretKey,
+      activationSigningSecretKey: account.secretKey,
     });
     const expected = {
       homeServerIdentityId: 'home-1',
@@ -38,7 +37,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
       installationId: 'installation-1',
       launchManifestCommitment,
       reviewedMachineContentKeyBinding: binding,
-      accountSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
+      activationSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
     };
 
     expect(openVerifiedRunnerRuntimeBootstrap({
@@ -144,8 +143,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
         installationId: 'installation-1',
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(machineContentKey),
       },
-      accountSigningPublicKey: account.publicKey,
-      accountSigningSecretKey: account.secretKey,
+      activationSigningSecretKey: account.secretKey,
     });
 
     expect(() => openVerifiedRunnerRuntimeBootstrap({
@@ -175,7 +173,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
         installationId: 'installation-1',
         launchManifestCommitment,
         reviewedMachineContentKeyBinding: binding,
-        accountSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
+        activationSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
       },
     })).toThrow('runner_runtime_bootstrap_binding_invalid');
   });
@@ -195,16 +193,14 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
     };
     const bootstrapBinding = signRunnerMachineContentKeyBindingV1({
       payload,
-      accountSigningPublicKey: account.publicKey,
-      accountSigningSecretKey: account.secretKey,
+      activationSigningSecretKey: account.secretKey,
     });
     const reviewedBinding = signRunnerMachineContentKeyBindingV1({
       payload: {
         ...payload,
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(new Uint8Array(32).fill(18)),
       },
-      accountSigningPublicKey: account.publicKey,
-      accountSigningSecretKey: account.secretKey,
+      activationSigningSecretKey: account.secretKey,
     });
     const launchManifestCommitment = encodeBase64(new Uint8Array(32).fill(3), 'base64url');
 
@@ -231,7 +227,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
         installationId: payload.installationId,
         launchManifestCommitment,
         reviewedMachineContentKeyBinding: reviewedBinding,
-        accountSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
+        activationSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
       },
     })).toThrow('runner_runtime_bootstrap_binding_invalid');
   });
@@ -252,8 +248,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
         installationId: 'installation-1',
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(machineContentKey),
       },
-      accountSigningPublicKey: account.publicKey,
-      accountSigningSecretKey: account.secretKey,
+      activationSigningSecretKey: account.secretKey,
     });
     const verificationFailure = new Error('verification_interrupted');
     const fillSpy = vi.spyOn(Uint8Array.prototype, 'fill');
@@ -294,7 +289,7 @@ describe('openVerifiedRunnerRuntimeBootstrap', () => {
           installationId: 'installation-1',
           launchManifestCommitment,
           reviewedMachineContentKeyBinding: binding,
-          accountSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
+          activationSigningPublicKeyBase64Url: encodeBase64(account.publicKey, 'base64url'),
         },
       })).toThrow(verificationFailure);
       expect(fillSpy).toHaveBeenCalledWith(0);

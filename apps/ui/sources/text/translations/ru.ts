@@ -677,7 +677,7 @@ function plural({
  */
 export const ru = {
     actionConfirmations: actionConfirmationTranslations.ru,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ru, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ru.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ru, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ru.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ru.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Завершить подготовленную загрузку',
@@ -690,7 +690,7 @@ export const ru = {
     voice: voiceReadinessTranslations.ru,
     pluginPermissions: pluginPermissionTranslations.ru,
     sessionBoard: sessionBoardTranslations.ru,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.ru,
     ...changedFileEvidenceTranslations.ru,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.ru,
     pluginSurfaces: {
@@ -1645,6 +1645,8 @@ export const ru = {
     securingCredentials: "Защита учётных данных…",
     showQrInstead: "Показать QR‑код вместо этого",
     addPhoneQrInstructions: "Отсканируйте этот QR‑код в мобильном приложении Happier, чтобы войти на телефоне.",
+    addPhoneChooseHomeTitle: "Выберите Home",
+    addPhoneChooseHomeFooter: "Добавленный телефон получит доступ к выбранному здесь Home. Ваш активный Home не изменится.",
     serverUrlNotEmbeddedTitle: "Настройте сервер на телефоне",
     serverUrlNotEmbeddedBody:
       "Этот QR‑код не может включать адрес сервера, потому что он настроен на localhost. На телефоне откройте Настройки → Серверы и добавьте URL, доступный с телефона (LAN IP или Tailscale), затем отсканируйте снова.",
@@ -1656,9 +1658,12 @@ export const ru = {
     expiresAtLabel: "Истекает",
     showPairingLink: "Показать ссылку для подключения",
     pairingLinkSecurityWarning: "Любой, у кого есть эта временная ссылка, может добавить устройство до её истечения. Делитесь ею только со своим устройством.",
+    pairingLinkFieldLabel: "Ссылка для связывания",
+    pairingLinkRequired: "Вставьте ссылку для связывания, показанную на другом устройстве.",
     pairingQrTooLargeTitle: "Не помещается в QR-код",
     pairingQrTooLargeBody: "Это приглашение содержит дополнительные сведения о подключении и не может быть показано как QR-код. Ваш Home по-прежнему готов к сопряжению — используйте безопасную ссылку ниже.",
     homeAddedPreservedFocusBody: "Этот Home добавлен. Выбранный Home не изменился.",
+    homeSavedOpenFailedBody: "Этот Home сохранён, но открыть его не удалось. Попробуйте ещё раз, чтобы переключиться на него.",
     requesterDeviceAddedBody: "Запрашивающее устройство добавлено в этот Home.",
     requestingDeviceLabel: "Запрашивающее устройство",
     thisDevice: "Это устройство",
@@ -5627,6 +5632,15 @@ export const ru = {
             workspaceChoose: 'Папку выбирают они',
             workspaceHome: 'Их домашняя папка',
         },
+        workspace: {
+            title: 'Начальная папка',
+            chooseRecommended: 'Рекомендуется · папку выберут при подключении пакета',
+            homeDetail: 'Запуск в домашней папке того, кто запустит пакет',
+        },
+        otherDevice: {
+            guidance: 'Этот пакет сохранён на устройстве, где он создан. Продолжите на нём или отмените запрос и создайте новый пакет здесь.',
+            createdOn: ({ device }: { device: string }) => `Создано на ${device}`,
+        },
         endpointFacts: {
             unreadable: 'Это устройство не может прочитать данные, отправленные тем компьютером.',
         },
@@ -6009,8 +6023,9 @@ export const ru = {
         automationRunEvents: "События запусков автоматизаций",
     },
     multiServerView: {
-      title: "Параллельный просмотр нескольких Homes",
-      footer: "Выберите, объединять ли несколько Homes в одном списке сессий.",
+      editMembersAction: "Изменить Homes в этой группе",
+      title: "Homes в этом представлении",
+      footer: "Выберите, как эти Homes отображаются в списке сессий и какие из них входят в эту группу.",
       presentationTitle: "Режим отображения",
       presentation: {
         flatWithBadges: "Плоский список с бейджами Home",
@@ -11651,7 +11666,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `С ${accountService} пока не связано ни одного Home. Свяжите Home, затем обновите.` : 'С этой учётной записью пока не связано ни одного Home. Свяжите Home, затем обновите.',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'Сделать этот Home доступным на других ваших устройствах',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Разрешите ${accountService} помочь другим вашим устройствам найти этот Home и запросить доступ.` : 'Разрешите своей учётной записи помочь другим вашим устройствам найти этот Home и запросить доступ.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -12149,6 +12164,7 @@ settingsSession: {
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Не удаётся подключиться к ${serverUrl}. Повторите попытку или выберите другую службу входа.`,
     signInServiceUnsupportedTitle: "Служба входа не поддерживается",
     signInServiceMethodlessTitle: "Здесь нет доступных способов входа",
+    signInServiceMethodlessBody: "Служба доступна, но сейчас не предлагает ни одного способа входа. Повторите попытку или выберите другую службу.",
     signInOptionsPartialTitle: "Не удалось загрузить некоторые способы входа",
     signInServiceUnsupportedBody: "Этот адрес относится к Home или не поддерживает вход в аккаунт. Выберите другую службу.",
     useDifferentHome: "Использовать другой Home",
@@ -13935,6 +13951,15 @@ settingsSession: {
             useExistingDetail: 'Проверьте доступ и защитите регистрацию, не меняя выбранный Дом.',
             useAnother: 'Использовать другой Дом',
             useAnotherDetail: 'Оставьте этот локальный Дом без изменений и выберите один из своих Домов.',
+            blocked: {
+                runtime_unhealthy: 'Вашему локальному Home требуется внимание, прежде чем он сможет запуститься.',
+                home_auth_invalid: 'Аутентификация Home требует внимания.',
+                existing_runtime: 'Существующий локальный Home требует выбора, прежде чем настройка продолжится.',
+                personal_home_erased: 'Ваш Personal Home удалён. Повторите попытку, чтобы создать новый.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Данные вашего Home удалены. Восстанавливать здесь нечего — создайте новый Personal Home или используйте другой Home.',
+            },
         },
     },
     settingsSearch: {

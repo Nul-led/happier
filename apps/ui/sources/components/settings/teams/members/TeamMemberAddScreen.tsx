@@ -303,7 +303,7 @@ const AddMemberForm = React.memo(function AddMemberForm(props: Readonly<{ contex
                 >
                     <Item
                         testID="team-member-add-history:from_membership"
-                        title={t('teams.history.fromMembership')}
+                        title={t('teams.history.fromMembershipNamed', { name: context.team.name })}
                         selected={historyAccess === 'from_membership'}
                         accessibilityRole="radio"
                         webRole="radio"
@@ -313,7 +313,7 @@ const AddMemberForm = React.memo(function AddMemberForm(props: Readonly<{ contex
                     />
                     <Item
                         testID="team-member-add-history:all_existing"
-                        title={t('teams.history.allExisting')}
+                        title={t('teams.history.allExistingNamed', { name: context.team.name })}
                         selected={historyAccess === 'all_existing'}
                         accessibilityRole="radio"
                         webRole="radio"

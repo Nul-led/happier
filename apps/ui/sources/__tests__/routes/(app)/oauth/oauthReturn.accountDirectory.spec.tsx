@@ -74,6 +74,18 @@ describe('Account Directory callback route contraction', () => {
         expect(fixture.state.calls.map(({ path }) => path)).toEqual(['/v1/features', '/v1/auth/external/github/finalize-keyless']);
     });
 
+    it('renders the Home-named refusal it classified instead of one generic failure', async () => {
+        fixture.state.exchangeStatus = 403;
+        fixture.state.exchangeError = 'account-disabled';
+
+        screen = await renderScreen(<AuthProvider initialCredentials={null}><OAuthReturn /></AuthProvider>);
+
+        await vi.waitFor(() => expect(screen!.findByTestId('oauth-account-directory-failure')).toBeTruthy());
+        expect(screen.getTextContent()).toContain('This account is disabled');
+        expect(screen.getTextContent()).not.toContain('Operation failed');
+        expect(navigation.replace).not.toHaveBeenCalled();
+    });
+
     it('rejects callback identity tampering without issuing a restricted credential', async () => {
         navigation.params.endpointServerIdentityId = 'srv_attacker';
         screen = await renderScreen(<AuthProvider initialCredentials={null}><OAuthReturn /></AuthProvider>);

@@ -1,4 +1,5 @@
 import * as React from 'react';
+import type { TeamIdentityConnectionV1 } from '@happier-dev/protocol/teams';
 import { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +7,18 @@ import { createDeferred, renderScreen, standardCleanup } from '@/dev/testkit';
 import { t } from '@/text';
 
 const executeMock = vi.hoisted(() => vi.fn());
+const executeBindingMock = vi.hoisted(() => vi.fn());
+const announceMock = vi.hoisted(() => vi.fn());
+const groupBindingRowsMock = vi.hoisted(() => ({
+    current: [] as Array<Readonly<{
+        id: string;
+        externalGroupId: string;
+        target: Readonly<{ teamGroupId: string; name: string; archivedAt: number | null }>;
+    }>>,
+}));
+const nativeGroupsMock = vi.hoisted(() => ({
+    current: [] as Array<Readonly<{ id: string; name: string; memberCount: number }>>,
+}));
 const refreshMock = vi.hoisted(() => vi.fn());
 const routerReplaceMock = vi.hoisted(() => vi.fn());
 const routerPushMock = vi.hoisted(() => vi.fn());
@@ -40,7 +53,10 @@ const identityStateMock = vi.hoisted(() => ({
             lastSuccessfulTest: null,
             createdAt: 1,
             updatedAt: 1,
-        }],
+            // The canonical union, not the first fixture's literal kind: cases
+            // below legitimately replace this row with a GitHub or WorkOS
+            // connection, which a narrowed `'oidc'` literal type forbids.
+        }] as TeamIdentityConnectionV1[],
     },
     publish() {
         this.version += 1;
@@ -84,7 +100,20 @@ vi.mock('./TeamAuthenticationSettingsScreen', () => ({ connectionStateLabel: (va
 vi.mock('./identityAdministrationClient', () => ({
     createIdentityAdministrationClient: () => ({
         execute: executeMock,
-        executeExternalGroupBinding: async () => ({ ok: true, value: { items: [], nextCursor: null } }),
+        executeExternalGroupBinding: executeBindingMock,
+    }),
+}));
+vi.mock('@/components/ui/accessibility/announceAccessibilityMessage', () => ({
+    announceAccessibilityMessage: announceMock,
+}));
+vi.mock('@/hooks/teams/useTeamGroups', () => ({
+    useTeamGroups: () => ({
+        rows: nativeGroupsMock.current,
+        status: 'ready',
+        hasMore: false,
+        error: null,
+        reload: vi.fn(),
+        loadMore: vi.fn(),
     }),
 }));
 vi.mock('./useIdentityAdministration', async () => {
@@ -116,6 +145,13 @@ import { IdentityConnectionDetailScreen } from './IdentityConnectionDetailScreen
 beforeEach(() => {
     standardCleanup();
     executeMock.mockReset();
+    groupBindingRowsMock.current = [];
+    nativeGroupsMock.current = [];
+    announceMock.mockReset();
+    executeBindingMock.mockReset();
+    executeBindingMock.mockImplementation(async (actionId: string) => actionId === 'teams.externalGroupBindings.list'
+        ? { ok: true, value: { items: groupBindingRowsMock.current, nextCursor: null } }
+        : { ok: true, value: { v: 1, outcome: 'removed' } });
     refreshMock.mockReset();
     routerReplaceMock.mockReset();
     routerPushMock.mockReset();
@@ -146,7 +182,10 @@ beforeEach(() => {
             lastSuccessfulTest: null,
             createdAt: 1,
             updatedAt: 1,
-        }],
+            // The canonical union, not the first fixture's literal kind: cases
+            // below legitimately replace this row with a GitHub or WorkOS
+            // connection, which a narrowed `'oidc'` literal type forbids.
+        }] as TeamIdentityConnectionV1[],
     };
 });
 
@@ -170,9 +209,9 @@ describe('IdentityConnectionDetailScreen test return', () => {
         identityStateMock.current.items[0] = {
             ...identityStateMock.current.items[0]!,
             provider: { id: 'provider-github', kind: 'github_app_identity', displayName: 'GitHub' },
-            externalReference: { v: 1, kind: 'github_app_identity', githubAppRegistrationId: 'registration-1' },
+            externalReference: { v: 1, kind: 'github_app_identity', installationId: 'installation-1' },
             settings: { v: 1, kind: 'github_app_identity', organizationLogin: 'example' },
-            lastObservation: { v: 1, kind: 'github_app_identity', organizationId: 'organization-1' },
+            lastObservation: { v: 1, kind: 'github_app_identity' },
         };
         await act(async () => identityStateMock.publish());
 
@@ -714,6 +753,104 @@ describe('IdentityConnectionDetailScreen test return', () => {
 
         expect(routerPushMock).toHaveBeenCalledWith(
             '/settings/teams/home-1/team-1/authentication/connection-1/edit?providerId=provider-1',
+        );
+    });
+
+    it('makes a WorkOS candidate choice an announced, confirmed selection rather than one silent tap', async () => {
+        // Choosing a candidate permanently fixes the provider namespace for
+        // every future identity under this binding, and the list appears far
+        // from the control that was pressed.
+        identityStateMock.current.items[0] = {
+            ...identityStateMock.current.items[0]!,
+            provider: { id: 'provider-1', kind: 'workos_sso', displayName: 'WorkOS' },
+            externalReference: { v: 1, kind: 'workos_sso', organizationId: 'organization-1', connectionId: null },
+            allowedActions: ['teams.identity.workos.reconcile'],
+        };
+        executeMock.mockResolvedValue({
+            ok: true,
+            value: {
+                v: 1,
+                outcome: 'selection_required',
+                candidates: [
+                    { connectionId: 'workos-connection-a', displayName: 'Acme SAML', strategy: 'saml', status: 'active' },
+                    { connectionId: 'workos-connection-b', displayName: 'Acme OIDC', strategy: 'oidc', status: 'inactive' },
+                ],
+            },
+        });
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.confirm).mockClear();
+        vi.mocked(Modal.confirm).mockResolvedValue(false);
+        const screen = await renderScreen(<IdentityConnectionDetailScreen
+            serverId="home-1"
+            teamId="team-1"
+            connectionId="connection-1"
+        />);
+
+        await screen.pressByTestIdAsync('team-identity-workos-reconcile');
+
+        expect(announceMock).toHaveBeenCalledWith(t('identityAdministration.workosChooseConnection'));
+        const candidate = screen.findByTestId('identity-workos-candidate:workos-connection-a');
+        expect(candidate?.props.accessibilityRole).toBe('radio');
+        expect(candidate?.props.accessibilityChecked).toBe(false);
+
+        executeMock.mockClear();
+        await screen.pressByTestIdAsync('identity-workos-candidate:workos-connection-a');
+
+        expect(Modal.confirm).toHaveBeenCalledWith(
+            t('identityAdministration.workosChooseConnection'),
+            ['Acme SAML', `${t('identityAdministration.workosStrategySaml')} \u00b7 ${t('identityAdministration.active')}`].join('\n'),
+            expect.any(Object),
+        );
+        expect(executeMock).not.toHaveBeenCalled();
+    });
+
+    it('names the target Team Group and the people a Group mapping moves before asking to confirm', async () => {
+        // The external Group id alone never said where those people were about
+        // to land, or how many of them there are. Both facts are already on the
+        // rows behind the confirmation.
+        groupBindingRowsMock.current = [{
+            id: 'binding-1',
+            externalGroupId: 'external-engineering',
+            target: { teamGroupId: 'team-group-opaque-id', name: 'Platform Engineering', archivedAt: null },
+        }];
+        nativeGroupsMock.current = [{ id: 'team-group-opaque-id', name: 'Platform Engineering', memberCount: 12 }];
+        const { Modal } = await import('@/modal');
+        vi.mocked(Modal.confirm).mockClear();
+        // Declining keeps this test on the confirmation contract: what the
+        // person is told before anything is written.
+        vi.mocked(Modal.confirm).mockResolvedValue(false);
+        const screen = await renderScreen(<IdentityConnectionDetailScreen
+            serverId="home-1"
+            teamId="team-1"
+            connectionId="connection-1"
+        />);
+
+        await screen.pressByTestIdAsync('identity-group-binding:binding-1');
+
+        expect(Modal.confirm).toHaveBeenCalledWith(
+            t('identityAdministration.removeMapping'),
+            ['external-engineering',
+                `${t('identityAdministration.mappedTo')}: Platform Engineering`,
+                t('teams.groups.memberCount', { count: 12 })].join('\n'),
+            expect.objectContaining({ destructive: true }),
+        );
+
+        vi.mocked(Modal.confirm).mockClear();
+        screen.changeTextByTestId('identity-external-group-id', 'external-design');
+        await screen.pressByTestIdAsync('identity-group-map-existing');
+        await screen.pressByTestIdAsync('identity-group-native-target:team-group-opaque-id');
+
+        expect(Modal.confirm).toHaveBeenCalledWith(
+            t('identityAdministration.chooseGroup'),
+            ['external-design',
+                `${t('identityAdministration.mappedTo')}: Platform Engineering`,
+                t('teams.groups.memberCount', { count: 12 })].join('\n'),
+            expect.any(Object),
+        );
+        expect(executeBindingMock).not.toHaveBeenCalledWith(
+            'teams.externalGroupBindings.set',
+            expect.anything(),
+            expect.anything(),
         );
     });
 });

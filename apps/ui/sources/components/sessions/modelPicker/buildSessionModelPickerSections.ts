@@ -13,6 +13,8 @@ import { presentProviderError } from '@/providers/connection/errorPresentation';
 import { presentProviderModelRow } from '@/providers/models/presentProviderModelRow';
 import { t } from '@/text';
 import {
+    formatLimitResetUtc,
+    limitMetricLabel,
     teamCredentialRecoveryLabel,
     teamCredentialRecoveryPresentation,
 } from '@/components/settings/teams/credentials/teamCredentialPresentation';
@@ -68,7 +70,13 @@ function teamCredentialUnavailableReason(resource: TeamCredentialResourceCatalog
         case 'source_unavailable': return t('teams.credentials.errors.sourceMissing');
         case 'update_required': return t('teams.unavailable.updateRequired');
         case 'policy_denied': return t('teams.credentials.forbidden');
-        case 'limit_reached': return t('teams.credentials.limits.reached');
+        // The Home already resolved which allowance closed and when it reopens;
+        // the picker is where the member decides what to do about it.
+        case 'limit_reached': return [
+            t('teams.credentials.limits.reached'),
+            limitMetricLabel(resource.readiness.metric),
+            formatLimitResetUtc(resource.readiness.resetsAtUtc),
+        ].filter((part): part is string => Boolean(part)).join(' · ');
         case 'resource_corrupt':
         case 'resource_unavailable':
             return t('teams.credentials.detail.notFound');

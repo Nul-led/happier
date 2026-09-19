@@ -24,6 +24,14 @@ export const WelcomeActionCard = React.memo(function WelcomeActionCard(props: Re
      * action: it stays operable and runs immediately.
      */
     escape?: boolean;
+    /**
+     * This card is one option in a selection, not a command. A caller that owns
+     * a group of mutually exclusive choices says so here, and the card is then
+     * announced with its checked state instead of as one more button that
+     * happens to look primary.
+     */
+    selectionRole?: 'radio';
+    selected?: boolean;
     onPress: () => Promise<void> | void;
 }>) {
     const { theme } = useUnistyles();
@@ -40,7 +48,10 @@ export const WelcomeActionCard = React.memo(function WelcomeActionCard(props: Re
     return (
         <HappierPressable
             testID={props.testID}
-            accessibilityRole="button"
+            accessibilityRole={props.selectionRole ?? 'button'}
+            {...(props.selectionRole
+                ? { checked: props.selected === true, selected: props.selected === true }
+                : {})}
             accessibilityLabel={props.title}
             accessibilityHint={props.subtitle}
             describedById={subtitleId}

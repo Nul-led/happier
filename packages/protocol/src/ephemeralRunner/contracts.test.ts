@@ -30,8 +30,7 @@ describe('Runner authority contracts', () => {
         installationId: 'installation',
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(new Uint8Array(32).fill(4)),
       },
-      accountSigningPublicKey: signing.publicKey,
-      accountSigningSecretKey: signing.secretKey,
+      activationSigningSecretKey: signing.secretKey,
     });
     expect(RunnerMachineMaterializationInputV1Schema.safeParse({
       metadata: encodePlainMachineStoredContent({ host: 'runner.test' }),
@@ -74,8 +73,7 @@ describe('Runner authority contracts', () => {
     };
     const binding = signRunnerMachineContentKeyBindingV1({
       payload,
-      accountSigningPublicKey: signing.publicKey,
-      accountSigningSecretKey: signing.secretKey,
+      activationSigningSecretKey: signing.secretKey,
     });
     const expectedKey = encodeBase64(signing.publicKey, 'base64url');
     expect(payload.machineContentKeyFingerprint).toBe(

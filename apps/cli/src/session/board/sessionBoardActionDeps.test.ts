@@ -360,11 +360,20 @@ describe('CLI Board Action family', () => {
       await expect(deps.sessionBoardAction!({ actionId: 'session.board.item.upsert', context, input })).resolves.toMatchObject({ result: { outcome: 'created' } });
       available = false;
       await expect(deps.sessionBoardAction!({ actionId: 'session.board.item.upsert', context, input })).resolves.toMatchObject({ errorCode: 'unsupported_action' });
+      // A renderer this Machine cannot run and a surface this Machine does not
+      // declare are different refusals: the first is genuinely unsupported here,
+      // the second names an invalid Board item the author can correct.
+      available = true;
+      await expect(deps.sessionBoardAction!({ actionId: 'session.board.item.upsert', context, input: {
+        ...input,
+        item: { ...item, source: { kind: 'installedSurface', surface: { pluginId: 'acme.widgets', localId: 'absent' } } },
+      } })).resolves.toMatchObject({ errorCode: 'session_board_invalid' });
       expect(writes).toBe(1);
-      // Both attempts authorize against current Session detail. Only the accepted
+      // Every attempt authorizes against current Session detail. Only the accepted
       // installed-surface write performs the second ownership-currentness read;
-      // the disabled projection is rejected before any write can need it.
-      expect(sessionQueries).toEqual(Array.from({ length: 3 }, () => ({ accessProjectionVersion: '1' })));
+      // the disabled projection and the undeclared surface are rejected before any
+      // write can need it.
+      expect(sessionQueries).toEqual(Array.from({ length: 4 }, () => ({ accessProjectionVersion: '1' })));
     } finally { rawSession.metadata = previousMetadata; }
   });
   it('updates a stored installed item while refusing a different surface identity', async () => {

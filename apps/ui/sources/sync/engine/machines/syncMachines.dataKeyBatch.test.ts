@@ -90,6 +90,31 @@ async function loadFetchAndApplyMachines() {
     return mod.fetchAndApplyMachines;
 }
 
+/**
+ * Seeds the creator-local activation verifier for a Runner Machine, exactly as
+ * the creating device retains it when it publishes the Machine-content-key
+ * proof. Every other device resolves no verifier and the Runner stays locked.
+ */
+async function seedCreatorRunnerTrust(input: Readonly<{
+    machineId: string;
+    activationId: string;
+    activationSigningPublicKey: string;
+}>): Promise<void> {
+    const values = new Map<string, string>();
+    vi.stubGlobal('window', { localStorage: {
+        getItem: (key: string) => values.get(key) ?? null,
+        setItem: (key: string, value: string) => { values.set(key, value); },
+        removeItem: (key: string) => { values.delete(key); },
+    } });
+    const trust = await import('@/sync/domains/ephemeralRunner/runnerCreatorMachineContentKeyTrust');
+    await trust.retainRunnerCreatorMachineContentKeyTrust({
+        scope: { homeServerIdentityId: 'home-1', creatorAccountId: 'account-1' },
+        machineId: input.machineId,
+        activationId: input.activationId,
+        activationSigningPublicKey: input.activationSigningPublicKey,
+    });
+}
+
 describe('fetchAndApplyMachines machine data-key unwrapping', () => {
     it('admits a Runner key only after its creator proof matches the exact row', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
@@ -107,8 +132,12 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
                 installationId: 'installation-1',
                 machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
             },
-            accountSigningPublicKey: signing.publicKey,
-            accountSigningSecretKey: signing.secretKey,
+            activationSigningSecretKey: signing.secretKey,
+        });
+        await seedCreatorRunnerTrust({
+            machineId: 'runner-1',
+            activationId: '11111111-1111-4111-8111-111111111111',
+            activationSigningPublicKey: encodeBase64(signing.publicKey, 'base64url'),
         });
         const runner = {
             ...machineRow('runner-1', 'runner-envelope'),
@@ -147,7 +176,7 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         expect(initializeMachines.mock.calls[1]?.[1]).toEqual(new Set(['runner-1']));
     });
 
-    it('keeps a DataKey Runner locked without independent creator signing authority', async () => {
+    it('keeps a Runner locked on a device without creator activation custody', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const signing = tweetnacl.sign.keyPair();
         const dataKey = new Uint8Array(32).fill(19);
@@ -163,8 +192,7 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
                 installationId: 'installation-1',
                 machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(dataKey),
             },
-            accountSigningPublicKey: signing.publicKey,
-            accountSigningSecretKey: signing.secretKey,
+            activationSigningSecretKey: signing.secretKey,
         });
         const initializeMachines = vi.fn(async (
             _keys: Map<string, Uint8Array | null>,

@@ -71,12 +71,21 @@ export type ProviderBrokerApplicationFailureBodyV1 = Readonly<{
     error: Readonly<{
         type: 'permission_error';
         code: ProviderBrokerApplicationFailure['reasonCode'];
+        /**
+         * The resource the recipient selected for this Session. It is already
+         * theirs to see in the picker, and it is what lets the Session runtime
+         * attribute the refusal to one shared credential instead of the Agent.
+         */
+        resourceId?: string;
         message: string;
         usageLimit?: TeamCredentialUsageLimitDenialV1;
     }>;
 }>;
 
-function providerBrokerApplicationFailureBody(response: ProviderBrokerApplicationFailure): ProviderBrokerApplicationFailureBodyV1 {
+function providerBrokerApplicationFailureBody(
+    response: ProviderBrokerApplicationFailure,
+    resourceId: string | undefined,
+): ProviderBrokerApplicationFailureBodyV1 {
     const usageLimit = response.reasonCode === 'team_credential_usage_limit' ? response.usageLimit : undefined;
     const message = usageLimit
         ? `Happier refused this request: the shared credential's ${usageLimit.metric} limit is reached `
@@ -87,6 +96,7 @@ function providerBrokerApplicationFailureBody(response: ProviderBrokerApplicatio
         error: {
             type: 'permission_error',
             code: response.reasonCode,
+            ...(resourceId ? { resourceId } : {}),
             message,
             ...(usageLimit ? { usageLimit } : {}),
         },
@@ -96,6 +106,7 @@ function providerBrokerApplicationFailureBody(response: ProviderBrokerApplicatio
 export function writeProviderBrokerApplicationFailure(
     reply: ProviderBrokerApplicationFailureReply,
     response: ProviderBrokerApplicationFailure,
+    resourceId?: string,
 ) {
     reply.header(PROVIDER_BROKER_APPLICATION_ERROR_CODE_HEADER, response.reasonCode);
     if (response.reasonCode === 'team_credential_usage_limit' && response.usageLimit) {
@@ -104,7 +115,7 @@ export function writeProviderBrokerApplicationFailure(
         reply.header(PROVIDER_BROKER_APPLICATION_LIMIT_RESETS_AT_HEADER, response.usageLimit.resetsAtUtc);
     }
     reply.header('content-type', 'application/json');
-    return reply.code(403).send(providerBrokerApplicationFailureBody(response));
+    return reply.code(403).send(providerBrokerApplicationFailureBody(response, resourceId));
 }
 
 function loopbackPort(app: FastifyInstance): number {
@@ -132,9 +143,16 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
         reply: FastifyReply,
         response: Awaited<ReturnType<ProviderBrokerRequestHandler>>,
         requestSignal: AbortSignal,
+        context?: ProviderBrokerAuthenticatedStreamContext,
     ) => {
         if (!response.ok) {
-            return writeProviderBrokerApplicationFailure(reply, response);
+            return writeProviderBrokerApplicationFailure(
+                reply,
+                response,
+                // Only the private stream has a recipient Session to attribute
+                // the refusal to; the external carrier answers an API key.
+                context && context.kind !== 'external' ? context.expected.resourceId : undefined,
+            );
         }
         for (const [name, value] of Object.entries(response.response.headers)) {
             if (!RESPONSE_HOP_BY_HOP_HEADERS.has(name.toLowerCase())) reply.header(name, value);
@@ -228,7 +246,7 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
                     signal: controller.signal,
                 },
             });
-            return await sendResponse(reply, result, controller.signal);
+            return await sendResponse(reply, result, controller.signal, context);
         },
     });
 

@@ -71,6 +71,10 @@ describe('session transcript RPC handlers', () => {
       context: {
         ...('sessionId' in input ? { defaultSessionId: input.sessionId } : {}),
         surface: 'rpc',
+        // dispatchActionFromRpc stamps the RPC surface's authority on every
+        // context it builds (_actionDispatchAdapter.ts:73); a registrar that
+        // narrows it passes its own through params.authority.
+        authority: 'account_automation',
       },
     })));
   });

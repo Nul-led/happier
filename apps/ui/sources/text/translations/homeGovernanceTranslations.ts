@@ -88,7 +88,7 @@ const en = {
     roleMemberDescription: 'No Home administration authority.',
 
     disableTitle: ({ account }: { account: string }) => `Disable ${account}?`,
-    disableBody: 'They will be signed out on every device and their machines will disconnect. Personal access tokens are permanently revoked, and Session responsibility is cleared. Team membership and encryption keys are kept, and you can re-enable them later.',
+    disableBody: 'They will be signed out on every device and their machines will disconnect. Personal access tokens are permanently revoked, Session responsibility is cleared, and on every Session they lose access to their unsent drafts are discarded and their Follow is removed. Re-enabling restores access but not those drafts, Follow or responsibility. Team membership and encryption keys are kept.',
     disableConfirm: 'Disable',
     enableTitle: ({ account }: { account: string }) => `Re-enable ${account}?`,
     enableBody: 'They can sign in again on their devices. Previously revoked access tokens stay revoked.',
@@ -248,7 +248,7 @@ const de: typeof en = {
     roleMemberDescription: 'Keine Berechtigung zur Home-Verwaltung.',
 
     disableTitle: ({ account }: { account: string }) => `${account} deaktivieren?`,
-    disableBody: 'Die Person wird auf allen Geräten abgemeldet und ihre Maschinen trennen die Verbindung. Persönliche Zugriffstoken werden dauerhaft widerrufen und die Session-Verantwortung wird aufgehoben. Team-Mitgliedschaft und Schlüssel bleiben erhalten, und du kannst sie später wieder aktivieren.',
+    disableBody: 'Die Person wird auf allen Geräten abgemeldet und ihre Maschinen trennen die Verbindung. Persönliche Zugriffstoken werden dauerhaft widerrufen, die Session-Verantwortung wird aufgehoben, und in jeder Session, auf die sie den Zugriff verliert, werden ihre ungesendeten Entwürfe verworfen und ihr Folgen entfernt. Beim Wiederaktivieren kehrt der Zugriff zurück, nicht aber diese Entwürfe, das Folgen oder die Verantwortung. Team-Mitgliedschaft und Schlüssel bleiben erhalten.',
     disableConfirm: 'Deaktivieren',
     enableTitle: ({ account }: { account: string }) => `${account} wieder aktivieren?`,
     enableBody: 'Die Person kann sich auf ihren Geräten wieder anmelden. Zuvor entzogene Zugriffstoken bleiben entzogen.',
@@ -408,7 +408,7 @@ const es: typeof en = {
     roleMemberDescription: 'Sin autoridad de administración del Home.',
 
     disableTitle: ({ account }: { account: string }) => `¿Deshabilitar a ${account}?`,
-    disableBody: 'Se cerrará su sesión en todos los dispositivos y sus máquinas se desconectarán. Los tokens de acceso personal se revocan permanentemente y se elimina la responsabilidad de las sesiones. Se conservan la pertenencia a equipos y las claves de cifrado, y podrás volver a habilitar la cuenta más tarde.',
+    disableBody: 'Se cerrará su sesión en todos los dispositivos y sus máquinas se desconectarán. Los tokens de acceso personal se revocan permanentemente, se elimina la responsabilidad de las sesiones y, en cada sesión a la que pierda acceso, se descartan sus borradores sin enviar y se elimina su seguimiento. Al volver a habilitar la cuenta se recupera el acceso, pero no esos borradores, el seguimiento ni la responsabilidad. Se conservan la pertenencia a equipos y las claves de cifrado.',
     disableConfirm: 'Deshabilitar',
     enableTitle: ({ account }: { account: string }) => `¿Volver a habilitar a ${account}?`,
     enableBody: 'Podrá iniciar sesión de nuevo en sus dispositivos. Los tokens de acceso revocados siguen revocados.',
@@ -568,7 +568,7 @@ const fr: typeof en = {
     roleMemberDescription: 'Aucune autorité d’administration sur le Home.',
 
     disableTitle: ({ account }: { account: string }) => `Désactiver ${account} ?`,
-    disableBody: 'La personne sera déconnectée sur tous ses appareils et ses machines se déconnecteront. Les jetons d’accès personnels sont révoqués définitivement et la responsabilité des sessions est supprimée. L’appartenance aux équipes et les clés de chiffrement sont conservées, et vous pourrez la réactiver plus tard.',
+    disableBody: 'La personne sera déconnectée sur tous ses appareils et ses machines se déconnecteront. Les jetons d’accès personnels sont révoqués définitivement, la responsabilité des sessions est supprimée et, dans chaque session dont elle perd l’accès, ses brouillons non envoyés sont supprimés et son suivi est retiré. La réactivation rétablit l’accès, mais pas ces brouillons, ce suivi ni cette responsabilité. L’appartenance aux équipes et les clés de chiffrement sont conservées.',
     disableConfirm: 'Désactiver',
     enableTitle: ({ account }: { account: string }) => `Réactiver ${account} ?`,
     enableBody: 'La personne pourra se reconnecter sur ses appareils. Les jetons d’accès révoqués restent révoqués.',
@@ -728,7 +728,7 @@ const it: typeof en = {
     roleMemberDescription: 'Nessuna autorità di amministrazione dell’Home.',
 
     disableTitle: ({ account }: { account: string }) => `Disattivare ${account}?`,
-    disableBody: 'Verrà disconnesso su tutti i dispositivi e le sue macchine si scollegheranno. I token di accesso personali vengono revocati definitivamente e la responsabilità delle sessioni viene rimossa. L’appartenenza ai team e le chiavi di cifratura vengono mantenute e potrai riattivarlo in seguito.',
+    disableBody: 'Verrà disconnesso su tutti i dispositivi e le sue macchine si scollegheranno. I token di accesso personali vengono revocati definitivamente, la responsabilità delle sessioni viene rimossa e, in ogni sessione a cui perde l’accesso, le sue bozze non inviate vengono eliminate e il suo Segui viene rimosso. Riattivandolo torna l’accesso, ma non quelle bozze, il Segui o la responsabilità. L’appartenenza ai team e le chiavi di cifratura vengono mantenute.',
     disableConfirm: 'Disattiva',
     enableTitle: ({ account }: { account: string }) => `Riattivare ${account}?`,
     enableBody: 'Potrà accedere di nuovo dai suoi dispositivi. I token di accesso revocati restano revocati.',
@@ -888,7 +888,7 @@ const pt: typeof en = {
     roleMemberDescription: 'Sem autoridade de administração do Home.',
 
     disableTitle: ({ account }: { account: string }) => `Desativar ${account}?`,
-    disableBody: 'A sessão será terminada em todos os dispositivos e as máquinas serão desligadas. Os tokens de acesso pessoal são revogados permanentemente e a responsabilidade pelas sessões é removida. A pertença a equipas e as chaves de cifra são mantidas, e podes reativar mais tarde.',
+    disableBody: 'A sessão será terminada em todos os dispositivos e as máquinas serão desligadas. Os tokens de acesso pessoal são revogados permanentemente, a responsabilidade pelas sessões é removida e, em cada sessão a que perca acesso, os rascunhos por enviar são descartados e o seguimento é removido. Reativar devolve o acesso, mas não esses rascunhos, o seguimento ou a responsabilidade. A pertença a equipas e as chaves de cifra são mantidas.',
     disableConfirm: 'Desativar',
     enableTitle: ({ account }: { account: string }) => `Reativar ${account}?`,
     enableBody: 'Poderá iniciar sessão novamente nos seus dispositivos. Os tokens de acesso revogados continuam revogados.',
@@ -1048,7 +1048,7 @@ const ca: typeof en = {
     roleMemberDescription: 'Sense autoritat d’administració del Home.',
 
     disableTitle: ({ account }: { account: string }) => `Vols desactivar ${account}?`,
-    disableBody: 'Se li tancarà la sessió a tots els dispositius i les seves màquines es desconnectaran. Els tokens d’accés personal es revoquen permanentment i s’elimina la responsabilitat de les sessions. La pertinença als equips i les claus de xifratge es mantenen, i el podràs tornar a activar més tard.',
+    disableBody: 'Se li tancarà la sessió a tots els dispositius i les seves màquines es desconnectaran. Els tokens d’accés personal es revoquen permanentment, s’elimina la responsabilitat de les sessions i, a cada sessió a la qual perdi l’accés, els seus esborranys sense enviar es descarten i el seu seguiment s’elimina. Tornar a activar-lo recupera l’accés, però no aquests esborranys, el seguiment ni la responsabilitat. La pertinença als equips i les claus de xifratge es mantenen.',
     disableConfirm: 'Desactiva',
     enableTitle: ({ account }: { account: string }) => `Vols tornar a activar ${account}?`,
     enableBody: 'Podrà iniciar la sessió de nou als seus dispositius. Els testimonis d’accés revocats continuen revocats.',
@@ -1208,7 +1208,7 @@ const pl: typeof en = {
     roleMemberDescription: 'Brak uprawnień administracyjnych w Home.',
 
     disableTitle: ({ account }: { account: string }) => `Wyłączyć konto ${account}?`,
-    disableBody: 'Ta osoba zostanie wylogowana na wszystkich urządzeniach, a jej maszyny się rozłączą. Członkostwo w zespołach i klucze szyfrowania zostaną zachowane, a konto można później włączyć ponownie.',
+    disableBody: 'Ta osoba zostanie wylogowana na wszystkich urządzeniach, a jej maszyny się rozłączą. Osobiste tokeny dostępu są trwale unieważniane, odpowiedzialność za sesje zostaje wyczyszczona, a w każdej sesji, do której traci dostęp, jej niewysłane wersje robocze są usuwane, a obserwowanie wyłączane. Ponowne włączenie przywraca dostęp, ale nie te wersje robocze, obserwowanie ani odpowiedzialność. Członkostwo w zespołach i klucze szyfrowania zostaną zachowane.',
     disableConfirm: 'Wyłącz',
     enableTitle: ({ account }: { account: string }) => `Włączyć ponownie konto ${account}?`,
     enableBody: 'Ta osoba będzie mogła zalogować się ponownie na swoich urządzeniach. Wcześniej odebrane tokeny dostępu pozostają odebrane.',
@@ -1368,7 +1368,7 @@ const ru: typeof en = {
     roleMemberDescription: 'Нет прав администрирования Home.',
 
     disableTitle: ({ account }: { account: string }) => `Отключить ${account}?`,
-    disableBody: 'Выход будет выполнен на всех устройствах, а машины отключатся. Членство в командах и ключи шифрования сохранятся, и позже вы сможете включить запись снова.',
+    disableBody: 'Выход будет выполнен на всех устройствах, а машины отключатся. Персональные токены доступа отзываются навсегда, ответственность за сессии снимается, а в каждой сессии, доступ к которой теряется, неотправленные черновики удаляются и отслеживание отключается. Повторное включение вернёт доступ, но не эти черновики, отслеживание или ответственность. Членство в командах и ключи шифрования сохранятся.',
     disableConfirm: 'Отключить',
     enableTitle: ({ account }: { account: string }) => `Включить ${account} снова?`,
     enableBody: 'Человек снова сможет войти на своих устройствах. Ранее отозванные токены доступа остаются отозванными.',
@@ -1528,7 +1528,7 @@ const ja: typeof en = {
     roleMemberDescription: 'Home の管理権限はありません。',
 
     disableTitle: ({ account }: { account: string }) => `${account} を無効にしますか？`,
-    disableBody: 'すべての端末でサインアウトされ、マシンの接続も切断されます。チームのメンバーシップと暗号鍵は保持され、後で再度有効にできます。',
+    disableBody: 'すべての端末でサインアウトされ、マシンの接続も切断されます。個人用アクセストークンは完全に失効し、セッションの担当も解除され、アクセスを失う各セッションでは未送信の下書きが破棄されフォローも解除されます。再度有効にするとアクセスは戻りますが、下書き・フォロー・担当は戻りません。チームのメンバーシップと暗号鍵は保持されます。',
     disableConfirm: '無効にする',
     enableTitle: ({ account }: { account: string }) => `${account} を再度有効にしますか？`,
     enableBody: '本人は自分の端末で再びサインインできます。取り消し済みのアクセストークンは取り消されたままです。',
@@ -1688,7 +1688,7 @@ const zhHans: typeof en = {
     roleMemberDescription: '没有 Home 管理权限。',
 
     disableTitle: ({ account }: { account: string }) => `要停用 ${account} 吗？`,
-    disableBody: '该成员将在所有设备上退出登录，其机器也会断开连接。团队成员身份和加密密钥会保留，你之后可以重新启用。',
+    disableBody: '该成员将在所有设备上退出登录，其机器也会断开连接。个人访问令牌将被永久吊销，会话负责人身份将被清除；在其失去访问权限的每个会话中，未发送的草稿会被丢弃，关注也会被移除。重新启用会恢复访问权限，但不会恢复这些草稿、关注或负责人身份。团队成员身份和加密密钥会保留。',
     disableConfirm: '停用',
     enableTitle: ({ account }: { account: string }) => `要重新启用 ${account} 吗？`,
     enableBody: '该成员可以在自己的设备上重新登录。此前撤销的访问令牌仍然无效。',
@@ -1848,7 +1848,7 @@ const zhHant: typeof en = {
     roleMemberDescription: '沒有 Home 管理權限。',
 
     disableTitle: ({ account }: { account: string }) => `要停用 ${account} 嗎？`,
-    disableBody: '該成員會在所有裝置登出，其機器也會中斷連線。團隊成員資格與加密金鑰會保留，你之後可以重新啟用。',
+    disableBody: '該成員會在所有裝置登出，其機器也會中斷連線。個人存取權杖將永久撤銷，工作階段負責人身分會被清除；在其失去存取權的每個工作階段中，未傳送的草稿會被捨棄，追蹤也會移除。重新啟用會恢復存取權，但不會恢復這些草稿、追蹤或負責人身分。團隊成員資格與加密金鑰會保留。',
     disableConfirm: '停用',
     enableTitle: ({ account }: { account: string }) => `要重新啟用 ${account} 嗎？`,
     enableBody: '該成員可以在自己的裝置重新登入。先前撤銷的存取權杖仍然無效。',

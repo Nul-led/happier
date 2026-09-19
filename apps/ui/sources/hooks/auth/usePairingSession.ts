@@ -24,13 +24,13 @@ import { isRuntimeActive } from '@/utils/runtime/isRuntimeActive';
 type StartPairingResult = { ok: true } | { ok: false; status: number; reason?: 'invalid_invite' | 'update_required' };
 type CancelPairingResult = { ok: true } | { ok: false; status: number };
 export type PairingContext = Readonly<{ pairId: string; target: PairingCallTarget; issuedAtMs: number; expiresAtMs: number }>;
-export type PairingCompletionState = 'idle' | 'pending' | 'adding' | 'retrying' | 'completed' | 'invalid_request' | 'completion_failed' | 'expired';
+export type PairingCompletionState = 'idle' | 'pending' | 'adding' | 'retrying' | 'completed' | 'invalid_request' | 'completion_failed' | 'expired' | 'update_required';
 export type PairingPresentation =
     | Readonly<{ phase: 'generating' }>
     | Readonly<{ phase: 'ready'; deepLink: string; context: PairingContext; qrAvailable: boolean }>
     | Readonly<{ phase: 'adding' | 'retryable_error' | 'succeeded'; context: PairingContext; requestedDeviceLabel: string | null }>
     | Readonly<{ phase: 'expired'; context: PairingContext }>
-    | Readonly<{ phase: 'invalid_request' }>;
+    | Readonly<{ phase: 'invalid_request' | 'update_required' }>;
 type StartedLifecycle = Extract<DirectHomeQrStartResult, { kind: 'started' }>;
 
 function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
@@ -43,13 +43,21 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
     });
 }
 
-/** React presentation adapter over the shared client-neutral direct Home QR lifecycle. */
-export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthenticated: boolean }>): Readonly<{
+/**
+ * React presentation adapter over the shared client-neutral direct Home QR lifecycle.
+ *
+ * `targetProfileId` names the saved Home this QR enrols a device into. It defaults to
+ * the focused Home; a different saved Home is paired without changing focus, and only
+ * the focused Home's own runtime lease (Iroh or a leased loopback origin) can be used
+ * as transport, so a background Home is reached through its published descriptor.
+ */
+export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthenticated: boolean; targetProfileId?: string | null }>): Readonly<{
     deepLink: string | null; status: PairingStatus | null; pairingContext: PairingContext | null;
     completionState: PairingCompletionState; presentation: PairingPresentation; isExpired: boolean; isStarting: boolean;
     startPairing: () => Promise<StartPairingResult>; cancelPairing: () => Promise<CancelPairingResult>; clearSession: () => void;
 }> {
     const { enabled, isAuthenticated } = params;
+    const targetProfileId = params.targetProfileId?.trim() || null;
     const [status, setStatus] = React.useState<PairingStatus | null>(null);
     const [deepLink, setDeepLink] = React.useState<string | null>(null);
     const [pairingContext, setPairingContext] = React.useState<PairingContext | null>(null);
@@ -98,22 +106,30 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
         let observationTransport: Awaited<ReturnType<typeof resolveHomeEnrollmentTransport>> | null = null;
         try {
             const active = getActiveServerSnapshot();
+            // The focused Home's runtime lease (Iroh carrier or leased loopback origin)
+            // belongs to that Home only. A different saved Home is reached through its
+            // own published descriptor, never through the focused Home's transport.
+            const serverId = targetProfileId ?? active.serverId;
+            const usesActiveRuntime = serverId === active.serverId;
+            const runtimeTransport = usesActiveRuntime
+                ? { runtimeOrigin: active.runtimeOrigin, runtimeCarrier: active.carrier }
+                : {};
             // A person is waiting on the QR: a Home that cannot answer promptly must
             // surface the failure instead of holding the generating state open for the
             // shared probe's full attempt bound. The shared request keeps running for
             // the consumers still waiting on it.
             const snapshot = await getServerFeaturesSnapshot({
-                serverId: active.serverId,
+                serverId,
                 timeoutMs: FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS,
             });
             if (!isCurrent()) return { ok: false, status: 409 };
             if (snapshot.status === 'unsupported') {
-                setCompletionState('completion_failed');
+                setCompletionState('update_required');
                 return { ok: false, status: 426, reason: 'update_required' };
             }
             if (snapshot.status !== 'ready') { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
             const observedIdentity = String(snapshot.serverIdentityId ?? '').trim();
-            const profile = getServerProfileById(active.serverId);
+            const profile = getServerProfileById(serverId);
             const retainedDescriptor = profile ? buildHomeConnectionDescriptorForProfile(profile) : null;
             if (!retainedDescriptor || !observedIdentity || retainedDescriptor.homeServerIdentityId !== observedIdentity) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
             const credentials = await TokenStorage.getCredentialsForServerUrl(retainedDescriptor.canonicalServerUrl, {
@@ -121,8 +137,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             });
             if (!credentials) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
             observationTransport = await resolveHomeEnrollmentTransport(retainedDescriptor, {
-                runtimeOrigin: active.runtimeOrigin,
-                runtimeCarrier: active.carrier,
+                ...runtimeTransport,
                 verification: { kind: 'authenticated', token: credentials.token },
             });
             if (!observationTransport.ok) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
@@ -160,12 +175,11 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             await observationTransport.transport.close();
             observationTransport = null;
             const transport = await resolveHomeEnrollmentTransport(descriptor, {
-                runtimeOrigin: active.runtimeOrigin,
-                runtimeCarrier: active.carrier,
+                ...runtimeTransport,
                 verification: { kind: 'authenticated', token: credentials.token },
             });
             if (!transport.ok) { setCompletionState('completion_failed'); return { ok: false, status: 412 }; }
-            target = { ...transport.transport, serverId: active.serverId };
+            target = { ...transport.transport, serverId };
             if (!isCurrent()) return { ok: false, status: 409 };
             const immutableTarget = target;
             const started = await startDirectHomeQrLifecycle({
@@ -220,7 +234,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             });
             lifecycleOwnsTarget = true;
             if (!isCurrent()) { if (started.kind === 'started') await started.cancel(); return { ok: false, status: 409 }; }
-            if (started.kind === 'update_required') { setCompletionState('completion_failed'); return { ok: false, status: 426, reason: 'update_required' }; }
+            if (started.kind === 'update_required') { setCompletionState('update_required'); return { ok: false, status: 426, reason: 'update_required' }; }
             if (started.kind === 'failed') {
                 setCompletionState('completion_failed');
                 return { ok: false, status: started.status, ...(started.reason === 'invalid_invite' ? { reason: 'invalid_invite' as const } : {}) };
@@ -250,7 +264,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
             if (target && !lifecycleOwnsTarget) await target.close().catch(() => {});
             if (isCurrent()) { isStartingRef.current = false; setIsStarting(false); }
         }
-    }, [enabled, isAuthenticated, resetPresentation]);
+    }, [enabled, isAuthenticated, resetPresentation, targetProfileId]);
 
     const cancelPairing = React.useCallback(async (): Promise<CancelPairingResult> => {
         const active = activeRef.current;
@@ -263,6 +277,7 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
 
     const presentation = React.useMemo<PairingPresentation>(() => {
         if (completionState === 'expired' && pairingContext) return { phase: 'expired', context: pairingContext };
+        if (completionState === 'update_required') return { phase: 'update_required' };
         if (completionState === 'invalid_request' || completionState === 'completion_failed') return { phase: 'invalid_request' };
         if (pairingContext) {
             if (completionState === 'adding') return { phase: 'adding', context: pairingContext, requestedDeviceLabel };

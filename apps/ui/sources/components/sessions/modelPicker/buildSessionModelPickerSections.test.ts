@@ -141,7 +141,7 @@ describe('buildSessionModelPickerSections', () => {
             resourceRevision: 8,
             readiness: { kind: 'source_unavailable' }, recoveryAction: 'source_owner_action',
             mayBroker: false, mayReceiveDirect: true,
-            directMaterialState: 'source_changed', sessionUsePolicy: 'personal_allowed',
+            directMaterialState: 'stale', sessionUsePolicy: 'personal_allowed',
             providerModels: [],
             sourcePresentation: {
                 kind: 'provider',
@@ -183,7 +183,7 @@ describe('buildSessionModelPickerSections', () => {
             resourceRevision: 7,
             readiness: { kind: 'available' }, recoveryAction: 'source_owner_action',
             mayBroker: true, mayReceiveDirect: false,
-            directMaterialState: 'not_permitted', sessionUsePolicy: 'personal_allowed',
+            directMaterialState: 'never_delivered', sessionUsePolicy: 'personal_allowed',
             providerModels: [{
                 selection: {
                     kind: 'team_credential_provider_model', resourceId: 'resource-1', teamId: 'team-1',
@@ -215,6 +215,50 @@ describe('buildSessionModelPickerSections', () => {
         expect(sections[0]?.options[0]).toMatchObject({ disabled: true });
         expect(sections[0]?.options[0]?.description).toContain(t('teams.credentials.errors.sourceOwnerRequired'));
         expect(sections[0]?.options[0]?.accessibilityLabel).not.toContain('source_owner_required');
+    });
+
+    it('names the exhausted allowance and when it reopens instead of a bare "Limit reached"', () => {
+        const resource = TeamCredentialResourceCatalogEntryV1Schema.parse({
+            id: 'resource-1', teamId: 'team-1', displayName: 'Acme Claude access',
+            resourceRevision: 7,
+            readiness: { kind: 'limit_reached', metric: 'total_tokens', resetsAtUtc: '2026-09-15T00:00:00.000Z' },
+            recoveryAction: 'retry',
+            mayBroker: true, mayReceiveDirect: false,
+            directMaterialState: 'never_delivered', sessionUsePolicy: 'personal_allowed',
+            providerModels: [{
+                selection: {
+                    kind: 'team_credential_provider_model', resourceId: 'resource-1', teamId: 'team-1',
+                    expectedResourceRevision: 7, deliveryMode: 'brokered', agentTargetKey: 'backend:codex', modelId: 'claude-sonnet',
+                },
+                descriptor: { id: 'claude-sonnet', name: 'Claude Sonnet' },
+                application: {
+                    agentTargetKey: 'backend:codex',
+                    implementationIdentity: { pluginId: 'provider.anthropic', localId: 'anthropic' },
+                    endpointTemplateId: 'messages', protocol: 'anthropic-messages',
+                },
+                sourceRevision: 'source-v1',
+                availability: 'available',
+            }],
+            sourcePresentation: {
+                kind: 'provider',
+                provider: { identity: { pluginId: 'provider.anthropic', localId: 'anthropic' }, definitionRevision: 1 },
+            },
+        });
+
+        const sections = buildSessionModelPickerSections({
+            agentTargetKey: 'backend:codex',
+            nativeModels: [], providerGroups: [], hiddenNativeModelKeys: new Set(),
+            providerProjectionAuthoritative: true,
+            teamCredentialResources: [resource],
+            currentTeamCredentialResourceKeys: new Set(['team-1:resource-1']),
+        });
+
+        const description = sections[0]?.options[0]?.description ?? '';
+        expect(description).toContain(t('teams.credentials.limits.reached'));
+        expect(description).toContain(t('teams.credentials.limits.metric.tokens'));
+        expect(description).toContain('UTC');
+        expect(description).not.toContain('total_tokens');
+        expect(description).not.toContain('2026-09-15T00:00:00.000Z');
     });
 
     it('fails closed to native parity when the Providers feature decision is not enabled', () => {

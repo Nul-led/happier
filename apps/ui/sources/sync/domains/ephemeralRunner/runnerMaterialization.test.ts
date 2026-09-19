@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import tweetnacl from 'tweetnacl';
 import {
     computeRunnerAuthoringCommitmentV1,
@@ -10,6 +10,7 @@ import { signRunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/conse
 import { signRunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
 import { signRunnerBrokerReadinessRequestV1 } from '@happier-dev/protocol/teams';
 import { openBoxBundleWithSecretKey } from '@happier-dev/protocol/crypto/boxBundle';
+import { computeRunnerMachineContentKeyFingerprintV1, verifyRunnerMachineContentKeyBindingV1 } from '@happier-dev/protocol/ephemeralRunner/machineContentKeyBinding';
 import { MACHINE_PLAIN_DATA_KEY_MARKER, decodePlainMachineStoredContent, sealBoxBundle, signAccountContentKeyBindingV1, computeContentPublicKeyFingerprint, openEncryptedDataKeyEnvelopeV1, openSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol';
 import type { RunnerEndpointFactsRecipientV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
 import { RunnerRuntimeBootstrapV1Schema } from '@happier-dev/protocol/ephemeralRunner/bootstrap';
@@ -19,10 +20,17 @@ import { acceptRunnerCreatorActivationBinding, getOrCreateRunnerMaterializationR
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { createRunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
 import {
+    createRunnerActivationKeyCustody,
+    readRunnerActivationSigningKey,
+} from './runnerActivationKeyCustody';
+import {
+    loadRunnerCreatorMachineContentKeyTrust,
+    resetRunnerCreatorMachineContentKeyTrustProjectionForTests,
+} from './runnerCreatorMachineContentKeyTrust';
+import {
     buildRunnerMaterializationRequestV1,
     prepareRunnerActivationReviewV1,
     prepareAndStoreRunnerActivationReviewV1,
-    resolveRunnerAccountSigningSecretKeyV1,
     RunnerMaterializationPreparationError,
     type RunnerReviewCustodyV1,
 } from './runnerMaterialization';
@@ -92,12 +100,16 @@ const endpointFactsContent = {
     },
 };
 
-function claimedFixture(recipient: RunnerEndpointFactsRecipientV1 = { mode: 'plain', creatorAccountId: 'creator' }) {
-    const activationKey = tweetnacl.sign.keyPair();
+function claimedFixture(
+    recipient: RunnerEndpointFactsRecipientV1 = { mode: 'plain', creatorAccountId: 'creator' },
+    creatorActivation?: Readonly<{ activationId: string; key: tweetnacl.SignKeyPair }>,
+) {
+    const activationKey = creatorActivation?.key ?? tweetnacl.sign.keyPair();
     const installationKey = tweetnacl.sign.keyPair();
     const runnerBox = tweetnacl.box.keyPair();
     const binding = {
-        activationId: '00000000-0000-4000-8000-000000000007', homeServerIdentityId: 'srv_runner',
+        activationId: creatorActivation?.activationId ?? '00000000-0000-4000-8000-000000000007',
+        homeServerIdentityId: 'srv_runner',
         creatorAccountId: 'creator', creatorTokenEpoch: 1, activationExpiresAt: null, workspace: { kind: 'choose_on_endpoint' as const },
         sessionId: 'session-a', machineId: 'machine-a',
         activationSigningPublicKey: encodeBase64(activationKey.publicKey, 'base64url'),
@@ -159,7 +171,38 @@ function brokerReadinessRequest(
     });
 }
 
+const creatorScope = { serverId: 'srv_runner', accountId: 'creator' } as const;
+
+/**
+ * Creates the exact device-local activation custody a creator holds after
+ * package creation, then returns the same identity the published activation
+ * binding names. The Machine-content-key proof is signed with it, so no
+ * Account signing key is involved for any credential kind.
+ */
+async function claimedFixtureWithCreatorCustody(recipient: RunnerEndpointFactsRecipientV1) {
+    const custody = await createRunnerActivationKeyCustody(creatorScope);
+    const secretKey = decodeBase64(await readRunnerActivationSigningKey(creatorScope, custody), 'base64url');
+    return claimedFixture(recipient, {
+        activationId: custody.activationId,
+        key: tweetnacl.sign.keyPair.fromSecretKey(secretKey),
+    });
+}
+
 describe('creator Runner review and materialization', () => {
+    let storedValues: Map<string, string>;
+    beforeEach(() => {
+        storedValues = new Map();
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+        vi.stubGlobal('window', { localStorage: {
+            getItem: (key: string) => storedValues.get(key) ?? null,
+            setItem: (key: string, value: string) => { storedValues.set(key, value); },
+            removeItem: (key: string) => { storedValues.delete(key); },
+        } });
+    });
+    afterEach(() => {
+        resetRunnerCreatorMachineContentKeyTrustProjectionForTests();
+        vi.unstubAllGlobals();
+    });
     it('rejects a later Home-substituted binding instead of replacing accepted creator custody', async () => {
         const values = new Map<string, string>();
         vi.stubGlobal('window', { localStorage: {
@@ -170,7 +213,7 @@ describe('creator Runner review and materialization', () => {
         try {
             const fixture = claimedFixture();
             const scope = { serverId: 'srv_runner', accountId: 'creator' };
-            const prepared = prepareRunnerActivationReviewV1({
+            const prepared = await prepareRunnerActivationReviewV1({
                 projection: fixture.projection, expectedBinding: fixture.binding, preparedAuthoring,
                 credentialSelectionBinding, reviewedProviderModel, displayFacts, connectedServiceReviewBindings,
                 credentials: { token: 'token' }, encryption: null,
@@ -196,14 +239,14 @@ describe('creator Runner review and materialization', () => {
             vi.unstubAllGlobals();
         }
     });
-    it('reports absent endpoint facts as the typed unavailable result rather than failing on the projection', () => {
+    it('reports absent endpoint facts as the typed unavailable result rather than failing on the projection', async () => {
         const fixture = claimedFixture();
         // A claimed activation whose winning endpoint has not published facts
         // yet projects `endpointFacts: null`, which review must refuse through
         // its own contract instead of reading the missing projection.
         let caught: unknown;
         try {
-            prepareRunnerActivationReviewV1({
+            await prepareRunnerActivationReviewV1({
                 projection: { ...fixture.projection, endpointFacts: null },
                 expectedBinding: fixture.binding, preparedAuthoring,
                 credentialSelectionBinding, reviewedProviderModel, displayFacts, connectedServiceReviewBindings,
@@ -226,14 +269,14 @@ describe('creator Runner review and materialization', () => {
             ? accountEncryption
             : await Encryption.createFromContentKeyPair({ publicKey: accountEncryption.contentDataKey, machineKey: accountEncryption.getContentPrivateKey() });
         const signing = tweetnacl.sign.keyPair.fromSeed(accountSecret);
-        const fixture = claimedFixture({
+        const fixture = await claimedFixtureWithCreatorCustody({
             mode: 'e2ee', creatorAccountId: 'creator',
             accountSigningPublicKey: encodeBase64(signing.publicKey, 'base64url'),
             contentPublicKey: encodeBase64(encryption.contentDataKey, 'base64url'),
             contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({ accountSigningSecretKey: signing.secretKey, contentPublicKey: encryption.contentDataKey }), 'base64url'),
             contentPublicKeyFingerprint: computeContentPublicKeyFingerprint(encryption.contentDataKey),
         });
-        const prepared = prepareRunnerActivationReviewV1({
+        const prepared = await prepareRunnerActivationReviewV1({
             projection: fixture.projection, expectedBinding: fixture.binding, preparedAuthoring,
             credentialSelectionBinding, reviewedProviderModel, displayFacts, connectedServiceReviewBindings,
             credentials, encryption,
@@ -388,36 +431,91 @@ describe('creator Runner review and materialization', () => {
         })).rejects.toMatchObject({ code: 'session_access_invalid_recipient_envelope' });
     });
 
-    it('fails closed when data-key credentials do not carry Account signing authority', () => {
-        expect(() => resolveRunnerAccountSigningSecretKeyV1({
-            credentials: {
-                token: 'token',
-                encryption: {
-                    publicKey: encodeBase64(new Uint8Array(32).fill(1), 'base64'),
-                    machineKey: encodeBase64(new Uint8Array(32).fill(2), 'base64'),
-                },
+    it('signs the scoped Machine key proof for a data-key credential that holds no Account signing key', async () => {
+        const accountSecret = new Uint8Array(32).fill(59);
+        const accountEncryption = await Encryption.create(accountSecret);
+        const encryption = await Encryption.createFromContentKeyPair({
+            publicKey: accountEncryption.contentDataKey,
+            machineKey: accountEncryption.getContentPrivateKey(),
+        });
+        // The Account content-key binding is public material the Home projects.
+        // This creator's credential carries no signing secret at all.
+        const accountSigning = tweetnacl.sign.keyPair.fromSeed(accountSecret);
+        const credentials = {
+            token: 'token',
+            encryption: {
+                publicKey: encodeBase64(encryption.contentDataKey, 'base64'),
+                machineKey: encodeBase64(encryption.getContentPrivateKey(), 'base64'),
             },
-        })).toThrowError(expect.objectContaining({ code: 'runner_account_signing_authority_unavailable' }));
+        };
+        const fixture = await claimedFixtureWithCreatorCustody({
+            mode: 'e2ee', creatorAccountId: 'creator',
+            accountSigningPublicKey: encodeBase64(accountSigning.publicKey, 'base64url'),
+            contentPublicKey: encodeBase64(encryption.contentDataKey, 'base64url'),
+            contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: accountSigning.secretKey,
+                contentPublicKey: encryption.contentDataKey,
+            }), 'base64url'),
+            contentPublicKeyFingerprint: computeContentPublicKeyFingerprint(encryption.contentDataKey),
+        });
+
+        const prepared = await prepareRunnerActivationReviewV1({
+            projection: fixture.projection, expectedBinding: fixture.binding, preparedAuthoring,
+            credentialSelectionBinding, reviewedProviderModel, displayFacts, connectedServiceReviewBindings,
+            credentials, encryption,
+        });
+
+        const binding = prepared.review.machineContentKeyBinding!;
+        expect(prepared.custody.machineContentKey).toHaveLength(32);
+        expect(binding.machineContentKeyFingerprint)
+            .toBe(computeRunnerMachineContentKeyFingerprintV1(prepared.custody.machineContentKey!));
+        // The proof verifies against the creator's activation identity, and not
+        // against the Account signing identity the Home publishes.
+        const { accountSignatureBase64Url: _signature, ...payload } = binding;
+        expect(verifyRunnerMachineContentKeyBindingV1({
+            binding,
+            expectedPayload: payload,
+            expectedAccountSigningPublicKey: fixture.binding.activationSigningPublicKey,
+        })).toEqual(binding);
+        expect(verifyRunnerMachineContentKeyBindingV1({
+            binding,
+            expectedPayload: payload,
+            expectedAccountSigningPublicKey: encodeBase64(accountSigning.publicKey, 'base64url'),
+        })).toBeNull();
+        // The creating device retains the exact verifier for a later read of the
+        // published Machine row.
+        await expect(loadRunnerCreatorMachineContentKeyTrust(creatorScope, fixture.binding.machineId))
+            .resolves.toEqual({
+                activationId: fixture.binding.activationId,
+                activationSigningPublicKey: fixture.binding.activationSigningPublicKey,
+            });
     });
 
-    it('does not let an injected signing key turn DataKey credentials into creator signing authority', () => {
-        const forgedInput = {
-            credentials: {
-                token: 'token',
-                encryption: {
-                    publicKey: encodeBase64(new Uint8Array(32).fill(1), 'base64'),
-                    machineKey: encodeBase64(new Uint8Array(32).fill(2), 'base64'),
-                },
-            },
-            explicitAccountSigningSecretKey: tweetnacl.sign.keyPair().secretKey,
-        };
-        expect(() => resolveRunnerAccountSigningSecretKeyV1(forgedInput))
-            .toThrowError(expect.objectContaining({ code: 'runner_account_signing_authority_unavailable' }));
+    it('refuses to sign the scoped Machine key without creator activation custody', async () => {
+        const accountSecret = new Uint8Array(32).fill(61);
+        const encryption = await Encryption.create(accountSecret);
+        const accountSigning = tweetnacl.sign.keyPair.fromSeed(accountSecret);
+        const fixture = claimedFixture({
+            mode: 'e2ee', creatorAccountId: 'creator',
+            accountSigningPublicKey: encodeBase64(accountSigning.publicKey, 'base64url'),
+            contentPublicKey: encodeBase64(encryption.contentDataKey, 'base64url'),
+            contentPublicKeySignature: encodeBase64(signAccountContentKeyBindingV1({
+                accountSigningSecretKey: accountSigning.secretKey,
+                contentPublicKey: encryption.contentDataKey,
+            }), 'base64url'),
+            contentPublicKeyFingerprint: computeContentPublicKeyFingerprint(encryption.contentDataKey),
+        });
+        await expect(prepareRunnerActivationReviewV1({
+            projection: fixture.projection, expectedBinding: fixture.binding, preparedAuthoring,
+            credentialSelectionBinding, reviewedProviderModel, displayFacts, connectedServiceReviewBindings,
+            credentials: { token: 'token', secret: encodeBase64(accountSecret, 'base64url') },
+            encryption,
+        })).rejects.toMatchObject({ code: 'runner_activation_signing_custody_unavailable' });
     });
 
     it('rejects readiness for an Agent other than the reviewed launch Agent', async () => {
         const fixture = claimedFixture();
-        const prepared = prepareRunnerActivationReviewV1({
+        const prepared = await prepareRunnerActivationReviewV1({
             projection: fixture.projection,
             expectedBinding: fixture.binding,
             preparedAuthoring,
@@ -471,7 +569,7 @@ describe('creator Runner review and materialization', () => {
 
     it('rejects endpoint Machine-fact substitution after creator review', async () => {
         const fixture = claimedFixture();
-        const prepared = prepareRunnerActivationReviewV1({
+        const prepared = await prepareRunnerActivationReviewV1({
             projection: fixture.projection,
             expectedBinding: fixture.binding,
             preparedAuthoring,

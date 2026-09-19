@@ -623,7 +623,7 @@ export function readSessionHandoffFeatureEnv(env: NodeJS.ProcessEnv): SessionHan
 }
 
 export function readSessionEphemeralRunnerFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ ephemeralRunnerEnabled: boolean }> {
-  return { ephemeralRunnerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsEphemeralRunnerEnabled], false) };
+  return { ephemeralRunnerEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsEphemeralRunnerEnabled], true) };
 }
 
 export function readSessionAgentSwitchingFeatureEnv(env: NodeJS.ProcessEnv): SessionAgentSwitchingFeatureEnv {
@@ -648,32 +648,32 @@ export function readSessionFilteredListingFeatureEnv(env: NodeJS.ProcessEnv): Se
   return {
     filteredListingEnabled: parseBooleanEnv(
       env[FEATURE_ENV_KEYS.sessionsFilteredListingEnabled],
-      false,
+      true,
     ),
   };
 }
 
 export function readSessionBoardFeatureEnv(env: NodeJS.ProcessEnv) {
-  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsBoardEnabled], false) };
+  return { enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsBoardEnabled], true) };
 }
 
 export function readSessionFollowingFeatureEnv(env: NodeJS.ProcessEnv): SessionFollowingFeatureEnv {
   return {
-    followingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFollowingEnabled], false),
+    followingEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsFollowingEnabled], true),
   };
 }
 
 export function readSessionCollaborationFeatureEnv(env: NodeJS.ProcessEnv): Readonly<{ enabled: boolean }> {
   return {
-    // Broad audience activation requires the composed private-read/delivery gate.
-    // Direct sharing remains available independently of this new capability.
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsCollaborationEnabled], false),
+    // Direct sharing remains available independently of this capability; the
+    // catalog dependency on `sharing.session` is what closes it, not a default.
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsCollaborationEnabled], true),
   };
 }
 
 export function readSessionConversationsFeatureEnv(env: NodeJS.ProcessEnv): SessionConversationsFeatureEnv {
   return {
-    conversationsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsConversationsEnabled], false),
+    conversationsEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.sessionsConversationsEnabled], true),
   };
 }
 
@@ -858,10 +858,10 @@ export function readSearchFeatureEnv(env: NodeJS.ProcessEnv): SearchFeatureEnv {
 export function readTeamsFeatureEnv(env: NodeJS.ProcessEnv): TeamsFeatureEnv {
   return {
     enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsEnabled], true),
-    credentialResourcesEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsCredentialResourcesEnabled], false),
+    credentialResourcesEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.teamsCredentialResourcesEnabled], true),
     credentialResourcesExternalApiEnabled: parseBooleanEnv(
       env[FEATURE_ENV_KEYS.teamsCredentialResourcesExternalApiEnabled],
-      false,
+      true,
     ),
   };
 }

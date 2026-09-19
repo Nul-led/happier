@@ -1,35 +1,69 @@
 ---
-title: Multiple Homes
-description: Use multiple Happier Homes from the same app and CLI.
+title: Homes
+description: What a Home is, why your Account belongs to one, and how to use several of them from the same app and CLI.
 ---
 
-Happier supports using multiple Homes at once (for example a Home discovered through Happier's Account Service, a Personal Home, and a company Home).
+By the end of this page you will know what a Home holds, why signing in to one
+never signs you in to another, and how to keep a personal Home and a company
+Home on the same device without them colliding.
 
-> **Availability:** Home terminology and Account Service discovery describe the 0.3 development/preview line. Stable 0.2 uses the released server/Relay profile UI and commands.
+> **Availability:** Home terminology and account-based Home discovery describe the 0.3 development/preview line. Stable 0.2 uses the released server/Relay profile UI and commands.
 
-## Core model
+## What a Home is
 
-- A **Home profile** is a saved stable Home identity plus its current connection descriptor. A URL is a route or compatibility alias, not the identity itself.
-- Auth is **scoped per Home**. Signing into Home A does not sign you into Home B.
-- Daemon/runtime state is also scoped per Home, so one machine can run multiple daemon instances safely.
+A **Home** is the place your Happier Account lives. It holds the Account, its
+settings and credentials, the synchronized record of your Sessions, and — where
+the deployment has them — your Teams. A Home is a running Happier server: Happier
+Cloud, a company deployment, or a Personal Home you create on a computer you own.
 
-If you use the same identity provider (for example GitHub) on two servers, they are still separate server accounts.
+What a Home does **not** do is run your coding agents. Those run on your own
+machines, beside your repositories, and report to the Home. Choosing a Home in
+the cloud does not move a single agent process into the cloud.
 
-## App and web UI
+Three consequences follow from that, and they explain almost everything else on
+this page:
 
-### Add and switch servers
+- **Your Account belongs to one Home.** Signing in to Home A does not sign you in
+  to Home B, even when both offer the same identity provider. Two GitHub sign-ins
+  on two Homes are two separate Accounts.
+- **A Home has a stable identity, not an address.** The URL you reach it on is a
+  route. Homes can move between addresses, and a Personal Home may be reachable
+  over Iroh with no public address at all, while staying the same Home.
+- **Everything scoped to a Home stays there.** Sessions, settings, Teams,
+  credentials and machine registrations do not migrate when you switch Homes.
+  Switching selects another Home and the Account you hold there.
 
-- Open **Server** settings to add, select, rename, or remove saved servers.
-- On web, server selection can be set per-tab or as a device default.
-- If a connect/notification link targets a different **saved** server, Happier switches to that server before continuing.
-- If a notification targets a server that is **not saved yet**, Happier does not blindly replace your existing server setup.
+## Where a Home comes from
+
+- **Join one you already have** — found through your account on a sign-in
+  service, or entered directly as a saved Home, an HTTPS address, a QR code or a
+  pasted Home link. See [Signing in](/getting-started/sign-in).
+- **Create a Personal Home** on a computer or VPS you control, with
+  `happier home create`. See [Self-host runtime](/self-hosting/self-host-runtime).
+- **Be given one** by whoever operates your company deployment. See
+  [Self-hosting](/self-hosting).
+
+## Using more than one
+
+Happier supports several Homes at once — for example a Personal Home, a company
+Home, and Happier Cloud. A **saved Home** on a device is its stable Home identity
+plus the connection descriptor currently known for it. Credentials, daemon state
+and runtime state are all scoped per Home, so one machine can safely run one
+background service per Home.
+
+### Add and switch Homes
+
+- Open **Settings → System → Homes** to add, select, rename, group, or remove saved Homes.
+- On web, Home selection can be set per-tab or as a device default.
+- If a connect/notification link targets a different **saved** Home, Happier switches to that Home before continuing.
+- If a notification targets a Home that is **not saved yet**, Happier does not blindly replace your existing setup.
 
 #### Notifications from a server that is not saved yet
 
 Happier handles this differently depending on what is already on the device:
 
-- **No saved servers yet**: Happier can bootstrap the server so the notification link still opens the intended session
-- **One or more saved servers already exist**: Happier opens **Server settings** with the incoming URL prefilled and asks you to add it explicitly
+- **No saved Homes yet**: Happier can bootstrap the server so the notification link still opens the intended session
+- **One or more saved Homes already exist**: Happier opens **Settings → System → Homes** with the incoming URL prefilled and asks you to add it explicitly
 
 After you choose **Add & Use**, Happier continues to the pending session/request automatically.
 
@@ -45,7 +79,7 @@ These prefill server settings so users do not have to paste URLs manually.
 
 ## CLI Home targeting
 
-For routine setup, use `happier setup`. It discovers a Home through the selected Account Service by default, or accepts `--home <saved-home>`, `--home-url https://...`, or `--home-descriptor-file <path|->`. If the selected Home is unavailable, Retry checks that same Home; setup does not silently substitute another identity.
+For routine setup, use `happier setup`. With no usable active Home it offers to find your linked Homes through your sign-in service, connect to an existing Home, or create a Personal Home here; `--home <saved-home>`, `--home-url https://...`, or `--home-descriptor-file <path|->` skip that choice. If the selected Home is unavailable, Retry checks that same Home; setup does not silently substitute another identity. See [Signing in](/getting-started/sign-in) for the headless walkthrough.
 
 ### Persisted profiles
 
@@ -77,28 +111,31 @@ happier --server-url https://api.company.example --webapp-url https://app.compan
 
 Prefer the saved Home form for routine use. URL flags remain useful for HTTPS compatibility and advanced/operator workflows; a strict Home descriptor may instead be Iroh-only.
 
-## Multiple daemons on one machine
+## One background service per Home
 
-Install/start one daemon service per server profile:
+Install one background service per saved Home:
 
 ```bash
-happier --server personal daemon service install
-happier --server company daemon service install
+happier --server personal service install
+happier --server company service install
 ```
 
 Check status:
 
 ```bash
+happier service list
+happier --server personal service status
+happier --server company service status
 happier daemon status --all
-happier --server personal daemon service status
-happier --server company daemon service status
 ```
+
+`happier daemon install`, `happier daemon uninstall` and `happier daemon service …` remain legacy aliases for the `happier service` commands.
 
 ## Recommended flow
 
-1. Add/select the target server.
-2. Sign in on that server (app/web). If you already use Happier on another device, sign in with that same account.
-3. Connect terminal/daemon for that same server.
+1. Add or select the target Home.
+2. Sign in to that Home (app/web). If you already use Happier on another device, sign in with that same account.
+3. Connect the terminal and background service for that same Home.
 
 For end-to-end walkthroughs, see [Onboarding](/getting-started/onboarding) and [Proxmox deployment](/self-hosting/proxmox).
 
@@ -116,8 +153,15 @@ Accounts are server-scoped. The identity provider can be the same, but each serv
 
 That is expected when the previous sessions belong to another server. Switch back to that server profile to see those sessions again.
 
-### I tapped a notification and Happier sent me to Server settings instead of directly into the session.
+### I tapped a notification and Happier sent me to Home settings instead of directly into the session.
 
-That usually means the notification came from a server URL that is not saved on this device yet, while you already had other saved servers.
+That usually means the notification came from a server URL that is not saved on this device yet, while you already had other saved Homes.
 
-Happier does this on purpose so it does not silently add or trust a new server in the background. Add the server from the prefilled form, then Happier will continue to the intended session.
+Happier does this on purpose so it does not silently add or trust a new server in the background. Add the Home from the prefilled form, then Happier will continue to the intended session.
+
+## Related
+
+- [Signing in](/getting-started/sign-in) — the Welcome screen, Home-first sign-in, and the headless CLI equivalent.
+- [Finding your Homes](/accounts/your-homes) — the account-level list of Homes, and how to stop delegated sign-in.
+- [Home administration](/self-hosting/home-administration) — people, roles and policy on a Home you administer.
+- [Device linking and restore](/accounts/device-linking-and-restore) — adding a device to one of these Homes.

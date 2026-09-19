@@ -27,29 +27,48 @@ export function computeRunnerMachineContentKeyFingerprintV1(key: Uint8Array): st
   return `${RUNNER_MACHINE_CONTENT_KEY_FINGERPRINT_PREFIX}${bytesToHex(sha256(key))}`;
 }
 
+/**
+ * Signs the binding with the creator-generated activation signing identity.
+ *
+ * The creator device generates that identity at package creation and retains
+ * its private key device-locally through proof publication, so the proof needs
+ * no Account signing private key: a DataKey or token-only creator credential
+ * produces exactly the same binding. Callers pass the secret key alone; the
+ * public half is derived here so a caller can never present a signature under
+ * one identity while naming another.
+ */
 export function signRunnerMachineContentKeyBindingV1(params: Readonly<{
   payload: RunnerMachineContentKeyBindingPayloadV1;
-  accountSigningPublicKey: Uint8Array;
-  accountSigningSecretKey: Uint8Array;
+  activationSigningSecretKey: Uint8Array;
 }>): RunnerMachineContentKeyBindingV1 {
   const payload = RunnerMachineContentKeyBindingPayloadV1Schema.parse(params.payload);
-  if (params.accountSigningPublicKey.length !== 32 || params.accountSigningSecretKey.length !== 64) {
-    throw new Error('Invalid Account signing key');
+  if (params.activationSigningSecretKey.length !== tweetnacl.sign.secretKeyLength) {
+    throw new Error('Invalid activation signing key');
   }
-  if (!tweetnacl.verify(
-    tweetnacl.sign.keyPair.fromSecretKey(params.accountSigningSecretKey).publicKey,
-    params.accountSigningPublicKey,
-  )) throw new Error('Account signing public and secret keys do not match');
   const bytes = new TextEncoder().encode(createCanonicalJsonSigningInput(payload));
   return {
     ...payload,
-    accountSignatureBase64Url: encodeBase64(tweetnacl.sign.detached(bytes, params.accountSigningSecretKey), 'base64url'),
+    accountSignatureBase64Url: encodeBase64(
+      tweetnacl.sign.detached(bytes, params.activationSigningSecretKey),
+      'base64url',
+    ),
   };
 }
 
+/**
+ * Verifies the binding against an independently trusted signing identity.
+ *
+ * `expectedAccountSigningPublicKey` is the creator's activation signing public
+ * key. It must come from the verifier's own trusted scope — the Runner's local
+ * activation package, the Home's persisted activation row, or the creator's
+ * device-local activation custody — and never from the Home-published Machine
+ * row, so substituting verifier key, binding and an Account-openable envelope
+ * together still fails.
+ */
 export function verifyRunnerMachineContentKeyBindingV1(params: Readonly<{
   binding: unknown;
   expectedPayload: unknown;
+  /** Trusted creator activation signing public key; not a Home-published field. */
   expectedAccountSigningPublicKey: string;
 }>): RunnerMachineContentKeyBindingV1 | null {
   const binding = RunnerMachineContentKeyBindingV1Schema.safeParse(params.binding);

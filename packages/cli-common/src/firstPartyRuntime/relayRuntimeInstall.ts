@@ -41,6 +41,7 @@ import {
     type ManagedRelayPurpose,
 } from './personalHome/personalHomeRuntimeSpec.js';
 import { withPersonalHomeOperationAdmission } from './personalHome/operationAdmission.js';
+import { assertPersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
 import { readPersonalHomeIdentityValueFromSqlite, validateCanonicalPersonalHomeLayout } from './personalHome/productionAdapters.js';
 import { resolvePersonalHomeRuntimeLayout } from './personalHome/layout.js';
 import type { PersonalHomeRuntimeLayout } from './personalHome/layout.js';
@@ -895,6 +896,10 @@ async function backupRelayRuntimeInstallState(params: Readonly<{
     previousEnvText: string | null;
     previousStateText: string | null;
 }>> {
+    // The backup root is created beside the install root, which does not exist
+    // yet on a Home's first install. Owning that precondition here keeps it true
+    // for every caller-selected root (incumbent Personal Home or default lane).
+    await mkdir(params.installRoot, { recursive: true });
     const backupRoot = await mkdtemp(join(dirname(params.installRoot), '.relay-runtime-backup-'));
     const payloadBackupDir = join(backupRoot, 'payload');
     const migrationsBackupDir = join(backupRoot, 'migrations');
@@ -1503,6 +1508,13 @@ async function installOrUpdateRelayRuntimeLocalUnderMutationLocks(params: Readon
     let pendingPersonalHomeUpdateRecoveryRecord: PersonalHomeUpdateRecoveryRecordV1 | null = null;
 
     try {
+        if (params.purpose?.kind === 'personal-home') {
+            await assertPersonalHomeServerArtifactCapability({
+                payloadRoot: preparedPayload.payloadRoot,
+                provenance: { channel: params.channel, version: params.version ?? null },
+            });
+            await params.cleanupLegacyServiceBeforeInstall?.();
+        }
         if (params.purpose?.kind !== 'personal-home') {
             const migrated = await migrateInstallRootAfterCandidateBoundary();
             ownedRootMigration = migrated.owned;
@@ -2301,7 +2313,9 @@ export async function installOrUpdateRelayRuntimeLocal(
             });
             const installUnderHeldLocks = async () => {
                 await params.assertPersonalHomeMutationPrecondition?.();
-                await params.cleanupLegacyServiceBeforeInstall?.();
+                if (params.purpose?.kind !== 'personal-home') {
+                    await params.cleanupLegacyServiceBeforeInstall?.();
+                }
                 return installOrUpdateRelayRuntimeLocalUnderMutationLocks(params, rootMigrationSource);
             };
             if (params.purpose?.kind === 'personal-home') {

@@ -6,7 +6,8 @@ const en = {
     "editor": {
         "title": "Follow this session",
         "subtitle": "Get the updates that matter to you.",
-        "ownerSubtitle": "You own this session, so its updates always reach you."
+        "ownerSubtitle": "You own this session, so its updates always reach you.",
+        "externalAttachedOnly": "Background sync is off, so updates may arrive only while this session is attached."
     },
     "level": {
         "none": "No notifications",
@@ -25,6 +26,7 @@ const en = {
     "footer": "Following never changes who can access this session.",
     "settingsLink": "Notification settings…",
     "assignedExplanation": "Following because you were assigned",
+    "wakeEventExplanation": "Followed context changed, so Happier woke this Agent with the update.",
     "accessLost": "You no longer have access to this session.",
     "offline": "You're offline. Reconnect to change following.",
     "archived": "Following is paused while this session is archived.",
@@ -71,7 +73,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Segueix aquesta sessió",
             "subtitle": "Rep les actualitzacions que t’importen.",
-            "ownerSubtitle": "Ets propietari d’aquesta sessió, així que sempre en rebràs les novetats."
+            "ownerSubtitle": "Ets propietari d’aquesta sessió, així que sempre en rebràs les novetats.",
+            "externalAttachedOnly": "La sincronització en segon pla està desactivada, així que les actualitzacions poden arribar només mentre aquesta sessió estigui connectada."
         },
         "level": {
             "none": "Sense notificacions",
@@ -90,6 +93,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Seguir no canvia mai qui pot accedir a aquesta sessió.",
         "settingsLink": "Configuració de notificacions…",
         "assignedExplanation": "La segueixes perquè te l’han assignat",
+        "wakeEventExplanation": "El context seguit ha canviat, així que Happier ha despertat aquest agent amb l’actualització.",
         "accessLost": "Ja no tens accés a aquesta sessió.",
         "offline": "No tens connexió. Torna a connectar-te per canviar el seguiment.",
         "archived": "El seguiment està pausat mentre la sessió està arxivada.",
@@ -128,7 +132,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Dieser Sitzung folgen",
             "subtitle": "Erhalte die Updates, die dir wichtig sind.",
-            "ownerSubtitle": "Dir gehört diese Sitzung, daher erreichen dich ihre Updates immer."
+            "ownerSubtitle": "Dir gehört diese Sitzung, daher erreichen dich ihre Updates immer.",
+            "externalAttachedOnly": "Die Hintergrundsynchronisierung ist aus, daher kommen Updates möglicherweise nur an, während diese Sitzung verbunden ist."
         },
         "level": {
             "none": "Keine Benachrichtigungen",
@@ -147,6 +152,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Folgen ändert niemals, wer auf diese Sitzung zugreifen kann.",
         "settingsLink": "Benachrichtigungseinstellungen…",
         "assignedExplanation": "Du folgst, weil dir die Sitzung zugewiesen wurde",
+        "wakeEventExplanation": "Der verfolgte Kontext hat sich geändert, deshalb hat Happier diesen Agenten mit der Aktualisierung geweckt.",
         "accessLost": "Du hast keinen Zugriff mehr auf diese Sitzung.",
         "offline": "Du bist offline. Verbinde dich erneut, um das Folgen zu ändern.",
         "archived": "Das Folgen ist pausiert, solange diese Sitzung archiviert ist.",
@@ -185,7 +191,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Seguir esta sesión",
             "subtitle": "Recibe las novedades que te importan.",
-            "ownerSubtitle": "Esta sesión es tuya, así que siempre recibirás sus novedades."
+            "ownerSubtitle": "Esta sesión es tuya, así que siempre recibirás sus novedades.",
+            "externalAttachedOnly": "La sincronización en segundo plano está desactivada, así que las actualizaciones pueden llegar solo mientras esta sesión esté conectada."
         },
         "level": {
             "none": "Sin notificaciones",
@@ -204,6 +211,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Seguir nunca cambia quién puede acceder a esta sesión.",
         "settingsLink": "Ajustes de notificaciones…",
         "assignedExplanation": "La sigues porque se te asignó",
+        "wakeEventExplanation": "El contexto seguido ha cambiado, así que Happier despertó a este agente con la actualización.",
         "accessLost": "Ya no tienes acceso a esta sesión.",
         "offline": "No tienes conexión. Vuelve a conectarte para cambiar el seguimiento.",
         "archived": "El seguimiento está en pausa mientras esta sesión está archivada.",
@@ -242,7 +250,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Suivre cette session",
             "subtitle": "Recevez les nouvelles qui comptent pour vous.",
-            "ownerSubtitle": "Cette session vous appartient, ses mises à jour vous parviennent toujours."
+            "ownerSubtitle": "Cette session vous appartient, ses mises à jour vous parviennent toujours.",
+            "externalAttachedOnly": "La synchronisation en arrière-plan est désactivée : les mises à jour peuvent n’arriver que pendant que cette session est attachée."
         },
         "level": {
             "none": "Aucune notification",
@@ -261,6 +270,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Le suivi ne change jamais qui peut accéder à cette session.",
         "settingsLink": "Paramètres de notification…",
         "assignedExplanation": "Vous suivez cette session car elle vous a été attribuée",
+        "wakeEventExplanation": "Le contexte suivi a changé, donc Happier a réveillé cet agent avec la mise à jour.",
         "accessLost": "Vous n’avez plus accès à cette session.",
         "offline": "Vous êtes hors ligne. Reconnectez-vous pour modifier le suivi.",
         "archived": "Le suivi est suspendu tant que cette session est archivée.",
@@ -299,7 +309,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Segui questa sessione",
             "subtitle": "Ricevi gli aggiornamenti che ti interessano.",
-            "ownerSubtitle": "Questa sessione è tua, quindi i suoi aggiornamenti ti raggiungono sempre."
+            "ownerSubtitle": "Questa sessione è tua, quindi i suoi aggiornamenti ti raggiungono sempre.",
+            "externalAttachedOnly": "La sincronizzazione in background è disattivata, quindi gli aggiornamenti potrebbero arrivare solo mentre questa sessione è collegata."
         },
         "level": {
             "none": "Nessuna notifica",
@@ -318,6 +329,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Seguire non cambia mai chi può accedere a questa sessione.",
         "settingsLink": "Impostazioni notifiche…",
         "assignedExplanation": "Segui questa sessione perché ti è stata assegnata",
+        "wakeEventExplanation": "Il contesto seguito è cambiato, quindi Happier ha risvegliato questo agente con l’aggiornamento.",
         "accessLost": "Non hai più accesso a questa sessione.",
         "offline": "Sei offline. Riconnettiti per modificare il seguito.",
         "archived": "Il seguito è sospeso mentre questa sessione è archiviata.",
@@ -356,7 +368,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "このセッションをフォロー",
             "subtitle": "大切な更新を受け取ります。",
-            "ownerSubtitle": "このセッションはあなたのものなので、更新は常に届きます。"
+            "ownerSubtitle": "このセッションはあなたのものなので、更新は常に届きます。",
+            "externalAttachedOnly": "バックグラウンド同期がオフのため、このセッションが接続されている間のみ更新が届く場合があります。"
         },
         "level": {
             "none": "通知なし",
@@ -375,6 +388,7 @@ export const sessionFollowTranslations: Record<
         "footer": "フォローしても、このセッションにアクセスできる人は変わりません。",
         "settingsLink": "通知設定…",
         "assignedExplanation": "担当に割り当てられたためフォロー中",
+        "wakeEventExplanation": "フォロー中のコンテキストが変わったため、Happier がこのエージェントを更新とともに起動しました。",
         "accessLost": "このセッションへのアクセス権がなくなりました。",
         "offline": "オフラインです。再接続してフォロー設定を変更してください。",
         "archived": "このセッションのアーカイブ中はフォローが一時停止します。",
@@ -413,7 +427,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Obserwuj tę sesję",
             "subtitle": "Otrzymuj aktualizacje, które są dla Ciebie ważne.",
-            "ownerSubtitle": "Ta sesja należy do Ciebie, więc jej aktualizacje zawsze do Ciebie docierają."
+            "ownerSubtitle": "Ta sesja należy do Ciebie, więc jej aktualizacje zawsze do Ciebie docierają.",
+            "externalAttachedOnly": "Synchronizacja w tle jest wyłączona, więc aktualizacje mogą docierać tylko wtedy, gdy ta sesja jest podłączona."
         },
         "level": {
             "none": "Bez powiadomień",
@@ -432,6 +447,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Obserwowanie nigdy nie zmienia dostępu do tej sesji.",
         "settingsLink": "Ustawienia powiadomień…",
         "assignedExplanation": "Obserwujesz, ponieważ przypisano Ci tę sesję",
+        "wakeEventExplanation": "Śledzony kontekst się zmienił, więc Happier wybudził tego agenta wraz z aktualizacją.",
         "accessLost": "Nie masz już dostępu do tej sesji.",
         "offline": "Jesteś offline. Połącz się ponownie, aby zmienić obserwowanie.",
         "archived": "Obserwowanie jest wstrzymane, gdy sesja jest zarchiwizowana.",
@@ -470,7 +486,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Seguir esta sessão",
             "subtitle": "Recebe as atualizações que te interessam.",
-            "ownerSubtitle": "Esta sessão é tua, por isso as atualizações chegam-te sempre."
+            "ownerSubtitle": "Esta sessão é tua, por isso as atualizações chegam-te sempre.",
+            "externalAttachedOnly": "A sincronização em segundo plano está desativada, por isso as atualizações podem chegar apenas enquanto esta sessão estiver ligada."
         },
         "level": {
             "none": "Sem notificações",
@@ -489,6 +506,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Seguir nunca altera quem pode aceder a esta sessão.",
         "settingsLink": "Definições de notificações…",
         "assignedExplanation": "Estás a seguir porque a sessão te foi atribuída",
+        "wakeEventExplanation": "O contexto seguido mudou, por isso o Happier acordou este agente com a atualização.",
         "accessLost": "Já não tens acesso a esta sessão.",
         "offline": "Estás offline. Volta a ligar-te para alterar o seguimento.",
         "archived": "O seguimento está em pausa enquanto esta sessão está arquivada.",
@@ -527,7 +545,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "Подписаться на эту сессию",
             "subtitle": "Получайте важные для вас обновления.",
-            "ownerSubtitle": "Эта сессия принадлежит вам, поэтому её обновления всегда доходят до вас."
+            "ownerSubtitle": "Эта сессия принадлежит вам, поэтому её обновления всегда доходят до вас.",
+            "externalAttachedOnly": "Фоновая синхронизация выключена, поэтому обновления могут приходить только пока эта сессия подключена."
         },
         "level": {
             "none": "Без уведомлений",
@@ -546,6 +565,7 @@ export const sessionFollowTranslations: Record<
         "footer": "Подписка не меняет права доступа к этой сессии.",
         "settingsLink": "Настройки уведомлений…",
         "assignedExplanation": "Вы подписаны, потому что сессия назначена вам",
+        "wakeEventExplanation": "Отслеживаемый контекст изменился, поэтому Happier разбудил этого агента с обновлением.",
         "accessLost": "У вас больше нет доступа к этой сессии.",
         "offline": "Вы не в сети. Подключитесь, чтобы изменить подписку.",
         "archived": "Подписка приостановлена, пока сессия в архиве.",
@@ -584,7 +604,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "关注此会话",
             "subtitle": "接收对你重要的更新。",
-            "ownerSubtitle": "这个会话属于你，因此它的更新始终会送达。"
+            "ownerSubtitle": "这个会话属于你，因此它的更新始终会送达。",
+            "externalAttachedOnly": "后台同步已关闭，因此只有在此会话处于连接状态时才可能收到更新。"
         },
         "level": {
             "none": "不通知",
@@ -603,6 +624,7 @@ export const sessionFollowTranslations: Record<
         "footer": "关注不会改变谁可以访问此会话。",
         "settingsLink": "通知设置…",
         "assignedExplanation": "因分配给你而关注",
+        "wakeEventExplanation": "关注的上下文发生变化，因此 Happier 用该更新唤醒了此智能体。",
         "accessLost": "你已无权访问此会话。",
         "offline": "你已离线。请重新连接以更改关注设置。",
         "archived": "此会话归档期间，关注将暂停。",
@@ -641,7 +663,8 @@ export const sessionFollowTranslations: Record<
         "editor": {
             "title": "關注此工作階段",
             "subtitle": "接收對你重要的更新。",
-            "ownerSubtitle": "這個工作階段屬於你，因此它的更新一定會送達。"
+            "ownerSubtitle": "這個工作階段屬於你，因此它的更新一定會送達。",
+            "externalAttachedOnly": "背景同步已關閉，因此只有在此工作階段處於連線狀態時才可能收到更新。"
         },
         "level": {
             "none": "不通知",
@@ -660,6 +683,7 @@ export const sessionFollowTranslations: Record<
         "footer": "關注不會改變誰可以存取此工作階段。",
         "settingsLink": "通知設定…",
         "assignedExplanation": "因指派給你而關注",
+        "wakeEventExplanation": "追蹤的內容有變動，因此 Happier 以該更新喚醒了此代理程式。",
         "accessLost": "你已無權存取此工作階段。",
         "offline": "你已離線。請重新連線以變更關注設定。",
         "archived": "此工作階段封存期間，關注將暫停。",

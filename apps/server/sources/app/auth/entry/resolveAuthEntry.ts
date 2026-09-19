@@ -3,6 +3,7 @@ import {
     AuthEntryProjectionV1Schema,
     type AuthEntryProjectionV1,
     type AuthEntryRequestV1,
+    type TeamEntryUnavailableReasonV1,
 } from '@happier-dev/protocol';
 import { readServerEnabledBit } from '@happier-dev/protocol';
 import type { AuthTokenAuthenticationEvidenceV1 } from '@happier-dev/protocol';
@@ -126,22 +127,29 @@ function unavailableProjection(reason: 'not_account_service' | 'authentication_p
     });
 }
 
-function unavailableInvitationProjection(): AuthEntryProjectionV1 {
+/**
+ * Why a Team or invitation destination is unavailable, said only as far as the
+ * request has earned. `entry_not_available` is the non-enumerating default and
+ * is passed explicitly at every site that must stay opaque; a named reason is
+ * only chosen where the request already proved it may see this destination, so
+ * naming it discloses nothing the ordinary admission page would not.
+ */
+function unavailableInvitationProjection(reason: TeamEntryUnavailableReasonV1): AuthEntryProjectionV1 {
     return AuthEntryProjectionV1Schema.parse({
         v: 1,
         state: 'unavailable',
         scope: { kind: 'invitation' },
-        reason: 'entry_not_available',
+        reason,
         autoRedirect: null,
     });
 }
 
-function unavailableTeamProjection(): AuthEntryProjectionV1 {
+function unavailableTeamProjection(reason: TeamEntryUnavailableReasonV1): AuthEntryProjectionV1 {
     return AuthEntryProjectionV1Schema.parse({
         v: 1,
         state: 'unavailable',
         scope: { kind: 'team' },
-        reason: 'entry_not_available',
+        reason,
         autoRedirect: null,
     });
 }
@@ -157,6 +165,24 @@ function hasUsableTeamAuthentication(policy: ResolvedTeamAuthenticationPolicyInT
     return policy.resolution.status === 'inherit'
         || (policy.resolution.status === 'restricted'
             && policy.resolution.choices.some((choice) => choice.availability === 'usable'));
+}
+
+/**
+ * The reason a visitor who is already signed in to this Home may be told when a
+ * Team refuses entry for its authentication policy alone.
+ *
+ * A `restricted` policy with no currently usable choice is the Team insisting on
+ * a sign-in this visitor cannot use — exactly what `sso_required` says. An
+ * anonymous visitor has proved nothing, and an unresolved policy is not a
+ * statement about the visitor at all, so both keep the opaque default.
+ */
+function teamEntryPolicyRefusalReason(
+    policy: ResolvedTeamAuthenticationPolicyInTx,
+    principal: AuthEntryPrincipal | null,
+): TeamEntryUnavailableReasonV1 {
+    return principal !== null && policy.resolution.status === 'restricted'
+        ? 'sso_required'
+        : 'entry_not_available';
 }
 
 function defaultMethodDisplayName(id: string): string {
@@ -258,7 +284,7 @@ async function resolveTeamAuthEntry(
     const { env, principal, emailDeliveryReady } = request;
     return await inTx(async (tx) => {
         const teamContext = await resolveTeamAuthEntryContextInTx(tx, { teamId });
-        if (teamContext === null) return unavailableTeamProjection();
+        if (teamContext === null) return unavailableTeamProjection('entry_not_available');
         const [policy, homeMethods] = await Promise.all([
             resolveTeamAuthenticationPolicyInTx(tx, {
                 env,
@@ -268,7 +294,9 @@ async function resolveTeamAuthEntry(
             }),
             resolveEffectiveHomeAuthMethodsInTx(tx, { env, emailDeliveryReady }),
         ]);
-        if (!hasUsableTeamAuthentication(policy)) return unavailableTeamProjection();
+        if (!hasUsableTeamAuthentication(policy)) {
+            return unavailableTeamProjection(teamEntryPolicyRefusalReason(policy, principal));
+        }
 
         const account = await resolveAuthenticatedAccountPresentationInTx(tx, principal);
 
@@ -292,7 +320,7 @@ async function resolveTeamAuthEntry(
                 autoRedirect: null,
             });
         }
-        if (homeMethods.status !== 'ready') return unavailableTeamProjection();
+        if (homeMethods.status !== 'ready') return unavailableTeamProjection('entry_not_available');
 
         const allowedHomeMethodIds = policy.resolution.status === 'restricted'
             ? new Set(policy.resolution.choices.flatMap((choice) =>
@@ -348,7 +376,7 @@ async function resolveTeamAuthEntry(
             autoRedirect: null,
         } as const;
         if (AUTH_ENTRY_UTF8_ENCODER.encode(JSON.stringify(projection)).byteLength
-            > AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1) return unavailableTeamProjection();
+            > AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1) return unavailableTeamProjection('entry_not_available');
         return AuthEntryProjectionV1Schema.parse(projection);
     });
 }
@@ -376,7 +404,9 @@ async function resolveInvitationAuthEntryInTx(
             admission,
         }),
     ]);
-    if (!hasUsableTeamAuthentication(policy)) return unavailableInvitationProjection();
+    if (!hasUsableTeamAuthentication(policy)) {
+        return unavailableInvitationProjection(teamEntryPolicyRefusalReason(policy, principal));
+    }
 
     const account = await resolveAuthenticatedAccountPresentationInTx(tx, principal);
 
@@ -396,7 +426,7 @@ async function resolveInvitationAuthEntryInTx(
             autoRedirect: null,
         });
     }
-    if (homeMethods.status !== 'ready') return unavailableInvitationProjection();
+    if (homeMethods.status !== 'ready') return unavailableInvitationProjection('entry_not_available');
 
     const currentAccountRecipientStatus = principal && invitation.recipientEmailNormalized
         ? await tx.accountEmail.findUnique({
@@ -471,7 +501,7 @@ async function resolveInvitationAuthEntryInTx(
         autoRedirect: null,
     } as const;
     if (AUTH_ENTRY_UTF8_ENCODER.encode(JSON.stringify(projection)).byteLength
-        > AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1) return unavailableInvitationProjection();
+        > AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1) return unavailableInvitationProjection('entry_not_available');
     return AuthEntryProjectionV1Schema.parse(projection);
 }
 
@@ -484,9 +514,11 @@ async function resolveInvitationAuthEntry(
 ): Promise<AuthEntryProjectionV1> {
     return await inTx(async (tx) => {
         const invitation = await resolveTeamInvitationAuthEntryContextInTx(tx, { token });
+        // The bearer is the proof of visibility here: naming a spent, revoked or
+        // unknown invitation tells a holder what to do next and names no Team.
         return invitation
             ? await resolveInvitationAuthEntryInTx(tx, invitation, env, emailDeliveryReady, principal, home)
-            : unavailableInvitationProjection();
+            : unavailableInvitationProjection('invitation_unavailable');
     });
 }
 
@@ -502,7 +534,7 @@ export async function resolveAuthEntry(
     // The auth-entry method rows below remain live catalog projections rather than feature rows.
     const homeFeatures = resolveFeaturesFromEnv(context.env);
     if (input.scope.kind === 'team') {
-        if (readServerEnabledBit(homeFeatures, 'teams') !== true) return unavailableTeamProjection();
+        if (readServerEnabledBit(homeFeatures, 'teams') !== true) return unavailableTeamProjection('entry_not_available');
         const home = await resolveJoinScreenHomeIdentity(context.env);
         return await resolveTeamAuthEntry(input.scope.teamId, {
             env: context.env,
@@ -517,7 +549,7 @@ export async function resolveAuthEntry(
     }
     if (input.scope.kind === 'invitation') {
         if (readServerEnabledBit(homeFeatures, 'teams') !== true) {
-            return unavailableInvitationProjection();
+            return unavailableInvitationProjection('entry_not_available');
         }
         const home = await resolveJoinScreenHomeIdentity(context.env);
         return await resolveInvitationAuthEntry(
@@ -536,9 +568,9 @@ export async function resolveAuthEntry(
                 purpose: 'verify_native_email',
                 token: verificationToken,
             });
-            if (operation?.purpose !== 'verify_native_email') return unavailableInvitationProjection();
+            if (operation?.purpose !== 'verify_native_email') return unavailableInvitationProjection('entry_not_available');
             if (operation.consumer.kind === 'team_invitation') {
-                if (readServerEnabledBit(homeFeatures, 'teams') !== true) return unavailableInvitationProjection();
+                if (readServerEnabledBit(homeFeatures, 'teams') !== true) return unavailableInvitationProjection('entry_not_available');
                 const invitation = await resolveTeamInvitationAuthEntryReferenceContextInTx(tx, operation.consumer);
                 return invitation
                     ? await resolveInvitationAuthEntryInTx(
@@ -549,9 +581,9 @@ export async function resolveAuthEntry(
                         context.principal ?? null,
                         home,
                     )
-                    : unavailableInvitationProjection();
+                    : unavailableInvitationProjection('invitation_unavailable');
             }
-            if (operation.consumer.kind !== 'fresh_account') return unavailableInvitationProjection();
+            if (operation.consumer.kind !== 'fresh_account') return unavailableInvitationProjection('entry_not_available');
             const homeMethods = await resolveEffectiveHomeAuthMethodsInTx(tx, {
                 env: context.env,
                 emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),

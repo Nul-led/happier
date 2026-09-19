@@ -11,8 +11,9 @@ import { motionTokens } from '@/components/ui/motion/motionTokens';
 import { useReducedMotionPreference } from '@/hooks/ui/useReducedMotionPreference';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import type { SessionHumanPresenceViewer } from '@/sync/domains/session/humanPresence/sessionHumanPresenceStore';
+
+import { formatSessionPresenceViewerNames } from './sessionPresenceNames';
 
 const AVATAR_SIZE = 28;
 /** One de-emphasis for retained last-known presence, shared with the Collaboration summary row. */
@@ -58,7 +59,9 @@ export function SessionViewerFacepile({ viewers, stale, attentionLabel, onPress 
     const [hovered, setHovered] = React.useState(false);
     const [focused, setFocused] = React.useState(false);
     if (viewers.length === 0) return null;
-    const names = viewers.map((viewer) => formatAccountDisplayName(viewer.account) ?? t('session.collaboration.unnamed')).join(', ');
+    // The ring colour is not perceivable to every viewer, so who is typing has to
+    // reach the accessible name through the shared presence-name owner.
+    const names = formatSessionPresenceViewerNames(viewers, { stale });
     const label = `${t('session.collaboration.title')}, ${t('session.collaboration.viewingNow')}, ${viewers.length}: ${names}${stale ? `. ${t('session.collaboration.stale')}` : ''}${attentionLabel ? `. ${attentionLabel}` : ''}`;
     return <Pressable
         ref={anchorRef}

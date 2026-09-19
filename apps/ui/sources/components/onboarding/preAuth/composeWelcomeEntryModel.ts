@@ -41,7 +41,6 @@ export type WelcomeEntryModel = Readonly<{
     notice?: Readonly<{
         kind: 'service_loading' | 'service_unavailable' | 'service_unsupported' | 'service_methodless';
         serviceName: string | null;
-        hasUsableHomeMethods: boolean;
     }>;
 }>;
 
@@ -174,15 +173,21 @@ export function composeWelcomeEntryModel(input: ComposeWelcomeEntryModelInput): 
         if (dominantIndex > 0) unique.unshift(unique.splice(dominantIndex, 1)[0]!);
     }
 
-    const notice = input.serviceCatalogState.kind === 'loading'
-        ? { kind: 'service_loading' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
-        : input.serviceCatalogState.kind === 'unavailable'
-            ? { kind: 'service_unavailable' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
-            : input.serviceCatalogState.kind === 'unsupported'
-                ? { kind: 'service_unsupported' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
-                : input.serviceCatalogState.kind === 'methodless'
-                    ? { kind: 'service_methodless' as const, serviceName: input.serviceCatalogState.hintName ?? null, hasUsableHomeMethods: input.homeMethods.length > 0 }
-                    : undefined;
+    // `choose_sign_in_service` is already an ordinary action row whenever the
+    // navigation allows it, so the notice carries only what it renders: which
+    // service failed, and how.
+    const noticeKindByCatalogState = {
+        loading: 'service_loading',
+        unavailable: 'service_unavailable',
+        unsupported: 'service_unsupported',
+        methodless: 'service_methodless',
+    } as const;
+    const noticeState = input.serviceCatalogState.kind === 'ready' || input.serviceCatalogState.kind === 'not_offered'
+        ? null
+        : input.serviceCatalogState;
+    const notice = noticeState === null
+        ? undefined
+        : { kind: noticeKindByCatalogState[noticeState.kind], serviceName: noticeState.hintName ?? null };
 
     return {
         heading: input.userHistory,

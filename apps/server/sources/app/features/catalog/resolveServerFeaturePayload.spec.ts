@@ -83,30 +83,26 @@ describe("resolveServerFeaturePayload", () => {
         )).toBe(false);
     });
 
-    it("keeps credential resources fail-closed until the operator enables the consumed vertical", () => {
+    it("publishes credential resources by default and keeps them dependent on Teams", () => {
         const path = ["features", "teams", "credentialResources", "enabled"];
-        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(false);
-        expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1" }, serverFeatureRegistry), path)).toBe(true);
+        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(true);
         expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS__ENABLED: "0" }, serverFeatureRegistry), path)).toBe(false);
         expect(readOptionalPath(resolveServerFeaturePayload({ HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "0" }, serverFeatureRegistry), path)).toBe(false);
     });
 
-    it("keeps external credential API access default-off and dependent on credential resources", () => {
+    it("publishes external credential API access by default and keeps it dependent on credential resources", () => {
         const path = ["features", "teams", "credentialResources", "externalApi", "enabled"];
-        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(false);
+        expect(readOptionalPath(resolveServerFeaturePayload({}, serverFeatureRegistry), path)).toBe(true);
         expect(readOptionalPath(resolveServerFeaturePayload({
-            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "0",
         }, serverFeatureRegistry), path)).toBe(false);
         expect(readOptionalPath(resolveServerFeaturePayload({
-            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
-            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
-        }, serverFeatureRegistry), path)).toBe(true);
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "0",
+        }, serverFeatureRegistry), path)).toBe(false);
     });
 
     it("publishes external credential API deployment readiness through the canonical feature payload", () => {
         const payload = resolveServerFeaturePayload({
-            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
-            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
             HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test/prefix/",
         }, serverFeatureRegistry);
         expect(payload.capabilities.teams?.credentialResources.externalApi).toEqual({
@@ -376,20 +372,20 @@ describe("resolveServerFeaturePayload", () => {
         expect(readOptionalPath(payload, ["features", "sessions", "folders", "enabled"])).toBe(false);
     });
 
-    it("enables the development Runner surface only when explicitly enabled and every canonical dependency is enabled", () => {
-        const enabled = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" }, serverFeatureRegistry);
-        expect(readOptionalPath(enabled, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(true);
-        const disabled = resolveServerFeaturePayload({}, serverFeatureRegistry);
-        expect(readOptionalPath(disabled, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
-        const withoutDrafts = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1", HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED: "0" }, serverFeatureRegistry);
+    it("publishes the Runner surface by default while every canonical dependency still gates it", () => {
+        const byDefault = resolveServerFeaturePayload({}, serverFeatureRegistry);
+        expect(readOptionalPath(byDefault, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(true);
+        const operatorDisabled = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "0" }, serverFeatureRegistry);
+        expect(readOptionalPath(operatorDisabled, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
+        const withoutDrafts = resolveServerFeaturePayload({ HAPPIER_FEATURE_SESSIONS_DRAFTS__ENABLED: "0" }, serverFeatureRegistry);
         expect(readOptionalPath(withoutDrafts, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
         const withoutSessions = resolveServerFeaturePayload(
-            { HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" },
+            {},
             [...serverFeatureRegistry, fromPartial({ features: { sessions: { enabled: false } } })],
         );
         expect(readOptionalPath(withoutSessions, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);
         const withoutMachines = resolveServerFeaturePayload(
-            { HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: "1" },
+            {},
             [...serverFeatureRegistry, fromPartial({ features: { machines: { enabled: false } } })],
         );
         expect(readOptionalPath(withoutMachines, ["features", "sessions", "ephemeralRunner", "enabled"])).toBe(false);

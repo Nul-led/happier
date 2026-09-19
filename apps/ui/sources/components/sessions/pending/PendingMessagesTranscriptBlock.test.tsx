@@ -1106,7 +1106,9 @@ describe('PendingMessagesTranscriptBlock', () => {
     });
 
     it.each([
-        ['delivery_outcome_uncertain', 'Delivery status needs review'],
+        // An effect may already have started, so this reason gets its own sentence instead of the
+        // generic `unknown` label ("Delivery status needs review"), which reads like nothing was sent.
+        ['delivery_outcome_uncertain', 'This may already have reached the agent — check before resending'],
     ] as const)('keeps effect-possible blocked reason %s visible with truthful manual recovery actions', async (
         pendingDeliveryBlockedReason,
         expectedLabel,

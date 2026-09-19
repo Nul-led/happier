@@ -2,9 +2,9 @@ import { readSessionConversationsFeatureEnv } from './catalog/readFeatureEnv';
 import type { FeaturesPayloadDelta } from './types';
 
 /**
- * Publishes the single fail-closed server gate for Session conversations.
- * Dependency closure with Session collaboration is applied centrally when the
- * complete payload is assembled.
+ * Publishes the single server bit for Session conversations, on by default with
+ * the env variable as the operator opt-out. Dependency closure with Session
+ * collaboration is applied centrally when the complete payload is assembled.
  */
 export function resolveSessionConversationsFeature(env: NodeJS.ProcessEnv): FeaturesPayloadDelta {
     return {

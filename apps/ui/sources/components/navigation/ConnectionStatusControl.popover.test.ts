@@ -34,6 +34,8 @@ type ActionLike = {
     subtitle?: unknown;
     accessibilityLabel?: unknown;
     icon?: unknown;
+    selected?: boolean;
+    disabled?: boolean;
     onPress?: () => void;
 };
 type ActionListSectionProps = {
@@ -800,6 +802,27 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(findAction('account-link-current-home')).toBeUndefined();
     });
 
+    it('keeps a retryable notice in the popover when sign-in-service discovery fails', async () => {
+        accountEntryState.options = {
+            effectiveSignInService: { kind: 'no_target_default', endpoint: 'https://accounts.example.test' },
+            endpoint: { url: 'https://accounts.example.test', displayName: 'Acme', source: 'user' },
+            status: 'unavailable',
+            discovery: null,
+            transport: {},
+            retry: accountEntryState.options.retry,
+        };
+        const ConnectionStatusControl = await importConnectionStatusControl();
+        const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+
+        await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+
+        const notice = findAction('account-service-notice');
+        expect(notice).toBeDefined();
+        expect(notice?.subtitle).toContain('Acme');
+        notice?.onPress?.();
+        expect(accountEntryState.options.retry).toHaveBeenCalledTimes(1);
+    });
+
     it('uses the shared popover autofocus and trigger focus-return contract', async () => {
         const ConnectionStatusControl = await importConnectionStatusControl();
         const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
@@ -878,7 +901,7 @@ describe('ConnectionStatusControl (native popover config)', () => {
         });
     });
 
-    it('puts the Home list first and keeps technical connection facts behind one disclosure', async () => {
+    it('puts live service health with the Home and keeps only technical connection facts behind one disclosure', async () => {
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const activeProfile = profiles.listServerProfiles().find((profile) => profile.name === 'Happier Cloud');
         if (!activeProfile) throw new Error('expected default Happier Cloud profile');
@@ -918,8 +941,10 @@ describe('ConnectionStatusControl (native popover config)', () => {
             orderedSections.indexOf('connection-details-disclosure'),
         );
         expect(tree!.root.findAllByProps({ testID: 'connection-popover-relay' })).toHaveLength(0);
-        expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' })).toHaveLength(0);
-        expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' })).toHaveLength(0);
+        const realtimeRowCount = tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length;
+        const machineRowCount = tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length;
+        expect(realtimeRowCount).toBeGreaterThan(0);
+        expect(machineRowCount).toBeGreaterThan(0);
         expect(screen.getTextContent()).not.toContain('iroh-endpoint-123');
 
         await act(async () => {
@@ -929,8 +954,8 @@ describe('ConnectionStatusControl (native popover config)', () => {
         expect(screen.findByTestId('connection-details-disclosure')?.props.accessibilityState).toEqual({ expanded: true });
         expect(screen.getTextContent()).toContain('systemStatus.transport.irohCurrent');
         expect(screen.getTextContent()).not.toContain('systemStatus.server.activeServer');
-        expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' }).length).toBeGreaterThan(0);
-        expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' }).length).toBeGreaterThan(0);
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-realtime' })).toHaveLength(realtimeRowCount);
+        expect(tree!.root.findAllByProps({ testID: 'connection-popover-machines' })).toHaveLength(machineRowCount);
         expect(screen.getTextContent()).toContain('iroh-endpoint-123');
         expect(screen.getTextContent()).toContain('relay.example.test');
         expect(screen.getTextContent()).not.toContain('connectionStatus.labels.transport');
@@ -1198,6 +1223,14 @@ describe('ConnectionStatusControl (native popover config)', () => {
 
             const companyItem = findAction(`target-use-server-${company.id}`);
             expect(companyItem).toBeTruthy();
+            const localItem = findAction(`target-use-server-${local.id}`);
+            expect(localItem).toMatchObject({ selected: true });
+            expect(localItem?.disabled).not.toBe(true);
+
+            await act(async () => {
+                localItem?.onPress?.();
+            });
+            expect(connectionMocks.switchConnectionToActiveServer).not.toHaveBeenCalled();
 
             await act(async () => {
                 companyItem?.onPress?.();
@@ -1305,6 +1338,33 @@ describe('ConnectionStatusControl (native popover config)', () => {
             await act(async () => {
                 screen.tree.unmount();
             });
+        } finally {
+            if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+            else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;
+        }
+    });
+
+    it('uses the canonical unavailable label for a signed-in secondary Home projection error', async () => {
+        const previousScope = process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
+        process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = `test_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+
+        try {
+            vi.resetModules();
+            const profiles = await import('@/sync/domains/server/serverProfiles');
+            const secondary = await profiles.upsertServerProfile({ serverUrl: 'https://secondary.example.test', name: 'Secondary' });
+            machineListStatusState.byServerId = { [secondary.id]: 'error' };
+
+            const ConnectionStatusControl = await importConnectionStatusControl();
+            const screen = await renderScreen(React.createElement(ConnectionStatusControl, { variant: 'sidebar' }));
+            await act(async () => pressTestInstanceAsync(screen.findByProps({ accessibilityRole: 'button' })));
+            await vi.waitFor(() => {
+                expect(tokenStorageMock.getCredentialsForServerUrl).toHaveBeenCalledWith(secondary.serverUrl, { serverId: secondary.id });
+            });
+
+            expect(findAction(`target-use-server-${secondary.id}`)?.subtitle)
+                .toBe('connectionStatus.summary.unavailable');
+
+            await act(async () => screen.tree.unmount());
         } finally {
             if (previousScope === undefined) delete process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE;
             else process.env.EXPO_PUBLIC_HAPPY_STORAGE_SCOPE = previousScope;

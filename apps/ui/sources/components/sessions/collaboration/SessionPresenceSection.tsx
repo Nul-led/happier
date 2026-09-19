@@ -9,8 +9,8 @@ import { useMountedRef } from '@/hooks/ui/useMountedRef';
 import { t } from '@/text';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useSessionHumanPresence } from '@/sync/domains/session/humanPresence/useSessionHumanPresence';
-import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { STALE_PRESENCE_OPACITY } from './SessionViewerFacepile';
+import { formatSessionPresenceViewerNames } from './sessionPresenceNames';
 
 const styles = StyleSheet.create({
     // Retained last-known rows are de-emphasized exactly like the header
@@ -36,12 +36,9 @@ export function SessionPresenceSection(target: SessionAddress) {
     const status = presence.status === 'stale' ? t('session.collaboration.stale')
         : presence.status === 'unavailable' ? t('session.collaboration.unavailable')
             : presence.status === 'connecting' ? t('session.collaboration.connecting')
-                : hasViewers ? presence.viewers.map((viewer) => {
-                    const name = formatAccountDisplayName(viewer.account) ?? t('session.collaboration.unnamed');
-                    return viewer.typing ? `${name} · ${t('session.collaboration.typing')}` : name;
-                }).join(', ')
+                : hasViewers ? formatSessionPresenceViewerNames(presence.viewers)
                     : t('session.collaboration.justYou');
-    const names = presence.viewers.map((viewer) => formatAccountDisplayName(viewer.account) ?? t('session.collaboration.unnamed')).join(', ');
+    const names = formatSessionPresenceViewerNames(presence.viewers, { stale: true });
     const openViewers = async () => {
         const { SessionPresenceViewerList } = await import('./SessionPresenceViewerList');
         if (!mounted.current || currentTarget.current.serverId !== target.serverId || currentTarget.current.sessionId !== target.sessionId) return;
@@ -63,7 +60,11 @@ export function SessionPresenceSection(target: SessionAddress) {
         <View ref={summaryAnchor} tabIndex={-1} testID="session-presence-summary-anchor"
             style={presence.status === 'stale' ? styles.stale : undefined}>
             <Item testID="session-presence-summary" title={t('session.collaboration.viewingNow')}
-                subtitle={<Text testID="session-presence-status">{presence.status === 'stale' && hasViewers ? `${names} · ${status}` : status}</Text>}
+                // Presence changes while the person is already reading this region, so
+                // the change has to be announced where they navigated to, not only in
+                // the header they may never reach.
+                subtitle={<Text testID="session-presence-status" accessibilityLiveRegion="polite"
+                >{presence.status === 'stale' && hasViewers ? `${names} · ${status}` : status}</Text>}
                 icon={<Icon name="users" size={ICON_SIZE.xl} color={theme.colors.text.secondary} />}
                 showChevron={hasViewers} onPress={hasViewers ? () => { void openViewers(); } : undefined}
                 accessibilityLabel={`${t('session.collaboration.viewingNow')}: ${names}${names ? '. ' : ''}${status}`}

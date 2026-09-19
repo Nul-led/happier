@@ -60,10 +60,55 @@ describe('exact invoking-surface continuation', () => {
         await screen.unmount();
 
         screen = await renderScreen(<AccountServiceContinuation input={input}
-            result={{ kind: 'failure', stage: 'refresh', code: { source: 'directory', code: 'account_disabled' }, recovery: 'stop', accountCredentialCommitted: true, homeCredentialCommitted: false }}
+            result={{ kind: 'failure', stage: 'refresh', code: { source: 'directory', code: 'account-disabled' }, recovery: 'stop', accountCredentialCommitted: true, homeCredentialCommitted: false }}
             onResult={() => {}} onBack={() => {}} />);
         expect(screen.getTextContent()).toContain('This account is disabled');
         expect(screen.getTextContent()).not.toContain('Open Account settings to continue connecting the Home');
+    });
+
+    it('offers a rejected approval the same fresh attempt expiry already gets', async () => {
+        const input = { service: fixture.service,
+            session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
+            intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
+        screen = await renderScreen(<AccountServiceContinuation input={input}
+            result={{ kind: 'failure', stage: 'enroll', code: { source: 'home', code: 'rejected' }, recovery: 'stop', accountCredentialCommitted: true, homeCredentialCommitted: false }}
+            onResult={() => {}} onBack={() => {}} />);
+        expect(screen.getTextContent()).toContain('Start Again');
+    });
+
+    it('tells the waiting user what to do and confirms the sign-in survived stop-waiting', async () => {
+        const input = { service: fixture.service,
+            session: new AccountDirectorySession({ endpoint: fixture.service.endpointUrl, serverIdentityId: fixture.service.serverIdentityId }, { capability: fixture.service.capability }),
+            intent: { kind: 'enroll' as const, homeServerIdentityId: fixture.home.homeServerIdentityId } };
+        let backs = 0;
+        screen = await renderScreen(<AccountServiceContinuation input={input}
+            result={{ kind: 'approval_required', homeServerIdentityId: fixture.home.homeServerIdentityId, expiresAtMs: Date.now() + 300_000 }}
+            onResult={() => {}} onBack={() => { backs += 1; }} />);
+        expect(screen.getTextContent()).toContain('Approve this sign-in from your other signed-in device');
+        // The Home name and the expiry stay as the secondary line they already were.
+        expect(screen.getTextContent()).toContain('·');
+
+        await screen.pressByTestIdAsync('account-service-continuation-approval_required-action');
+        expect(backs).toBe(0);
+        expect(screen.getTextContent()).toContain('Stopped waiting for approval');
+        expect(screen.getTextContent()).toContain('Your sign-in is still saved');
+
+        await screen.pressByTestIdAsync('account-service-approval-stopped-action');
+        expect(backs).toBe(1);
+    });
+
+    it('names each choosable Home by address and marks the preferred one', async () => {
+        const { service } = fixture;
+        const input = { service, session: new AccountDirectorySession({ endpoint: service.endpointUrl, serverIdentityId: service.serverIdentityId }, { capability: service.capability }),
+            intent: { kind: 'enter' as const, target: { kind: 'automatic' as const } } };
+        const other = { ...fixture.home, homeServerIdentityId: 'srv_other', label: 'Other Home', canonicalServerUrl: 'https://other.example.test', preferred: false };
+        screen = await renderScreen(<AccountServiceContinuation input={input}
+            result={{ kind: 'choose_home', homes: [{ ...fixture.home, preferred: true }, other] }}
+            onResult={() => {}} onBack={() => {}} />);
+        const text = screen.getTextContent();
+        expect(text).toContain(fixture.home.canonicalServerUrl);
+        expect(text).toContain('https://other.example.test');
+        expect(text).toContain('Preferred');
     });
 
     it('opens exact Home authentication with the current coordinator result', async () => {

@@ -67,7 +67,7 @@ Setup configures this computer. If the computer was already configured and later
 happier doctor repair
 ```
 
-If you log in from the mobile app with **Login with secret key instead**, the wizard continues the same onboarding flow after sign-in instead of sending you to a separate settings page.
+If you log in from the mobile app with **Restore with Recovery Key Instead**, the wizard continues the same onboarding flow after sign-in instead of sending you to a separate settings page.
 
 ### Create a Personal Home (optional)
 
@@ -86,6 +86,31 @@ happier home create --ssh user@host
 Both forms install or reuse the same managed runtime and perform the atomic Personal Home bootstrap. An Iroh-only descriptor is sufficient for reachability, so public ingress is optional. Personal Home data is plaintext at rest on its host; choose a computer you trust.
 
 Use `happier home pair-device` to create a new short-lived device invite. Use `happier home link-account` to make the Home discoverable through your signed-in Account Service.
+
+#### What first run looks like
+
+The wizard shows **Preparing your Personal Home** and narrates the two stages it
+actually has: *Getting your local Home ready*, then *Your Home is ready. Preparing
+this computer in the background* — the Home exists before this computer is finished
+being set up, so an interruption after the first stage does not cost you the Home.
+It ends on *Your Home is ready*.
+
+**Use another Home** is offered throughout, not only on failure. That matters on a
+second computer: if you already have a Home, you never have to let this one create
+another to get past the screen. Its subtitle is explicit — *Leave this local Home
+untouched and choose from your Homes.*
+
+If this computer already hosts a local Home, the wizard stops and asks rather than
+guessing: *Happier found an existing local Home on this computer. Choose how to
+continue.* **Use this local Home** verifies its access and secure signup without
+changing your focused Home; **Use another Home** leaves it alone.
+
+When setup cannot continue, it names which of the four situations you are in rather
+than showing one generic error: the local Home needs attention before it can start,
+Home authentication needs attention, an existing local Home needs a choice, or the
+Personal Home was erased. The erased case says so plainly — the data is gone,
+nothing here can recover it, and the way forward is a new Personal Home or a
+different Home.
 
 ### Operate a generic Relay runtime (advanced)
 
@@ -175,9 +200,13 @@ User guide: [Relay access](/apps/relay-access).
 If you are using the **web app on HTTPS** and your Relay is `http://...`, your browser may block the probe as mixed-content.
 In that case, use the desktop app or expose your Relay over HTTPS (for example via Tailscale Serve/Funnel or a reverse proxy).
 
-The inline **Use a different Relay URL** action always opens the same manual Relay URL step, so you do not have to remember a separate settings page.
+The inline **Use a different Home** action always opens the same manual **Home address** step, so you do not have to remember a separate settings page.
 
-### “Login with secret key instead”
+### “Restore with Recovery Key Instead”
 
-If you are restoring a device that already has an account, the wizard sends you to the secret-key login step when you choose **Login with secret key instead**.
+If you are restoring a device that already has an account, the wizard sends you to the recovery-key step when you choose **Restore with Recovery Key Instead**.
 That path is separate from the QR-code login flow and is meant for account/device restoration, not terminal approval.
+
+## Related
+
+- [Signing in](/getting-started/sign-in) — the Welcome screen this wizard opens with, and the CLI equivalent.

@@ -36,11 +36,16 @@ afterEach(async () => {
     provision.account.mockReset();
 });
 
+/**
+ * Fills whatever this creation step actually asks for. A Home that proves the
+ * mailbox first renders no password fields, because the Account is created on
+ * the verification landing rather than here.
+ */
 async function fillProvisionForm(rendered: NonNullable<typeof screen>) {
     await act(async () => {
         rendered.findByTestId('email-password-email')!.props.onChangeText(' Person@Example.test ');
-        rendered.findByTestId('email-password-password')!.props.onChangeText('a sufficiently long password');
-        rendered.findByTestId('email-password-confirm')!.props.onChangeText('a sufficiently long password');
+        rendered.findByTestId('email-password-password')?.props.onChangeText('a sufficiently long password');
+        rendered.findByTestId('email-password-confirm')?.props.onChangeText('a sufficiently long password');
     });
 }
 

@@ -95,6 +95,25 @@ describe('TeamMemberAddScreen search', () => {
         await waitForTestId(screen, 'team-member-add-candidate:account-grace');
     });
 
+    it('names the audience whose history the admission choice grants', async () => {
+        const serverId = await harness.addHome({
+            name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'account-ada', teamsEnabled: true,
+        });
+        await harness.selectHomes([serverId]);
+        harness.answer(serverId, TEAM_GET_PATH, {
+            body: teamSummaryFixture({ capabilities: teamCapabilitiesFixture({ manageMembers: true }) }),
+        });
+
+        const screen = await renderAddMember(serverId);
+        await waitForTestId(screen, 'team-member-add-history:from_membership');
+
+        // An irreversible-at-mint horizon must say which audience it opens history
+        // to. The row's title is rendered text, not a prop of the node the testID
+        // resolves to, so it is asserted where a reader would actually see it.
+        expect(screen.getTextContent()).toContain('teams.history.fromMembershipNamed(name=Platform)');
+        expect(screen.getTextContent()).toContain('teams.history.allExistingNamed(name=Platform)');
+    });
+
     it('says why a found Account cannot be chosen instead of silently disabling it', async () => {
         const serverId = await harness.addHome({
             name: 'Home A', serverUrl: 'https://home-a.example', accountId: 'account-ada', teamsEnabled: true,

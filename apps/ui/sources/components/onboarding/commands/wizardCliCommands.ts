@@ -121,9 +121,12 @@ export function resolveWebDesktopSetupHandoffTarget(params: Readonly<{
     if (params.descriptor) {
         const httpsEndpoint = params.descriptor.endpoints.find((endpoint) => endpoint.kind === 'https');
         if (httpsEndpoint) return { kind: 'https', homeUrl: httpsEndpoint.url };
-        return params.profileSource === 'account-directory'
-            ? { kind: 'account_service' }
-            : { kind: 'descriptor_file_required' };
+        // A descriptor without an HTTPS endpoint (an Iroh-only Home) is still a
+        // Home this handoff can name exactly. How the profile was discovered
+        // does not change that, and an untargeted `happier setup` would send the
+        // remote machine into the sign-in-service journey instead of the Home
+        // the user is looking at.
+        return { kind: 'descriptor_file_required' };
     }
 
     const fallbackHomeUrl = String(params.fallbackHomeUrl ?? '').trim();
@@ -169,16 +172,16 @@ export function buildRemoteMachineSetupCommand(params: Readonly<{
     ].join(' ');
 }
 
-export function buildRemoteRelayHostInstallCommand(params: Readonly<{
+export function buildRemotePersonalHomeCreateCommand(params: Readonly<{
     draft: SshCredentialsDraft;
-    installRelayRuntime?: boolean;
 }>): string {
     const invoker = resolveCliInvokerNameForCurrentApp();
+    const username = params.draft.username.trim();
+    const host = params.draft.host.trim();
+    const target = username ? `${username}@${host || '<host>'}` : (host || '<host>');
     return [
-        `${invoker} relay host install`,
-        '--mode user',
-        ...buildRemoteSshArgs(params),
-        '--yes',
+        `${invoker} home create`,
+        `--ssh ${target}`,
     ].join(' ');
 }
 

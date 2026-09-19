@@ -256,6 +256,14 @@ export const HomeAdministrationSection = React.memo(function HomeAdministrationS
                     <Item
                         testID="home-admin-stale"
                         title={state.error ? t('homeGovernance.offlineNotice') : t('homeGovernance.refreshing')}
+                        // How old the retained state is, not only that it is
+                        // old. A projection observed before this device could
+                        // record when is shown without a manufactured time.
+                        subtitle={state.lastObservedAt === null
+                            ? undefined
+                            : t('homeGovernance.lastUpdated', {
+                                time: new Date(state.lastObservedAt).toLocaleString(),
+                            })}
                         icon={<Icon name="warning" size={29} color={theme.colors.state.warning.foreground} />}
                         onPress={retry}
                         detail={t('homeGovernance.retry')}

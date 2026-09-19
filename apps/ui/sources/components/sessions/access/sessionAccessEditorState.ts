@@ -43,7 +43,15 @@ export type SessionAccessEncryptionPreparation =
         status:SessionAccessEncryptionSettledStatus;
         summary:SessionDataKeyEnvelopeSummaryV1|null;
     }>
-    | Readonly<{kind:'failed';error:SessionAccessUiError}>;
+    | Readonly<{
+        kind:'failed';
+        /**
+         * Which read failed. Only a pass that followed a committed mutation may say
+         * the access was saved; a failed opening discovery proves nothing about a save.
+         */
+        origin:'discovery'|'pass';
+        error:SessionAccessUiError;
+    }>;
 const IDLE_PREPARATION: SessionAccessEncryptionPreparation = Object.freeze({kind:'idle'});
 
 /**
@@ -117,7 +125,7 @@ export type SessionAccessEditorEvent =
     | Readonly<{type:'confirm';scopeKey:string;key:string|null}>
     | Readonly<{type:'preparing';scopeKey:string;preparedCount:number;actionableTotal:number|null}>
     | Readonly<{type:'prepared';scopeKey:string;preparation:SessionAccessEncryptionPreparation}>
-    | Readonly<{type:'preparationFailed';scopeKey:string;error:SessionAccessUiError}>
+    | Readonly<{type:'preparationFailed';scopeKey:string;origin:'discovery'|'pass';error:SessionAccessUiError}>
     | Readonly<{type:'recipientsLoading';scopeKey:string;view:SessionAccessEncryptionRecipientsView}>
     | Readonly<{type:'recipientsPage';scopeKey:string;view:SessionAccessEncryptionRecipientsView;rows:readonly SessionDataKeyEnvelopeItemV1[];nextCursor:string|null;append:boolean}>
     | Readonly<{type:'recipientsFailed';scopeKey:string;view:SessionAccessEncryptionRecipientsView;error:SessionAccessUiError}>;
@@ -169,7 +177,7 @@ export function reduceSessionAccessEditorState(state:SessionAccessEditorState,ev
         case 'confirm': return {...state,confirmingRemoval:event.key};
         case 'preparing': return {...state,preparation:{kind:'preparing',preparedCount:event.preparedCount,actionableTotal:event.actionableTotal}};
         case 'prepared': return {...state,preparation:event.preparation};
-        case 'preparationFailed': return {...state,preparation:{kind:'failed',error:event.error}};
+        case 'preparationFailed': return {...state,preparation:{kind:'failed',origin:event.origin,error:event.error}};
         // Asking for a different view clears the rows it is about to replace; a
         // continuation within the current view keeps them while the page loads.
         case 'recipientsLoading': return {...state,recipients:event.view===state.recipients.view

@@ -517,7 +517,7 @@ export const en = {
     voice: voiceReadinessTranslations.en,
     pluginPermissions: pluginPermissionTranslations.en,
     sessionBoard: sessionBoardTranslations.en,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.en,
     ...changedFileEvidenceTranslations.en,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.en,
     pluginSurfaces: {
@@ -1794,6 +1794,8 @@ export const en = {
         securingCredentials: 'Securing credentials…',
         showQrInstead: 'Other recovery options',
         addPhoneQrInstructions: 'Scan this QR code with the Happier mobile app to sign in on your phone.',
+        addPhoneChooseHomeTitle: 'Choose a Home',
+        addPhoneChooseHomeFooter: 'The phone you add gets access to the Home you pick here. Your focused Home does not change.',
         serverUrlNotEmbeddedTitle: 'Set up your phone’s server',
         serverUrlNotEmbeddedBody:
             'This QR code can’t include the server address because it’s set to localhost. On your phone, go to Settings → Servers and add a URL your phone can reach (LAN IP or Tailscale), then scan again.',
@@ -1805,9 +1807,12 @@ export const en = {
         expiresAtLabel: 'Expires',
         showPairingLink: 'Show Pairing Link',
         pairingLinkSecurityWarning: 'Anyone with this temporary link can add a device before it expires. Share it only with your own device.',
+        pairingLinkFieldLabel: 'Pairing link',
+        pairingLinkRequired: 'Paste the pairing link shown on the other device.',
         pairingQrTooLargeTitle: 'Too large for a QR code',
         pairingQrTooLargeBody: "This invite carries extra connection details, so it can't be shown as a QR code. Your Home is still ready to pair — use the secure link below instead.",
         homeAddedPreservedFocusBody: 'This Home was added. Your focused Home is unchanged.',
+        homeSavedOpenFailedBody: 'We saved this Home but could not open it. Try again to switch to it.',
         requesterDeviceAddedBody: 'The requesting device was added to this Home.',
         requestingDeviceLabel: 'Requesting device',
         thisDevice: 'This device',
@@ -1834,7 +1839,7 @@ export const en = {
         accountUrlPlaceholder: 'happier:///account?...',
         showRequesterQrInstructions: 'Keep this QR code on this device. On an already-enrolled device, open Happier and scan it to add this device.',
         restoreQrInstructions: "On the signed-in Home, open Settings → Account → Add Your Phone. On this device, scan that Home QR, or use manual recovery.",
-        legacyAccountQrUnavailable: 'This older account QR can no longer be approved safely. On the signed-in Home, open Settings → Account → Add Your Phone and scan that Home QR instead.',
+        legacyAccountQrUnavailable: 'This older account QR can no longer be approved safely. On the signed-in Home, open Settings → Add your phone and scan that Home QR instead.',
         externalAuthVerifiedTitle: ({ provider }: { provider: string }) => `${provider} verified`,
         externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
             `We found an existing Happier account linked to ${provider}. To finish signing in on this device, restore your account key using the QR code or your recovery key.`,
@@ -6038,6 +6043,15 @@ export const en = {
                 workspaceChoose: 'They choose the folder',
                 workspaceHome: 'Their home folder',
             },
+            workspace: {
+                title: 'Starting folder',
+                chooseRecommended: 'Recommended · they pick a folder when the package connects',
+                homeDetail: 'Start in the home folder of whoever runs the package',
+            },
+            otherDevice: {
+                guidance: 'This package was saved on the device that created it. Continue on that device, or cancel this request and create a new package here.',
+                createdOn: ({ device }: { device: string }) => `Created on ${device}`,
+            },
             endpointFacts: {
                 unreadable: 'This device can’t read the details that computer sent.',
             },
@@ -7504,8 +7518,9 @@ export const en = {
             automationRunEvents: 'Automation run events',
         },
         multiServerView: {
-            title: 'Concurrent Multi-Home View',
-            footer: 'Select whether to combine multiple Homes in one session list.',
+            editMembersAction: 'Edit Homes in this group',
+            title: 'Homes in this view',
+            footer: 'Choose how these Homes appear in your session list, and which of them belong to this group.',
             presentationTitle: 'Presentation mode',
             presentation: {
                 flatWithBadges: 'Flat list with Home badges',
@@ -10151,6 +10166,7 @@ workspaceSync: {
         authorizationExpired: 'Workspace authorization expired. Start the operation again.',
         rootNoLongerAuthorized: 'The workspace folder changed and is no longer authorized. Review the relationship before retrying.',
         conflictNeedsAttention: 'This conflict changed. Refresh it before choosing a version.',
+        updateRequired: 'Update Happier on the source computer before trying this workspace handoff again. Other session and computer actions are still available.',
         needsAttention: 'Workspace sync needs attention. Refresh its status, then try again.',
     },
     start: {
@@ -12856,6 +12872,7 @@ settingsSession: {
             `We can’t connect to ${serverUrl}. Retry or choose another sign-in service.`,
         signInServiceUnsupportedTitle: 'Sign-in service not supported',
         signInServiceMethodlessTitle: 'No sign-in methods are available here',
+        signInServiceMethodlessBody: 'This service is reachable but offers no sign-in method right now. Retry, or choose another sign-in service.',
         signInOptionsPartialTitle: 'Some sign-in options couldn’t be loaded',
         signInServiceUnsupportedBody: 'This address is a Home, or it does not offer account sign-in. Choose another sign-in service.',
         useDifferentHome: 'Use a different Home',
@@ -14769,6 +14786,15 @@ settingsSession: {
             useExistingDetail: 'Verify its access and secure signup without changing your focused Home.',
             useAnother: 'Use another Home',
             useAnotherDetail: 'Leave this local Home untouched and choose from your Homes.',
+            blocked: {
+                runtime_unhealthy: 'Your local Home needs attention before it can start.',
+                home_auth_invalid: 'Home authentication needs attention.',
+                existing_runtime: 'An existing local Home needs a choice before setup can continue.',
+                personal_home_erased: 'Your Personal Home was erased. Try again to create a new one.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Your Home data was deleted. Nothing is left to recover here — create a new Personal Home, or use another Home.',
+            },
         },
     },
     settingsSearch: {

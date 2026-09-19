@@ -180,7 +180,7 @@ describe('TemporaryComputerLaunchSurface', () => {
         expect(screen.findByTestId('temporary-computer-package-export-device')?.props.children).toBe("Alice's iPhone");
     });
 
-    it('does not offer re-export without creator-device custody', async () => {
+    it('tells a non-creating device to continue there or cancel and create a new package here', async () => {
         const { TemporaryComputerLaunchSurface } = await import('./TemporaryComputerLaunchSurface');
         const screen = await renderScreen(<TemporaryComputerLaunchSurface
             controller={controller('waiting_for_computer')}
@@ -189,7 +189,16 @@ describe('TemporaryComputerLaunchSurface', () => {
         />);
 
         expect(screen.findByTestId('temporary-computer-export')).toBeNull();
-        expect(screen.findByTestId('temporary-computer-package-export-device')?.props.children).toBe("Alice's iPhone");
+        // The two real options, stated. The generic "prepare a package"
+        // subtitle is an instruction this device cannot carry out.
+        expect(screen.findByTestId('temporary-computer-other-device-guidance')?.props.children)
+            .toBe('newSession.temporaryComputer.otherDevice.guidance');
+        // The device name is a fact about where the package lives, not a bare
+        // label that can read as "This device" on the wrong device.
+        expect(screen.findByTestId('temporary-computer-package-export-device')?.props.children)
+            .toBe("newSession.temporaryComputer.otherDevice.createdOn(device=Alice's iPhone)");
+        // Cancelling here is the second option the guidance names.
+        expect(screen.findByTestId('temporary-computer-cancel')).not.toBeNull();
     });
 
     it('keeps offline cancellation visible with retry and cancel', async () => {

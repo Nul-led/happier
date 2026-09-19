@@ -49,6 +49,25 @@ loads those same current connections and provider descriptors in the deciding
 transaction; it never substitutes an empty connection set or widens a restricted
 policy to inherit.
 
+Whether a Team or invitation page stays open is one question with one answer:
+does the policy currently offer a usable choice? An `inherit` resolution always
+does; a `restricted` one does when at least one accepted choice is currently
+usable. A successful provider test — activation readiness — is the *policy
+writer's* precondition, enforced when the policy is saved, and is deliberately
+not a member-entry gate, so an accepted-but-untested choice still appears on the
+admission page. `resolveTeamAcceptedChoiceAvailability` in
+`apps/server/sources/app/auth/entry/resolveTeamAuthenticationPolicy.ts` is the
+single evaluator of that per-choice availability, shared by entry, policy
+administration, activation, and credential qualification. It distinguishes an
+*unreadable* choice — a read owner reported a failure — from an *unavailable*
+one, which is a reference the provider catalog does not currently offer: a
+disabled method, a Home-narrowed provider kind, or a disconnected connection.
+The qualifier states the result in three words used everywhere downstream:
+`satisfied` (the credential proves one accepted reference), `authentication_required`
+(at least one accepted reference is offered but unproven — a 403 carrying those
+references), and `unavailable` (malformed policy, unreadable fact, or nothing
+offered — a 503-class answer).
+
 The endpoint is public but optionally authenticated. When the request carries an
 ordinary present-user Home credential, it is verified through the same bearer
 verification and login-eligibility owner the authenticating route decorator uses
@@ -72,6 +91,18 @@ from provider configuration. `autoRedirect`, when present, selects only a
 projected `login` or `provision` row. Terminal responses are strict, contain no
 actions, and use `denied`, `unavailable`, or `update_required` state.
 
+Two filters narrow that row set, both applied in the one projector
+(`projectHomeAuthenticationActions`). A Home `connect` action attaches a method
+to the caller's *existing* Account, so a request carrying no authenticated
+principal is offered none — its only completion lives in the signed-in Account
+Security flow. Team-origin `connect`, which is SSO through a Team connection, is
+a different row and is unaffected. Separately, a Home `provision` action is
+withheld when the public-signup provisioning policy denies it for the
+route-attributed request address; the address reaches the projector as
+`requestIp` on the entry context, and without one the catalog is unrestricted.
+Home and Team scope carry the address; invitation scope deliberately does not,
+because every invitation finalizer already exempts invitation admission.
+
 For `purpose: "account_service"`, a Home without the current Account Directory
 capability returns `unavailable` with reason `not_account_service`; it does not
 return ordinary Home actions. Account Service clients verify the endpoint
@@ -81,6 +112,18 @@ The 0.3 clients fall back to the legacy `/v1/features` authentication projection
 only when `/v1/auth/entry` is absent: HTTP 404, 405, or 501. A network failure,
 another unsuccessful status, invalid JSON, or a schema-incompatible response
 fails closed as unavailable or incompatible and never triggers that fallback.
+
+That fallback endpoint publishes the Home's **effective** sign-in service, not
+the deployment value. `resolveEffectiveHomeSignInServicePolicy`
+(`apps/server/sources/app/auth/methods/signInServicePolicy.ts`) is the one
+composition: the deployment policy, narrowed by the persisted Home policy, and
+withheld entirely when `self` mode lacks the Account Directory capability a
+self-hosted service requires. The synchronous features assembler reads no
+database, so it composes that rule with no narrowing and publishes the
+deployment recommendation; the `/v1/features` route then replaces it with the
+effective value it already resolved for the method catalog, and omits the
+service while the Home policy is unreadable — the same fail-closed posture auth
+entry takes. Neither side composes the rule a second time.
 
 The server derives core actions from the effective authentication-method owner
 and provider actions through the asynchronous identity-provider catalog, which

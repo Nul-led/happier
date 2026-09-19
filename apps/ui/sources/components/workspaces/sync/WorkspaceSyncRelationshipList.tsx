@@ -28,6 +28,8 @@ import {
     setWorkspaceSyncStatus,
 } from '@/sync/domains/sessionHandoff/workspaceSyncStatusStore';
 import type { WorkspaceSyncRelationshipSummary } from '@/sync/domains/sessionHandoff/workspaceSyncRelationshipModel';
+import { invokeDesktopHost, isDesktopHost } from '@/utils/platform/desktopHost';
+import { useLocalDaemonControl } from '@/components/settings/machines/localControl/useLocalDaemonControl';
 import { resolveProjectRoutePathForSurface } from '@/components/workspaceCockpit/project/projectCockpitState';
 import { Modal } from '@/modal';
 import { formatWithCachedDateTimeFormatter } from '@/utils/datetime/cachedIntlFormatters';
@@ -45,6 +47,8 @@ const MINIMUM_INTERACTIVE_TARGET_SIZE = resolveMinimumInteractiveTargetSize(Plat
 export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRelationshipRow(props: Readonly<{
     summary: WorkspaceSyncRelationshipSummary;
     localWorkspaceRefId?: string | null;
+    /** This computer's machine id, so a row can offer to reveal only its own endpoint. */
+    localMachineId?: string | null;
     onOpenDetails?: (summary: WorkspaceSyncRelationshipSummary) => void;
     onOpenConflicts?: (summary: WorkspaceSyncRelationshipSummary) => void;
 }>) {
@@ -62,6 +66,16 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
     const errorKey = resolveWorkspaceSyncErrorTranslationKey(status?.errorCode);
     const [pendingAction, setPendingAction] = React.useState<'sync' | 'disable' | 'enable' | 'terminate' | null>(null);
     const [menuOpen, setMenuOpen] = React.useState(false);
+    // Revealing a folder is a local OS action: only an endpoint rooted on the computer
+    // running this desktop shell has a path this host can open. The list owns the one
+    // daemon-status subscription; a row must not start one per relationship.
+    const localDaemonMachineId = props.localMachineId ?? null;
+    const revealableEndpoint = React.useCallback((endpoint: WorkspaceSyncRelationshipSummary['alpha']): string | null => {
+        if (!isDesktopHost() || !localDaemonMachineId) return null;
+        const ref = endpoint.workspaceRef;
+        if (!ref || ref.machineId !== localDaemonMachineId) return null;
+        return ref.rootPath?.trim() || null;
+    }, [localDaemonMachineId]);
 
     const runAction = React.useCallback(async (action: 'sync' | 'disable' | 'enable' | 'terminate') => {
         setPendingAction(action);
@@ -113,9 +127,11 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
             toggleAction,
             ...(props.summary.alpha.workspaceRef ? [{ id: 'open-alpha', title: t('workspaceSync.actions.openOnMachine', { machine: props.summary.alpha.machineName ?? props.summary.alpha.label }) }] : []),
             ...(props.summary.beta.workspaceRef ? [{ id: 'open-beta', title: t('workspaceSync.actions.openOnMachine', { machine: props.summary.beta.machineName ?? props.summary.beta.label }) }] : []),
+            ...(revealableEndpoint(props.summary.alpha) ? [{ id: 'reveal-alpha', title: t('workspaceSync.actions.openFolder', { label: props.summary.alpha.machineName ?? props.summary.alpha.label }) }] : []),
+            ...(revealableEndpoint(props.summary.beta) ? [{ id: 'reveal-beta', title: t('workspaceSync.actions.openFolder', { label: props.summary.beta.machineName ?? props.summary.beta.label }) }] : []),
             { id: 'terminate', title: t('workspaceSync.actions.terminate') },
         ];
-    }, [props.summary.alpha.label, props.summary.alpha.machineName, props.summary.alpha.workspaceRef, props.summary.beta.label, props.summary.beta.machineName, props.summary.beta.workspaceRef, props.summary.relationship.enabled]);
+    }, [props.summary.alpha, props.summary.beta, props.summary.relationship.enabled, revealableEndpoint]);
 
     const handleActionSelect = React.useCallback((action: string) => {
         if (action === 'open-alpha' || action === 'open-beta') {
@@ -127,10 +143,16 @@ export const WorkspaceSyncRelationshipRow = React.memo(function WorkspaceSyncRel
             }) as Href);
             return;
         }
+        if (action === 'reveal-alpha' || action === 'reveal-beta') {
+            const path = revealableEndpoint(action === 'reveal-alpha' ? props.summary.alpha : props.summary.beta);
+            setMenuOpen(false);
+            if (path) void invokeDesktopHost('system_tasks_open_log_path', { path });
+            return;
+        }
         if (action === 'sync' || action === 'disable' || action === 'enable' || action === 'terminate') {
             void runAction(action);
         }
-    }, [props.summary.alpha, props.summary.beta, router, runAction]);
+    }, [props.summary.alpha, props.summary.beta, revealableEndpoint, router, runAction]);
 
     const lastSyncLabel = status?.lastSuccessfulSyncAtMs == null
         ? t('workspaceSync.neverSynced')
@@ -230,6 +252,7 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
     props: WorkspaceSyncRelationshipListProps,
 ) {
     const summaries = useWorkspaceSyncRelationshipSummaries(props.workspaceRefId);
+    const localMachineId = useLocalDaemonControl().status?.machineId ?? null;
     return (
         <ItemGroup title={t('workspaceSync.title')} footer={t('workspaceSync.footer')}>
             {summaries.length === 0 ? (
@@ -239,6 +262,7 @@ export const WorkspaceSyncRelationshipList = React.memo(function WorkspaceSyncRe
                     key={summary.relationshipId}
                     summary={summary}
                     localWorkspaceRefId={props.workspaceRefId}
+                    localMachineId={localMachineId}
                     onOpenDetails={props.onOpenDetails}
                     onOpenConflicts={props.onOpenConflicts}
                 />

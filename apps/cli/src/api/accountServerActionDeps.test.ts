@@ -27,7 +27,10 @@ import {
 import { NO_TEAM_CAPABILITIES_V1 } from '@happier-dev/protocol/teams';
 
 import { installAxiosFastifyAdapter } from '@/testkit/http/axiosAdapter';
-import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
+import {
+  createCurrentSessionProjectionRecordFixture,
+  createSessionRecordFixture,
+} from '@/testkit/backends/sessionFixtures';
 import { deriveKey } from '@/utils/deriveKey';
 import { createAccountServerActionDeps } from './accountServerActionDeps';
 
@@ -810,7 +813,11 @@ describe('Session access HTTP adapter', () => {
         return reply.code(404).send({ error: 'session_access_session_not_found' });
       }
       return {
-        session: createSessionRecordFixture({
+        // A Home answering accessProjectionVersion=1 must return the complete
+        // current projection: SessionCurrentProjectionRecordV1Schema requires the
+        // responsibility pair alongside effectiveAccess so an omission cannot be
+        // read as an authoritative unassigned value.
+        session: createCurrentSessionProjectionRecordFixture({
           id: 'session-plain',
           encryptionMode: 'plain',
           dataEncryptionKey: null,

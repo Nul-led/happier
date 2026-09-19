@@ -29,7 +29,12 @@ export function openVerifiedRunnerRuntimeBootstrap(input: Readonly<{
     installationId: string;
     launchManifestCommitment: string;
     reviewedMachineContentKeyBinding: RunnerMachineContentKeyBindingV1 | null;
-    accountSigningPublicKeyBase64Url?: string;
+    /**
+     * Creator activation signing public key, derived locally from this
+     * Runner's own activation package. It is never taken from a Home-relayed
+     * field, and it needs no Account signing authority from the creator.
+     */
+    activationSigningPublicKeyBase64Url?: string;
   }>;
 }>): VerifiedRunnerRuntimeBootstrap {
   const bootstrap = RunnerRuntimeBootstrapV1Schema.safeParse(input.bootstrap);
@@ -58,7 +63,7 @@ export function openVerifiedRunnerRuntimeBootstrap(input: Readonly<{
   if (value.storedContent.mode !== 'e2ee') throw new Error('runner_runtime_bootstrap_invalid');
   const storedContent = value.storedContent;
 
-  if (!input.expected.accountSigningPublicKeyBase64Url) {
+  if (!input.expected.activationSigningPublicKeyBase64Url) {
     throw new Error('runner_runtime_bootstrap_binding_invalid');
   }
 
@@ -76,7 +81,7 @@ export function openVerifiedRunnerRuntimeBootstrap(input: Readonly<{
         installationId: input.expected.installationId,
         machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(machineContentKey),
       },
-      expectedAccountSigningPublicKey: input.expected.accountSigningPublicKeyBase64Url,
+      expectedAccountSigningPublicKey: input.expected.activationSigningPublicKeyBase64Url,
     });
     if (!verifiedBinding) throw new Error('runner_runtime_bootstrap_binding_invalid');
 

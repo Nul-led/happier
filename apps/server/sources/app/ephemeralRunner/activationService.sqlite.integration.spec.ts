@@ -408,8 +408,7 @@ async function materializationFixture(
         agentTargetKey: 'agent:happier.agent.codex/codex',
         machineContentKeyBinding: mode === 'plain' ? null : signRunnerMachineContentKeyBindingV1({
             payload: machineContentKeyBindingPayload,
-            accountSigningPublicKey: accountSigningKey!.publicKey,
-            accountSigningSecretKey: accountSigningKey!.secretKey,
+            activationSigningSecretKey: activationKey.secretKey,
         }),
         credentialSelectionBinding: { v: 1 as const, resourceId: resource.id, brokerMachineId: brokerMachine.id, revision: resource.revision,
             application: { agentTargetKey: 'agent:happier.agent.codex/codex', implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' }, endpointTemplateId: 'responses', protocol: 'openai-responses' as const },
@@ -1382,13 +1381,12 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                 ...fixture.machineContentKeyBindingPayload,
                 machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(new Uint8Array(32).fill(77)),
             },
-            accountSigningPublicKey: fixture.accountSigningKey!.publicKey,
-            accountSigningSecretKey: fixture.accountSigningKey!.secretKey,
+            activationSigningSecretKey: fixture.activationKey.secretKey,
         });
         const base = materializationRequest(fixture);
         const request = { ...base, machine: { ...base.machine, runnerContentKeyBinding: substituted } };
 
-        // A correctly Account-signed binding is still not the reviewed one.
+        // A correctly creator-signed binding is still not the reviewed one.
         await expect(materializeEphemeralRunner({
             creatorAccountId: fixture.account.id,
             request,
@@ -1690,8 +1688,7 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                     installationId: claim.payload.installation.installationId,
                     machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(new Uint8Array(32).fill(13)),
                 },
-                accountSigningPublicKey: accountSigningKey!.publicKey,
-                accountSigningSecretKey: accountSigningKey!.secretKey,
+                activationSigningSecretKey: activationKey.secretKey,
             });
             const review = {
                 sealedLaunchManifest: 'sealed-reviewed-manifest',
@@ -1784,8 +1781,7 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                         installationId: machineContentKeyBinding!.installationId,
                         machineContentKeyFingerprint: machineContentKeyBinding!.machineContentKeyFingerprint,
                     },
-                    accountSigningPublicKey: accountSigningKey!.publicKey,
-                    accountSigningSecretKey: accountSigningKey!.secretKey,
+                    activationSigningSecretKey: activationKey.secretKey,
                 });
                 expect((await app.inject({
                     method: 'PUT',
@@ -1793,6 +1789,34 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                     headers: creatorHeaders,
                     payload: { ...review, machineContentKeyBinding: replayedBinding },
                 })).statusCode).toBe(400);
+
+                // The verifier is the activation identity this Home recorded at
+                // creation. A binding re-signed under any other identity the
+                // Home could publish — including the Account signing identity
+                // carried by the endpoint-facts recipient — is refused.
+                for (const substituteSigner of [accountSigningKey!, tweetnacl.sign.keyPair()]) {
+                    const substituted = signRunnerMachineContentKeyBindingV1({
+                        payload: {
+                            v: machineContentKeyBinding!.v,
+                            purpose: machineContentKeyBinding!.purpose,
+                            homeServerIdentityId: machineContentKeyBinding!.homeServerIdentityId,
+                            activationId: machineContentKeyBinding!.activationId,
+                            creatorAccountId: machineContentKeyBinding!.creatorAccountId,
+                            machineId: machineContentKeyBinding!.machineId,
+                            installationId: machineContentKeyBinding!.installationId,
+                            machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(
+                                new Uint8Array(32).fill(97),
+                            ),
+                        },
+                        activationSigningSecretKey: substituteSigner.secretKey,
+                    });
+                    expect((await app.inject({
+                        method: 'PUT',
+                        url: `/v1/ephemeral-runners/activations/${request.activationId}/review`,
+                        headers: creatorHeaders,
+                        payload: { ...review, machineContentKeyBinding: substituted },
+                    })).statusCode).toBe(400);
+                }
             }
             expect((await app.inject({ method: 'PUT', url: `/v1/ephemeral-runners/activations/${request.activationId}/review`, headers: creatorHeaders,
                 payload: { ...review, machineContentKeyBinding: mode === 'plain' ? {

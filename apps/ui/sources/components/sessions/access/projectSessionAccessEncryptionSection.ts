@@ -44,6 +44,25 @@ function recipientState(item: SessionDataKeyEnvelopeItemV1): SessionAccessEncryp
     return item.envelopeState === 'prepared' ? 'prepared' : item.envelopeState === 'invalid' ? 'invalid' : 'pending';
 }
 
+/**
+ * The repeat affordance belongs to the rows that can actually use it.
+ *
+ * A delivered recipient needs nothing, and an Account that has not finished its own
+ * encryption setup can only be explained — repeating delivery against it would fail
+ * every time. Naming the operation for what the manager is repeating keeps the row
+ * and the aggregate saying the same thing.
+ */
+function recipientActionLabel(state: SessionAccessEncryptionRecipientState): string | undefined {
+    switch (state) {
+        case 'pending': return t('session.access.prepareNow');
+        case 'invalid':
+        case 'encryption_inconsistent': return t('session.access.prepareAgain');
+        case 'prepared':
+        case 'plain_account':
+        case 'encryption_setup_required': return undefined;
+    }
+}
+
 function recipientStateLabel(state: SessionAccessEncryptionRecipientState): string {
     switch (state) {
         case 'prepared': return t('session.access.ready');
@@ -67,6 +86,7 @@ export function projectSessionAccessEncryptionRecipientRow(
 ): SessionAccessEncryptionRecipientRowModel {
     const state = recipientState(item);
     const stateLabel = recipientStateLabel(state);
+    const actionLabel = recipientActionLabel(state);
     const label = displayNameForAccount(item.recipientAccountId) ?? item.recipientAccountId;
     return {
         recipientAccountId: item.recipientAccountId,
@@ -74,6 +94,7 @@ export function projectSessionAccessEncryptionRecipientRow(
         label,
         stateLabel,
         accessibilityLabel: t('session.access.accessibleSummary', { title: label, label: stateLabel }),
+        ...(actionLabel ? { actionLabel } : {}),
     };
 }
 
@@ -122,15 +143,21 @@ export function projectSessionAccessEncryptionSection(input: Readonly<{
                 ...expansion,
             };
         }
-        case 'failed':
+        case 'failed': {
+            // Only a pass that followed a committed mutation may claim the access was
+            // saved. A failed opening discovery says nothing about any save.
+            const failureLabel = preparation.origin === 'pass'
+                ? t('session.access.preparationFailed')
+                : t('session.access.preparationCheckFailed');
             return {
-                summaryLabel: t('session.access.preparationFailed'),
-                accessibilityLabel: t('session.access.preparationFailed'),
+                summaryLabel: failureLabel,
+                accessibilityLabel: failureLabel,
                 actionLabel: t('session.access.retryAction'),
                 error: preparation.error,
                 showAllLabel,
                 ...expansion,
             };
+        }
         case 'settled': {
             // A plain Session needs no envelope, and a scope change proves nothing
             // about the Session now on screen.

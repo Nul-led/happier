@@ -1,4 +1,5 @@
 import type {
+  SessionRuntimeTeamCredentialDenialDetailsV1,
   SessionRuntimeTemporaryThrottleDetailsV1,
   SessionRuntimeUsageLimitDetailsV1,
   SessionRuntimeIssueSourceV1,
@@ -7,7 +8,9 @@ import type {
 import {
   readBuiltInLegacyConnectedAccountServiceKeyIngress,
   readConnectedServiceLimitCategoryV1,
+  ProviderBrokerAdmissionFailureCodeV1Schema,
   SessionRuntimeIssueSourceV1Schema,
+  SessionRuntimeTeamCredentialDenialDetailsV1Schema,
 } from '@happier-dev/protocol';
 import { sanitizeConnectedServiceRuntimeFailureClassification } from '@/daemon/connectedServices/runtimeAuth/sanitizeConnectedServiceRuntimeFailureClassification';
 import { hasConnectedServiceRuntimeAuthRecoveryContext } from './connectedServiceRuntimeAuthRecoveryContext';
@@ -339,6 +342,85 @@ function refineRuntimeAuthClassificationSource(
   }
 }
 
+/**
+ * The Team-credential broker answers a refused request with a typed 403 whose
+ * body deliberately mirrors a Provider error envelope, so an Agent relays it
+ * either as a structured error object or as text it pasted into its message.
+ * Both are read here, and the body is only believed when its admission code is
+ * one this protocol defines — an upstream Provider's own `permission_error`
+ * stays an ordinary Agent failure.
+ */
+type TeamCredentialDenial = Readonly<{
+  /** The refusal is this broker's; the details may still be partial. */
+  details: SessionRuntimeTeamCredentialDenialDetailsV1 | null;
+}>;
+
+function readTeamCredentialDenialEnvelope(value: unknown): TeamCredentialDenial | null {
+  const envelope = readRecord(readRecord(value)?.error);
+  if (!envelope || envelope.type !== 'permission_error') return null;
+  // The admission code is the discriminator: an upstream Provider's own
+  // `permission_error` never carries one of these.
+  if (!ProviderBrokerAdmissionFailureCodeV1Schema.safeParse(envelope.code).success) return null;
+  const parsed = SessionRuntimeTeamCredentialDenialDetailsV1Schema.safeParse({
+    v: 1,
+    resourceId: envelope.resourceId,
+    reasonCode: envelope.code,
+    ...(envelope.usageLimit === undefined ? {} : { usageLimit: envelope.usageLimit }),
+  });
+  // An older custodian daemon names no resource. The refusal is still a Team
+  // credential refusal; only its attribution detail is missing.
+  return { details: parsed.success ? parsed.data : null };
+}
+
+/** Index just past the object that starts at `start`, or -1 when it never closes. */
+function jsonObjectEnd(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === '\\') escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') inString = true;
+    else if (character === '{') depth += 1;
+    else if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return index + 1;
+    }
+  }
+  return -1;
+}
+
+function readEmbeddedTeamCredentialDenial(text: string): TeamCredentialDenial | null {
+  const start = text.indexOf('{"type":"error"');
+  if (start < 0) return null;
+  const end = jsonObjectEnd(text, start);
+  if (end < 0) return null;
+  try {
+    return readTeamCredentialDenialEnvelope(JSON.parse(text.slice(start, end)));
+  } catch {
+    return null;
+  }
+}
+
+function readTeamCredentialDenial(error: unknown): TeamCredentialDenial | null {
+  const record = readRecord(error);
+  const direct = readTeamCredentialDenialEnvelope(record)
+    ?? readTeamCredentialDenialEnvelope(readRecord(record?.data))
+    ?? readTeamCredentialDenialEnvelope(readRecord(record?.body))
+    ?? readTeamCredentialDenialEnvelope(readRecord(record?.details));
+  if (direct) return direct;
+  for (const part of extractErrorTextParts(error)) {
+    const embedded = readEmbeddedTeamCredentialDenial(part);
+    if (embedded) return embedded;
+  }
+  return null;
+}
+
 export function classifyPrimarySessionRuntimeIssue(
   input: ClassifyPrimarySessionRuntimeIssueInput,
 ): SessionRuntimeIssueV1 {
@@ -351,7 +433,13 @@ export function classifyPrimarySessionRuntimeIssue(
     ? readDeclaredRuntimeIssueSource(input.error)
     : null;
   const agentProcessExitAfterSwitch = readProviderProcessExitAfterSwitchDetails(input.error);
-  const source = runtimeAuthSource
+  // A shared Team credential refusing the request is the fact the member has to
+  // act on, so it outranks the Agent-shaped cause that carried it.
+  const teamCredentialDenial = readTeamCredentialDenial(input.error);
+  const teamCredential = teamCredentialDenial?.details ?? null;
+  const source = teamCredentialDenial
+    ? 'team_credential' as const
+    : runtimeAuthSource
     ? runtimeAuthSource
     : declaredSource
     ? declaredSource
@@ -384,6 +472,7 @@ export function classifyPrimarySessionRuntimeIssue(
     sanitizedPreview: buildSafeModelNotFoundPreview(input.error)
       ?? (temporaryThrottle ? 'Provider is temporarily limiting requests' : sanitizedPreviewBySource[source]),
     ...(usageLimit === null ? {} : { usageLimit }),
+    ...(teamCredential === null ? {} : { teamCredential }),
     ...(temporaryThrottle === null ? {} : { temporaryThrottle }),
     ...(agentProcessExitAfterSwitch === undefined ? {} : { agentProcessExitAfterSwitch }),
   };

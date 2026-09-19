@@ -33,8 +33,9 @@ describe('Teams external API deployment projection', () => {
         });
     });
 
-    it('reports feature-disabled without publishing deployment details', () => {
+    it('reports feature-disabled without publishing deployment details under the operator opt-out', () => {
         expect(resolveTeamsFeature({
+            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: '0',
             HAPPIER_PUBLIC_SERVER_URL: 'https://home.example.test',
         }).capabilities?.teams?.credentialResources?.externalApi).toEqual({
             available: false,

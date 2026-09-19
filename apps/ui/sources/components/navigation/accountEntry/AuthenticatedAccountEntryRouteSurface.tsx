@@ -1,12 +1,8 @@
 import * as React from 'react';
-import { View } from 'react-native';
-import { StyleSheet } from 'react-native-unistyles';
-
 import { accountDirectoryAuthClient, createVerifiedAccountServiceAuthority, type AccountDirectoryAuthMethodDiscovery, type AccountDirectoryAuthTransport } from '@/auth/accountDirectory/accountDirectoryAuthClient';
 import { AccountServiceAuthenticationFlow } from '@/components/account/auth/AccountServiceAuthenticationFlow';
 import { AccountServiceContinuation } from '@/components/account/auth/AccountServiceContinuation';
 import { AccountServiceHomeAuthenticationAdapter } from '@/components/account/auth/AccountServiceHomeAuthenticationAdapter';
-import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
 import { WizardModalShell } from '@/components/onboarding/ui/WizardModalShell';
 import { t } from '@/text';
@@ -14,10 +10,6 @@ import { consumeAccountServiceOAuthReturn } from '@/sync/ops/accountDirectory/co
 import type { AccountPostAuthInput, AccountPostAuthResult } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 
 import { AUTHENTICATED_ACCOUNT_ENTRY_ROUTE, type AuthenticatedAccountEntryRequest } from './authenticatedAccountEntryRoute';
-
-const stylesheet = StyleSheet.create(() => ({
-    loading: { minHeight: 180, alignItems: 'center', justifyContent: 'center' },
-}));
 
 type State =
     | Readonly<{ kind: 'loading' }>
@@ -37,7 +29,6 @@ export function AuthenticatedAccountEntryRouteSurface(props: Readonly<{
     transport?: AccountDirectoryAuthTransport;
     onExit: (returnTo: string) => void;
 }>): React.ReactElement {
-    const styles = stylesheet;
     const [retryGeneration, setRetryGeneration] = React.useState(0);
     const [state, setState] = React.useState<State>({ kind: 'loading' });
     const operationSequenceRef = React.useRef(0);
@@ -132,7 +123,11 @@ export function AuthenticatedAccountEntryRouteSurface(props: Readonly<{
 
     let content: React.ReactNode;
     if (state.kind === 'loading') {
-        content = <View testID="authenticated-account-entry-loading" style={styles.loading}><ActivitySpinner /></View>;
+        // Directory discovery, adoption, assertion mint and approval polling all
+        // sit behind this one wait. The contract names it, so it is announced
+        // rather than left as an unlabeled spinner.
+        content = <SurfaceStateCard testID="authenticated-account-entry-loading" kind="loading"
+            title={t('settingsAccount.accountServiceOAuth.stages.findingHomes')} accessibilitySemantics="status" />;
     } else if (state.kind === 'unavailable') {
         content = <SurfaceStateCard testID="authenticated-account-entry-unavailable" kind="error" title={t('welcome.signInServiceUnavailableTitle')}
             reason={t('settingsAccount.accountServiceDiscoveryUnavailableDescription')} accessibilitySemantics="alert"

@@ -58,7 +58,7 @@ import {
     subscribeIrohHomeTransportDiagnostics,
 } from '@/sync/runtime/irohHomeTransportDiagnostics';
 import { formatIrohRelayConfiguration } from '@/components/navigation/connectionStatus/formatIrohRelayConfiguration';
-import { resolveHomeConnectionSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
+import { resolveHomeConnectionSummary, resolveHomeTargetSummary } from '@/components/navigation/connectionStatus/resolveHomeConnectionSummary';
 import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import {
     sanitizeDoctorDiagnosticText,
@@ -80,6 +80,7 @@ type Variant = 'sidebar' | 'header';
 const RELAY_SETTINGS_ROUTE = '/settings/server';
 const POPOVER_MAX_WIDTH = 420;
 const POPOVER_MIN_WIDTH = 220;
+const DENSE_POINTER_TARGET_SIZE = 24;
 const minimumInteractiveTargetSize = resolveMinimumInteractiveTargetSize(Platform.OS);
 
 type ConnectionStatusKey = 'connected' | 'connecting' | 'disconnected' | 'error' | 'action_required' | 'unknown';
@@ -118,7 +119,16 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
         maxWidth: '100%',
         overflow: 'visible',
+    },
+    headerStatusContainer: {
         minHeight: minimumInteractiveTargetSize,
+    },
+    sidebarStatusContainer: {
+        // Keep the 0.2 line-box geometry while giving React Native Web a real
+        // pointer frame. Pressable does not implement hitSlop on web.
+        minHeight: DENSE_POINTER_TARGET_SIZE,
+        marginTop: -6,
+        marginBottom: -4,
     },
     statusText: {
         lineHeight: 16,
@@ -138,7 +148,7 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     popoverHeader: {
         paddingHorizontal: 16,
-        paddingBottom: 8,
+        paddingBottom: 10,
     },
     popoverTitle: {
         fontSize: 12,
@@ -147,18 +157,28 @@ const stylesheet = StyleSheet.create((theme) => ({
         textTransform: 'uppercase',
     },
     popoverStatusList: {
-        paddingHorizontal: 12,
-        gap: 10,
+        marginHorizontal: 12,
+        borderRadius: 14,
+        borderWidth: StyleSheet.hairlineWidth,
+        borderColor: theme.colors.border.default,
+        backgroundColor: theme.colors.surface.inset,
+        overflow: 'hidden',
     },
     statusRow: {
         flexDirection: 'row',
         alignItems: 'center',
-        borderRadius: 14,
-        paddingVertical: 10,
+        minHeight: 54,
+        paddingVertical: 9,
         paddingHorizontal: 12,
-        borderWidth: 1,
-        backgroundColor: theme.colors.surface.inset,
-        borderColor: theme.colors.border.default,
+        position: 'relative',
+    },
+    statusRowDivider: {
+        position: 'absolute',
+        top: 0,
+        left: 44,
+        right: 12,
+        height: StyleSheet.hairlineWidth,
+        backgroundColor: theme.colors.border.default,
     },
     statusRowLeft: {
         flexDirection: 'row',
@@ -168,14 +188,10 @@ const stylesheet = StyleSheet.create((theme) => ({
         minWidth: 0,
     },
     statusRowIcon: {
-        width: 28,
-        height: 28,
-        borderRadius: 10,
+        width: 22,
+        height: 22,
         alignItems: 'center',
         justifyContent: 'center',
-        backgroundColor: theme.colors.surface.base,
-        borderWidth: 1,
-        borderColor: theme.colors.border.default,
     },
     statusRowText: {
         flexShrink: 1,
@@ -185,14 +201,14 @@ const stylesheet = StyleSheet.create((theme) => ({
         fontSize: 13,
         color: theme.colors.text.primary,
         ...Typography.default('semiBold'),
-        lineHeight: 16,
+        lineHeight: 17,
     },
     statusRowSubtitle: {
         fontSize: 12,
         color: theme.colors.text.secondary,
         ...Typography.default(),
         lineHeight: 16,
-        marginTop: 2,
+        marginTop: 1,
     },
     statusRowRight: {
         marginLeft: 10,
@@ -232,8 +248,8 @@ const stylesheet = StyleSheet.create((theme) => ({
         ...Typography.default(),
     },
     technicalDetails: {
-        marginHorizontal: 16,
-        marginTop: 12,
+        marginHorizontal: 12,
+        marginTop: 4,
         padding: 12,
         borderRadius: 10,
         backgroundColor: theme.colors.surface.inset,
@@ -303,9 +319,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     },
     detailsDisclosure: {
         minHeight: minimumInteractiveTargetSize,
-        marginHorizontal: 16,
-        marginTop: 8,
-        paddingHorizontal: 4,
+        marginHorizontal: 12,
+        marginTop: 6,
+        paddingHorizontal: 8,
         flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'space-between',
@@ -530,6 +546,26 @@ function resolveSocketStatusKey(socketStatus: unknown): 'connected' | 'connectin
     }
 }
 
+function resolveMachineStatusKey(kind: ConnectionHealthKind): ConnectionStatusKey {
+    switch (kind) {
+        case 'healthy':
+            return 'connected';
+        case 'connecting':
+            return 'connecting';
+        case 'server_error':
+            return 'error';
+        case 'server_unreachable':
+            return 'disconnected';
+        case 'auth_required':
+        case 'no_machine':
+        case 'machine_offline':
+        case 'machine_not_ready':
+            return 'action_required';
+        default:
+            return 'unknown';
+    }
+}
+
 const ConnectionPopoverStatusRow = React.memo(function ConnectionPopoverStatusRow(props: Readonly<{
     testID: string;
     icon: IconName;
@@ -539,14 +575,16 @@ const ConnectionPopoverStatusRow = React.memo(function ConnectionPopoverStatusRo
     statusColor: string;
     dotColor: string;
     statusVariant: StatusPillVariant;
+    divided?: boolean;
     onRetry?: () => void;
 }>) {
     const styles = stylesheet;
     return (
         <View style={styles.statusRow} testID={props.testID}>
+            {props.divided ? <View pointerEvents="none" style={styles.statusRowDivider} /> : null}
             <View style={styles.statusRowLeft}>
                 <View style={styles.statusRowIcon}>
-                    <Icon name={props.icon} size={16} color={props.dotColor} />
+                    <Icon name={props.icon} size={17} color={props.dotColor} />
                 </View>
                 <View style={styles.statusRowText}>
                     <Text style={styles.statusRowTitle} numberOfLines={1}>
@@ -677,22 +715,16 @@ const ConnectionPopoverTargets = React.memo(function ConnectionPopoverTargets(pr
             if (target.kind !== 'server') continue;
             const authStatus = authStatusByServerId[target.serverId] ?? 'unknown';
             const projectionStatus = machineListStatusByServerId[target.serverId];
+            const isDisplayedHome = areServerProfileIdentifiersEquivalent(target.serverId, props.displayServerId);
+            const summary = isDisplayedHome
+                ? null
+                : resolveHomeTargetSummary({
+                    authStatus,
+                    projectionStatus,
+                    pending: props.pendingServerId === target.serverId,
+                });
             result[target.serverId] = {
-                label: authStatus === 'signedOut'
-                    ? t('server.signedOut')
-                    : props.pendingServerId === target.serverId
-                        ? t('status.connecting')
-                        : areServerProfileIdentifiersEquivalent(target.serverId, props.displayServerId)
-                            ? t(props.connectionStatusLabelKey)
-                            : projectionStatus === 'idle'
-                                ? t('status.connected')
-                                : projectionStatus === 'loading'
-                                    ? t('status.connecting')
-                                    : projectionStatus === 'error'
-                                        ? t('status.offline')
-                                        : authStatus === 'signedIn'
-                                            ? t('server.signedIn')
-                                            : t('server.authStatusUnknown'),
+                label: t(summary?.statusLabelKey ?? props.connectionStatusLabelKey),
             };
         }
         return result;
@@ -858,6 +890,32 @@ const ConnectionPopoverAccountEntryActions = React.memo(function ConnectionPopov
     const currentHomeIsLinked = currentHomeServerIdentityId
         ? directorySnapshot?.homes.some((home) => home.homeServerIdentityId === currentHomeServerIdentityId) === true
         : false;
+    // A loading, unreachable or unsupported sign-in service used to erase the
+    // whole service area of the popover — no signal, no retry. The Home actions
+    // below stay usable either way; this row only says what happened.
+    const serviceNotice = React.useMemo(() => {
+        if (entry.status === 'ready' || entry.status === 'not_offered') return null;
+        const endpointName = entry.endpoint?.displayName?.trim() || (entry.endpoint?.url ? toServerUrlDisplay(entry.endpoint.url) : '');
+        if (entry.status === 'loading') {
+            return {
+                id: 'account-service-notice',
+                testID: 'connection-popover-account-service-notice',
+                label: t('common.loading'),
+                subtitle: endpointName,
+            };
+        }
+        return {
+            id: 'account-service-notice',
+            testID: 'connection-popover-account-service-notice',
+            label: entry.status === 'unsupported'
+                ? t('welcome.signInServiceUnsupportedTitle')
+                : t('welcome.signInServiceUnavailableTitle'),
+            subtitle: entry.status === 'unsupported'
+                ? t('welcome.signInServiceUnsupportedBody')
+                : t('welcome.signInServiceUnavailableBody', { serverUrl: endpointName }),
+            onPress: entry.retry,
+        };
+    }, [entry.endpoint?.displayName, entry.endpoint?.url, entry.retry, entry.status]);
     const serviceActions = React.useMemo(() => discovery ? [
         signedIn ? {
             id: 'account-service-status',
@@ -898,7 +956,7 @@ const ConnectionPopoverAccountEntryActions = React.memo(function ConnectionPopov
 
     return (
         <>
-            <ActionListSection actions={serviceActions} />
+            <ActionListSection actions={serviceNotice ? [serviceNotice, ...serviceActions] : serviceActions} />
             <ActionListSection title={t('settingsAccount.accountServiceHomes')} actions={homeActions} />
         </>
     );
@@ -1188,14 +1246,21 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
     }, [props.variant, router]);
     const popoverMinWidth = props.variant === 'sidebar' && Platform.OS === 'web' ? POPOVER_MIN_WIDTH : undefined;
     const collapsedStatusLabel = t(homeSummary.statusLabelKey);
-    const collapsedStatusColor = connectionHealth.color;
+    const collapsedStatusColor = homeSummaryPresentation.color;
     // DESIGN.md forbids color as the only carrier of meaning. For states that
     // truly need attention (canonical health tone), the collapsed trigger swaps
     // its bare dot for a warning glyph carrying the same status color — one
     // quiet non-color cue. Routine connected/connecting stays dot-only and
     // transport-neutral; detail remains inside the popover.
     const collapsedShowsAttentionCue =
-        connectionHealth.tone === 'attention' || connectionHealth.tone === 'danger';
+        homeSummary.statusKey === 'action_required' || homeSummary.statusKey === 'error';
+    const collapsedStatusIsPulsing = homeSummary.statusKey === 'connecting';
+    const socketPresentation = resolveStatusPresentation(
+        theme,
+        resolveSocketStatusKey(socketStatus.status),
+    );
+    const machineStatusKey = resolveMachineStatusKey(connectionHealth.kind);
+    const machinesPresentation = resolveStatusPresentation(theme, machineStatusKey);
 
     return (
         <>
@@ -1207,7 +1272,12 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
             >
                 <Pressable
                     ref={triggerRef}
-                    style={styles.statusContainer}
+                    style={[
+                        styles.statusContainer,
+                        props.variant === 'header'
+                            ? styles.headerStatusContainer
+                            : styles.sidebarStatusContainer,
+                    ]}
                     onPress={handleActivate}
                     accessibilityRole="button"
                     accessibilityLabel={`${activeServerLabel}, ${collapsedStatusLabel}`}
@@ -1223,7 +1293,7 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                     ) : (
                         <StatusDot
                             color={collapsedStatusColor}
-                            isPulsing={connectionHealth.isPulsing}
+                            isPulsing={collapsedStatusIsPulsing}
                             size={dotSize}
                             style={{ marginRight: 4 }}
                         />
@@ -1287,6 +1357,28 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                         statusColor={homeSummaryPresentation.color}
                                         dotColor={homeSummaryPresentation.dotColor}
                                         statusVariant={homeSummaryPresentation.pillVariant}
+                                    />
+                                    <ConnectionPopoverStatusRow
+                                        testID="connection-popover-realtime"
+                                        icon="pulse"
+                                        title={t('systemStatus.ui.realtime')}
+                                        subtitle={t('systemStatus.ui.socket')}
+                                        statusLabel={t(socketPresentation.labelKey)}
+                                        statusColor={socketPresentation.color}
+                                        dotColor={socketPresentation.dotColor}
+                                        statusVariant={socketPresentation.pillVariant}
+                                        divided
+                                    />
+                                    <ConnectionPopoverStatusRow
+                                        testID="connection-popover-machines"
+                                        icon="laptop"
+                                        title={t('settings.machines')}
+                                        subtitle={machineSubtitle}
+                                        statusLabel={t(connectionHealth.machineLabelKey)}
+                                        statusColor={machinesPresentation.color}
+                                        dotColor={machinesPresentation.dotColor}
+                                        statusVariant={machinesPresentation.pillVariant}
+                                        divided
                                     />
                                 </View>
 
@@ -1368,65 +1460,21 @@ export const ConnectionStatusControl = React.memo(function ConnectionStatusContr
                                         relayStatusKey === 'connecting'
                                         || relayStatusKey === 'disconnected'
                                         || relayStatusKey === 'error';
-                                    const socketPresentation = resolveStatusPresentation(
-                                        theme,
-                                        resolveSocketStatusKey(socketStatus.status),
-                                    );
-                                    const machinesPresentation = resolveStatusPresentation(
-                                        theme,
-                                        connectionHealth.kind === 'healthy'
-                                            ? 'connected'
-                                            : connectionHealth.kind === 'connecting'
-                                              ? 'connecting'
-                                              : connectionHealth.kind === 'server_error'
-                                                ? 'error'
-                                                : connectionHealth.kind === 'server_unreachable'
-                                                  ? 'disconnected'
-                                                  : connectionHealth.kind === 'auth_required'
-                                                    ? 'action_required'
-                                                    : connectionHealth.kind === 'no_machine'
-                                                      ? 'action_required'
-                                                      : connectionHealth.kind === 'machine_offline'
-                                                        ? 'action_required'
-                                                        : connectionHealth.kind === 'machine_not_ready'
-                                                          ? 'action_required'
-                                                          : 'unknown',
-                                    );
-
+                                    if (!transportDiagnostics && !(displayUsesActiveSnapshot && activeServerSnapshot.carrier === 'iroh')) {
+                                        return null;
+                                    }
                                     return (
                                         <View style={styles.popoverStatusList}>
-                                            {(transportDiagnostics || (displayUsesActiveSnapshot && activeServerSnapshot.carrier === 'iroh')) ? (
-                                                <ConnectionPopoverStatusRow
-                                                    testID="connection-popover-relay"
-                                                    icon="hard-drives"
-                                                    title={t('systemStatus.transport.irohCurrent')}
-                                                    subtitle={toServerUrlDisplay(displayServerUrl)}
-                                                    statusLabel={t(endpointPresentation.labelKey)}
-                                                    statusColor={endpointPresentation.color}
-                                                    dotColor={endpointPresentation.dotColor}
-                                                    statusVariant={endpointPresentation.pillVariant}
-                                                    onRetry={canRetryRelayConnection ? handleRetry : undefined}
-                                                />
-                                            ) : null}
                                             <ConnectionPopoverStatusRow
-                                                testID="connection-popover-realtime"
-                                                icon="pulse"
-                                                title={t('systemStatus.ui.realtime')}
-                                                subtitle={t('systemStatus.ui.socket')}
-                                                statusLabel={t(socketPresentation.labelKey)}
-                                                statusColor={socketPresentation.color}
-                                                dotColor={socketPresentation.dotColor}
-                                                statusVariant={socketPresentation.pillVariant}
-                                            />
-                                            <ConnectionPopoverStatusRow
-                                                testID="connection-popover-machines"
-                                                icon="laptop"
-                                                title={t('settings.machines')}
-                                                subtitle={machineSubtitle}
-                                                statusLabel={t(connectionHealth.machineLabelKey)}
-                                                statusColor={machinesPresentation.color}
-                                                dotColor={machinesPresentation.dotColor}
-                                                statusVariant={machinesPresentation.pillVariant}
+                                                testID="connection-popover-relay"
+                                                icon="hard-drives"
+                                                title={t('systemStatus.transport.irohCurrent')}
+                                                subtitle={toServerUrlDisplay(displayServerUrl)}
+                                                statusLabel={t(endpointPresentation.labelKey)}
+                                                statusColor={endpointPresentation.color}
+                                                dotColor={endpointPresentation.dotColor}
+                                                statusVariant={endpointPresentation.pillVariant}
+                                                onRetry={canRetryRelayConnection ? handleRetry : undefined}
                                             />
                                         </View>
                                     );

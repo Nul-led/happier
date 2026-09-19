@@ -11,8 +11,17 @@ import { HappyError } from '@/utils/errors/errors';
  * The email/password journeys this surface can run. `provision` and `recover`
  * additionally confirm the new password; `login` never adds requirements the
  * Home would not enforce, because an existing Account may predate them.
+ * `verify_email` is the address-only step that precedes creation on a Home that
+ * requires proven mailbox control: it carries no credential, because none would
+ * survive the mail round trip.
  */
-export type EmailPasswordFormPurpose = 'login' | 'provision' | 'enroll' | 'change' | 'recover';
+export type EmailPasswordFormPurpose =
+    | 'login'
+    | 'provision'
+    | 'enroll'
+    | 'change'
+    | 'recover'
+    | 'verify_email';
 
 export type EmailPasswordFieldId = 'email' | 'password' | 'confirmPassword' | 'currentPassword';
 
@@ -38,7 +47,8 @@ export type EmailPasswordValidation =
     | Readonly<{ ok: true; normalizedEmail: string; email: string; password: string }>
     | Readonly<{ ok: false; problem: EmailPasswordProblem }>;
 
-const PURPOSES_REQUIRING_EMAIL: readonly EmailPasswordFormPurpose[] = ['login', 'provision', 'enroll'];
+const PURPOSES_REQUIRING_EMAIL: readonly EmailPasswordFormPurpose[] = ['login', 'provision', 'enroll', 'verify_email'];
+const PURPOSES_REQUIRING_PASSWORD: readonly EmailPasswordFormPurpose[] = ['login', 'provision', 'enroll', 'change', 'recover'];
 const PURPOSES_CONFIRMING_PASSWORD: readonly EmailPasswordFormPurpose[] = ['provision', 'enroll', 'change', 'recover'];
 
 /**
@@ -64,6 +74,10 @@ export function validateEmailPasswordDraft(input: Readonly<{
 
     if (input.requiresCurrentPassword && !draft.currentPassword) {
         return { ok: false, problem: { field: 'currentPassword', messageKey: 'settingsAccount.nativePassword.currentPasswordRequired' } };
+    }
+
+    if (!PURPOSES_REQUIRING_PASSWORD.includes(purpose)) {
+        return { ok: true, normalizedEmail, email, password: '' };
     }
 
     const accepted = acceptPasswordTextV1(draft.password);

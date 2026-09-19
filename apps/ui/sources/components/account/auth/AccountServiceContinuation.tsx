@@ -5,6 +5,7 @@ import { PairingLinkEntryForm } from '@/components/account/restore/PairingLinkEn
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { parseHomeQrInviteDeepLink } from '@/auth/pairing/pairingUrl';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import { ActionListSection } from '@/components/ui/lists/ActionListSection';
 import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Modal } from '@/modal';
 import { t } from '@/text';
@@ -14,6 +15,7 @@ import { getPendingDirectoryHomeEnrollment, subscribePendingDirectoryHomeEnrollm
 import { useAccountDirectoryActivePolling } from '@/sync/ops/accountDirectory/useAccountDirectoryActivePolling';
 import { formatEnrollmentExpiry } from '@/auth/pairing/pairingPresentation';
 import { resolveServerProfileForPortableIdentity } from '@/sync/domains/server/serverProfiles';
+import { toServerUrlDisplay } from '@/sync/domains/server/url/serverUrlDisplay';
 import { WelcomeActionAdmissionContext } from '@/components/onboarding/preAuth/WelcomeActionList';
 import { describeAccountServiceFailure } from './accountServiceFailurePresentation';
 
@@ -33,6 +35,7 @@ export function AccountServiceContinuation(props: Readonly<{
 }>): React.ReactElement {
     const [recoveryView, setRecoveryView] = React.useState<'key' | 'scan' | 'paste'>('key');
     const [pairingLink, setPairingLink] = React.useState<string | null>(null);
+    const [approvalStopped, setApprovalStopped] = React.useState(false);
     const admission = React.useContext(WelcomeActionAdmissionContext);
     const inFlight = React.useRef(false);
     const [busy, setBusy] = React.useState(false);
@@ -65,6 +68,10 @@ export function AccountServiceContinuation(props: Readonly<{
         ?? (props.result.kind === 'explicit_target_not_linked' || props.result.kind === 'approval_required' ? props.result.homeServerIdentityId : undefined);
     const targetProfile = target ? resolveServerProfileForPortableIdentity(target) : null;
     const verifiedAccountServiceName = props.input.service.snapshot.features.accountServicePresentation?.displayName?.trim() || undefined;
+    // Routine copy names the service the user actually chose, never the
+    // internal "Account Service" concept. The verified presentation name is the
+    // authority; its address is the only honest fallback.
+    const serviceDisplayName = verifiedAccountServiceName ?? toServerUrlDisplay(props.input.service.endpointUrl);
     const homeName = props.input.session.snapshot.homes.find((home) => home.homeServerIdentityId === target)?.label
         ?? (targetProfile?.kind === 'resolved' ? targetProfile.profile.name : t('common.home'));
     const paired = material ? async (value: Parameters<typeof supplyAccountServiceHomeMaterial>[2]) => {
@@ -103,17 +110,47 @@ export function AccountServiceContinuation(props: Readonly<{
         <RoundButton title={t('connect.scanExistingHomeQrTitle')} onPress={() => setRecoveryView('scan')} />
     </View>;
     if (props.result.kind === 'choose_home') return <View>
-        {props.result.homes.map((home) => <RoundButton key={home.homeServerIdentityId} title={home.label}
-            testID={`account-service-choose-home-${home.homeServerIdentityId}`}
-            disabled={busy || admission.pendingActionId !== null}
-            action={async () => await run(home.homeServerIdentityId, async () => {
+        {/*
+          * Offline Homes stay eligible (R-DIRECTORY forbids filtering to
+          * manufacture a sole choice), so the row itself has to carry the
+          * address and the preferred hint — otherwise identically labelled
+          * Homes are indistinguishable and the user picks blind.
+          */}
+        <ActionListSection actions={props.result.homes.map((home) => ({
+            id: home.homeServerIdentityId,
+            testID: `account-service-choose-home-${home.homeServerIdentityId}`,
+            label: home.label,
+            subtitle: home.preferred
+                ? `${home.canonicalServerUrl} · ${t('settingsAccount.accountServicePreferredHome')}`
+                : home.canonicalServerUrl,
+            disabled: busy || admission.pendingActionId !== null,
+            onPress: () => run(home.homeServerIdentityId, async () => {
                 const input: AccountPostAuthInput = { ...props.input,
                     intent: { kind: 'enter', target: { kind: 'explicit', homeServerIdentityId: home.homeServerIdentityId } } };
                 await props.onResult(await completeAccountServicePostAuth(input), input);
-            })} />)}
+            }),
+        }))} />
         <RoundButton title={t('common.back')} onPress={back} />
     </View>;
+    // Stopping the wait is not the same as leaving: the Account sign-in survives
+    // it, and the user cannot tell that from an immediate dismissal.
+    if (props.result.kind === 'approval_required' && approvalStopped) {
+        return <SurfaceStateCard testID="account-service-approval-stopped" kind="warning"
+            title={t('settingsAccount.accountServiceOAuth.approvalWait.cancelledTitle')}
+            reason={t('settingsAccount.accountServiceOAuth.approvalWait.cancelledBody')}
+            accessibilitySemantics="status"
+            action={{ label: t('common.back'), onPress: props.onBack }} />;
+    }
+    const stopWaiting = async () => {
+        if (ownsPending && pending) await cancelPendingDirectoryHomeEnrollment(pending);
+        setApprovalStopped(true);
+    };
     const expired = failure?.code.source === 'home' && failure.code.code === 'expired';
+    // A declined approval is as legitimately restartable as an expired one: the
+    // other device answered, so a fresh attempt is the allowed distinct action.
+    const approvalRejected = (failure?.code.source === 'home' && failure.code.code === 'rejected')
+        || (failure?.code.source === 'directory' && failure.code.code === 'approval_rejected');
+    const restartable = expired || approvalRejected;
     const canRetry = failure?.recovery === 'retry_stage';
     const noHomes = props.result.kind === 'account_connected_no_homes' || props.result.kind === 'explicit_target_not_linked';
     const successful = props.result.kind === 'account_connected' || props.result.kind === 'home_entered'
@@ -129,21 +166,26 @@ export function AccountServiceContinuation(props: Readonly<{
         kind={failure ? 'error' : 'warning'}
         title={props.result.kind === 'approval_required' ? t('settingsAccount.accountServiceOAuth.stages.waitingApproval')
             : successful ? t('settingsAccount.accountServiceHomeConnected')
-                : noHomes ? t('settingsAccount.accountServiceOAuth.stages.accountServiceConnected')
+                : noHomes ? t('settingsAccount.accountServiceSignedInTo', { accountService: serviceDisplayName })
                     : failurePresentation ? failurePresentation.title : t('common.error')}
-        reason={props.result.kind === 'approval_required' ? `${homeName} · ${formatEnrollmentExpiry(props.result.expiresAtMs)}`
+        reason={props.result.kind === 'approval_required' ? t('settingsAccount.accountServiceOAuth.approvalWait.waitingBody')
             : failure?.recovery === 'reauthenticate_account' ? t('settingsAccount.accountServiceDiscoveryUnavailableDescription')
                 : failure?.recovery === 'use_home_auth' ? t('connect.scanExistingHomeQrTitle')
                     : failurePresentation ? failurePresentation.body
                         : t('settingsAccount.accountServiceOAuth.errors.homeEnrollment.body')}
+        {...(props.result.kind === 'approval_required'
+            ? { detail: `${homeName} · ${formatEnrollmentExpiry(props.result.expiresAtMs)}` }
+            : {})}
         accessibilitySemantics={failure ? 'alert' : 'status'}
         action={canRetry ? { label: t('common.retry'), onPress: retry }
             : failure?.recovery === 'reauthenticate_account' && props.onReauthenticate
                 ? { label: t('common.continue'), onPress: () => run('reauthenticate', () => props.onReauthenticate!(props.input)) }
-            : expired ? { label: t('connect.startAgain'), onPress: async () => { await props.onResult(await completeAccountServicePostAuth(props.input)); } }
+            : restartable ? { label: t('connect.startAgain'), onPress: async () => { await props.onResult(await completeAccountServicePostAuth(props.input)); } }
                 : failure?.recovery === 'relink_home' ? { label: t('settingsAccount.accountServiceLinkThisHome'), onPress: relink }
                     : failure?.recovery === 'use_home_auth' ? { label: t('connect.scanExistingHomeQrTitle'), onPress: () => setRecoveryView('scan') }
-                        : { label: props.result.kind === 'approval_required' ? t('approvals.stopWaiting') : t('common.back'), onPress: back }} />
+                        : props.result.kind === 'approval_required'
+                            ? { label: t('approvals.stopWaiting'), onPress: stopWaiting }
+                            : { label: t('common.back'), onPress: back }} />
         {noHomes ? <View>
             <RoundButton title={t('common.refresh')} onPress={async () => { await props.onResult(await completeAccountServicePostAuth(props.input)); }} />
             <RoundButton title={t('connect.scanExistingHomeQrTitle')} onPress={() => setRecoveryView('scan')} />

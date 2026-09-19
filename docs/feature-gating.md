@@ -14,6 +14,15 @@ Fail-closed behavior answers what happens after a gate exists; it does not justi
 
 An off-by-default parallel implementation of existing behavior is a split-brain finding unless the user explicitly requested staged rollout or the compatibility analysis proves it necessary.
 
+A feature bit, flag, default-off switch, dormant branch, or unwired consumer whose only reason is
+"not validated yet", "until the producer lands", "until the composed journey passes", or "rollout
+safety" is not a gate: wire the feature completely and default it on. A server-represented bit may
+still exist as the Home capability boundary — so a current client degrades against an older Home and
+an operator can opt out — but its default must be `true`, and a bit with no user-facing Settings
+toggle must never sit at `false` as a staging device. Keep a default-off bit only for a genuine
+user-facing setting a user turns on themselves, or when a *fact* other than validation holds it
+closed (an unmet catalog dependency, an inactive persistence contract, an absent signing key).
+
 ## Canonical sources
 
 - Feature catalog: `packages/protocol/src/features/catalog.ts`.
@@ -118,20 +127,20 @@ current Home and Team capabilities still authorize each operation. Home Account 
 Home roles, owner protection, and Home Administration remain core behavior and do not use
 a separate `home.governance` gate.
 
-The in-progress credential-sharing implementation uses the child gate
-`teams.credentialResources`, which depends on `teams` in the canonical catalog.
-Its server resolver defaults to disabled and requires the operator opt-in
-`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED=1`. Missing child bits default
-to disabled on every Home. This development gate does not establish resource
-entitlement, source readiness, or completion of the administration and broker flows.
+Credential sharing uses the child gate `teams.credentialResources`, which depends on
+`teams` in the canonical catalog. Its server resolver enables it by default, with
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED=0` as the operator opt-out. A
+missing child bit is still disabled on the client, so a current client degrades against
+an older Home. The bit does not establish resource entitlement or source readiness.
 
 External API access uses the narrower
 `teams.credentialResources.externalApi` gate and depends on
-`teams.credentialResources`. It also defaults off and requires
-`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED=1`. The dependency
-resolver keeps it disabled unless the parent credential-resource vertical is enabled.
-This bit controls route availability only; current resource, membership, key, policy,
-limit, and broker admission remain mandatory for every request.
+`teams.credentialResources`. It is likewise on by default with
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED=0` as the operator
+opt-out, and the dependency resolver keeps it disabled unless the parent
+credential-resource vertical is enabled. This bit controls route availability only;
+current resource, membership, key, policy, limit, and broker admission remain mandatory
+for every request.
 
 ### Session collaboration feature ids
 
@@ -139,10 +148,9 @@ limit, and broker admission remain mandatory for every request.
 Team, and Group Session grants, responsibility, primary-Team context, and atomic
 initial access. It depends on `sessions` and the released `sharing.session`
 capability. `resolveSessionCollaborationFeature` is its only server producer and
-defaults it off while the complete current-component vertical remains under
-loaded and compatibility validation. Operators may explicitly enable it with
-`HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED=1`; the dependency resolver
-still forces it off when normal Session sharing is unavailable.
+enables it by default, with `HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED=0`
+as the operator opt-out; the dependency resolver still forces it off when normal
+Session sharing is unavailable.
 
 The current grant and responsibility routes are mounted through
 `createServerFeatureGatedRouteApp`, and UI hosts consume the exact Home's same
@@ -160,10 +168,52 @@ Team/Group grants or responsibility. Session-to-Session Follow remains under
 the separate `sessions.following` owner and runtime capability; neither feature
 bit is a substitute for current access admission.
 
-Default-off preserves the full collaboration feature while its mounted vertical
-is completed. It is not permission to delete Account/Team/Group access,
-responsibility, presence, public links, or the Access editor, and it must not be
-split into mechanism-level feature bits.
+The bit is a Home capability boundary, not a rollout stage: it must not be split
+into mechanism-level feature bits, and disabling it is not permission to delete
+Account/Team/Group access, responsibility, presence, public links, or the Access
+editor.
+
+### Session Follow feature id
+
+`sessions.following` is the one boundary for durable per-Account Follow of an
+accessible Session, its notification and Voice preferences, and the four
+auto-follow defaults (`assigned`, `direct`, `team`, `group`). It is
+server-represented, `defaultFailMode: 'fail_closed'`, and depends only on
+`sessions` in the Protocol catalog — not on `sessions.collaboration`, because
+following a Session you can already read is not a Team capability.
+
+`resolveSessionFollowingFeature`, registered in the one `serverFeatureRegistry`,
+reads `HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED` and defaults on, with `=0` as
+the operator opt-out. The Follow and Follow-source routes mount through
+`createServerFeatureGatedRouteApp`, and the in-process consumers read the same
+decision through `isServerFeatureEnabledForRequest`: automatic follow on a new
+relationship, the `following` listing scope, the socket Follow handlers, push
+routing, and the Account remote-alert policy. None of them reconstructs the
+decision locally, and none of them is a second place where following can be
+turned off.
+
+The bit governs the Follow *relation*, not read state. Durable viewer read state
+is `AccountSessionReadState`, owned by
+`apps/server/sources/app/session/personal/readState.ts` and reachable for any
+Account holding `readTranscript`; see
+[session-collaboration.md](session-collaboration.md).
+
+### Filtered Session listing feature id
+
+`sessions.filteredListing` is the Home capability for structurally filtered
+Session listing before Home-local pagination — the scope, Team, Group, tag and
+attention query the flat released listing cannot express. It is
+server-represented, `defaultFailMode: 'fail_closed'`, and depends only on
+`sessions`.
+
+`resolveSessionFilteredListingFeature` reads
+`HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED` and defaults on, with `=0`
+as the operator opt-out. The query route mounts behind
+`createServerFeatureGatePreHandler`. Because the bit is fail-closed on the
+client, a current client facing an older Home falls back to the released flat
+listing rather than probing the query route by failure. Disabling it narrows
+which listings a Home can answer; it does not change access, and it is not a
+place to hide Team Sessions from a member who may read them.
 
 ### Session Conversations feature id
 
@@ -173,18 +223,14 @@ Collaboration surface. It is server-represented, fail-closed, and depends exactl
 `applyFeatureDependencies(...)`.
 
 Its server value is produced by `resolveSessionConversationsFeature`, registered in the one
-`serverFeatureRegistry`, from
-`HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED`. The resolver defaults off while the complete
-Plain/E2EE create, post, read, realtime, draft, and attention journey remains under integration.
-Explicit enablement still resolves false when Session collaboration is absent, disabled, or
-malformed. The nested Discussion routes use `createServerFeatureGatedRouteApp`, while the UI
-consumes the same published decision through `useFeatureEnabled`; neither side reconstructs the
-dependency locally.
+`serverFeatureRegistry`, from `HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED`. The resolver
+defaults on, with `=0` as the operator opt-out, and still resolves false when Session
+collaboration is absent, disabled, or malformed. The nested Discussion routes use
+`createServerFeatureGatedRouteApp`, while the UI consumes the same published decision through
+`useFeatureEnabled`; neither side reconstructs the dependency locally.
 
-Default-off preserves the full feature while its mounted vertical is completed. It is an
-activation boundary, not permission to delete Conversation functionality or split it into
-smaller feature bits. Change the default only after the canonical plan's composed activation
-evidence is complete.
+The bit is a Home capability boundary, not a rollout stage. Disabling it is not permission to
+delete Conversation functionality or split it into smaller feature bits.
 
 ### Session Board feature id
 
@@ -195,12 +241,10 @@ depends only on `sessions` in the Protocol catalog.
 
 `resolveSessionBoardFeature`, registered in the one `serverFeatureRegistry`, reads
 `HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED` and also consumes the existing Session System Records
-v1 activation fact. The environment value defaults off; missing and malformed values remain
-off. Explicit enablement therefore publishes `true` only after the current Home's System Records
-contract is active. A missing or malformed payload bit is also disabled on clients. Keep this
-default off until the approved Lane 08 native Board activation and loaded compatibility evidence
-is complete; default-off preserves the implementation and stored records rather than removing
-Board features.
+v1 activation fact. The environment value defaults on, with `=0` as the operator opt-out, so the
+Home publishes `true` once its System Records contract is active and `false` before that. A
+missing or malformed payload bit is disabled on clients, so a current client degrades against an
+older Home. The persistence-contract fact — not a rollout stage — is what holds the bit closed.
 
 The Board aggregate route and exact host `surface` reads enforce this decision before mutation or
 disclosure. Generic System Record writes cannot mutate the typed-only Board kinds. UI, CLI, and
@@ -224,18 +268,18 @@ Machine identity, or the synchronized waiting-draft owner is unavailable; routes
 must not reconstruct that dependency locally.
 
 `resolveSessionEphemeralRunnerFeature`, registered in the one `serverFeatureRegistry`, reads
-`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED`. The resolver defaults off. Missing or
-malformed payload bits are also disabled, so a current client hides Temporary computer against
-an older Home and ordinary Session creation remains usable.
+`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED`. The resolver defaults on, with `=0` as the
+operator opt-out. Missing or malformed payload bits are still disabled on clients, so a current
+client hides Temporary computer against an older Home and ordinary Session creation remains
+usable.
 
 The bit gates route availability only. It does not prove that a signed Runner artifact exists,
 that the selected Agent and trusted external plugin generation can run on the target, that an
 exact broker Machine is ready, or that the creator and restricted runtime are authorized.
 Those decisions remain with their existing publication, Agent/plugin, broker, authentication,
-and Session-access owners. Keep the default off until one complete creator → endpoint →
-materialized ordinary Session → real turn → ordinary-feature parity → Stop journey passes for
-a supported target. This activation boundary preserves the full feature; it is not permission
-to remove unfinished Runner capabilities or split them into mechanism-level flags.
+and Session-access owners, and each of them refuses on its own terms. The bit is a Home
+capability boundary, not a rollout stage, and it is not permission to remove Runner capabilities
+or split them into mechanism-level flags.
 
 ### Machine Pools feature id
 

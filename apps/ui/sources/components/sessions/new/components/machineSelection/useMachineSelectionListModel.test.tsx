@@ -205,7 +205,7 @@ describe('useMachineSelectionListModel', () => {
         const workspaceStep = section.options[0]!.openStep;
         expect(workspaceStep).toMatchObject({
             id: 'temporary-computer-workspace:server-a:linux-x64',
-            title: 'newSession.selectWorkingDirectoryTitle',
+            title: 'newSession.temporaryComputer.workspace.title',
         });
         // Expiry is offered beside the folder, defaulting to Never, and the
         // folder choice is what commits the target.
@@ -223,10 +223,26 @@ describe('useMachineSelectionListModel', () => {
 
         const workspaceSection = workspaceStep?.sections[1];
         if (workspaceSection?.kind !== 'static') throw new Error('expected the workspace section');
-        expect(workspaceSection.options.map((option) => option.id)).toEqual([
-            'temporary-computer-workspace:server-a:linux-x64:choose_on_endpoint',
-            'temporary-computer-workspace:server-a:linux-x64:endpoint_home',
+        // The step names the endpoint's folder from the endpoint's point of
+        // view — the creator is not choosing their own working directory — and
+        // marks the recommended default the same way the expiry section marks
+        // its own.
+        expect(workspaceSection.title).toBe('newSession.temporaryComputer.workspace.title');
+        expect(workspaceSection.options.map((option) => [option.id, option.label, option.subtitle])).toEqual([
+            [
+                'temporary-computer-workspace:server-a:linux-x64:choose_on_endpoint',
+                'newSession.temporaryComputer.target.workspaceChoose',
+                'newSession.temporaryComputer.workspace.chooseRecommended',
+            ],
+            [
+                'temporary-computer-workspace:server-a:linux-x64:endpoint_home',
+                'newSession.temporaryComputer.target.workspaceHome',
+                'newSession.temporaryComputer.workspace.homeDetail',
+            ],
         ]);
+        // The committed folder is echoed in the one place the list renders a
+        // current answer, exactly like the expiry beside it.
+        expect(workspaceSection.resultHint).toBe('newSession.temporaryComputer.target.workspaceHome');
         workspaceSection.options[0]!.onSelect?.();
         workspaceSection.options[1]!.onSelect?.();
         expect(onSelectTemporaryComputer).toHaveBeenNthCalledWith(1, { kind: 'choose_on_endpoint' }, undefined);

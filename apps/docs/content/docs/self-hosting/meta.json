@@ -18,6 +18,7 @@
     "auth-custom-providers",
     "setup-and-bootstrap-policy",
     "home-owner",
+    "home-administration",
     "encryption",
     "retention",
     "self-host-runtime",

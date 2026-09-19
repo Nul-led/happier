@@ -338,23 +338,23 @@ See [Security](/security) for what the server can and cannot read under each mod
 
 When a session starts, the daemon decrypts the selected records locally and materializes only the backend-specific auth it needs for that spawn.
 
-<Callout type="warn">
-  **Development preview:** Team shared credentials are disabled by default in current source.
-  Shared Saved Secrets use the broader Teams decision, but must not be advertised until their
-  complete consumer, recovery, compatibility, and live product journeys are verified. Neither is
-  available in a public Happier release.
-</Callout>
+## Sharing one with a Team
 
-In that preview, **brokered** access keeps usable credential material on the exact Machine making
-the provider request; recipients do not receive it. **Direct** access deliberately delivers usable
-material to the recipient. Removing direct access stops later retrieval but cannot recall material
-already delivered or control requests made outside Happier.
+A connected account, a connected-service pool or a provider connection can be shared with a
+Team, so everybody in it uses the credential without ever holding it. **Brokered** access keeps
+usable credential material on the exact Machine making the provider request; recipients do not
+receive it. **Direct** access deliberately delivers usable material to the recipient. Removing
+direct access stops later retrieval but cannot recall material already delivered or control
+requests made outside Happier.
 
 A shared Saved Secret remains one shared resource rather than becoming a copied personal secret for
 each recipient. Happier rechecks the current Account, Team or Group grant at use time. A missing
 source, stale direct preparation, unavailable broker, lost membership, or encryption-readiness
 problem stays visible as a typed unavailable state with its recovery action; Happier does not
 silently choose a personal credential or change delivery modes.
+
+For the whole workflow — audience, broker placement, limits, usage and activity — see
+[Shared credentials for a Team](/accounts/team-credentials).
 
 ## Feature gates and overrides
 

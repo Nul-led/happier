@@ -1511,6 +1511,246 @@ export type PluginActionWorkflowBlockV1 = Readonly<{
     timeoutMs?: number | undefined;
     onlyWhen?: PluginActionWorkflowConditionV1 | undefined;
 };
+export type PluginActionWorkflowIngressBlockV1 = (Omit<Readonly<{
+    kind: 'if';
+    id: string;
+    when: PluginActionWorkflowConditionV1;
+    then: readonly PluginActionWorkflowBlockV1[];
+    otherwise: readonly PluginActionWorkflowBlockV1[];
+}>, 'otherwise' | 'then'> & Readonly<{
+    then: readonly PluginActionWorkflowIngressBlockV1[];
+    otherwise: readonly PluginActionWorkflowIngressBlockV1[];
+}>) | (Omit<Readonly<{
+    kind: 'loop';
+    id: string;
+    body: readonly PluginActionWorkflowBlockV1[];
+    repetition: PluginActionWorkflowRepetitionV1;
+    onlyWhen?: PluginActionWorkflowConditionV1 | undefined;
+}>, 'body'> & Readonly<{
+    body: readonly PluginActionWorkflowIngressBlockV1[];
+}>) | (Omit<Readonly<{
+    kind: 'parallel';
+    id: string;
+    branches: readonly Readonly<{
+        id: string;
+        blocks: readonly PluginActionWorkflowBlockV1[];
+    }>[];
+    failurePolicy: 'collect_outcomes' | 'fail_stop';
+    maxConcurrent?: number | undefined;
+    onlyWhen?: PluginActionWorkflowConditionV1 | undefined;
+}>, 'branches'> & Readonly<{
+    branches: readonly (Omit<Readonly<{
+        id: string;
+        blocks: readonly PluginActionWorkflowBlockV1[];
+    }>, 'blocks'> & Readonly<{
+        blocks: readonly PluginActionWorkflowIngressBlockV1[];
+    }>)[];
+}>) | string | {
+    kind: 'step';
+    id: string;
+    document: {
+        text: string;
+        references: {
+            [x: string]: unknown;
+            kind: string;
+            ref: string;
+            token: string;
+            label?: string | undefined;
+        }[];
+        attachments: {
+            v: 1;
+            instanceId: string;
+            attachment: {
+                pluginId: string;
+                localId: string;
+            };
+            key: string;
+            value: PluginJsonValueV2;
+            presentation: {
+                label: string;
+                typeLabel: string;
+                description?: string | undefined;
+                icon?: 'action' | 'add' | 'back' | 'browser' | 'change-complete' | 'change-open' | 'check' | 'close' | 'copy' | 'error' | 'external' | 'file' | 'forward' | 'globe' | 'info' | 'more' | 'preview' | 'refresh' | 'search' | 'settings' | 'terminal' | 'warning' | undefined;
+                tone?: 'danger' | 'info' | 'neutral' | 'success' | 'warning' | undefined;
+            };
+        }[];
+    };
+    input: PluginActionWorkflowValueReferenceV1[];
+    result: {
+        kind: 'decision';
+        decisions: string[];
+    } | {
+        kind: 'json';
+        schema: PluginJsonSchemaV2;
+    } | {
+        kind: 'text';
+    };
+    execution?: undefined | {
+        agentTarget?: null | undefined | {
+            kind: 'agent';
+            identity: {
+                pluginId: string;
+                localId: string;
+            };
+        };
+        modelSelection?: null | undefined | {
+            v: 1;
+            ref: {
+                agentTargetKey: string;
+                providerConnectionId: null;
+                modelId: string;
+            } | {
+                agentTargetKey: string;
+                providerConnectionId: string;
+                modelId: string;
+            };
+            updatedAt: number;
+        };
+        profileId?: null | string | undefined;
+        permissionMode?: null | string | undefined;
+        acpSessionModeId?: null | string | undefined;
+        sessionConfigOptionOverrides?: null | undefined | {
+            [x: string]: unknown;
+            v: 1;
+            updatedAt: number;
+            overrides: Record<string, {
+                [x: string]: unknown;
+                updatedAt: number;
+                value: boolean | null | number | string;
+            }>;
+        };
+        mcpSelection?: null | undefined | {
+            forceIncludeServerIds: string[];
+            forceExcludeServerIds: string[];
+            v: 1;
+            managedServersEnabled: boolean;
+        };
+        connectedServices?: null | undefined | {
+            v: 2;
+            bindingsByServiceId: Record<string, {
+                source: 'connected';
+                selection: 'group';
+                groupId: string;
+                profileId?: string | undefined;
+            } | {
+                source: 'connected';
+                selection: 'profile';
+                profileId: string;
+            } | {
+                source: 'native';
+            } | {
+                source: 'team_resource';
+                resourceId: string;
+                deliveryMode: 'brokered';
+                disclosedMember?: undefined;
+            } | {
+                source: 'team_resource';
+                resourceId: string;
+                deliveryMode: 'direct';
+                disclosedMember: {
+                    service: {
+                        pluginId: string;
+                        localId: string;
+                    };
+                    accountId: string;
+                };
+            }>;
+        };
+        transcriptStorage?: 'direct' | 'persisted' | null | undefined;
+        terminal?: null | undefined | {
+            mode?: 'integrated' | 'plain' | 'tmux' | 'windows_console' | 'windows_terminal' | undefined;
+            tmux?: undefined | {
+                sessionName?: string | undefined;
+                isolated?: boolean | undefined;
+                tmpDir?: null | string | undefined;
+            };
+            windows?: undefined | {
+                launchMode?: 'console' | 'hidden' | 'windows_terminal' | undefined;
+                console?: 'hidden' | 'visible' | undefined;
+                windowName?: string | undefined;
+            };
+        };
+        windowsRemoteSessionLaunchMode?: 'console' | 'hidden' | 'windows_terminal' | null | undefined;
+        windowsRemoteSessionConsole?: 'hidden' | 'visible' | null | undefined;
+        windowsTerminalWindowName?: null | string | undefined;
+        runtimeDescriptorV1?: null | undefined | {
+            v: 1;
+            agentId: string;
+            agent: {
+                backendMode: string;
+                home?: 'connectedService' | 'user' | undefined;
+                connectedServiceId?: string | undefined;
+                connectedServiceProfileId?: string | undefined;
+                connectedServiceGroupId?: string | undefined;
+            };
+        };
+        conversation?: undefined | {
+            kind: 'existing_session';
+            sessionId: string;
+            machineId: string;
+        } | {
+            kind: 'fresh';
+        } | {
+            kind: 'from_step';
+            producer: {
+                blockId: string;
+                scope: {
+                    kind: 'current';
+                } | {
+                    kind: 'outer';
+                    levels: number;
+                } | {
+                    kind: 'previous_iteration';
+                    loopBlockId: string;
+                };
+            };
+        } | {
+            kind: 'shared_run';
+        };
+        workspace?: undefined | {
+            kind: 'from_step';
+            producer: {
+                blockId: string;
+                scope: {
+                    kind: 'current';
+                } | {
+                    kind: 'outer';
+                    levels: number;
+                } | {
+                    kind: 'previous_iteration';
+                    loopBlockId: string;
+                };
+            };
+        } | {
+            kind: 'inherit';
+        } | {
+            kind: 'new_worktree';
+            source: {
+                kind: 'original';
+            } | {
+                kind: 'step';
+                producer: {
+                    blockId: string;
+                    scope: {
+                        kind: 'current';
+                    } | {
+                        kind: 'outer';
+                        levels: number;
+                    } | {
+                        kind: 'previous_iteration';
+                        loopBlockId: string;
+                    };
+                };
+            } | {
+                kind: 'workflow';
+            };
+        } | {
+            kind: 'project_checkout';
+        };
+    };
+    timeoutMs?: number | undefined;
+    onlyWhen?: PluginActionWorkflowConditionV1 | undefined;
+};
 export type ActionSpec = {
     readonly id: PluginInvocableActionId;
     readonly title: string;
@@ -1642,13 +1882,15 @@ export type PluginActionInputById = {
     };
     readonly "workflow.validate": {
         definition: {
-            blocks: unknown[];
+            blocks: PluginActionWorkflowIngressBlockV1[];
             version?: 1 | undefined;
             inputs?: undefined | {
                 name: string;
                 valueType: 'boolean' | 'json' | 'number' | 'string';
                 required: boolean;
-                default?: unknown;
+                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
+                    readonly [key: string]: JsonValue;
+                };
                 description?: string | undefined;
             }[];
             defaults?: undefined | {
@@ -1686,50 +1928,22 @@ export type PluginActionInputById = {
                     }>;
                 };
                 mcpSelection?: null | undefined | {
-                    v?: 1 | undefined;
-                    managedServersEnabled?: boolean | undefined;
-                    forceIncludeServerIds?: string[] | undefined;
-                    forceExcludeServerIds?: string[] | undefined;
+                    forceIncludeServerIds: string[];
+                    forceExcludeServerIds: string[];
+                    v: 1;
+                    managedServersEnabled: boolean;
                 };
                 connectedServices?: null | undefined | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
                     v: 2;
-                    bindingsByServiceId?: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
+                    bindingsByServiceId: Record<string, {
                         source: 'connected';
                         selection: 'group';
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: 'connected';
+                        selection: 'profile';
+                        profileId: string;
                     } | {
                         source: 'native';
                     } | {
@@ -1748,7 +1962,7 @@ export type PluginActionInputById = {
                             };
                             accountId: string;
                         };
-                    }> | undefined;
+                    }>;
                 };
                 transcriptStorage?: 'direct' | 'persisted' | null | undefined;
                 terminal?: null | undefined | {
@@ -1788,7 +2002,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -1805,7 +2019,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -1825,7 +2039,7 @@ export type PluginActionInputById = {
                         kind: 'step';
                         producer: {
                             blockId: string;
-                            scope?: undefined | {
+                            scope: {
                                 kind: 'current';
                             } | {
                                 kind: 'outer';
@@ -1846,7 +2060,7 @@ export type PluginActionInputById = {
                 kind: 'result';
                 producer: {
                     blockId: string;
-                    scope?: undefined | {
+                    scope: {
                         kind: 'current';
                     } | {
                         kind: 'outer';
@@ -1856,7 +2070,7 @@ export type PluginActionInputById = {
                         loopBlockId: string;
                     };
                 };
-                path?: (number | string)[] | undefined;
+                path: (number | string)[];
             };
         };
         inputs?: Record<string, unknown> | undefined;
@@ -1869,13 +2083,15 @@ export type PluginActionInputById = {
         source: {
             kind: 'inline';
             definition: {
-                blocks: unknown[];
+                blocks: PluginActionWorkflowIngressBlockV1[];
                 version?: 1 | undefined;
                 inputs?: undefined | {
                     name: string;
                     valueType: 'boolean' | 'json' | 'number' | 'string';
                     required: boolean;
-                    default?: unknown;
+                    default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
+                        readonly [key: string]: JsonValue;
+                    };
                     description?: string | undefined;
                 }[];
                 defaults?: undefined | {
@@ -1913,50 +2129,22 @@ export type PluginActionInputById = {
                         }>;
                     };
                     mcpSelection?: null | undefined | {
-                        v?: 1 | undefined;
-                        managedServersEnabled?: boolean | undefined;
-                        forceIncludeServerIds?: string[] | undefined;
-                        forceExcludeServerIds?: string[] | undefined;
+                        forceIncludeServerIds: string[];
+                        forceExcludeServerIds: string[];
+                        v: 1;
+                        managedServersEnabled: boolean;
                     };
                     connectedServices?: null | undefined | {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: 'connected';
-                            profileId: string;
-                            selection?: 'profile' | undefined;
-                        } | {
-                            source: 'connected';
-                            selection: 'group';
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: 'native';
-                        }>;
-                    } | {
-                        v: 1;
-                        bindingsByServiceId: Record<string, {
-                            source: 'connected';
-                            profileId: string;
-                            selection?: 'profile' | undefined;
-                        } | {
-                            source: 'connected';
-                            selection: 'group';
-                            groupId: string;
-                            profileId?: string | undefined;
-                        } | {
-                            source: 'native';
-                        }>;
-                    } | {
                         v: 2;
-                        bindingsByServiceId?: Record<string, {
-                            source: 'connected';
-                            profileId: string;
-                            selection?: 'profile' | undefined;
-                        } | {
+                        bindingsByServiceId: Record<string, {
                             source: 'connected';
                             selection: 'group';
                             groupId: string;
                             profileId?: string | undefined;
+                        } | {
+                            source: 'connected';
+                            selection: 'profile';
+                            profileId: string;
                         } | {
                             source: 'native';
                         } | {
@@ -1975,7 +2163,7 @@ export type PluginActionInputById = {
                                 };
                                 accountId: string;
                             };
-                        }> | undefined;
+                        }>;
                     };
                     transcriptStorage?: 'direct' | 'persisted' | null | undefined;
                     terminal?: null | undefined | {
@@ -2015,7 +2203,7 @@ export type PluginActionInputById = {
                         kind: 'from_step';
                         producer: {
                             blockId: string;
-                            scope?: undefined | {
+                            scope: {
                                 kind: 'current';
                             } | {
                                 kind: 'outer';
@@ -2032,7 +2220,7 @@ export type PluginActionInputById = {
                         kind: 'from_step';
                         producer: {
                             blockId: string;
-                            scope?: undefined | {
+                            scope: {
                                 kind: 'current';
                             } | {
                                 kind: 'outer';
@@ -2052,7 +2240,7 @@ export type PluginActionInputById = {
                             kind: 'step';
                             producer: {
                                 blockId: string;
-                                scope?: undefined | {
+                                scope: {
                                     kind: 'current';
                                 } | {
                                     kind: 'outer';
@@ -2073,7 +2261,7 @@ export type PluginActionInputById = {
                     kind: 'result';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -2083,7 +2271,7 @@ export type PluginActionInputById = {
                             loopBlockId: string;
                         };
                     };
-                    path?: (number | string)[] | undefined;
+                    path: (number | string)[];
                 };
             };
         } | {
@@ -2246,6 +2434,7 @@ export type PluginActionInputById = {
         invocation: {
             recordId: string;
         };
+        causalInvocationIds: string[];
         conversation: 'fresh_agent' | 'same_conversation';
         input: {
             kind: 'original';
@@ -2298,13 +2487,15 @@ export type PluginActionInputById = {
     readonly "workflow.definition.create": {
         definitionId: string;
         definition: {
-            blocks: unknown[];
+            blocks: PluginActionWorkflowIngressBlockV1[];
             version?: 1 | undefined;
             inputs?: undefined | {
                 name: string;
                 valueType: 'boolean' | 'json' | 'number' | 'string';
                 required: boolean;
-                default?: unknown;
+                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
+                    readonly [key: string]: JsonValue;
+                };
                 description?: string | undefined;
             }[];
             defaults?: undefined | {
@@ -2342,50 +2533,22 @@ export type PluginActionInputById = {
                     }>;
                 };
                 mcpSelection?: null | undefined | {
-                    v?: 1 | undefined;
-                    managedServersEnabled?: boolean | undefined;
-                    forceIncludeServerIds?: string[] | undefined;
-                    forceExcludeServerIds?: string[] | undefined;
+                    forceIncludeServerIds: string[];
+                    forceExcludeServerIds: string[];
+                    v: 1;
+                    managedServersEnabled: boolean;
                 };
                 connectedServices?: null | undefined | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
                     v: 2;
-                    bindingsByServiceId?: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
+                    bindingsByServiceId: Record<string, {
                         source: 'connected';
                         selection: 'group';
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: 'connected';
+                        selection: 'profile';
+                        profileId: string;
                     } | {
                         source: 'native';
                     } | {
@@ -2404,7 +2567,7 @@ export type PluginActionInputById = {
                             };
                             accountId: string;
                         };
-                    }> | undefined;
+                    }>;
                 };
                 transcriptStorage?: 'direct' | 'persisted' | null | undefined;
                 terminal?: null | undefined | {
@@ -2444,7 +2607,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -2461,7 +2624,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -2481,7 +2644,7 @@ export type PluginActionInputById = {
                         kind: 'step';
                         producer: {
                             blockId: string;
-                            scope?: undefined | {
+                            scope: {
                                 kind: 'current';
                             } | {
                                 kind: 'outer';
@@ -2502,7 +2665,7 @@ export type PluginActionInputById = {
                 kind: 'result';
                 producer: {
                     blockId: string;
-                    scope?: undefined | {
+                    scope: {
                         kind: 'current';
                     } | {
                         kind: 'outer';
@@ -2512,7 +2675,7 @@ export type PluginActionInputById = {
                         loopBlockId: string;
                     };
                 };
-                path?: (number | string)[] | undefined;
+                path: (number | string)[];
             };
         };
         metadata: {
@@ -2527,13 +2690,15 @@ export type PluginActionInputById = {
             bodyVersion: number;
         };
         definition: {
-            blocks: unknown[];
+            blocks: PluginActionWorkflowIngressBlockV1[];
             version?: 1 | undefined;
             inputs?: undefined | {
                 name: string;
                 valueType: 'boolean' | 'json' | 'number' | 'string';
                 required: boolean;
-                default?: unknown;
+                default?: boolean | null | number | readonly JsonValue[] | string | undefined | {
+                    readonly [key: string]: JsonValue;
+                };
                 description?: string | undefined;
             }[];
             defaults?: undefined | {
@@ -2571,50 +2736,22 @@ export type PluginActionInputById = {
                     }>;
                 };
                 mcpSelection?: null | undefined | {
-                    v?: 1 | undefined;
-                    managedServersEnabled?: boolean | undefined;
-                    forceIncludeServerIds?: string[] | undefined;
-                    forceExcludeServerIds?: string[] | undefined;
+                    forceIncludeServerIds: string[];
+                    forceExcludeServerIds: string[];
+                    v: 1;
+                    managedServersEnabled: boolean;
                 };
                 connectedServices?: null | undefined | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
-                    v: 1;
-                    bindingsByServiceId: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
-                        source: 'connected';
-                        selection: 'group';
-                        groupId: string;
-                        profileId?: string | undefined;
-                    } | {
-                        source: 'native';
-                    }>;
-                } | {
                     v: 2;
-                    bindingsByServiceId?: Record<string, {
-                        source: 'connected';
-                        profileId: string;
-                        selection?: 'profile' | undefined;
-                    } | {
+                    bindingsByServiceId: Record<string, {
                         source: 'connected';
                         selection: 'group';
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: 'connected';
+                        selection: 'profile';
+                        profileId: string;
                     } | {
                         source: 'native';
                     } | {
@@ -2633,7 +2770,7 @@ export type PluginActionInputById = {
                             };
                             accountId: string;
                         };
-                    }> | undefined;
+                    }>;
                 };
                 transcriptStorage?: 'direct' | 'persisted' | null | undefined;
                 terminal?: null | undefined | {
@@ -2673,7 +2810,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -2690,7 +2827,7 @@ export type PluginActionInputById = {
                     kind: 'from_step';
                     producer: {
                         blockId: string;
-                        scope?: undefined | {
+                        scope: {
                             kind: 'current';
                         } | {
                             kind: 'outer';
@@ -2710,7 +2847,7 @@ export type PluginActionInputById = {
                         kind: 'step';
                         producer: {
                             blockId: string;
-                            scope?: undefined | {
+                            scope: {
                                 kind: 'current';
                             } | {
                                 kind: 'outer';
@@ -2731,7 +2868,7 @@ export type PluginActionInputById = {
                 kind: 'result';
                 producer: {
                     blockId: string;
-                    scope?: undefined | {
+                    scope: {
                         kind: 'current';
                     } | {
                         kind: 'outer';
@@ -2741,7 +2878,7 @@ export type PluginActionInputById = {
                         loopBlockId: string;
                     };
                 };
-                path?: (number | string)[] | undefined;
+                path: (number | string)[];
             };
         };
         metadata: {
@@ -10629,9 +10766,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -10639,6 +10773,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -10666,9 +10803,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -10676,6 +10810,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -10712,9 +10849,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -10722,6 +10856,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -11040,20 +11177,6 @@ export type PluginActionResultById = {
                 interruption?: string | undefined;
             };
         };
-        availability: {
-            pause: boolean;
-            resumeBoundary: boolean;
-            recoverSameConversation: boolean;
-            recoverFreshAgent: boolean;
-            retry: boolean;
-            restoreWorkspace: boolean;
-            cancel: boolean;
-            inspectExecution: boolean;
-            disabledReasons: {
-                operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
-                code: string;
-            }[];
-        };
         result?: boolean | null | number | readonly JsonValue[] | string | undefined | {
             readonly [key: string]: JsonValue;
         };
@@ -11086,9 +11209,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -11096,6 +11216,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -11125,9 +11248,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -11135,6 +11255,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -11162,9 +11285,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -11172,6 +11292,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -11199,9 +11322,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -11209,6 +11329,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;
@@ -11604,6 +11727,33 @@ export type PluginActionResultById = {
                 };
             };
             parentRevision: number;
+            recoveryAvailability?: undefined | {
+                reattach: {
+                    kind: 'available';
+                } | {
+                    kind: 'unavailable';
+                    reason: 'causal_set_requires_batch_review' | 'execution_not_admitted' | 'invocation_not_recoverable' | 'recovery_not_prepared' | 'run_not_interrupted' | 'stop_pending' | 'workspace_unavailable';
+                };
+                retry: {
+                    kind: 'available';
+                    causalInvocationIds: string[];
+                } | {
+                    kind: 'unavailable';
+                    reason: 'causal_set_requires_batch_review' | 'execution_not_admitted' | 'invocation_not_recoverable' | 'recovery_not_prepared' | 'run_not_interrupted' | 'stop_pending' | 'workspace_unavailable';
+                };
+                continueSameConversation: {
+                    kind: 'available';
+                } | {
+                    kind: 'unavailable';
+                    reason: 'causal_set_requires_batch_review' | 'execution_not_admitted' | 'invocation_not_recoverable' | 'recovery_not_prepared' | 'run_not_interrupted' | 'stop_pending' | 'workspace_unavailable';
+                };
+                continueFreshAgent: {
+                    kind: 'available';
+                } | {
+                    kind: 'unavailable';
+                    reason: 'causal_set_requires_batch_review' | 'execution_not_admitted' | 'invocation_not_recoverable' | 'recovery_not_prepared' | 'run_not_interrupted' | 'stop_pending' | 'workspace_unavailable';
+                };
+            };
         };
     };
     readonly "workflow.run.invocations.retry": {
@@ -11627,9 +11777,6 @@ export type PluginActionResultById = {
             availability: {
                 pause: boolean;
                 resumeBoundary: boolean;
-                recoverSameConversation: boolean;
-                recoverFreshAgent: boolean;
-                retry: boolean;
                 restoreWorkspace: boolean;
                 cancel: boolean;
                 inspectExecution: boolean;
@@ -11637,6 +11784,9 @@ export type PluginActionResultById = {
                     operation: 'cancel' | 'inspect_execution' | 'pause' | 'recover_fresh_agent' | 'recover_same_conversation' | 'restore_workspace' | 'resume_boundary' | 'retry';
                     code: string;
                 }[];
+                recoverSameConversation?: boolean | undefined;
+                recoverFreshAgent?: boolean | undefined;
+                retry?: boolean | undefined;
             };
             createdAt: string;
             updatedAt: string;

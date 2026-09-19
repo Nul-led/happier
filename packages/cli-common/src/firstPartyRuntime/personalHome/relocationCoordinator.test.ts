@@ -736,4 +736,24 @@ describe('Personal Home source relocation coordinator', () => {
     expect(destination.abort).not.toHaveBeenCalled();
     expect(params.activateSource).not.toHaveBeenCalled();
   });
+
+  it('reports public-integration follow-up only when the committed Home answers at a new address', async () => {
+    const moved = await fixture();
+    await expect(coordinatePersonalHomeRelocation(moved.params)).resolves.toMatchObject({
+      status: 'committed',
+      publicIntegrationsNeedAttention: true,
+    });
+
+    // A move that keeps the Home's published address (only its revision advances)
+    // breaks no outside registration, so it must not ask for follow-up work.
+    const sameAddress = await fixture();
+    sameAddress.params.sourceCanonicalServerUrl = publishedDescriptor.canonicalServerUrl;
+    sameAddress.params.readPublishedDescriptor.mockReset();
+    sameAddress.params.readPublishedDescriptor
+      .mockImplementationOnce(async () => ({ ...publishedDescriptor, revision: 4 }))
+      .mockImplementation(async () => publishedDescriptor);
+    const unchanged = await coordinatePersonalHomeRelocation(sameAddress.params);
+    expect(unchanged.status).toBe('committed');
+    expect('publicIntegrationsNeedAttention' in unchanged).toBe(false);
+  });
 });

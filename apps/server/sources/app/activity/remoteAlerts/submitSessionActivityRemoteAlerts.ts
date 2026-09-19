@@ -1,6 +1,8 @@
 import {
     ACTIVITY_REMOTE_ALERT_POLICY_EVENT_V1,
     ActivityRemoteAlertV2Schema,
+    SESSION_CHANGED_WAKE_TYPE,
+    SessionChangedWakeV1Schema,
     resolveAccountRemoteAlertPolicyCurrentness,
     resolveActivityRemoteAlertEventForPersonalEventV2,
     resolveExpoNotificationSoundName,
@@ -135,6 +137,7 @@ export async function submitSessionActivityRemoteAlerts(
 
     const deliveries: AccountPushDelivery[] = [];
     const alerted = new Set<string>();
+    const alertedTokens = new Set<string>();
     for (const account of accounts) {
         // An absent or stale projection means the recipient's current policy is
         // unknown here, so this leg stays unavailable rather than guessing.
@@ -178,7 +181,38 @@ export async function submitSessionActivityRemoteAlerts(
                 },
             });
             alerted.add(account.id);
+            alertedTokens.add(token.token);
         }
+    }
+
+    // Every eligible recipient device this leg did not alert gets the
+    // content-free wake instead, so exactly one leg is responsible for each
+    // device and this event. A device the Home could not decide for — no
+    // published projection, a stale one, or a policy that declined an OS-visible
+    // alert — still reaches its own Activity policy and content builder locally
+    // after synchronizing this exact Home.
+    const wakeData = SessionChangedWakeV1Schema.parse({
+        type: SESSION_CHANGED_WAKE_TYPE,
+        serverId,
+        sessionId: params.sessionId,
+    });
+    for (const token of tokens) {
+        if (alertedTokens.has(token.token)) continue;
+        deliveries.push({
+            accountId: token.accountId,
+            token: token.token,
+            message: {
+                to: token.token,
+                priority: "normal",
+                // A background notification with no alert content: iOS treats it as
+                // `content-available`, which the OS may throttle, delay or discard
+                // and never delivers to a user-terminated app, and Android receives
+                // it as a plain data message. It is best effort by platform
+                // contract and never renders anything by itself.
+                _contentAvailable: true,
+                data: wakeData,
+            },
+        });
     }
 
     if (deliveries.length === 0) return [];

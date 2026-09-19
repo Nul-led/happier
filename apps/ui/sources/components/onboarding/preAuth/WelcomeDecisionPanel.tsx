@@ -122,7 +122,7 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
             allowedNavigation: {
                 changeHome: props.canChangeHome !== false,
                 selectService: props.onChooseAccountService != null,
-                scanOrPasteHome: true,
+                scanOrPasteHome: props.canScanQr === true,
                 createPersonalHome: props.canCreatePersonalHome === true && props.onCreatePersonalHome != null,
             },
             serviceCatalogState,
@@ -196,8 +196,18 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                         <WelcomeActionCard testID="welcome-auth-blocked-retry" title={t('common.retry')} onPress={options.retryServerCheck} />
                     </View>
                 ) : null}
-                {model.notice ? (
-                    <View testID={model.notice.kind === 'service_loading' ? 'welcome-auth-loading' : 'welcome-account-service-recovery'} style={styles.statusBlock}>
+                {/*
+                  * The Home probe owns the first-paint Loading block, so the
+                  * service notice stays out of that moment instead of stacking a
+                  * second identical card under it. A service state that arrives
+                  * later is its own announced block, named for the service the
+                  * user chose and explaining what they can do about it.
+                  */}
+                {model.notice && !(model.notice.kind === 'service_loading' && options.serverAvailability === 'loading') ? (
+                    <View testID={model.notice.kind === 'service_loading' ? 'welcome-account-service-loading' : 'welcome-account-service-recovery'}
+                        style={styles.statusBlock}
+                        accessibilityLiveRegion="polite"
+                        role="status">
                         {model.notice.kind === 'service_loading' ? <ActivitySpinner color={theme.colors.text.primary} /> : null}
                         <Text style={styles.statusText}>
                             {model.notice.kind === 'service_loading'
@@ -208,6 +218,17 @@ export const WelcomeDecisionPanel = React.memo(function WelcomeDecisionPanel(pro
                                         ? t('welcome.signInServiceMethodlessTitle')
                                         : t('welcome.signInServiceUnsupportedTitle')}
                         </Text>
+                        {model.notice.kind === 'service_loading' ? null : (
+                            <Text style={styles.statusText}>
+                                {model.notice.kind === 'service_unavailable'
+                                    ? t('welcome.signInServiceUnavailableBody', {
+                                        serverUrl: model.notice.serviceName ?? accountServiceEntry?.endpoint?.url ?? '',
+                                    })
+                                    : model.notice.kind === 'service_methodless'
+                                        ? t('welcome.signInServiceMethodlessBody')
+                                        : t('welcome.signInServiceUnsupportedBody')}
+                            </Text>
+                        )}
                         {model.notice.kind !== 'service_loading' && accountServiceEntry ? <WelcomeActionCard testID="welcome-account-service-retry" title={t('common.retry')} onPress={accountServiceEntry.retry} /> : null}
                     </View>
                 ) : null}

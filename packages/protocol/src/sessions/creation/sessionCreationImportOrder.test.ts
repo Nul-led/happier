@@ -26,7 +26,10 @@ describe('Session creation source import order', () => {
     expect(spawn.SessionAuthoringCheckoutCreationDraftV1Schema).toBeDefined();
     expect(spawn.SessionServerStartSpawnDraftV1Schema).toBeDefined();
     expect(preparation.SessionCreationTargetPreparationRequestV1Schema).toBeDefined();
-  });
+    // Each case resets the module registry and re-imports the Automation recipe
+    // graph cold, which is seconds of work under directory-level parallelism.
+    // The budget matches the settlement case below rather than the 5 s default.
+  }, 30_000);
 
   it('initializes the Automation recipe graph after creation schemas', async () => {
     vi.resetModules();
@@ -34,7 +37,7 @@ describe('Session creation source import order', () => {
     expect(spawn.SessionAuthoringCheckoutCreationDraftV1Schema).toBeDefined();
     expect(spawn.SessionServerStartSpawnDraftV1Schema).toBeDefined();
     expect(preparation.SessionCreationTargetPreparationRequestV1Schema).toBeDefined();
-  });
+  }, 30_000);
 
   it('initializes creation settlement after the Action-spec graph', async () => {
     vi.resetModules();

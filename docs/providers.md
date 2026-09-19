@@ -171,11 +171,13 @@ This product-risk posture is not a legal-compliance determination. It does not a
 
 Current 0.3 development source contains the protocol, server routes, and UI foundations for
 sharing an existing Connected Account, Connected Service Pool, or Provider Connection as a
-Team credential resource. This is not a released capability and is disabled by default behind
-`teams.credentialResources`; the independently exposed Internet API also requires
-`teams.credentialResources.externalApi`. Neither a schema nor an enabled feature bit proves that
-the end-to-end broker, direct-delivery, selection, usage, recovery, and revocation journeys are
-ready.
+Team credential resource. This is not a released capability. It is bounded by
+`teams.credentialResources`, which depends on `teams` and is enabled by default with
+`HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED=0` as the operator opt-out; the
+independently exposed Internet API additionally requires
+`teams.credentialResources.externalApi`, on the same default-on shape. Those bits are Home
+capability boundaries, not rollout stages, and an enabled bit proves nothing about the
+end-to-end broker, direct-delivery, selection, usage, recovery, and revocation journeys.
 
 The source Account keeps credential custody. A Team resource stores a typed reference to the
 current source plus audience and use policy; it does not copy a Provider definition or create a
@@ -191,6 +193,30 @@ second credential store. Resource access has two intentionally different privacy
 - **Direct** access deliberately discloses usable current material to an authorized recipient for
   a source that supports export. Future revocation can stop new retrieval, but cannot recall
   material already delivered or enforce later out-of-product requests.
+
+Broker placement has one interpreter. The resource row carries two nullable columns,
+`brokerMachineId` and `brokerPoolId`, and `readTeamCredentialBrokerPlacement` in
+`apps/server/sources/app/teams/credentials/brokerPlacementResolver.ts` is the only code that
+reads them: exactly one set names the broker location, neither set is an unplaced resource,
+and both set is `resource_corrupt` rather than a silent preference for one column. Every
+placement, eligibility and selection decision starts there, so no caller compares the raw
+columns, and `teamCredentialBrokerPlacementPinsMachine` is the one answer to "is this
+resource pinned to this Machine" — a Pool placement never pins. Saving a Pool placement
+mirrors the saved exact-Machine rule: the Pool must be the custodian's and carry at least
+one enabled member that is a compatible persistent broker. Presence is not required to save,
+because an offline Pool is repairable while an empty or incompatible one is simply not a
+broker location.
+
+The resource `revision` is an **authority** revision, not a row version. Every durable Session
+binding and signed broker open compares it, so `resourceUpdate.ts` advances it only when an
+authority fact changes: the source binding, disclosure ceiling, placement, enabled state,
+Session use policy, request policy, audience, or usage limits. A presentation-only edit — a
+display-name change — keeps the current revision, so renaming a resource does not invalidate
+live bindings. The optimistic-concurrency precondition is independent of that: `expectedRevision`
+is still required and a stale value still answers `resource_changed`, whichever kind of edit it
+was. Direct delivery tracks its own narrower authority set and clears stored direct source
+versions when the source, the disclosure ceiling, or the direct audience changes, or when the
+resource is disabled.
 
 For normal Sessions and execution runs, the runtime admission owner supplies the authenticated
 accountable Account independently of message authorship. Background work must not guess that

@@ -30,6 +30,12 @@ const approvalArtifactState = vi.hoisted(() => ({
     requests: [] as Array<Readonly<{ artifactId: string | null; serverId: string | null }>>,
 }));
 
+const routerReplaceSpy = vi.hoisted(() => vi.fn());
+vi.mock('expo-router', async () => {
+    const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
+    return createExpoRouterMock({ router: { replace: routerReplaceSpy } }).module;
+});
+
 vi.mock('@/sync/http/client', () => ({
     serverFetch: vi.fn(),
     createServerFetchAtEndpoint: vi.fn(() => endpointFetch),
@@ -420,6 +426,30 @@ describe('TeamAuthEntrySurface', () => {
         expect(opaque.getTextContent()).toContain(t('teams.errors.notFound'));
         expect(opaque.getTextContent()).not.toContain(t('teams.entry.ssoRequiredTitle'));
         expect(opaque.findAllByTestId('team-auth-entry-unavailable-reason')).toHaveLength(0);
+    });
+
+    it('offers a way out of a Team it cannot enter instead of only an endless retry', async () => {
+        // Every §10 refusal ends with "or go back to your own work". A Team page
+        // opened from a public link has no other exit, so the terminal card owns
+        // one — the same exit the OAuth Team failure card already offers.
+        routerReplaceSpy.mockClear();
+        endpointFetch.mockReset();
+        endpointFetch.mockResolvedValue(new Response(JSON.stringify({
+            v: 1,
+            state: 'unavailable',
+            scope: { kind: 'team' },
+            reason: 'sso_required',
+            autoRedirect: null,
+        }), { status: 200 }));
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface teamId="team-1" target={target} onSelectAction={() => {}} />,
+        );
+        await waitForTestId(screen, 'team-auth-entry-unavailable');
+
+        expect(screen.getTextContent()).toContain(t('teams.entry.returnToHappier'));
+        await screen.pressByTestIdAsync('team-auth-entry-unavailable-secondary-action');
+
+        expect(routerReplaceSpy).toHaveBeenCalledWith('/');
     });
 
     it('offers an already-admitted member continuation instead of another sign-in', async () => {

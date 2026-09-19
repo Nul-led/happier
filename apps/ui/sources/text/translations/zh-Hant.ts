@@ -1,6 +1,7 @@
 import { sessionMessageAccountActorTranslations } from './sessionMessageAccountActorTranslations';
 import { sessionAccessTranslations } from './sessionAccessTranslations';
 import { sessionCollaborationTranslations } from './sessionCollaborationTranslations';
+import { sessionResponsibilityTranslations } from './sessionResponsibilityTranslations';
 import { nativePasswordTranslations } from './nativePasswordTranslations';
 import { sessionFollowTranslations } from './sessionFollowTranslations';
 import { sessionHomeFreshnessTranslations } from './sessionHomeFreshnessTranslations';
@@ -737,7 +738,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
     },
     pluginPermissions: pluginPermissionTranslations['zh-Hant'],
     sessionBoard: sessionBoardTranslations['zh-Hant'],
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.zhHant,
     ...changedFileEvidenceTranslations['zh-Hant'],
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations['zh-Hant'],
   ui: {
@@ -2478,6 +2479,8 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         securingCredentials: '正在保護憑證…',
         showQrInstead: '改為顯示 QR 碼',
         addPhoneQrInstructions: '使用 Happier 手機 App 掃描此 QR 碼，在手機上登入。',
+        addPhoneChooseHomeTitle: '選擇一個 Home',
+        addPhoneChooseHomeFooter: '你新增的手機將取得此處所選 Home 的存取權限。目前聚焦的 Home 不會改變。',
         serverUrlNotEmbeddedTitle: '在手機上設定伺服器',
         serverUrlNotEmbeddedBody:
             '此 QR 碼無法包含伺服器位址，因為伺服器被設定為 localhost。請在手機上前往 設定 → 伺服器，新增一個手機可連線的 URL（例如區網 IP 或 Tailscale URL），然後再掃描一次。',
@@ -2488,9 +2491,12 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         expiresAtLabel: '到期時間',
         showPairingLink: '顯示配對連結',
         pairingLinkSecurityWarning: '任何擁有此暫時連結的人都可以在連結過期前新增裝置。請只與您自己的裝置分享。',
+        pairingLinkFieldLabel: '配對連結',
+        pairingLinkRequired: '貼上另一台裝置上顯示的配對連結。',
         pairingQrTooLargeTitle: '內容過長，無法顯示為 QR 碼',
         pairingQrTooLargeBody: '此邀請包含額外的連線資訊，無法以 QR 碼顯示。您的 Home 仍可繼續配對——請改用下方的安全連結。',
         homeAddedPreservedFocusBody: '已加入此 Home。目前選取的 Home 未變更。',
+        homeSavedOpenFailedBody: '此 Home 已儲存，但無法開啟。請重試以切換至它。',
         requesterDeviceAddedBody: '已將提出請求的裝置加入此 Home。',
         requestingDeviceLabel: '提出要求的裝置',
         thisDevice: '此裝置',
@@ -4838,6 +4844,15 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
                 workspaceChoose: '由對方選擇資料夾',
                 workspaceHome: '對方的家目錄',
             },
+            workspace: {
+                title: '起始資料夾',
+                chooseRecommended: '建議 · 套件連線時由對方選擇資料夾',
+                homeDetail: '在執行該套件的人的家目錄中啟動',
+            },
+            otherDevice: {
+                guidance: '這個套件儲存在建立它的裝置上。請在那台裝置上繼續，或取消這個請求並在這裡建立新的套件。',
+                createdOn: ({ device }: { device: string }) => `建立於 ${device}`,
+            },
             endpointFacts: {
                 unreadable: '此裝置無法讀取那台電腦傳來的資訊。',
             },
@@ -5030,6 +5045,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
 
       session: {
         access: sessionAccessTranslations['zh-Hant'],
+        ...sessionResponsibilityTranslations['zh-Hant'],
         collaboration: sessionCollaborationTranslations['zh-Hant'],
         follow: sessionFollowTranslations['zh-Hant'],
         homeFreshness: sessionHomeFreshnessTranslations['zh-Hant'],
@@ -5795,8 +5811,9 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             automationRunEvents: '自動化執行事件',
         },
         multiServerView: {
-            title: '多 Home 並行檢視',
-            footer: '選擇是否將多個 Home 合併在同一個工作階段清單中顯示。',
+            editMembersAction: '編輯此群組中的 Home',
+            title: '此檢視中的 Home',
+            footer: '選擇這些 Home 在工作階段清單中的顯示方式，以及哪些 Home 屬於此群組。',
             presentationTitle: '呈現模式',
             presentation: {
                 flatWithBadges: '扁平清單（含 Home 徽章）',
@@ -9405,7 +9422,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `尚未有 Home 連結至 ${accountService}。請連結一個 Home，然後重新整理。` : '尚未有 Home 連結至此帳號。請連結一個 Home，然後重新整理。',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: '讓此 Home 可在你的其他裝置上使用',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `允許 ${accountService} 協助你的其他裝置尋找此 Home 並要求存取權限。` : '允許你的帳號協助其他裝置尋找此 Home 並要求存取權限。',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -9878,6 +9895,7 @@ settingsSession: {
         signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `無法連線到 ${serverUrl}。請重試或選擇其他登入服務。`,
         signInServiceUnsupportedTitle: '不支援此登入服務',
         signInServiceMethodlessTitle: '此處沒有可用的登入方式',
+        signInServiceMethodlessBody: '此服務可以連線，但目前未提供任何登入方式。請重試或選擇其他服務。',
         signInOptionsPartialTitle: '部分登入方式無法載入',
         signInServiceUnsupportedBody: '此位址是 Home，或不提供帳戶登入。請選擇其他服務。',
         useDifferentHome: '使用其他 Home',
@@ -11216,6 +11234,15 @@ settingsSession: {
           useExistingDetail: '驗證其存取權並保護註冊流程，同時不變更目前選取的之家。',
           useAnother: '使用另一個之家',
           useAnotherDetail: '保持此本地之家不變，並從你的之家中選擇。',
+          blocked: {
+              runtime_unhealthy: '本機 Home 需要處理後才能啟動。',
+              home_auth_invalid: 'Home 驗證需要處理。',
+              existing_runtime: '繼續設定前，需要先對已存在的本機 Home 做出選擇。',
+              personal_home_erased: '你的 Personal Home 已被刪除。重試以建立新的。',
+          },
+          blockedBody: {
+              personal_home_erased: 'Home 資料已被刪除。這裡沒有可復原的內容——請建立新的 Personal Home，或使用其他 Home。',
+          },
       },
   },
   settingsSearch: {

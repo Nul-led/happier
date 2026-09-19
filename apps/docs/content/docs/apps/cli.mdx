@@ -544,7 +544,7 @@ happier home unlink-account [--home PROFILE]
 
 `pair-device` requires the Home's current `bound-qr-v2` capability and starts a new short-lived QR/link session; expired or cancelled sessions are not resumable. `link-account` publishes the Home to the signed-in Account Service for later discovery. Linking is optional and never puts the Account Service in the Home traffic path.
 
-`unlink-account` is the reverse: it stops the selected Account Service from signing in to this Home. The Home refuses future delegated sign-ins from that service, but it does **not** revoke Home credentials the service already issued — devices that are signed in keep their access until you sign them out on the Home itself. The same action is available in the app under **Settings → Account → Homes** as **Stop letting {Service} sign in to this Home**.
+`unlink-account` is the reverse: it stops the selected Account Service from signing in to this Home. The Home refuses future delegated sign-ins from that service, but it does **not** revoke Home credentials the service already issued — devices that are signed in keep their access until you sign them out on the Home itself. The same action is available in the app under **Settings → Account → Homes** as **Stop delegated sign-in to this Home**.
 
 You can also inspect, change, or sign out of the Account Service this CLI uses:
 
@@ -732,7 +732,16 @@ Uninstalling the managed runtime (`happier relay host uninstall`) is different a
 
 ### Relocation (0.3 development)
 
-`happier home` does not expose a source-side relocation command. In the 0.3 development line, **Move Home** is initiated from Desktop settings for a managed destination. The coordinator uses the installed destination CLI internally to stage, verify, quarantine, and activate the Home; those destination-local commands are not a second user-facing move workflow.
+```bash
+happier home relocate --target user@host [--yes]
+happier home relocate --target user@host --recovery-action finish_move|return_to_source [--yes]
+```
+
+`relocate` moves this computer's Personal Home to the explicit SSH destination in `--target`. It is the terminal form of the same **Move Home** operation Desktop settings starts, and both run through the one relocation coordinator — there is no second move workflow. Use `--target`, not `--ssh`: the destination is the move's target, not a remote host the command is executed on.
+
+The move is staged by the coordinator: it inspects the source Home, verifies that the active Home profile is this computer's managed Personal Home, transfers and activates the Home on the destination, and publishes the destination descriptor. The single destructive confirmation names the source Home and the SSH destination; non-interactive runs require `--yes`.
+
+If a move is interrupted, the next `relocate` against the same destination requires `--recovery-action`: `finish_move` completes the activation on the destination, and `return_to_source` restores the source Home. `return_to_source` is refused once destination publication has advanced, and a destination that does not match the interrupted move's reserved destination is refused rather than resumed. Ambiguous recovery state fails closed and asks for repair instead of guessing which Home is authoritative.
 
 The current SSH transfer path is POSIX-oriented. Do not claim or automate a general Windows headless destination until the destination-owned opaque upload locator or authenticated machine carrier is implemented and validated.
 
@@ -1131,4 +1140,4 @@ For the broader product model, see [Happier tools & actions](/extending/happier-
 
 ## Multi-server reference
 
-For full multi-Relay and background-service guidance, see [Features → Multi-server](/accounts/multi-server).
+For full multi-Relay and background-service guidance, see [Homes](/accounts/multi-server).

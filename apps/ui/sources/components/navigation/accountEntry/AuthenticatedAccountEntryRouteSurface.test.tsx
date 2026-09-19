@@ -161,6 +161,22 @@ describe('AuthenticatedAccountEntryRouteSurface', () => {
         expect(oauthReturn.consume).toHaveBeenCalledTimes(1);
     });
 
+    it('names the Home-discovery wait instead of showing a silent spinner', async () => {
+        let release!: (value: AccountDirectoryAuthMethodDiscovery) => void;
+        authClient.discoverAuthenticationMethods.mockReturnValue(new Promise<AccountDirectoryAuthMethodDiscovery>((resolve) => { release = resolve; }));
+        const screen = await renderScreen(
+            <AuthenticatedAccountEntryRouteSurface request={request} routeParams={{ mode: 'account-entry' }} onExit={vi.fn()} />,
+        );
+
+        const loading = screen.findByTestId('authenticated-account-entry-loading');
+        expect(loading).toBeTruthy();
+        expect(screen.getTextContent()).toContain('settingsAccount.accountServiceOAuth.stages.findingHomes');
+        // The slowest leg of the journey has to reach assistive tech too.
+        expect(loading!.props.accessibilityLiveRegion).toBe('polite');
+        await act(async () => { release(discovery()); });
+        await screen.unmount();
+    });
+
     it('re-verifies the exact service and carries enter/automatic into shared key and OAuth owners', async () => {
         authClient.discoverAuthenticationMethods.mockResolvedValue(discovery());
         const screen = await renderScreen(

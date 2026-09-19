@@ -13,6 +13,21 @@ vi.mock('@/text', async () => {
     return createTextModuleMock({ translate: (key) => key });
 });
 
+const savedProfiles = vi.hoisted(() => ({ profiles: [] as Array<Record<string, unknown>> }));
+const removeServerProfileUiActionSpy = vi.hoisted(() => vi.fn(async () => ({ kind: 'completed' as const })));
+vi.mock('@/components/serverProfiles/removeServerProfileUiAction', () => ({
+    removeServerProfileUiAction: removeServerProfileUiActionSpy,
+}));
+// Only the saved-profile listing is a test boundary here; every other export of the
+// profile owner (and the sync graph that reads it) stays real.
+vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
+    return {
+        ...actual,
+        listServerProfiles: () => savedProfiles.profiles,
+    };
+});
+
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 type ScriptedSpec = { kind: string; params: Record<string, unknown> };
@@ -303,6 +318,8 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                 remainingOwnedPaths: ['/data/files'],
                 remainingUnknownPaths: ['/data/operator-note'],
                 stoppedRunningHome: true,
+                inspectionComplete: true,
+                inspectionError: null,
                 error: 'The files directory could not be removed.',
             },
         });
@@ -449,6 +466,7 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                     homeServerIdentityId: 'home-identity-1',
                     createdAt: '2026-01-02T00:00:00.000Z',
                     homeNeedsAttention: false,
+                    cleanupRequired: null,
                     verified: true,
                 },
             },
@@ -487,6 +505,7 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
                 homeServerIdentityId: 'home-identity-1',
                 createdAt: '2026-01-01T00:00:00.000Z',
                 homeNeedsAttention: false,
+                cleanupRequired: null,
             },
         });
 
@@ -578,6 +597,8 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             restoreRecovery: { status: 'none', affectedTargets: [] },
             relocationRecovery: null,
             estimatedOwnedBytes: null,
+            estimatedOwnedBytesComplete: true,
+            estimatedOwnedBytesReason: null,
                 destinationEmpty: false,
             },
         });
@@ -600,6 +621,7 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             homeServerIdentityId: 'home-identity-1',
             createdAt: '2026-01-01T00:00:00.000Z',
             homeNeedsAttention: false,
+            cleanupRequired: null,
         });
         expect(getCurrent().lastOperation).toEqual({ operation: 'backup', backup: result });
     });
@@ -681,5 +703,28 @@ describe('useLocalRelayRuntimeControl Personal Home operations', () => {
             await getCurrent().cancelTask('task_manual:relay.runtime.stop.v1');
         });
         expect(cancelMock).toHaveBeenCalledWith('task_manual:relay.runtime.stop.v1');
+    });
+
+    it('drops this device\u2019s saved binding for the Home it just erased', async () => {
+        savedProfiles.profiles = [{
+            id: 'profile-personal',
+            serverUrl: 'http://127.0.0.1:53288',
+            serverIdentityId: 'srv_home_erased',
+            personalHomeBootstrapCompleted: true,
+        }];
+        removeServerProfileUiActionSpy.mockClear();
+        const harness = createScriptedRunnerHarness();
+        const { getCurrent } = await renderHook(() => useLocalRelayRuntimeControl({ runner: harness.runner }));
+
+        const inspect = await harness.start(() => getCurrent().refreshInspection());
+        await harness.settle(inspect, true, { data: { homeServerIdentityId: 'srv_home_erased' } });
+
+        const erase = await harness.start(() => getCurrent().erasePersonalHomeData());
+        await harness.settle(erase, true, { data: { removedPaths: ['/data/a'], stoppedRunningHome: true } });
+
+        expect(removeServerProfileUiActionSpy).toHaveBeenCalledWith({
+            profileId: 'profile-personal',
+            serverUrl: 'http://127.0.0.1:53288',
+        });
     });
 });

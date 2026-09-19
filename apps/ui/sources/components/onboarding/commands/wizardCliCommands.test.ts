@@ -62,16 +62,32 @@ describe('wizardCliCommands', () => {
             }],
         };
 
+        // A descriptor-proven Home is targeted by its descriptor whatever
+        // discovered it: the Directory-sourced case used to fall through to a
+        // target-less `happier setup`, which silently sent the remote machine
+        // into the sign-in-service journey instead of the Home on screen.
         expect(commands.resolveWebDesktopSetupHandoffTarget({
             descriptor,
             profileSource: 'account-directory',
             fallbackHomeUrl: descriptor.canonicalServerUrl,
-        })).toEqual({ kind: 'account_service' });
+        })).toEqual({ kind: 'descriptor_file_required' });
         expect(commands.resolveWebDesktopSetupHandoffTarget({
             descriptor,
             profileSource: 'desktop-personal-home',
             fallbackHomeUrl: descriptor.canonicalServerUrl,
         })).toEqual({ kind: 'descriptor_file_required' });
+    });
+
+    it('keeps the sign-in-service handoff only when there is no Home to target', async () => {
+        vi.resetModules();
+        vi.doMock('@/config', () => ({ config: { variant: 'production' } }));
+        const commands = await import('./wizardCliCommands');
+
+        expect(commands.resolveWebDesktopSetupHandoffTarget({
+            descriptor: null,
+            profileSource: 'account-directory',
+            fallbackHomeUrl: null,
+        })).toEqual({ kind: 'account_service' });
     });
 
     it('uses an exact descriptor-declared HTTPS endpoint for the setup handoff', async () => {
@@ -92,7 +108,7 @@ describe('wizardCliCommands', () => {
         })).toEqual({ kind: 'https', homeUrl: 'https://home.example.test' });
     });
 
-    it('keeps generic Relay runtime installation out of routine machine setup', async () => {
+    it('routes remote Personal Home handoff through home create instead of generic hosting', async () => {
         vi.resetModules();
         vi.doMock('@/config', () => ({ config: { variant: 'production' } }));
         const commands = await import('./wizardCliCommands');
@@ -101,9 +117,8 @@ describe('wizardCliCommands', () => {
             draft: sshDraft,
             installRelayRuntime: true,
         })).not.toContain('--install-relay-runtime');
-        expect(commands.buildRemoteRelayHostInstallCommand({
+        expect(commands.buildRemotePersonalHomeCreateCommand({
             draft: sshDraft,
-            installRelayRuntime: true,
-        })).toContain('--install-relay-runtime');
+        })).toBe('happier home create --ssh operator@machine.example.test');
     });
 });

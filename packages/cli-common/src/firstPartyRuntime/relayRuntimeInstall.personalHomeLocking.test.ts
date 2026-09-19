@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { writePersonalHomeServerArtifactCapability } from './personalHome/artifactContract.js';
+
 const lockEvents = vi.hoisted(() => [] as string[]);
 
 vi.mock('./withFirstPartyPayloadMutationLock.js', () => ({
@@ -41,6 +43,7 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home locking', () => {
       await mkdir(payloadRoot, { recursive: true });
       const serverBinaryPath = join(payloadRoot, 'happier-server');
       await writeFile(serverBinaryPath, '#!/bin/sh\n', 'utf8');
+      await writePersonalHomeServerArtifactCapability(payloadRoot);
 
       const { installOrUpdateRelayRuntimeLocal } = await import('./relayRuntimeInstall.js');
       await installOrUpdateRelayRuntimeLocal({
@@ -69,6 +72,10 @@ describe('installOrUpdateRelayRuntimeLocal Personal Home locking', () => {
     } finally {
       await rm(homeDir, { recursive: true, force: true });
     }
-  });
+    // Driving a complete install costs seconds of module-graph work; every
+    // sibling test that calls installOrUpdateRelayRuntimeLocal carries the same
+    // explicit budget (legacyRootMigration.stopBeforeRename 60 s,
+    // personalHomeForwardRecovery 20 s).
+  }, 60_000);
 
 });

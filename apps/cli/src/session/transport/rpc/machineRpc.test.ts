@@ -464,8 +464,7 @@ describe('callMachineRpc', () => {
       };
       const binding = signRunnerMachineContentKeyBindingV1({
         payload: bindingPayload,
-        accountSigningPublicKey: signing.publicKey,
-        accountSigningSecretKey: signing.secretKey,
+        activationSigningSecretKey: signing.secretKey,
       });
       const machine = {
         id: 'runner-one',
@@ -549,8 +548,7 @@ describe('callMachineRpc', () => {
         }),
         runnerContentKeyBinding: signRunnerMachineContentKeyBindingV1({
           payload: bindingPayload,
-          accountSigningPublicKey: untrustedSigning.publicKey,
-          accountSigningSecretKey: untrustedSigning.secretKey,
+          activationSigningSecretKey: untrustedSigning.secretKey,
         }),
       } } });
 

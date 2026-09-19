@@ -1,0 +1,100 @@
+---
+title: Following a session
+description: Decide which sessions push updates at you, at what volume, without changing who can access them.
+---
+
+Access and attention are different questions. Somebody sharing a session with a
+Team of forty answers the first one; **Follow** answers the second. Follow a
+session and its activity reaches you — notifications, Voice context, the personal
+surfaces you already use. Leave it unfollowed and it sits quietly in the list
+until you go looking.
+
+The rule underneath is worth stating once: **Following never changes who can
+access this session.** It is your subscription, not a grant.
+
+## Availability
+
+Follow is a per-Home capability. A self-hosted Home offers it unless its operator
+sets `HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED` to a false value.
+
+## Follow one session
+
+Open the session and choose **Follow**. The editor — **Follow this session** —
+carries one choice, how much you want to hear:
+
+| Level | What reaches you |
+| --- | --- |
+| **No notifications** | The session is followed, but it does not notify you. |
+| **Important updates** | The activity Happier classifies as worth interrupting you for. |
+| **Every new message** | Each new message in the session. |
+
+**Include in Voice** is separate and optional: it lets Voice keep the session in
+context. An encrypted session has to be unlocked on this device before Voice can
+include it, and some Voice modes cannot include stored session updates at all —
+Happier says which case you are in rather than silently dropping the session.
+
+If you own the session, the editor tells you so: **You own this session, so its
+updates always reach you.**
+
+## Sessions you follow without asking
+
+Some relationships imply attention, so Happier can follow on your behalf. In
+**Settings → Notifications**, **Automatically follow** has four switches:
+
+| Switch | Default |
+| --- | --- |
+| **Sessions assigned to me** | On |
+| **Sessions shared directly** | Off |
+| **Sessions shared through Teams** | Off |
+| **Sessions shared through Groups** | Off |
+
+The defaults are deliberate. Being handed a session personally is a request for
+your attention; being inside the audience of a Team share usually is not — a Team
+of forty would otherwise generate forty subscriptions every time anybody shared
+anything. Turn the Team and Group switches on if your Team is small enough that
+you do want all of it.
+
+These preferences apply to new assignments and newly accessible sessions.
+Existing choices stay unchanged, so turning a switch on does not retroactively
+follow everything you can already see. They are set per Home.
+
+When an assignment follows a session for you, the session says why: **Following
+because you were assigned.**
+
+## Follow, read state, and assignment
+
+Three related things, each answering something different:
+
+- **Follow** decides whether future activity reaches you.
+- **Read and unread state** decides whether the session currently wants a look.
+  See [Read and unread state](/organize/session-read-state).
+- **Assignment** — the responsible member on a shared session — records who is
+  expected to act, and by default follows the session for them.
+
+Receiving Team or Group access on its own creates none of these. It does not
+produce unread state, Inbox pressure, a badge, or a notification. Open the session
+and follow it when you want it in your flow.
+
+## When following pauses or stops
+
+- **Following is paused while this session is archived.** Unarchive it to resume.
+- **You no longer have access to this session.** Follow ends with the access it
+  depended on.
+- **You're offline. Reconnect to change following.** Your existing follows keep
+  working; only changing them needs the Home.
+
+## Follow between sessions
+
+There is a second, unrelated feature with the same word in it: an agent session
+can follow *another session* and receive bounded context from it during a turn.
+That is **Session updates** in the same editor — **Follow in another Session…** —
+and it is about what the agent reads, not about what you are notified of. It is
+described under [Session-to-Session Follow
+context](/accounts/session-sharing#session-to-session-follow-context-03-development).
+
+## Related
+
+- [Read and unread state](/organize/session-read-state) — marking a session read or unread, and keeping one in Needs attention.
+- [Attention surfaces](/organize/attention-surfaces) — where a followed session's activity can appear.
+- [Session sharing](/accounts/session-sharing) — access, discussions, and the responsible member.
+- [Notification routing](/extras/notifications-routing) — what happens when you tap one.

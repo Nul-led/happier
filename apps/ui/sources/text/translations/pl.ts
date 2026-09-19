@@ -673,7 +673,7 @@ function plural({
  */
 export const pl = {
     actionConfirmations: actionConfirmationTranslations.pl,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pl, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pl.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pl, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pl.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pl.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Dokończ przygotowane przesyłanie',
@@ -686,7 +686,7 @@ export const pl = {
     voice: voiceReadinessTranslations.pl,
     pluginPermissions: pluginPermissionTranslations.pl,
     sessionBoard: sessionBoardTranslations.pl,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.pl,
     ...changedFileEvidenceTranslations.pl,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.pl,
     pluginSurfaces: {
@@ -1748,6 +1748,8 @@ export const pl = {
     securingCredentials: "Zabezpieczanie danych logowania…",
     showQrInstead: "Zamiast tego pokaż kod QR",
     addPhoneQrInstructions: "Zeskanuj ten kod QR w aplikacji mobilnej Happier, aby zalogować się na telefonie.",
+    addPhoneChooseHomeTitle: "Wybierz Home",
+    addPhoneChooseHomeFooter: "Dodany telefon uzyska dostęp do wybranego tu Home. Twój aktywny Home się nie zmienia.",
     serverUrlNotEmbeddedTitle: "Skonfiguruj serwer na telefonie",
     serverUrlNotEmbeddedBody:
       "Ten kod QR nie może zawierać adresu serwera, ponieważ jest ustawiony na localhost. Na telefonie przejdź do Ustawienia → Serwery i dodaj URL, do którego telefon ma dostęp (LAN IP lub Tailscale), a następnie zeskanuj ponownie.",
@@ -1759,9 +1761,12 @@ export const pl = {
     expiresAtLabel: "Wygasa",
     showPairingLink: "Pokaż link parowania",
     pairingLinkSecurityWarning: "Każda osoba z tym tymczasowym linkiem może dodać urządzenie przed jego wygaśnięciem. Udostępnij go tylko własnemu urządzeniu.",
+    pairingLinkFieldLabel: "Link parowania",
+    pairingLinkRequired: "Wklej link parowania wyświetlony na drugim urządzeniu.",
     pairingQrTooLargeTitle: "Za duży na kod QR",
     pairingQrTooLargeBody: "To zaproszenie zawiera dodatkowe szczegóły połączenia i nie może zostać wyświetlone jako kod QR. Twój Home nadal czeka na parowanie — użyj poniższego bezpiecznego linku.",
     homeAddedPreservedFocusBody: "Ten Home został dodany. Wybrany Home nie został zmieniony.",
+    homeSavedOpenFailedBody: "Ten Home został zapisany, ale nie udało się go otworzyć. Spróbuj ponownie, aby się na niego przełączyć.",
     requesterDeviceAddedBody: "Urządzenie żądające zostało dodane do tego Home.",
     requestingDeviceLabel: "Urządzenie wysyłające prośbę",
     thisDevice: "To urządzenie",
@@ -5749,6 +5754,15 @@ export const pl = {
             workspaceChoose: 'Folder wybierają oni',
             workspaceHome: 'Ich folder domowy',
         },
+        workspace: {
+            title: 'Folder początkowy',
+            chooseRecommended: 'Zalecane · folder zostanie wybrany, gdy pakiet się połączy',
+            homeDetail: 'Start w folderze domowym osoby uruchamiającej pakiet',
+        },
+        otherDevice: {
+            guidance: 'Ten pakiet zapisano na urządzeniu, na którym powstał. Kontynuuj na tym urządzeniu albo anuluj to żądanie i utwórz tutaj nowy pakiet.',
+            createdOn: ({ device }: { device: string }) => `Utworzono na ${device}`,
+        },
         endpointFacts: {
             unreadable: 'To urządzenie nie może odczytać danych przesłanych przez tamten komputer.',
         },
@@ -7156,8 +7170,9 @@ export const pl = {
       automationRunEvents: "Zdarzenia uruchomien automatyzacji",
     },
     multiServerView: {
-      title: "Równoległy widok wielu Homes",
-      footer: "Wybierz, czy łączyć wiele Homes w jednej liście sesji.",
+      editMembersAction: "Edytuj Homes w tej grupie",
+      title: "Homes w tym widoku",
+      footer: "Wybierz, jak te Homes pojawiają się na liście sesji i które z nich należą do tej grupy.",
       presentationTitle: "Tryb prezentacji",
       presentation: {
         flatWithBadges: "Płaska lista z odznakami Home",
@@ -11677,7 +11692,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Żadne Home nie jest jeszcze połączone z ${accountService}. Połącz Home, a następnie odśwież.` : 'Żadne Home nie jest jeszcze połączone z tym kontem. Połącz Home, a następnie odśwież.',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'Udostępnij ten Home na innych swoich urządzeniach',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Pozwól ${accountService} pomóc innym urządzeniom znaleźć ten Home i poprosić o dostęp.` : 'Pozwól swojemu kontu pomóc innym urządzeniom znaleźć ten Home i poprosić o dostęp.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -12189,6 +12204,7 @@ settingsSession: {
     signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Nie można połączyć się z ${serverUrl}. Spróbuj ponownie lub wybierz inną usługę logowania.`,
     signInServiceUnsupportedTitle: "Nieobsługiwana usługa logowania",
     signInServiceMethodlessTitle: "Brak dostępnych metod logowania",
+    signInServiceMethodlessBody: "Ta usługa jest dostępna, ale nie oferuje teraz żadnej metody logowania. Spróbuj ponownie lub wybierz inną usługę.",
     signInOptionsPartialTitle: "Nie udało się wczytać niektórych opcji logowania",
     signInServiceUnsupportedBody: "Ten adres jest Home albo nie oferuje logowania do konta. Wybierz inną usługę.",
     useDifferentHome: "Użyj innego Home",
@@ -14028,6 +14044,15 @@ settingsSession: {
             useExistingDetail: 'Zweryfikuj dostęp i zabezpiecz rejestrację bez zmiany wybranego Domu.',
             useAnother: 'Użyj innego Domu',
             useAnotherDetail: 'Pozostaw ten lokalny Dom bez zmian i wybierz jeden ze swoich Domów.',
+            blocked: {
+                runtime_unhealthy: 'Twój lokalny Home wymaga uwagi, zanim będzie mógł wystartować.',
+                home_auth_invalid: 'Uwierzytelnianie Home wymaga uwagi.',
+                existing_runtime: 'Istniejący lokalny Home wymaga decyzji, zanim konfiguracja będzie kontynuowana.',
+                personal_home_erased: 'Twój Personal Home został usunięty. Spróbuj ponownie, aby utworzyć nowy.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Dane Twojego Home zostały usunięte. Nie ma tu nic do odzyskania — utwórz nowy Personal Home lub użyj innego Home.',
+            },
         },
     },
     settingsSearch: {

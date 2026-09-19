@@ -1371,6 +1371,20 @@ encryption owner, and envelope structure from the Protocol codec. It is not feat
 gated, because it is the envelope owner for every access kind including plain direct
 sharing and owner repair.
 
+The canonical record is the `(Session, recipient Account)` tuple, and three owners keep
+it coherent. `sessionDataKeyEnvelopePersistence.ts` stores and projects the opaque bytes.
+`sessionDataKeyRecipientProjection.ts` is the one wire projection of a recipient's
+content-key binding, shared by the per-Session collection and the membership-history page
+so the readiness columns, their reason vocabulary, and their encodings are never answered
+twice. `classifySessionDataKeyEnvelopeItemV1`, in the Protocol module
+`sessions/encryption/sessionDataKeyEnvelopes.ts`, is the one owner of summary-bucket
+precedence, so the aggregate a manager sees and the rows beneath it are the same
+classification applied twice, not two rules. That module also owns the strict boundary
+shapes; effective access, the recipient audience, Account content-key readiness, and the
+tuple read/write stay with their own owners. See
+[session-collaboration.md](session-collaboration.md) for how access, key delivery, and
+personal state divide the Session surface between them.
+
 Access is answered first, and the two answers stay distinct on purpose: a Session the
 caller cannot read reports `session_not_found`, so it is indistinguishable from one that
 does not exist, while a readable Session the caller cannot manage gets an honest

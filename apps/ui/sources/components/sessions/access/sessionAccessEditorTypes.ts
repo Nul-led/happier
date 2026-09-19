@@ -120,6 +120,8 @@ export type SessionAccessEncryptionRecipientRowModel = Readonly<{
     label: string;
     stateLabel: string;
     accessibilityLabel: string;
+    /** Present only on a row a repeated delivery could actually change. */
+    actionLabel?: string;
 }>;
 /**
  * Which rows are listed beneath the aggregate: the exceptions discovery already

@@ -24,6 +24,14 @@ export type PersonalHomeRelocationSourceResult = Readonly<{
   recoveryAction?: 'finish_move' | 'return_to_source';
   destinationTransferCleanupNeedsAttention?: true;
   destinationCleanupNeedsAttention?: true;
+  /**
+   * The committed Home answers at a different public address than the source did.
+   * Everything a third party registered against the old address — plugin webhooks,
+   * OAuth callback URLs, public shares and previews, and any DNS/HTTPS or Iroh
+   * record pointing at the old host — still points there and must be re-pointed.
+   * Absent when the published address is unchanged and nothing needs re-pointing.
+   */
+  publicIntegrationsNeedAttention?: true;
 }>;
 
 export type PersonalHomeRelocationPublicationFacts = Readonly<{
@@ -321,6 +329,34 @@ function cleanupAttentionFacts(marker: SourceMarker): Readonly<{
     ...(marker.destinationTransferCleanupNeedsAttention === true ? { destinationTransferCleanupNeedsAttention: true as const } : {}),
     ...(marker.destinationCleanupNeedsAttention === true ? { destinationCleanupNeedsAttention: true as const } : {}),
   };
+}
+
+/**
+ * The move only breaks outside registrations when the Home's published address
+ * actually changed. Compare the committed descriptor against the marker's retained
+ * source descriptor instead of assuming every move re-addresses the Home.
+ */
+function publicIntegrationFacts(
+  marker: SourceMarker,
+  published: HomeConnectionDescriptorV1,
+): Readonly<{ publicIntegrationsNeedAttention?: true }> {
+  const before = personalHomePublicAddresses(marker.sourceDescriptor);
+  const after = personalHomePublicAddresses(published);
+  const unchanged = before.length === after.length && before.every((address, index) => address === after[index]);
+  return unchanged ? {} : { publicIntegrationsNeedAttention: true as const };
+}
+
+/**
+ * Every value a third party could have registered: the canonical address plus each
+ * published endpoint, key-sorted so field order in the descriptor never reads as a
+ * changed address. Iroh endpoints are compared by their own fields, not by `kind`.
+ */
+function personalHomePublicAddresses(descriptor: HomeConnectionDescriptorV1): readonly string[] {
+  const endpoints = descriptor.endpoints.map((endpoint) => Object.entries(endpoint)
+    .map(([key, value]) => `${key}=${String(value)}`)
+    .sort()
+    .join(';'));
+  return [descriptor.canonicalServerUrl.trim(), ...endpoints].sort();
 }
 
 /** Both Homes stay stopped and intact; only the named recovery action is safe. */
@@ -695,6 +731,7 @@ export async function coordinatePersonalHomeRelocation(
         sourceDescriptorRevision: params.sourceDescriptorRevision,
         publishedDescriptor: descriptor,
         ...cleanupAttentionFacts(marker),
+        ...publicIntegrationFacts(marker, descriptor),
       };
     }
   }
@@ -785,5 +822,6 @@ export async function coordinatePersonalHomeRelocation(
     sourceDescriptorRevision: params.sourceDescriptorRevision,
     publishedDescriptor: authoritative,
     ...cleanupAttentionFacts(marker),
+    ...publicIntegrationFacts(marker, authoritative),
   };
 }

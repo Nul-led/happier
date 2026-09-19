@@ -129,6 +129,23 @@ describe('buildSessionActivityAttention', () => {
         expect(attention.hasAttention).toBe(true);
         expect(attention.attentionState).toBe('unread');
         expect(attention.personalAttention.reasons).toEqual(['unread_discussion']);
+        expect(attention.reasons.hasUnread).toBe(true);
+    });
+
+    it('counts a mention of the viewer as unread content, like the Session row', () => {
+        const session = Object.assign(createSessionFixture({ seq: 20, lastViewedSessionSeq: 20 }), {
+            viewer: {
+                readState: { state: 'tracking', lastViewedSessionSeq: 20, unreadSince: null },
+                relevance: { relevant: true, reasons: ['followed_by_me'] },
+                follow: { follows: true, notificationLevel: 'none' },
+                notification: { level: 'none', source: 'preference' },
+                attention: { needsAttention: true, reasons: ['mentioned'], primary: 'mentioned', presentation: 'full' },
+            },
+        } as const);
+        // One derivation of "new content this viewer has not seen" feeds the row,
+        // the Inbox and this overview count; a mention must not be unread in one
+        // and quiet in another.
+        expect(buildSessionActivityAttention({ session, nowMs: 1_000 }).reasons.hasUnread).toBe(true);
     });
 
     it.each(['manual', 'reminder_due'] as const)(

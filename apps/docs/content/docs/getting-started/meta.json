@@ -3,6 +3,7 @@
   "pages": [
     "index",
     "get-the-apps",
+    "sign-in",
     "onboarding",
     "local-development",
     "check-your-setup"

@@ -18,13 +18,27 @@ describe('SpawnDaemonSessionRequestSchema', () => {
   it.each([
     null,
     {},
-    { v: 2, bindingsByServiceId: {} },
     { v: 1, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected' } } },
     { v: 1, bindingsByServiceId: { 'happier.agent.codex/openai-codex': { source: 'connected', selection: 'group', groupId: '../invalid', profileId: 'work' } } },
   ])('rejects malformed present connected-account intent: %j', (connectedServices) => {
     const result = SpawnDaemonSessionRequestSchema.safeParse({ directory: '/workspace', connectedServices });
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error.issues[0]?.path[0]).toBe('connectedServices');
+  });
+
+  it('admits an empty V2 binding map as the distinct "no explicit binding" state', () => {
+    // normalizeConnectedServiceSelectionInput.ts:37-40 keeps "no selection
+    // supplied", "a named service wants its account default" and "no explicit
+    // binding" as three distinct states; an empty canonical map is the third,
+    // not malformed input.
+    const result = SpawnDaemonSessionRequestSchema.safeParse({
+      directory: '/workspace',
+      connectedServices: { v: 2, bindingsByServiceId: {} },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.connectedServices).toEqual({ v: 2, bindingsByServiceId: {} });
+    }
   });
 
   it('normalizes supported scalar profile and group selections at spawn ingress', () => {
@@ -35,7 +49,9 @@ describe('SpawnDaemonSessionRequestSchema', () => {
         anthropic: { source: 'connected', selection: 'group', groupId: 'team' },
       } },
     });
-    expect(parsed.connectedServices).toEqual({ v: 1, bindingsByServiceId: {
+    // The ingress writes the canonical current spelling; `v: 1` stays a
+    // supported input shape, never an output one.
+    expect(parsed.connectedServices).toEqual({ v: 2, bindingsByServiceId: {
       'happier.agent.codex/openai-codex': { source: 'connected', selection: 'profile', profileId: 'work' },
       'happier.agent.claude/anthropic': { source: 'connected', selection: 'group', groupId: 'team' },
     } });

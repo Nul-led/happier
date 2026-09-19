@@ -96,9 +96,11 @@ function buildEncryptionSection(input: Readonly<{
             subtitle: row.stateLabel,
             accessibilityLabel: row.accessibilityLabel,
             disabled: true,
-            ...(row.state === 'prepared' && model.accessMode === 'editable' && model.content.hasLastAcknowledgedSnapshot ? {
+            // The projection already decided which rows a repeated delivery could
+            // change, and what to call it there; this surface only renders it.
+            ...(row.actionLabel && model.accessMode === 'editable' && model.content.hasLastAcknowledgedSnapshot ? {
                 rightAccessoryOutsidePressable: true,
-                rightAccessory: () => <SessionAccessRowAction label={t('session.access.prepareAgain')}
+                rightAccessory: () => <SessionAccessRowAction label={row.actionLabel ?? ''}
                     testID={`${idPrefix}session-access-reprepare-${row.recipientAccountId}`}
                     disabled={encryption.progressLabel !== undefined}
                     onPress={() => actions.prepareAccess(row.recipientAccountId)} />,
@@ -194,7 +196,12 @@ export function buildSessionAccessSelectionStep(input: Readonly<{
                 disabled: true,
             }],
         }] : []),
-        { kind: 'static', id: 'current', title: t('session.access.hasAccess'), options: current },
+        // Last-good rows stay while the Home cannot be reached — an authoritative
+        // empty roster would be a lie — but they must not read as the current
+        // answer. This is the same word presence already uses for retained facts.
+        { kind: 'static', id: 'current', title: model.content.phase === 'error' && model.content.hasLastAcknowledgedSnapshot
+            ? t('session.access.withContext', { context: t('session.access.hasAccess'), label: t('session.collaboration.stale') })
+            : t('session.access.hasAccess'), options: current },
     ];
     if (!input.directoryKind && model.context) {
         sections.push({ kind: 'static', id: 'context', title: t('session.access.teams'), options: model.context.options.map((option) => ({

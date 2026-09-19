@@ -148,8 +148,16 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
         setPending('workos:reconcile'); setActionFailure(null);
         try {
             const applyResult = (value: TeamIdentityActionOutput<'teams.identity.workos.reconcile'>) => {
-                if (value.outcome === 'selection_required') setWorkosCandidates(value.candidates);
-                else { setWorkosCandidates([]); refresh(); }
+                if (value.outcome === 'selection_required') {
+                    setWorkosCandidates(value.candidates);
+                    // A new decision appears further down the screen than the
+                    // control that was pressed, so it is announced as well as
+                    // rendered; nothing is chosen on the caller's behalf.
+                    announceAccessibilityMessage(t('identityAdministration.workosChooseConnection'));
+                    return;
+                }
+                setWorkosCandidates([]);
+                refresh();
             };
             const result = await client.execute(
                 'teams.identity.workos.reconcile',
@@ -346,7 +354,21 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
         } finally { setPending(null); }
     };
 
-    const chooseWorkos = async (workosConnectionId: string) => {
+    const chooseWorkos = async (candidate: Readonly<{
+        connectionId: string; displayName: string; strategy: string; status: string;
+    }>) => {
+        const workosConnectionId = candidate.connectionId;
+        // Choosing fixes the provider namespace every future identity under this
+        // binding is issued in, so the choice is confirmed by name rather than
+        // committed by a single press on a row that appeared mid-screen.
+        if (!await Modal.confirm(
+            t('identityAdministration.workosChooseConnection'),
+            [
+                candidate.displayName,
+                `${workosConnectionStrategyLabel(candidate.strategy)} · ${workosConnectionStatusLabel(candidate.status)}`,
+            ].join('\n'),
+            { cancelText: t('common.cancel'), confirmText: t('common.continue') },
+        )) return;
         setPending(`workos:set:${workosConnectionId}`); setActionFailure(null);
         try {
             const applyConnection = () => { setWorkosCandidates([]); refresh(); };
@@ -430,7 +452,35 @@ const AuthorizedConnectionDetail = React.memo(function AuthorizedConnectionDetai
         </ItemGroup> : null}
         {connection.lastObservation?.kind === 'workos_sso' && connection.lastObservation.presentation ? <ItemGroup title={t('teams.authentication.detail.configuration')}><Item testID="identity-workos-current-connection" title={t('teams.authentication.detail.connection')} detail={connection.lastObservation.presentation.displayName} subtitle={`${workosConnectionStrategyLabel(connection.lastObservation.presentation.strategy)} · ${workosConnectionStatusLabel(connection.lastObservation.presentation.status)}`} showChevron={false} /></ItemGroup> : null}
         {connection.provider.kind === 'oidc' || connection.provider.kind === 'github_app_identity' ? <IdentityConnectionGroupMappings scope={props.scope} address={{ serverId: props.scope.serverId, teamId: props.teamId }} connectionId={connection.id} mutationsAvailable={props.mutationsAvailable && projectionCurrent} requestApproval={props.requestApproval} /> : null}
-        {workosCandidates.length > 0 ? <ItemGroup title={t('identityAdministration.workosChooseConnection')}>{workosCandidates.map((candidate) => <Item key={candidate.connectionId} testID={`identity-workos-candidate:${candidate.connectionId}`} title={candidate.displayName} subtitle={`${workosConnectionStrategyLabel(candidate.strategy)} · ${workosConnectionStatusLabel(candidate.status)}`} disabled={mutationBusy || !props.mutationsAvailable} onPress={() => void chooseWorkos(candidate.connectionId)} showChevron={false} />)}</ItemGroup> : null}
+        {workosCandidates.length > 0 ? (
+            <ItemGroup
+                title={t('identityAdministration.workosChooseConnection')}
+                accessibilityRole="radiogroup"
+                accessibilityLabel={t('identityAdministration.workosChooseConnection')}
+            >
+                {workosCandidates.map((candidate) => {
+                    const detail = `${workosConnectionStrategyLabel(candidate.strategy)} · ${workosConnectionStatusLabel(candidate.status)}`;
+                    return (
+                        <Item
+                            key={candidate.connectionId}
+                            testID={`identity-workos-candidate:${candidate.connectionId}`}
+                            title={candidate.displayName}
+                            subtitle={detail}
+                            // The row's own name and strategy/status carry the
+                            // whole choice, so assistive technology reads the
+                            // same thing the eye does instead of "button".
+                            accessibilityLabel={`${candidate.displayName}, ${detail}`}
+                            accessibilityRole="radio"
+                            webRole="radio"
+                            accessibilityChecked={false}
+                            disabled={mutationBusy || !props.mutationsAvailable}
+                            onPress={() => void chooseWorkos(candidate)}
+                            showChevron={false}
+                        />
+                    );
+                })}
+            </ItemGroup>
+        ) : null}
         {actionFailure ? <ItemGroup><Item testID="identity-connection-failure" title={actionFailure} showChevron={false} /></ItemGroup> : null}
         <ItemGroup title={t('identityAdministration.actions')}>
             {connection.provider.kind === 'oidc' ? <TeamManagedProviderEditItem scope={props.scope} address={{ serverId: props.scope.serverId, teamId: props.teamId }} connectionId={connection.id} providerId={connection.provider.id} disabled={mutationBusy || !props.mutationsAvailable} /> : null}

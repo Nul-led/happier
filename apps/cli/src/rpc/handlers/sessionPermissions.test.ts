@@ -58,17 +58,17 @@ describe('session permission RPC handlers', () => {
       {
         actionId: 'session.permission.respond',
         input: { sessionId: 'session-1', requestId: 'permission-1', decision: 'allow' },
-        context: { defaultSessionId: 'session-1', surface: 'rpc' },
+        context: { authority: 'account_automation', defaultSessionId: 'session-1', surface: 'rpc' },
       },
       {
         actionId: 'session.user_action.answer',
         input: { sessionId: 'session-1', requestId: 'user-action-1', decision: 'approve' },
-        context: { defaultSessionId: 'session-1', surface: 'rpc' },
+        context: { authority: 'account_automation', defaultSessionId: 'session-1', surface: 'rpc' },
       },
       {
         actionId: 'session.permission_mode.set',
         input: { sessionId: 'session-1', permissionMode: 'read_only' },
-        context: { defaultSessionId: 'session-1', surface: 'rpc' },
+        context: { authority: 'account_automation', defaultSessionId: 'session-1', surface: 'rpc' },
       },
     ]);
   });

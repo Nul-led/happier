@@ -6,12 +6,17 @@ description: Invite somebody to a Team or open an invitation while preserving it
 Use a Team invitation to bring somebody into one Team on one Home, with the role
 and Session-history choice selected by a Team manager.
 
-<Callout>
-  **Developer Preview:** native Team invitations and their email delivery are
-  implemented in Happier's development source. They are not released or
-  publicly available yet. Real SMTP delivery, CID-QR scanning, browser refresh,
-  and native deep-link journeys remain unverified from the current source.
-</Callout>
+## Availability
+
+Invitations come with [Teams](/accounts/teams), a per-Home capability. A
+self-hosted Home offers them unless its operator sets
+`HAPPIER_FEATURE_TEAMS__ENABLED` to a false value.
+
+Two parts depend on how the Home is configured rather than on the feature itself.
+**Invite by email** appears only when the Home reports that email delivery is
+ready. And a shareable link needs the Home to publish a web address: without one
+you see **This Home has not published an address that invitation links can point
+to**, and you add people from the Team's member list instead.
 
 ## What you need first
 
@@ -35,10 +40,29 @@ history is included. Then choose one delivery:
   from the Home. It is shown only when the Home reports that email delivery is
   ready.
 
+Either way, the invitation screen also renders the link as a **QR code**, which
+is usually the fastest way to get somebody on a phone into a Team from a laptop
+screen. A link too long to encode falls back to **This link is too long for a QR
+code. Copy it instead.**
+
 The full link is revealed only when it is issued or reissued. The invitation
 list keeps status and masked delivery details, not the bearer. Reissuing retires
 the old link before presenting a replacement; revoking makes an outstanding
 link unusable.
+
+## Join through a Team sign-in page
+
+An invitation is not the only way in. A Team can publish a **member sign-in
+page** — a link, and a QR code for it — that anybody can open to reach that
+Team's sign-in, including a company IdP where the Team requires one. The link
+grants nothing by itself: **joining still follows the Team's admission policy**,
+which may be by invitation only, provisioned from a directory, or automatic at
+first sign-in. See [Enterprise identity](/self-hosting/auth-enterprise-identity).
+
+Signing in to the Home does not prove Team membership. If the Team has not
+admitted you, Happier says so — **This Team has not admitted you yet** — rather
+than leaving you in a half-joined state, and **Your access is still on its way**
+when the Team's directory has not delivered your access yet.
 
 ## Accept an invitation
 
@@ -73,5 +97,6 @@ itself does not prove Team membership.
 ## Related
 
 - [Account security](/accounts/account-security) — email verification, passwords, and E2EE recovery.
-- [Multiple relays](/accounts/multi-server) — keeping the invitation's Home distinct from the currently focused Home.
+- [Homes](/accounts/multi-server) — keeping the invitation's Home distinct from the currently focused Home.
+- [Teams](/accounts/teams) — roles, members, Groups, and the Session-history default an invitation offers.
 - [Session sharing](/accounts/session-sharing) — sharing one Session without adding somebody to a Team.

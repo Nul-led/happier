@@ -1,4 +1,3 @@
-import { isSessionPersonallyTrackedForViewer } from './sessionViewer';
 import { computeHasUnreadActivity } from '@/sync/domains/messages/unread';
 import { summarizeSessionListReadableActivityFromMessageRecords } from '@/sync/domains/session/listing/sessionListRenderable';
 import { deriveExternalSessionAttentionHasUnread } from '@/sync/domains/session/external/readExternalSessionAttention';
@@ -114,8 +113,15 @@ export function deriveSessionReadState(session: SessionReadStateInput): SessionR
     return hasUnread ? 'unread' : 'read';
 }
 
+/**
+ * Explicit mark-read/mark-unread is admitted for any reader of the transcript,
+ * tracked or not: the Home seeds the actor's own row on the explicit operation
+ * (`session/personal/readState.ts#applyViewerReadCursorOperation`). Only
+ * automatic advance still requires an existing frontier, so this action never
+ * consults personal tracking — an untracked reader reads as `read` and is
+ * offered `mark-unread`.
+ */
 export function resolveSessionReadStateAction(session: SessionReadStateInput): SessionReadStateAction {
-    if (!isSessionPersonallyTrackedForViewer(session)) return { kind: 'none', visible: false };
     const readState = deriveSessionReadState(session);
     if (readState === 'empty') {
         return { kind: 'none', visible: false };

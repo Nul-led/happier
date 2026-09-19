@@ -1,0 +1,143 @@
+---
+title: Home administration
+description: Administer the people, roles and policy of a Home you own — from the app, on any Home, including a Personal Home.
+---
+
+By the end of this page you will be able to see everyone on a Home, change what
+they can do there, put an account on hold or remove it for good, and set the
+policy that decides who can join at all.
+
+> **Availability:** Home Administration is in the current unreleased 0.3 checkout. It is not evidence that an installed stable or preview server already offers it — check the version of the server binary you are running.
+
+## What you need first
+
+- An account on that Home holding the **Owner** or **Admin** role. An owner is
+  named once, from the machine running the server — see
+  [Home owner setup and recovery](/self-hosting/home-owner). Signing up never makes
+  anyone an owner.
+- The Home selected in the app. Administration is always of one named Home; each
+  Home keeps its own accounts, roles and policies.
+
+Open **Settings → Profile & Account → Home Administration**. If you administer more
+than one, Happier asks you to **Choose a Home** first.
+
+## Roles
+
+Three roles, and the third one is not an administrator at all:
+
+| Role | Can do |
+| --- | --- |
+| **Owner** | Administer everything on this Home, including deleting accounts and changing owners. |
+| **Admin** | Administer accounts and Teams, but not change owners. |
+| **Member** | No Home administration authority. |
+
+A Home always needs at least one **active** owner. Any change that would remove the
+last one is refused with *This Home needs at least one active owner. Make another
+account an owner first.* — that includes demoting yourself, disabling the last
+owner, and deleting them. Only an active account can hold a Home role.
+
+Home roles are governance only. Being an owner does not give you Team membership,
+access to anyone's Sessions, or any encryption key material. Recovering ownership
+of a Home does not make its end-to-end encrypted content readable, and it never
+will: the server does not hold those keys.
+
+## People
+
+The **People** tab lists every account on the Home, each with a role and a
+lifecycle state:
+
+- **Active** — signed in and usable.
+- **Disabled** — *Signed out everywhere. Can be re-enabled.*
+- **Retired** — *Access permanently revoked.* There is no way back.
+
+Search resolves accounts by name on Homes that offer it; older Homes report that
+search is unavailable rather than silently returning nothing.
+
+### Disable and re-enable
+
+**Disable account** is the reversible hold, and it is not a gentle one. The
+confirmation states what goes:
+
+> They will be signed out on every device and their machines will disconnect.
+> Personal access tokens are permanently revoked, Session responsibility is cleared,
+> and on every Session they lose access to their unsent drafts are discarded and
+> their Follow is removed. Re-enabling restores access but not those drafts, Follow
+> or responsibility. Team membership and encryption keys are kept.
+
+**Re-enable account** lets them sign in again on their devices. Tokens revoked by
+the disable stay revoked — re-enabling is not un-revoking.
+
+Neither state stores a reason or a timestamp, and Happier does not invent one.
+
+### Delete
+
+**Delete account and data…** permanently erases the account and its data on that
+Home. It cannot be undone, and any Home or Team ownership has to be transferred
+first — a Team that still needs this account as its owner blocks the deletion with
+*A Team still needs this account as its owner. Give that Team another owner first.*
+
+If cleanup does not finish, Happier says so instead of pretending it did: access is
+revoked and the account is **Retired**, and **Retry deletion** completes the rest. A
+member who sees this state is told a Home owner or the server operator can finish
+it.
+
+## Policies
+
+The **Policies** tab is owner-editable; admins see it read-only (*Only a Home owner
+can change these.*). Saving checks the revision you loaded, so two administrators
+editing at once get *This policy changed elsewhere* rather than a silent overwrite.
+
+### Team creation
+
+- **Anyone can create Teams** — active members create a Team and become its owner.
+- **Admins create Teams** — owners and admins create Teams and choose the initial owner.
+- **Team creation disabled** — no new Teams; existing Teams are unchanged.
+
+**Automatic Team membership from sign-in** lets signing in through a Team's
+connected identity provider join that Team automatically, with no invitation or
+approval. **Approved GitHub Enterprise hosts** restricts which canonical HTTPS
+origins Teams may connect GitHub Apps to, one per line.
+
+### Sign-in and admission
+
+By default a Home uses the server's defaults and narrows nothing. When it does
+narrow them, it can only ever restrict what the deployment already allows:
+
+- **Sign-in methods** — which of the deployment's methods this Home accepts.
+- **Account types** — **Plain**, **End-to-end encrypted**, or both, plus which is
+  **Recommended for new accounts**. Changing the recommendation sets the default for
+  new accounts and changes no existing one.
+- **Who can join** — **Self-service**, **Invitation only**, or **Closed**.
+- **Sign-in service** — a Home whose deployment offers one can turn it off here
+  (*The Home sign-in service is turned off.*). It cannot point the Home at a
+  different service; that is the operator's environment configuration, described in
+  [Authentication](/self-hosting/auth).
+
+**Deployment services** and **Private identity endpoints** show what the operator
+configured for the whole server. Deployment services are read-only from Home
+Administration by design.
+
+If a Home stores a sign-in configuration this server version cannot read, Happier
+says **Configuration needs attention** and sign-in stays unavailable until the
+operator repairs it. It does not guess a safe interpretation.
+
+## When it goes wrong
+
+- **You cannot administer this Home.** Your account holds no Home administration
+  authority there. Roles are per Home; being an owner elsewhere means nothing here.
+- **Home administration setup required.** The Home has no active owner yet. Assign the
+  first one from the machine running the server — see
+  [Home owner setup and recovery](/self-hosting/home-owner).
+- **This Home does not offer Home administration.** It is running a version without it.
+- **The Home is not answering.** You can keep reading the last known state; changes are
+  unavailable until it reconnects. Happier labels this rather than showing stale data as
+  current.
+- **This change was not confirmed.** The request reached the Home but its answer was
+  lost. It may have been applied — refresh and check before retrying.
+
+## Related
+
+- [Home owner setup and recovery](/self-hosting/home-owner) — naming the first owner, and recovering a Home that lost one.
+- [Authentication](/self-hosting/auth) — the deployment-level sign-in methods and the optional sign-in service.
+- [Homes](/accounts/multi-server) — what a Home holds, from the member's side.
+- [Teams](/accounts/team-invitations) — invitations and joining, once Teams are enabled.

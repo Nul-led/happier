@@ -15,13 +15,10 @@ It also helps the CLI:
 - reconnect to and manage existing sessions
 - support remote control / orchestration features without requiring your terminal to stay open
 
-## Machine Pools in the development build
+## Machine Pools
 
-<Callout type="info">
-  **Developer Preview:** personal Machine Pools are part of the current unreleased
-  0.3 source. They are not yet a released Happier contract and still require
-  integrated live validation.
-</Callout>
+Machine Pools are a per-Home capability. A self-hosted Home offers them unless its
+operator sets `HAPPIER_FEATURE_MACHINES_POOLS__ENABLED` to a false value.
 
 A Machine Pool is a named group of your own persistent Machines on one Home. In
 **Settings → Machines**, you can create a Pool, give it an optional description,
@@ -60,16 +57,13 @@ member is generically connected; the usual Agent, Provider, folder, permission, 
 launch checks still apply before a session can start.
 
 Machine Pool support is decided separately for each Home. A current client hides
-Pool controls for a Home that does not advertise the preview feature, while ordinary
-exact-Machine session creation continues to work there. Saves notify your other
-connected clients through the Account change feed; the notification carries only
-the Pool identity, and each client reloads the definition from that same Home.
+Pool controls for a Home that does not advertise the feature — see [feature
+environment variables](/self-hosting/feature-env) — while ordinary exact-Machine
+session creation continues to work there. Saves notify your other connected
+clients through the Account change feed; the notification carries only the Pool
+identity, and each client reloads the definition from that same Home.
 
-On a self-hosted Home the switch is `HAPPIER_FEATURE_MACHINES_POOLS__ENABLED`,
-which is on unless an operator turns it off — see [feature environment
-variables](/self-hosting/feature-env).
-
-The preview also exposes six generated Actions for listing, reading, creating,
+Six generated Actions are also exposed for listing, reading, creating,
 updating, deleting, and resolving personal Machine Pools. They use the same
 authenticated Home and Account permissions as the UI. They do not make Pool
 membership a permission grant.
@@ -79,13 +73,12 @@ membership a permission grant.
   credential sources. They are separate features even where both appear near a
   Session workflow. Choosing a Machine Pool never grants connected-service access.
 
-  In the current preview, a Team credential resource can use a personal Machine Pool
-  as its broker location. For a new broker connection, the source-owning Machines
+  A [shared Team credential](/accounts/team-credentials) can use a personal Machine
+  Pool as its broker location. For a new broker connection, the source-owning Machines
   report whether that credential source is usable without returning credentials or
   settings; the Home selects one eligible exact Machine, and the ordinary broker path
-  continues there. The integrated, loaded-Provider journey still needs validation.
-  Capacity-aware admission, Machine sharing, and Team-owned Pools are deferred
-  extensions, not part of this preview.
+  continues there. Capacity-aware admission, Machine sharing, and Team-owned Pools do
+  not exist today.
 </Callout>
 
 For the surrounding launch flow, see [Start a new session](/sessions/start-a-session).

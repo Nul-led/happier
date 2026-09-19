@@ -20,7 +20,7 @@ This avoids landing on the wrong server or silently approving a request on an un
 - action requests
 - share/collaboration events
 
-## Closed-app session alerts (in development)
+## Closed-app session alerts
 
 Alerts sent by a Home for a session you follow name that Home by its own server identity rather than by whichever server profile is currently active. Happier resolves it against your saved profiles:
 
@@ -28,6 +28,18 @@ Alerts sent by a Home for a session you follow name that Home by its own server 
 - if no saved profile matches — or the identity is ambiguous — the tap does nothing rather than opening the wrong Home's session
 
 When the app is already open, one committed event produces one visible alert on the device: if Happier's own local notification already showed it, the Home alert does not repeat it, and vice versa. This is best effort duplicate suppression on that device, not a delivery receipt or a guarantee that every alert arrives.
+
+<Callout type="warn">
+  **Known limitation: closed-app collaborator alerts are best effort on iOS.**
+  When somebody mentions you, assigns you a session, or posts to a session you
+  follow and Happier is closed, the Home sends a push carrying a generic body and
+  asks the device to fill in the real text locally. On iOS the system decides
+  whether and when to run that enrichment, so a collaborator alert can arrive with
+  the generic wording, arrive late, or not arrive at all. Nothing is lost: the
+  activity is in the session and on your attention surfaces when you next open
+  Happier. Do not rely on a closed-app alert as the only signal for something time
+  critical.
+</Callout>
 
 ## What happens when you tap a notification
 
@@ -128,7 +140,7 @@ If notification taps open the wrong context:
 
 ## Related pages
 
-- [Multi-server](/accounts/multi-server)
+- [Homes](/accounts/multi-server)
 - [Permissions](/sessions/permissions)
 - [Inbox and approvals](/sessions/inbox-and-approvals)
 - [Notifications](/extras/notifications-setup)

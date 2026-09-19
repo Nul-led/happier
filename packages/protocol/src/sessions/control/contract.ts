@@ -140,12 +140,14 @@ export {
 } from '../metadata/sessionPendingQueueHoldV1.js';
 export {
   PrimaryTurnStatusV1Schema,
+  SessionRuntimeTeamCredentialDenialDetailsV1Schema,
   SessionRuntimeTemporaryThrottleDetailsV1Schema,
   SessionRuntimeIssueSourceV1Schema,
   SessionRuntimeUsageLimitDetailsV1Schema,
   SessionRuntimeIssueV1Schema,
   TurnTerminalStatusV1Schema,
   type PrimaryTurnStatusV1,
+  type SessionRuntimeTeamCredentialDenialDetailsV1,
   type SessionRuntimeTemporaryThrottleDetailsV1,
   type SessionRuntimeUsageLimitDetailsV1,
   type SessionRuntimeIssueSourceV1,

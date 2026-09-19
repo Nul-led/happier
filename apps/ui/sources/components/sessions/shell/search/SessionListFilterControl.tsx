@@ -86,7 +86,7 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
         catalogRetry: t('common.retry'),
         catalogError: t('common.error'),
         catalogPartial: t('common.unavailable'),
-        catalogEnd: t('sessionAccess.picker.allLoaded'),
+        catalogEnd: t('session.access.allLoaded'),
     };
 
     // A Team is named for people, not addressed by them. The immutable id shows
@@ -95,11 +95,17 @@ export const SessionListFilterControl = React.memo(function SessionListFilterCon
     const corpusLabel = controller.corpusPresentation === 'legacy_owner_or_direct'
         ? t('sessionsList.filtersLegacyOwnerDirect')
         : semanticScopeLabel;
-    const controlLabel = controller.viewContext.kind === 'team'
+    const scopedLabel = controller.viewContext.kind === 'team'
         ? `${corpusLabel} · ${
             controller.viewContext.teamDisplayName?.trim() || controller.viewContext.team.teamId
         }`
         : corpusLabel;
+    // The attention facet narrows the corpus as much as the scope does, so the
+    // collapsed control has to say it is on rather than leaving the list looking
+    // inexplicably short. Short form here; the editor keeps the full sentence.
+    const controlLabel = controller.filters.attention === 'needs_my_attention'
+        ? `${scopedLabel} · ${t('sessionsList.filtersScopeNeedsMe')}`
+        : scopedLabel;
 
     return (
         <SessionListFilterEditorControl

@@ -753,6 +753,14 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                     ? { diagnosticCode: loadState.reason }
                     : {})}
                 action={{ label: t('common.retry'), onPress: retry }}
+                // Every §10 refusal ends with "or go back to your own work", and
+                // a restricted Team reached from a public link is otherwise a
+                // dead end with nothing but an endless Retry. This is the same
+                // exit the OAuth Team failure card offers.
+                secondaryAction={{
+                    label: t('teams.entry.returnToHappier'),
+                    onPress: () => router.replace('/'),
+                }}
                 accessibilitySemantics="status"
             />
         );

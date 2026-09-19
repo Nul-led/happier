@@ -50,7 +50,6 @@ import {
     sealBoxBundle,
     UserRecipientEnvelopeResponseSchema,
 } from '@happier-dev/protocol';
-import sodium from '@/encryption/libsodium.lib';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import { decryptBox } from '@/encryption/libsodium';
 import { getRandomBytes } from '@/platform/cryptoRandom';
@@ -60,6 +59,12 @@ import {
     isLegacyAuthCredentials,
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
+import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import {
+    openRunnerActivationKeyCustody,
+    readRunnerActivationSigningKey,
+} from './runnerActivationKeyCustody';
+import { retainRunnerCreatorMachineContentKeyTrust } from './runnerCreatorMachineContentKeyTrust';
 import type { Encryption } from '@/sync/encryption/encryption';
 import {
     MetadataSchema,
@@ -78,7 +83,7 @@ export class RunnerMaterializationPreparationError extends Error {
         | 'runner_activation_binding_mismatch'
         | 'runner_endpoint_facts_unavailable'
         | 'runner_account_encryption_mismatch'
-        | 'runner_account_signing_authority_unavailable'
+        | 'runner_activation_signing_custody_unavailable'
         | 'runner_review_mismatch'
         | 'runner_session_metadata_unsupported'
         | 'session_access_request_failed'
@@ -150,21 +155,31 @@ export function assertRunnerMaterializationCurrentnessV1(input: Readonly<{
     };
 }
 
-export function resolveRunnerAccountSigningSecretKeyV1(input: Readonly<{
-    credentials: AuthCredentials;
-}>): Uint8Array {
-    if (isLegacyAuthCredentials(input.credentials)) {
-        const seed = decodeBase64(input.credentials.secret, 'base64url');
-        if (seed.length !== 32) throw new RunnerMaterializationPreparationError('runner_account_signing_authority_unavailable');
-        try {
-            return sodium.crypto_sign_seed_keypair(seed).privateKey;
-        } finally {
-            seed.fill(0);
+/**
+ * Opens the creator's device-local activation signing key for this exact
+ * activation.
+ *
+ * The creator generated this identity at package creation and retains it
+ * through proof publication, so the Machine-content-key proof needs no Account
+ * signing private key and a DataKey or token-only creator produces the same
+ * binding. Custody whose public half does not match the published activation
+ * identity is refused rather than used.
+ */
+async function openRunnerActivationSigningSecretKeyV1(
+    binding: RunnerActivationBindingV1,
+): Promise<Uint8Array> {
+    const scope = createServerAccountScope(binding.homeServerIdentityId, binding.creatorAccountId);
+    if (!scope) throw new RunnerMaterializationPreparationError('runner_activation_signing_custody_unavailable');
+    try {
+        const custody = await openRunnerActivationKeyCustody(scope, binding.activationId);
+        if (custody.activationSigningPublicKey !== binding.activationSigningPublicKey) {
+            throw new RunnerMaterializationPreparationError('runner_activation_signing_custody_unavailable');
         }
+        return decodeBase64(await readRunnerActivationSigningKey(scope, custody), 'base64url');
+    } catch (error) {
+        if (error instanceof RunnerMaterializationPreparationError) throw error;
+        throw new RunnerMaterializationPreparationError('runner_activation_signing_custody_unavailable');
     }
-    // Data-key credentials deliberately carry only the content public key and this
-    // device's Machine key. Neither authenticates as the Account signing identity.
-    throw new RunnerMaterializationPreparationError('runner_account_signing_authority_unavailable');
 }
 
 function openEndpointFacts(input: Readonly<{
@@ -194,7 +209,7 @@ function openEndpointFacts(input: Readonly<{
 }
 
 /** Creates the exact manifest/key custody that must exist before endpoint review. */
-export function prepareRunnerActivationReviewV1(input: Readonly<{
+export async function prepareRunnerActivationReviewV1(input: Readonly<{
     projection: unknown;
     expectedBinding: RunnerActivationBindingV1;
     preparedAuthoring: RunnerPreparedAuthoringV1;
@@ -204,7 +219,7 @@ export function prepareRunnerActivationReviewV1(input: Readonly<{
     connectedServiceReviewBindings: RunnerLaunchManifestV1['connectedServiceReviewBindings'];
     credentials: AuthCredentials;
     encryption: Encryption | null;
-}>): Readonly<{ review: RunnerActivationReviewV1; custody: RunnerReviewCustodyV1 }> {
+}>): Promise<Readonly<{ review: RunnerActivationReviewV1; custody: RunnerReviewCustodyV1 }>> {
     const projection = RunnerActivationProjectionV1Schema.parse(input.projection);
     const expectedBinding = RunnerActivationBindingV1Schema.parse(input.expectedBinding);
     const preparedAuthoring = RunnerPreparedAuthoringV1Schema.parse(input.preparedAuthoring);
@@ -224,7 +239,7 @@ export function prepareRunnerActivationReviewV1(input: Readonly<{
         if (encodeBase64(input.encryption.contentDataKey, 'base64url') !== expectedBinding.endpointFactsRecipient.contentPublicKey) {
             throw new RunnerMaterializationPreparationError('runner_account_encryption_mismatch');
         }
-        const secretKey = resolveRunnerAccountSigningSecretKeyV1({ credentials: input.credentials });
+        const secretKey = await openRunnerActivationSigningSecretKeyV1(expectedBinding);
         try {
             machineContentKey = getRandomBytes(32);
             machineContentKeyBinding = signRunnerMachineContentKeyBindingV1({
@@ -238,8 +253,13 @@ export function prepareRunnerActivationReviewV1(input: Readonly<{
                     installationId: projection.claim.payload.installation.installationId,
                     machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(machineContentKey),
                 },
-                accountSigningPublicKey: decodeBase64(expectedBinding.endpointFactsRecipient.accountSigningPublicKey, 'base64url'),
-                accountSigningSecretKey: secretKey,
+                activationSigningSecretKey: secretKey,
+            });
+            await retainRunnerCreatorMachineContentKeyTrust({
+                scope: expectedBinding,
+                machineId: expectedBinding.machineId,
+                activationId: expectedBinding.activationId,
+                activationSigningPublicKey: expectedBinding.activationSigningPublicKey,
             });
         } catch (error) {
             machineContentKey?.fill(0);
@@ -308,7 +328,7 @@ export async function prepareAndStoreRunnerActivationReviewV1(input: Parameters<
         : null;
     const prepared = retained
         ? { review: retained.review, custody: retained }
-        : prepareRunnerActivationReviewV1(input);
+        : await prepareRunnerActivationReviewV1(input);
     if (!retained) await input.retainPreparedCustody?.(prepared.custody);
     await input.client.storeReview(prepared.custody.binding.activationId, prepared.review);
     return prepared;

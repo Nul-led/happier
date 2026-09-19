@@ -33,7 +33,8 @@ describe('POST /v2/sessions/query activation', () => {
         expect(config?.allowApiToken).toBeUndefined();
     });
 
-    it('registers the endpoint but fails closed before authentication while its producers are unavailable', async () => {
+    it('registers the endpoint and refuses before authentication only under the operator opt-out', async () => {
+        vi.stubEnv('HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED', '0');
         const route = createRouteTestBuilder({
             method: 'POST',
             path: '/v2/sessions/query',

@@ -306,7 +306,8 @@ describe('createIdentityAdministrationClient', () => {
             ? { items: [{ ...connection(true), id: 'connection-b' }], eligibleProviders: [], admissionModeApplicability, memberSignInUrl: null }
             : { items: [directorySource('directory-b')], nextCursor: null }), { status: 200 })));
         await vi.waitFor(() => expect(hook.getCurrent().state.kind).toBe('ready'));
-        expect(hook.getCurrent().state.kind === 'ready' && hook.getCurrent().state.items[0]?.id)
+        const refreshed = hook.getCurrent().state;
+        expect(refreshed.kind === 'ready' && refreshed.items[0]?.id)
             .toBe(kind === 'connections' ? 'connection-b' : 'directory-b');
     });
 
@@ -345,11 +346,13 @@ describe('createIdentityAdministrationClient', () => {
         });
 
         await act(async () => hook.getCurrent().loadMore());
-        await vi.waitFor(() => expect(hook.getCurrent().state.kind === 'ready'
-            && hook.getCurrent().state.items.map((item) => item.id)).toEqual([
+        await vi.waitFor(() => {
+            const state = hook.getCurrent().state;
+            expect(state.kind === 'ready' && state.items.map((item) => item.id)).toEqual([
             'directory-1',
             'directory-51',
-        ]));
+            ]);
+        });
         expect(hook.getCurrent().state).toMatchObject({
             kind: 'ready',
             nextCursor: null,
@@ -388,15 +391,17 @@ describe('createIdentityAdministrationClient', () => {
         });
         await vi.waitFor(() => expect(runtimeFetchMock).toHaveBeenCalledTimes(3));
         expect(runtimeFetchMock.mock.calls[2]?.[0].url).not.toContain('cursor=');
-        await vi.waitFor(() => expect(hook.getCurrent().state.kind === 'ready'
-            && hook.getCurrent().state.items[0]?.id).toBe('directory-current'));
+        await vi.waitFor(() => {
+            const state = hook.getCurrent().state;
+            expect(state.kind === 'ready' && state.items[0]?.id).toBe('directory-current');
+        });
 
         await act(async () => staleContinuation.resolve(new Response(JSON.stringify({
             items: [directorySource('directory-stale')],
             nextCursor: null,
         }), { status: 200 })));
-        expect(hook.getCurrent().state.kind === 'ready'
-            && hook.getCurrent().state.items.map((item) => item.id)).toEqual(['directory-current']);
+        const settleddirectory_current = hook.getCurrent().state;
+        expect(settleddirectory_current.kind === 'ready' && settleddirectory_current.items.map((item) => item.id)).toEqual(['directory-current']);
     });
 
     it('drops directory pages when the exact Home/Account scope changes', async () => {
@@ -426,15 +431,17 @@ describe('createIdentityAdministrationClient', () => {
         await hook.rerender(scopeB);
         expect(hook.getCurrent().state.kind).toBe('loading');
         await vi.waitFor(() => expect(runtimeFetchMock).toHaveBeenCalledTimes(3));
-        await vi.waitFor(() => expect(hook.getCurrent().state.kind === 'ready'
-            && hook.getCurrent().state.items[0]?.id).toBe('directory-b'));
+        await vi.waitFor(() => {
+            const state = hook.getCurrent().state;
+            expect(state.kind === 'ready' && state.items[0]?.id).toBe('directory-b');
+        });
 
         await act(async () => staleContinuation.resolve(new Response(JSON.stringify({
             items: [directorySource('directory-stale-a')],
             nextCursor: null,
         }), { status: 200 })));
-        expect(hook.getCurrent().state.kind === 'ready'
-            && hook.getCurrent().state.items.map((item) => item.id)).toEqual(['directory-b']);
+        const settleddirectory_b = hook.getCurrent().state;
+        expect(settleddirectory_b.kind === 'ready' && settleddirectory_b.items.map((item) => item.id)).toEqual(['directory-b']);
     });
 
     it('never presents or settles a scope A directory detail under scope B for the same Team and source IDs', async () => {
@@ -473,7 +480,8 @@ describe('createIdentityAdministrationClient', () => {
 
         await act(async () => answerB.resolve(new Response(JSON.stringify(directorySource('directory-b')), { status: 200 })));
         await vi.waitFor(() => expect(hook.getCurrent().state.kind).toBe('ready'));
-        expect(hook.getCurrent().state.kind === 'ready' && hook.getCurrent().state.item.id).toBe('directory-b');
+        const reread = hook.getCurrent().state;
+        expect(reread.kind === 'ready' && reread.item.id).toBe('directory-b');
     });
 
     it('binds a directory read to the Action-declared GET path and query', async () => {

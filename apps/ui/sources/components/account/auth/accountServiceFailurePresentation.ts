@@ -1,3 +1,4 @@
+import { AccountDirectoryErrorCodeV1Schema } from '@happier-dev/protocol';
 import { t } from '@/text';
 import type { AccountPostAuthFailureCode } from '@/sync/ops/accountDirectory/completeAccountServicePostAuth';
 
@@ -6,6 +7,9 @@ export type AccountServiceOAuthCallbackFailureCode =
     | 'credential_storage_failed'
     | 'provider_failed'
     | 'invalid_request'
+    | 'request_expired'
+    | 'identity_changed'
+    | 'service_unavailable'
     | 'token_exchange_failed'
     | 'directory_link_conflict';
 
@@ -44,7 +48,7 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                 case 'invalid_token':
                 case 'approval_expired':
                     return oauthError('expired');
-                case 'account_disabled':
+                case 'account-disabled':
                     return oauthError('accountDisabled');
                 case 'directory_unavailable':
                 case 'home_unavailable':
@@ -115,6 +119,12 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
                     return oauthError('provider');
                 case 'invalid_request':
                     return oauthError('invalid');
+                case 'request_expired':
+                    return oauthError('expired');
+                case 'identity_changed':
+                    return oauthError('identityChanged');
+                case 'service_unavailable':
+                    return oauthError('unavailable');
                 case 'token_exchange_failed':
                     return oauthError('exchange');
                 case 'directory_link_conflict':
@@ -124,6 +134,33 @@ export function describeAccountServiceFailure(code: AccountServiceFailureCode): 
             }
         default:
             return unreachable(code);
+    }
+}
+
+/**
+ * The exchange client reports its refusals as hyphenated client codes and passes
+ * the Home's own `error` body through untouched. Both reach the callback as one
+ * string, so this is where that string becomes the typed failure the single
+ * presenter already understands — a Home-named refusal keeps its own directory
+ * copy rather than collapsing into a generic exchange failure.
+ */
+export function classifyAccountServiceOAuthCallbackFailure(code: string): AccountServiceFailureCode {
+    const directory = AccountDirectoryErrorCodeV1Schema.safeParse(code);
+    if (directory.success) return { source: 'directory', code: directory.data };
+    switch (code) {
+        case 'invalid-pending':
+            return { source: 'oauth_callback', code: 'invalid_request' };
+        case 'request-expired':
+            return { source: 'oauth_callback', code: 'request_expired' };
+        case 'identity-changed':
+        case 'canonical-url-changed':
+            return { source: 'oauth_callback', code: 'identity_changed' };
+        case 'service-unavailable':
+            return { source: 'oauth_callback', code: 'service_unavailable' };
+        case 'credential-storage-failed':
+            return { source: 'oauth_callback', code: 'credential_storage_failed' };
+        default:
+            return { source: 'oauth_callback', code: 'token_exchange_failed' };
     }
 }
 

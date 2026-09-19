@@ -1,8 +1,10 @@
 import { StyleSheet } from 'react-native';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SESSION_FOLLOW_WAKE_EVENT_MESSAGE } from '@happier-dev/protocol';
+
 import { renderScreen } from '@/dev/testkit';
-import { t } from '@/text';
+import { setPreferredLanguageFromSettings, t } from '@/text';
 import type { AgentEvent } from '@/sync/typesRaw';
 
 import { TranscriptEventRow } from './TranscriptEventRow';
@@ -107,6 +109,33 @@ describe('TranscriptEventRow', () => {
             );
 
             expect(screen.findByTestId('transcriptEvent.clearTerminalComposer')).toBeTruthy();
+        }
+    });
+
+    it('localizes the Follow wake explanation and leaves every other message event verbatim', async () => {
+        // Asserted in a non-English locale on purpose: the English copy and the
+        // persisted Protocol marker read the same sentence, so an `en` assertion
+        // would pass against a row that just echoes the stored English string.
+        setPreferredLanguageFromSettings('es');
+        try {
+            const wake = await renderScreen(
+                <TranscriptEventRow
+                    sessionId="s1"
+                    event={{ type: 'message', message: SESSION_FOLLOW_WAKE_EVENT_MESSAGE }}
+                />,
+            );
+            expect(wake.getTextContent()).toContain(t('session.follow.wakeEventExplanation'));
+            expect(wake.getTextContent()).not.toContain(SESSION_FOLLOW_WAKE_EVENT_MESSAGE);
+
+            const other = await renderScreen(
+                <TranscriptEventRow
+                    sessionId="s1"
+                    event={{ type: 'message', message: 'A host-authored note.' }}
+                />,
+            );
+            expect(other.getTextContent()).toContain('A host-authored note.');
+        } finally {
+            setPreferredLanguageFromSettings(null);
         }
     });
 

@@ -78,11 +78,16 @@ import {
     type TeamAuthenticationFailureCode,
 } from '@/components/teams/entry/teamAuthenticationFailure';
 import { SurfaceStateCard } from '@/components/ui/surfaces/SurfaceStateCard';
+import {
+    classifyAccountServiceOAuthCallbackFailure,
+    describeAccountServiceFailure,
+    type AccountServiceFailureCode,
+} from '@/components/account/auth/accountServiceFailurePresentation';
 import { TeamInvitationPostAuthContinuationV1Schema } from '@happier-dev/protocol/teams';
 type AccountDirectoryCallbackStage = 'signing_in';
 type AccountDirectoryCallbackState = Readonly<{ providerName: string; endpointUrl: string }> & (
     | Readonly<{ kind: 'progress'; stage: AccountDirectoryCallbackStage }>
-    | Readonly<{ kind: 'error'; failure: string; signedIn: boolean }>
+    | Readonly<{ kind: 'error'; failure: AccountServiceFailureCode }>
 );
 
 const ACCOUNT_ENCRYPTION_FIRST_KEY_PURPOSE =
@@ -936,8 +941,7 @@ function OAuthProviderReturnBody() {
                     if (directoryCustodyFailure) {
                         safeSetDirectoryJourney({
                             kind: 'error',
-                            failure: 'credential_storage_failed',
-                            signedIn: false,
+                            failure: { source: 'oauth_callback', code: 'credential_storage_failed' },
                             providerName,
                             endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                         });
@@ -953,8 +957,7 @@ function OAuthProviderReturnBody() {
                         }
                         safeSetDirectoryJourney({
                             kind: 'error',
-                            failure: 'provider_failed',
-                            signedIn: false,
+                            failure: { source: 'oauth_callback', code: 'provider_failed' },
                             providerName,
                             endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                         });
@@ -974,8 +977,7 @@ function OAuthProviderReturnBody() {
                         }
                         safeSetDirectoryJourney({
                             kind: 'error',
-                            failure: 'invalid_request',
-                            signedIn: false,
+                            failure: { source: 'oauth_callback', code: 'invalid_request' },
                             providerName,
                             endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                         });
@@ -1054,8 +1056,7 @@ function OAuthProviderReturnBody() {
                             }
                             safeSetDirectoryJourney({
                                 kind: 'error',
-                                failure: 'token_exchange_failed',
-                                signedIn: false,
+                                failure: { source: 'oauth_callback', code: 'token_exchange_failed' },
                                 providerName,
                                 endpointUrl: directoryEndpoint,
                             });
@@ -1076,8 +1077,9 @@ function OAuthProviderReturnBody() {
                     }
                     safeSetDirectoryJourney({
                         kind: 'error',
-                        failure: result.kind === 'relink_required' ? 'directory_link_conflict' : result.code,
-                        signedIn: result.kind === 'failed' && result.accountCredentialCommitted,
+                        failure: result.kind === 'relink_required'
+                            ? { source: 'oauth_callback', code: 'directory_link_conflict' }
+                            : classifyAccountServiceOAuthCallbackFailure(result.code),
                         providerName,
                         endpointUrl: directoryEndpoint ?? resolvedEndpointUrl ?? '',
                     });
@@ -1790,6 +1792,9 @@ function OAuthProviderReturnBody() {
         const canCancel = visibleAccountDirectoryJourney.kind === 'progress'
             && visibleAccountDirectoryJourney.stage === 'signing_in'
             && !accountDirectoryCredentialCommitStartedRef.current;
+        const directoryFailure = visibleAccountDirectoryJourney.kind === 'error'
+            ? describeAccountServiceFailure(visibleAccountDirectoryJourney.failure)
+            : null;
         return (
             <WizardModalShell
                 testID="oauth-return-wizard"
@@ -1806,13 +1811,17 @@ function OAuthProviderReturnBody() {
                     </Text>
                 ) : undefined}
             >
-                {visibleAccountDirectoryJourney.kind === 'progress' ? (
-                    <ActivitySpinner size="small" />
+                {directoryFailure ? (
+                    <SurfaceStateCard
+                        testID="oauth-account-directory-failure"
+                        kind="error"
+                        title={directoryFailure.title}
+                        reason={directoryFailure.body}
+                        accessibilitySemantics="alert"
+                        action={{ label: t('common.back'), onPress: recoverAccountDirectoryJourney }}
+                    />
                 ) : (
-                    <View>
-                        <Text accessibilityRole="alert">{t('errors.operationFailed')}</Text>
-                        <RoundButton title={t('common.back')} onPress={recoverAccountDirectoryJourney} />
-                    </View>
+                    <ActivitySpinner size="small" />
                 )}
             </WizardModalShell>
         );

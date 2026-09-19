@@ -231,6 +231,8 @@ describe('HomeAdministrationSection', () => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-stale');
         });
         expect(screen.findByTestId('home-admin-stale')?.props.accessibilityLiveRegion).toBe('polite');
+        // Retained content must say how old it is, not only that it is old.
+        expect(screen.getTextContent()).toContain('homeGovernance.lastUpdated');
         // The administrator keeps reading the Home they were looking at.
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
     });

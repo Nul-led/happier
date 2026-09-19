@@ -509,7 +509,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  */
 export const de: TranslationStructure = {
     actionConfirmations: actionConfirmationTranslations.de,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.de, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.de.resolve } },
+    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.de, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.de.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.de.resolve } },
     ...sessionDraftTranslations,
     transferRecovery: {
         title: 'Vorgemerkten Upload abschließen',
@@ -522,7 +522,7 @@ export const de: TranslationStructure = {
     voice: voiceReadinessTranslations.de,
     pluginPermissions: pluginPermissionTranslations.de,
     sessionBoard: sessionBoardTranslations.de,
-    ...sessionAgentActivityTranslations,
+    sessionAgentActivity: sessionAgentActivityTranslations.de,
     ...changedFileEvidenceTranslations.de,
     sessionRemotePermissionGrants: sessionRemotePermissionGrantTranslations.de,
     pluginSurfaces: {
@@ -1721,6 +1721,8 @@ export const de: TranslationStructure = {
         securingCredentials: 'Zugangsdaten werden gesichert…',
         showQrInstead: 'Stattdessen QR-Code anzeigen',
         addPhoneQrInstructions: 'Scanne diesen QR-Code mit der Happier-App, um dich auf deinem Telefon anzumelden.',
+        addPhoneChooseHomeTitle: 'Home auswählen',
+        addPhoneChooseHomeFooter: 'Das hinzugefügte Telefon erhält Zugriff auf das hier gewählte Home. Dein fokussiertes Home ändert sich nicht.',
         serverUrlNotEmbeddedTitle: 'Server deines Telefons einrichten',
         serverUrlNotEmbeddedBody:
             'Dieser QR-Code kann die Serveradresse nicht enthalten, weil sie auf localhost steht. Geh auf deinem Telefon zu Einstellungen → Server und füge eine URL hinzu, die dein Telefon erreicht (LAN-IP oder Tailscale), und scanne dann erneut.',
@@ -1732,9 +1734,12 @@ export const de: TranslationStructure = {
         expiresAtLabel: 'Läuft ab',
         showPairingLink: 'Kopplungslink anzeigen',
         pairingLinkSecurityWarning: 'Jeder mit diesem temporären Link kann vor Ablauf ein Gerät hinzufügen. Teile ihn nur mit deinem eigenen Gerät.',
+        pairingLinkFieldLabel: 'Kopplungslink',
+        pairingLinkRequired: 'Füge den Kopplungslink ein, der auf dem anderen Gerät angezeigt wird.',
         pairingQrTooLargeTitle: 'Zu groß für einen QR-Code',
         pairingQrTooLargeBody: 'Diese Einladung enthält zusätzliche Verbindungsdetails und kann nicht als QR-Code angezeigt werden. Dein Home ist weiterhin bereit zum Koppeln – nutze unten den sicheren Link.',
         homeAddedPreservedFocusBody: 'Dieses Home wurde hinzugefügt. Dein fokussiertes Home bleibt unverändert.',
+        homeSavedOpenFailedBody: 'Dieses Home wurde gespeichert, konnte aber nicht geöffnet werden. Versuche es erneut, um dorthin zu wechseln.',
         requesterDeviceAddedBody: 'Das anfragende Gerät wurde diesem Home hinzugefügt.',
         requestingDeviceLabel: 'Anfragendes Gerät',
         thisDevice: 'Dieses Gerät',
@@ -1760,7 +1765,7 @@ export const de: TranslationStructure = {
         accountUrlPlaceholder: 'happier:///account?...',
         showRequesterQrInstructions: 'Lass diesen QR-Code auf diesem Gerät geöffnet. Öffne Happier auf einem bereits registrierten Gerät und scanne ihn, um dieses Gerät hinzuzufügen.',
         restoreQrInstructions: "Geh auf einem bereits angemeldeten Gerät zu Einstellungen → Konto und scanne diesen QR-Code.",
-        legacyAccountQrUnavailable: 'Dieser ältere Konto-QR-Code kann nicht mehr sicher bestätigt werden. Öffne auf dem angemeldeten Home Einstellungen → Konto → Telefon hinzufügen und scanne stattdessen den QR-Code dieses Homes.',
+        legacyAccountQrUnavailable: 'Dieser ältere Konto-QR-Code kann nicht mehr sicher bestätigt werden. Öffne auf dem angemeldeten Home Einstellungen → Telefon hinzufügen und scanne stattdessen den QR-Code dieses Homes.',
         externalAuthVerifiedTitle: ({ provider }: { provider: string }) => `${provider} verifiziert`,
         externalAuthVerifiedBody: ({ provider }: { provider: string }) =>
             `Wir haben ein bestehendes Happier-Konto gefunden, das verknüpft ist mit ${provider}. Um die Anmeldung auf diesem Gerät abzuschließen, stelle deinen Kontoschlüssel per QR-Code oder Wiederherstellungsschlüssel wieder her.`,
@@ -5961,6 +5966,15 @@ export const de: TranslationStructure = {
                 workspaceChoose: 'Sie wählen den Ordner',
                 workspaceHome: 'Ihr persönlicher Ordner',
             },
+            workspace: {
+                title: 'Startordner',
+                chooseRecommended: 'Empfohlen · der Ordner wird gewählt, sobald das Paket verbindet',
+                homeDetail: 'Startet im persönlichen Ordner der Person, die das Paket ausführt',
+            },
+            otherDevice: {
+                guidance: 'Dieses Paket wurde auf dem Gerät gespeichert, das es erstellt hat. Fahren Sie dort fort, oder brechen Sie diese Anfrage ab und erstellen Sie hier ein neues Paket.',
+                createdOn: ({ device }: { device: string }) => `Erstellt auf ${device}`,
+            },
             endpointFacts: {
                 unreadable: 'Dieses Gerät kann die Angaben dieses Computers nicht lesen.',
             },
@@ -7432,8 +7446,9 @@ export const de: TranslationStructure = {
             automationRunEvents: 'Ereignisse von Automations-Runs',
         },
         multiServerView: {
-            title: 'Gleichzeitige Ansicht mehrerer Homes',
-            footer: 'Lege fest, ob mehrere Homes in einer Session-Liste zusammengeführt werden.',
+            editMembersAction: 'Homes in dieser Gruppe bearbeiten',
+            title: 'Homes in dieser Ansicht',
+            footer: 'Lege fest, wie diese Homes in deiner Session-Liste erscheinen und welche zu dieser Gruppe gehören.',
             presentationTitle: 'Darstellung',
             presentation: {
                 flatWithBadges: 'Flache Liste mit Home-Badges',
@@ -12061,7 +12076,7 @@ settingsSession: {
         accountServiceHomesEmpty: 'No linked Homes yet',
         accountServiceHomesEmptyDescription: ({ accountService }: { accountService?: string }) => accountService ? `Noch sind keine Homes mit ${accountService} verknüpft. Verknüpfe ein Home und aktualisiere dann.` : 'Noch sind keine Homes mit diesem Konto verknüpft. Verknüpfe ein Home und aktualisiere dann.',
         accountServiceConnectHome: 'Connect Home',
-        accountServiceLinkThisHome: 'Link this Home',
+        accountServiceLinkThisHome: 'Dieses Home auf deinen anderen Geräten verfügbar machen',
         accountServiceLinkThisHomeDescription: ({ accountService }: { accountService?: string }) => accountService ? `Erlaube ${accountService}, deinen anderen Geräten zu helfen, dieses Home zu finden und Zugriff anzufordern.` : 'Erlaube deinem Konto, deinen anderen Geräten zu helfen, dieses Home zu finden und Zugriff anzufordern.',
         accountServiceRetryHomeConnection: 'Retry Home connection',
         accountServiceHomeConnected: 'Connected',
@@ -12567,6 +12582,7 @@ settingsSession: {
         signInServiceUnavailableBody: ({ serverUrl }: { serverUrl: string }) => `Verbindung zu ${serverUrl} nicht möglich. Versuche es erneut oder wähle einen anderen Anmeldedienst.`,
         signInServiceUnsupportedTitle: 'Anmeldedienst nicht unterstützt',
         signInServiceMethodlessTitle: 'Hier sind keine Anmeldemethoden verfügbar',
+        signInServiceMethodlessBody: 'Dieser Dienst ist erreichbar, bietet derzeit aber keine Anmeldemethode. Versuche es erneut oder wähle einen anderen Dienst.',
         signInOptionsPartialTitle: 'Einige Anmeldeoptionen konnten nicht geladen werden',
         signInServiceUnsupportedBody: 'Diese Adresse ist ein Home oder bietet keine Kontoanmeldung an. Wähle einen anderen Dienst.',
         useDifferentHome: 'Anderes Home verwenden',
@@ -14477,6 +14493,15 @@ settingsSession: {
             useExistingDetail: 'Überprüfe den Zugriff und sichere die Registrierung, ohne dein ausgewähltes Zuhause zu ändern.',
             useAnother: 'Ein anderes Zuhause verwenden',
             useAnotherDetail: 'Lass dieses lokale Zuhause unverändert und wähle eines deiner Zuhause aus.',
+            blocked: {
+                runtime_unhealthy: 'Dein lokales Home braucht Aufmerksamkeit, bevor es starten kann.',
+                home_auth_invalid: 'Die Home-Anmeldung braucht Aufmerksamkeit.',
+                existing_runtime: 'Ein vorhandenes lokales Home braucht eine Entscheidung, bevor die Einrichtung weitergeht.',
+                personal_home_erased: 'Dein Personal Home wurde gelöscht. Versuche es erneut, um ein neues zu erstellen.',
+            },
+            blockedBody: {
+                personal_home_erased: 'Deine Home-Daten wurden gelöscht. Hier gibt es nichts wiederherzustellen — erstelle ein neues Personal Home oder nutze ein anderes Home.',
+            },
         },
     },
     settingsSearch: {

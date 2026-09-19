@@ -9,7 +9,6 @@ import { RoundButton } from '@/components/ui/buttons/RoundButton';
 import { Text } from '@/components/ui/text/Text';
 import { Modal } from '@/modal';
 import { t } from '@/text';
-import { useFeatureDecision } from '@/hooks/server/useFeatureDecision';
 import { Typography } from '@/constants/Typography';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import {
@@ -18,6 +17,11 @@ import {
     resolveHomeEnrollmentPresentation,
 } from '@/auth/pairing/pairingPresentation';
 import { PairingLinkDisclosure } from '@/components/auth/pairing/PairingLinkDisclosure';
+import { Item } from '@/components/ui/lists/Item';
+import { ItemGroup } from '@/components/ui/lists/ItemGroup';
+import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import { buildHomeConnectionDescriptorForProfile, listServerProfiles } from '@/sync/domains/server/serverProfiles';
 
 const ADD_PHONE_QR_SIZE = 240;
 
@@ -133,9 +137,25 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const auth = useAuth();
-    const pairingDecision = useFeatureDecision('auth.pairing.boundQrV2');
-    const pairingState = pairingDecision?.state ?? 'unknown';
-    const pairingEnabled = pairingState === 'enabled';
+    const profilesGeneration = useServerProfilesGeneration();
+    // The default target is whichever Home has focus when pairing starts; the live
+    // subscription lives in usePairingSession, so a plain read is enough here.
+    const activeServerId = getActiveServerSnapshot().serverId;
+    // Only a saved Home that already publishes a connection descriptor can enrol a
+    // device; the same admission the restore surface uses, so the picker never offers
+    // a Home the QR could not be issued for.
+    const enrollableHomes = React.useMemo(() => listServerProfiles().flatMap((profile) => {
+        const descriptor = buildHomeConnectionDescriptorForProfile(profile);
+        return descriptor ? [{ profile, descriptor }] : [];
+    }), [profilesGeneration]);
+    const [chosenHomeId, setChosenHomeId] = React.useState<string | null>(null);
+    // Only an explicit pick overrides the default. Leaving it null while the focused
+    // Home settles keeps the pairing target stable, so the live invite is not torn
+    // down and reissued the moment the active snapshot resolves.
+    const selectedHomeId = chosenHomeId && enrollableHomes.some(({ profile }) => profile.id === chosenHomeId)
+        ? chosenHomeId
+        : null;
+    const targetProfileId = selectedHomeId ?? activeServerId;
 
     const {
         presentation,
@@ -143,8 +163,9 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
         startPairing,
         cancelPairing,
     } = usePairingSession({
-        enabled: pairingEnabled,
+        enabled: auth.isAuthenticated,
         isAuthenticated: auth.isAuthenticated,
+        targetProfileId: selectedHomeId,
     });
 
     const [cancelling, setCancelling] = React.useState(false);
@@ -158,21 +179,14 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
         : null;
     const visibleDeepLink = presentation.phase === 'ready' ? presentation.deepLink : null;
 
-    const startPairingWithAlert = React.useCallback(async () => {
-        const res = await startPairing();
-        if (!res.ok && auth.isAuthenticated && pairingEnabled) {
-            await Modal.alertAsync(
-                t(res.reason === 'update_required' ? 'connect.updateRequiredTitle' : 'common.error'),
-                t(res.reason === 'update_required' ? 'connect.updateRequiredBody' : 'errors.operationFailed'),
-            );
-        }
-    }, [auth.isAuthenticated, pairingEnabled, startPairing]);
+    const startPairingSession = React.useCallback(async () => {
+        await startPairing();
+    }, [startPairing]);
 
     React.useEffect(() => {
         if (!auth.isAuthenticated) return;
-        if (!pairingEnabled) return;
-        void startPairingWithAlert();
-    }, [auth.isAuthenticated, pairingEnabled, startPairingWithAlert]);
+        void startPairingSession();
+    }, [auth.isAuthenticated, startPairingSession]);
 
     const cancel = React.useCallback(async () => {
         setCancelling(true);
@@ -189,7 +203,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
     }, [cancelPairing]);
 
     const isAuthenticated = auth.isAuthenticated;
-    const canRenderPairing = pairingEnabled && isAuthenticated;
+    const canRenderPairing = isAuthenticated;
 
     return (
         <ScrollView style={styles.scrollView} contentContainerStyle={{ flexGrow: 1 }}>
@@ -204,16 +218,28 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                         </View>
                     ) : null}
 
-                    {isAuthenticated && pairingState === 'unknown' ? (
-                        <View style={styles.requestCard}>
-                            <Text style={styles.requestBody}>{t('common.loading')}</Text>
-                        </View>
-                    ) : null}
-
-                    {isAuthenticated && pairingState !== 'unknown' && !pairingEnabled ? (
-                        <View style={styles.requestCard}>
-                            <Text style={styles.requestBody}>{t('common.unavailable')}</Text>
-                        </View>
+                    {isAuthenticated && enrollableHomes.length > 1 ? (
+                        <ItemGroup
+                            title={t('connect.addPhoneChooseHomeTitle')}
+                            footer={t('connect.addPhoneChooseHomeFooter')}
+                            accessibilityRole="radiogroup"
+                            accessibilityLabel={t('connect.addPhoneChooseHomeTitle')}
+                        >
+                            {enrollableHomes.map(({ profile, descriptor }) => (
+                                <Item
+                                    key={profile.id}
+                                    testID={`add-phone-home-profile-${profile.id}`}
+                                    title={profile.name?.trim() || profile.serverUrl}
+                                    subtitle={formatHomeEnrollmentTargetLabel(descriptor)}
+                                    selected={profile.id === targetProfileId}
+                                    accessibilityRole="radio"
+                                    accessibilityChecked={profile.id === targetProfileId}
+                                    showChevron={false}
+                                    disabled={starting}
+                                    onPress={() => setChosenHomeId(profile.id)}
+                                />
+                            ))}
+                        </ItemGroup>
                     ) : null}
 
                     {canRenderPairing ? (
@@ -252,8 +278,6 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                     <QRCode
                                         data={presentation.deepLink}
                                         size={ADD_PHONE_QR_SIZE}
-                                        foregroundColor={theme.colors.text.primary}
-                                        backgroundColor={theme.colors.surface.base}
                                     />
                                 ) : presentation.phase === 'ready' ? (
                                     <View style={styles.qrUnavailable}>
@@ -290,7 +314,7 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                                         testID="add-phone-generate"
                                         size="small"
                                         title={t('connect.generateNewQrCode')}
-                                        action={startPairingWithAlert}
+                                        action={startPairingSession}
                                         display="inverted"
                                         disabled={starting || presentation.phase === 'ready'}
                                     />
@@ -347,6 +371,13 @@ export const AddPhoneSettingsView = React.memo(function AddPhoneSettingsView() {
                             {presentation.phase === 'invalid_request' ? (
                                 <View testID="add-phone-invalid-request" style={styles.requestCard} accessibilityLiveRegion={enrollmentPresentation.liveRegion}>
                                     <Text style={styles.requestTitle}>{t('common.error')}</Text>
+                                    <Text style={styles.requestBody}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
+                                </View>
+                            ) : null}
+
+                            {presentation.phase === 'update_required' ? (
+                                <View testID="add-phone-update-required" style={styles.requestCard} accessibilityLiveRegion={enrollmentPresentation.liveRegion}>
+                                    <Text style={styles.requestTitle}>{t('connect.updateRequiredTitle')}</Text>
                                     <Text style={styles.requestBody}>{t(enrollmentPresentation.primaryTranslationKey)}</Text>
                                 </View>
                             ) : null}

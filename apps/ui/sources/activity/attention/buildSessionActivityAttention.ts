@@ -3,6 +3,7 @@ import type { Message } from '@/sync/domains/messages/messageTypes';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { projectUiSessionAwareness } from '@/sync/domains/session/awareness/sessionAwareness';
 import { resolveSessionPersonalAttentionForViewer } from '@/sync/domains/session/readState/sessionViewerAttention';
+import { isUnreadContentAttentionReason } from '@/sync/domains/session/readState/sessionViewer';
 import { getSessionName, getSessionSubtitle } from '@/utils/sessions/sessionUtils';
 import { isSessionAwarenessContentReadableV1 } from '@happier-dev/protocol';
 import { t } from '@/text';
@@ -37,9 +38,7 @@ export function buildSessionActivityAttention(params: Readonly<{
     const operational = admitted ? awareness.operational.primary : 'none';
     const operationalAttentionState = resolveSessionListAttentionState({
         operational,
-        hasUnreadMessages: personalReasons.some(
-            (reason) => reason === 'unread' || reason === 'unread_discussion',
-        ),
+        hasUnreadMessages: personalReasons.some(isUnreadContentAttentionReason),
     });
     const primaryPersonalReason = personalReasons[0] ?? null;
     const personalAttentionState = presentSessionPersonalAttentionReason(primaryPersonalReason);
@@ -73,7 +72,7 @@ export function buildSessionActivityAttention(params: Readonly<{
         priority: resolveSessionListAttentionRank(attentionState),
         lastTurnCompletedAt: params.session.lastTurnCompletedAt ?? null,
         reasons: {
-            hasUnread: personalReasons.some((reason) => reason === 'unread' || reason === 'unread_discussion'),
+            hasUnread: personalReasons.some(isUnreadContentAttentionReason),
             hasPendingPermissionRequests: personalReasons.includes('permission_required'),
             hasPendingUserActionRequests: personalReasons.includes('user_action_required'),
             hasBlockedPendingDelivery: personalReasons.includes('pending_blocked'),

@@ -160,7 +160,7 @@ export async function reconcileHomeRemoteAlertEnrollment(params: Readonly<{
         ? buildHomeRemoteAlertPreparedCredential(params.credentials, accountEncryption.mode)
         : null;
     const encryptionReady = accountEncryption?.mode === 'plain'
-        || accountEncryption?.recipientEnvelopeReadiness.status === 'available';
+        || accountEncryption?.recipientEnvelopeReadiness?.status === 'available';
     if (!accountEncryption || !encryptionReady || !preparedCredential
         || !await params.isStillCurrent()) {
         persistHomeRemoteAlertPreparedContext({

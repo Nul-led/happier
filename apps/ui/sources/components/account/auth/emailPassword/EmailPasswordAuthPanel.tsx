@@ -12,6 +12,10 @@ import {
 } from '@/auth/password/provisionEmailPasswordAccount';
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
+import {
+    WelcomeActionAdmissionContext,
+    type WelcomeActionAdmission,
+} from '@/components/onboarding/preAuth/WelcomeActionList';
 import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
@@ -97,6 +101,9 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
     const [accountMode, setAccountMode] = React.useState<'plain' | 'e2ee'>(() => permittedModes[0]!);
     const [problem, setProblem] = React.useState<EmailPasswordProblem | null>(null);
     const [busy, setBusy] = React.useState(false);
+    const [pendingActionId, setPendingActionId] = React.useState<string | null>(null);
+    /** A settled resend, so the identical "check your email" view says so. */
+    const [resent, setResent] = React.useState(false);
     const showProgress = useDelayedProgress(busy);
     const mountedRef = React.useRef(true);
     const targetScope = `${props.target.serverIdentityId}|${props.target.canonicalServerUrl}|${props.target.endpointUrl}`;
@@ -115,6 +122,8 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         // credentials typed for the prior Home. The next Home starts from its
         // own requested action rather than inheriting stale busy/error state.
         setBusy(false);
+        setPendingActionId(null);
+        setResent(false);
         setProblem(null);
         setDraft(createEmailPasswordDraft(props.initialEmail ?? ''));
         setView({ kind: props.action });
@@ -124,6 +133,18 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         // would refuse; it also must not silently reword the person's choice.
         if (!permittedModes.includes(accountMode)) setAccountMode(permittedModes[0]!);
     }, [accountMode, permittedModes]);
+
+    /**
+     * Whether this Home must see proven mailbox control before an Account can
+     * exist. Both the form and the submit handler read this one fact, so the
+     * step can never ask for a credential the journey then throws away.
+     */
+    const transferableInvitation = props.admission?.kind === 'team_invitation'
+        && props.invitationEmailVerificationRequired === true
+        && props.admission.emailVerificationToken === undefined
+        ? props.admission
+        : null;
+    const mailboxProofFirst = props.admission === undefined || transferableInvitation !== null;
 
     const captureCurrentTarget = React.useCallback(() => {
         const expectedScope = targetScopeRef.current;
@@ -158,6 +179,26 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         }
     }, [busy, captureCurrentTarget, focusProblem, props.homeLabel]);
 
+    /**
+     * Action admission belongs to this controller, not to whichever host mounted
+     * it. `HomeAuthenticationFlow` wraps the panel in a `WelcomeActionList`
+     * while the Welcome modal host renders it bare, and the module default
+     * admits everything — so the same Argon2id wait used to be acknowledged on
+     * one host and silent on the other. One owner, both hosts.
+     */
+    const actionAdmission = React.useMemo<WelcomeActionAdmission>(() => ({
+        pendingActionId,
+        run: async (actionId, action) => {
+            if (pendingActionId !== null) return;
+            setPendingActionId(actionId);
+            try {
+                await action();
+            } finally {
+                if (mountedRef.current) setPendingActionId(null);
+            }
+        },
+    }), [pendingActionId]);
+
     const publicRequest = React.useCallback(() => createServerFetchAtEndpoint({
         ...props.target,
         credentials: null,
@@ -186,27 +227,30 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
 
     const submitProvision = React.useCallback(() => run(async () => {
         const isCurrent = captureCurrentTarget();
-        const validated = validateEmailPasswordDraft({ purpose: 'provision', draft });
+        const validated = validateEmailPasswordDraft({
+            purpose: mailboxProofFirst ? 'verify_email' : 'provision',
+            draft,
+        });
         if (!validated.ok) {
             focusProblem(validated.problem);
             return;
         }
-        const transferableInvitation = props.admission?.kind === 'team_invitation'
-            && props.invitationEmailVerificationRequired === true
-            && props.admission.emailVerificationToken === undefined;
-        if (!props.admission || transferableInvitation) {
+        if (mailboxProofFirst) {
             // Creation needs proven mailbox control. Ask the Home to send the
-            // link and say so plainly instead of hiding the journey.
+            // link and say so plainly instead of hiding the journey. Nothing
+            // secret is collected on this step: the password would be discarded
+            // here and asked for again on the verification landing.
             await requestNativeEmailVerification(publicRequest(), {
                 email: validated.normalizedEmail,
-                ...(transferableInvitation ? { admission: props.admission } : {}),
+                ...(transferableInvitation ? { admission: transferableInvitation } : {}),
             });
             if (!isCurrent()) return;
+            setResent(view.kind === 'verification_sent');
             if (transferableInvitation) {
                 rememberNativeInvitationEmailVerificationContinuation({
                     homeServerIdentityId: props.target.serverIdentityId,
                     normalizedEmail: validated.normalizedEmail,
-                    admission: props.admission,
+                    admission: transferableInvitation,
                 });
             }
             setView({ kind: 'verification_sent', email: validated.email });
@@ -232,7 +276,18 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         }
         setDraft((current) => ({ ...current, password: '', confirmPassword: '' }));
         await props.onAuthenticated(created);
-    }), [accountMode, captureCurrentTarget, draft, focusProblem, props, publicRequest, run]);
+    }), [
+        accountMode,
+        captureCurrentTarget,
+        draft,
+        focusProblem,
+        mailboxProofFirst,
+        props,
+        publicRequest,
+        run,
+        transferableInvitation,
+        view.kind,
+    ]);
 
     const submitResetRequest = React.useCallback(() => run(async () => {
         const isCurrent = captureCurrentTarget();
@@ -243,9 +298,12 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         }
         await requestNativePasswordReset(publicRequest(), email);
         if (!isCurrent()) return;
+        setResent(view.kind === 'reset_requested');
         setView({ kind: 'reset_requested', email });
-    }), [captureCurrentTarget, draft.email, focusProblem, publicRequest, run]);
+    }), [captureCurrentTarget, draft.email, focusProblem, publicRequest, run, view.kind]);
 
+    const emailErrorId = 'email-password-email-error';
+    const emailInvalid = problem?.field === 'email' && problemMessage !== null;
     const emailField = (autoComplete: 'email' | 'username') => (
         <FieldItem label={t('settingsAccount.nativePassword.email')}>
             <TextInput
@@ -253,6 +311,10 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 testID="email-password-email"
                 accessibilityLabel={t('settingsAccount.nativePassword.email')}
                 aria-invalid={problem?.field === 'email'}
+                // The refusal is the field's own, exactly as PasswordField
+                // already associates its error, so assistive technology reads it
+                // with the input rather than as a detached line.
+                aria-describedby={emailInvalid ? emailErrorId : undefined}
                 style={[styles.input, {
                     color: theme.colors.text.primary,
                     backgroundColor: theme.colors.surface.base,
@@ -307,6 +369,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
     if (view.kind === 'verification_sent' || view.kind === 'reset_requested') {
         const sent = view;
         return (
+            <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
             <View style={styles.root}>
                 <Text style={styles.title}>{t('settingsAccount.nativePassword.checkYourEmail')}</Text>
                 <Text testID="email-password-sent-detail" style={styles.hint}>
@@ -314,7 +377,18 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                         ? t('settingsAccount.nativePassword.verificationSent', { email: sent.email })
                         : t('settingsAccount.nativePassword.resetInstructionsSent', { email: sent.email })}
                 </Text>
+                {resent ? (
+                    <Text
+                        testID="email-password-resent"
+                        accessibilityLiveRegion="polite"
+                        role="status"
+                        style={styles.hint}
+                    >
+                        {t('settingsAccount.nativePassword.resent')}
+                    </Text>
+                ) : null}
                 {formProblem}
+                {progressNotice}
                 <WelcomeActionCard
                     testID="email-password-resend"
                     title={t('settingsAccount.nativePassword.resend')}
@@ -329,6 +403,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 />
                 {backAction}
             </View>
+            </WelcomeActionAdmissionContext.Provider>
         );
     }
 
@@ -337,6 +412,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
         // reachable from Account Security, so say that instead of showing a
         // login form that would create the wrong impression.
         return (
+            <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
             <View style={styles.root}>
                 <Text style={styles.title}>{t('settingsAccount.nativePassword.connectTitle')}</Text>
                 <Text testID="email-password-connect-detail" style={styles.hint}>
@@ -350,11 +426,13 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 />
                 {backAction}
             </View>
+            </WelcomeActionAdmissionContext.Provider>
         );
     }
 
     if (view.kind === 'forgot') {
         return (
+            <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
             <View style={styles.root}>
                 <Text style={styles.title}>{t('settingsAccount.nativePassword.forgotTitle')}</Text>
                 <Text style={styles.hint}>{t('settingsAccount.nativePassword.forgotExplanation')}</Text>
@@ -384,12 +462,18 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                     onPress={() => setView({ kind: props.action })}
                 />
             </View>
+            </WelcomeActionAdmissionContext.Provider>
         );
     }
 
     const provisioning = view.kind === 'provision';
+    // On a Home that proves the mailbox first, the Account is created on the
+    // verification landing. Asking for a password here would collect a secret
+    // this step discards and then ask for it a second time.
+    const collectsCredentials = !provisioning || !mailboxProofFirst;
 
     return (
+        <WelcomeActionAdmissionContext.Provider value={actionAdmission}>
         <View style={styles.root}>
             <Text style={styles.title}>
                 {provisioning ? t('settingsAccount.nativePassword.createTitle') : t('settingsAccount.nativePassword.title')}
@@ -398,9 +482,10 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 <Text testID="email-password-home-label" style={styles.hint}>{props.homeLabel}</Text>
             ) : null}
             {emailField(provisioning ? 'email' : 'username')}
-            {problem?.field === 'email' && problemMessage ? (
+            {emailInvalid ? (
                 <Text
-                    testID="email-password-email-error"
+                    testID={emailErrorId}
+                    nativeID={emailErrorId}
                     accessibilityRole="alert"
                     accessibilityLiveRegion="polite"
                     style={[styles.formError, { color: theme.colors.status.error }]}
@@ -408,6 +493,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                     {problemMessage}
                 </Text>
             ) : null}
+            {collectsCredentials ? (
             <PasswordField
                 testID="email-password-password"
                 inputRef={passwordRef}
@@ -421,7 +507,12 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                 returnKeyType={provisioning ? 'next' : 'go'}
                 onSubmitEditing={provisioning ? () => confirmRef.current?.focus() : submitLogin}
             />
-            {provisioning ? (
+            ) : (
+                <Text testID="email-password-verify-first" style={styles.hint}>
+                    {t('settingsAccount.nativePassword.verifyReturnToCreate')}
+                </Text>
+            )}
+            {provisioning && collectsCredentials ? (
                 <PasswordField
                     testID="email-password-confirm"
                     inputRef={confirmRef}
@@ -435,14 +526,19 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                     onSubmitEditing={submitProvision}
                 />
             ) : null}
-            {provisioning && permittedModes.length > 1 ? (
+            {provisioning && collectsCredentials && permittedModes.length > 1 ? (
                 <FieldItem
                     label={t('settingsAccount.nativePassword.accountProtection')}
                     supportingText={accountMode === 'e2ee'
                         ? tLoose('settingsAccount.nativePassword.protectionE2eeDetail')
                         : t('settingsAccount.nativePassword.protectionPlainDetail')}
                 >
-                    <View style={styles.choices}>
+                    <View
+                        style={styles.choices}
+                        accessibilityRole="radiogroup"
+                        role="radiogroup"
+                        accessibilityLabel={t('settingsAccount.nativePassword.accountProtection')}
+                    >
                         {permittedModes.map((candidate) => (
                             <WelcomeActionCard
                                 key={candidate}
@@ -450,6 +546,14 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                                 title={candidate === 'e2ee'
                                     ? tLoose('settingsAccount.nativePassword.protectionE2ee')
                                     : t('settingsAccount.nativePassword.protectionPlain')}
+                                subtitle={candidate === 'e2ee'
+                                    ? tLoose('settingsAccount.nativePassword.protectionE2eeDetail')
+                                    : t('settingsAccount.nativePassword.protectionPlainDetail')}
+                                // A protection is a choice, not a command: it is
+                                // announced as the selected option instead of as
+                                // one more button that happens to look primary.
+                                selectionRole="radio"
+                                selected={accountMode === candidate}
                                 primary={accountMode === candidate}
                                 iconName={candidate === 'e2ee' ? 'lock' : 'cloud'}
                                 onPress={() => setAccountMode(candidate)}
@@ -457,7 +561,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
                         ))}
                     </View>
                 </FieldItem>
-            ) : provisioning ? (
+            ) : provisioning && collectsCredentials ? (
                 <Text testID="email-password-protection-fixed" style={styles.hint}>
                     {permittedModes[0] === 'e2ee'
                         ? tLoose('settingsAccount.nativePassword.protectionE2eeDetail')
@@ -468,7 +572,11 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             {progressNotice}
             <WelcomeActionCard
                 testID={provisioning ? 'email-password-create' : 'email-password-submit'}
-                title={provisioning ? t('settingsAccount.nativePassword.createAccount') : t('settingsAccount.nativePassword.signIn')}
+                title={provisioning
+                    ? collectsCredentials
+                        ? t('settingsAccount.nativePassword.createAccount')
+                        : t('settingsAccount.nativePassword.sendVerification')
+                    : t('settingsAccount.nativePassword.signIn')}
                 iconName="sign-in"
                 primary
                 onPress={provisioning ? submitProvision : submitLogin}
@@ -483,6 +591,7 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             ) : null}
             {backAction}
         </View>
+        </WelcomeActionAdmissionContext.Provider>
     );
 });
 

@@ -598,7 +598,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                     >
                         <Item
                             testID="team-group-history:from_membership"
-                            title={t('teams.history.fromMembership')}
+                            title={t('teams.history.fromMembershipNamed', { name: group.name })}
                             selected={groupHistoryAccess === 'from_membership'}
                             accessibilityRole="radio"
                             webRole="radio"
@@ -608,7 +608,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                         />
                         <Item
                             testID="team-group-history:all_existing"
-                            title={t('teams.history.allExisting')}
+                            title={t('teams.history.allExistingNamed', { name: group.name })}
                             selected={groupHistoryAccess === 'all_existing'}
                             accessibilityRole="radio"
                             webRole="radio"

@@ -12,7 +12,11 @@ import {
   createApiSessionSocketStub,
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { createSessionClientCommitQueueRuntime } from './client/transport/createSessionClientCommitQueueRuntime';
-import { ApiSessionClient as StaticApiSessionClient } from './sessionClient';
+// The boundary mocks above are hoisted and read their stubs lazily, so every
+// test can share one module instance. Re-importing sessionClient behind
+// vi.resetModules() per test instantiated its graph eleven times and exhausted
+// an 8 GiB heap before this file could report a result.
+import { ApiSessionClient } from './sessionClient';
 
 let sessionSocketStub: ApiSessionSocketStub | null = null;
 let userSocketStub: ApiSessionSocketStub | null = null;
@@ -83,15 +87,13 @@ vi.mock('@happier-dev/connection-supervisor', () => ({
 describe('ApiSessionClient transcript vNext transport', () => {
 
   it('does not expose transcript-draft ephemerals (legacy partial streaming removed)', () => {
-    expect('sendTranscriptDraftDelta' in StaticApiSessionClient.prototype).toBe(false);
+    expect('sendTranscriptDraftDelta' in ApiSessionClient.prototype).toBe(false);
   });
 
   it('emits live transcript stream segments on the session socket without waiting for durable ACKs', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 1, localId: 'segment-1', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeral(
@@ -141,11 +143,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('includes the live-stream tick on transcript-stream-segment snapshot emissions when provided', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 1, localId: 'segment-1', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeral(
@@ -167,11 +167,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('emits transcript-stream-segment-delta ticks carrying only the appended text', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 1, localId: 'segment-1', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     expect((client as any).sendAgentMessageEphemeralDelta).toBeTypeOf('function');
@@ -227,11 +225,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('does not emit transcript-stream-segment-delta while the socket is disconnected', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: false, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: false, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     (client as any).sendAgentMessageEphemeralDelta(
@@ -247,11 +243,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('advances the ephemeral stream connection epoch on every socket connect', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 1, localId: 'l1', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
     await Promise.resolve();
@@ -267,11 +261,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('does not expose retired direct transcript publication bypasses', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' })));
 
     expect('sendAgentMessageCommitted' in client).toBe(false);
@@ -284,14 +276,12 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
 
   it('persists assistant session media through the central bridge before committing byte-free transcript metadata', async () => {
-    vi.resetModules();
     const workingDirectory = await mkdtemp(join(tmpdir(), 'happier-session-media-bridge-'));
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 8, localId: 'media-row-1', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     try {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
-      const { ApiSessionClient } = await import('./sessionClient');
 
       const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
@@ -354,7 +344,6 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('commits successful session media when another item fails with sanitized failure metadata', async () => {
-    vi.resetModules();
     const workingDirectory = await realpath(await mkdtemp(join(tmpdir(), 'happier-session-media-partial-failure-')));
     const missingSourcePath = join(workingDirectory, 'provider-cache', 'generated.png');
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 8, localId: 'media-row-partial', didWrite: true } });
@@ -362,7 +351,6 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     try {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
-      const { ApiSessionClient } = await import('./sessionClient');
 
       const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
@@ -460,7 +448,6 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('commits all-failure media-only rows as durable sanitized session media failure metadata', async () => {
-    vi.resetModules();
     const workingDirectory = await realpath(await mkdtemp(join(tmpdir(), 'happier-session-media-all-failure-')));
     const missingSourcePath = join(workingDirectory, 'provider-cache', 'missing.png');
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 8, localId: 'media-row-failed', didWrite: true } });
@@ -468,7 +455,6 @@ describe('ApiSessionClient transcript vNext transport', () => {
 
     try {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
-      const { ApiSessionClient } = await import('./sessionClient');
 
       const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',
@@ -539,11 +525,9 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('commits missing working-directory media as durable failure metadata instead of throwing', async () => {
-    vi.resetModules();
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 8, localId: 'media-row-no-wd', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
 
     const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
       id: 's1',
@@ -588,14 +572,12 @@ describe('ApiSessionClient transcript vNext transport', () => {
   });
 
   it('clears stale assistant text snapshots when a committed assistant row contains media only', async () => {
-    vi.resetModules();
     const workingDirectory = await mkdtemp(join(tmpdir(), 'happier-session-media-snapshot-'));
     sessionSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true, id: 'm1', seq: 8, localId: 'media-row-snapshot', didWrite: true } });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     try {
       await mkdir(join(workingDirectory, '.git', 'info'), { recursive: true });
-      const { ApiSessionClient } = await import('./sessionClient');
 
       const client = trackClient(createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({
         id: 's1',

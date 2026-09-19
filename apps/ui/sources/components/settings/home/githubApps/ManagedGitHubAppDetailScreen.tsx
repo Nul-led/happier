@@ -2,6 +2,9 @@ import * as React from 'react';
 import { useRouter } from 'expo-router';
 
 import { FieldItem } from '@/components/ui/forms/FieldItem';
+import { CopiedPill } from '@/components/ui/copy/CopiedPill';
+import { useTemporaryCopyFeedback } from '@/components/ui/copy/useTemporaryCopyFeedback';
+import { setClipboardStringSafe } from '@/utils/ui/clipboard';
 import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { ActivitySpinner } from '@/components/ui/feedback/ActivitySpinner';
 import { Item } from '@/components/ui/lists/Item';
@@ -45,6 +48,14 @@ export const ManagedGitHubAppDetailContent = React.memo(function ManagedGitHubAp
     const [pending, setPending] = React.useState<string | null>(null);
     const [error, setError] = React.useState<string | null>(null);
     const [notice, setNotice] = React.useState<string | null>(null);
+    const copyFeedback = useTemporaryCopyFeedback();
+    const copyCallbackUrl = React.useCallback(async (url: string) => {
+        if (!await setClipboardStringSafe(url)) {
+            await Modal.alertAsync(t('common.error'), t('items.failedToCopyToClipboard'));
+            return;
+        }
+        copyFeedback.markCopied();
+    }, [copyFeedback]);
     const reportApprovalFailure = (code: string) => {
         setNotice(null);
         setError(code);
@@ -127,11 +138,26 @@ export const ManagedGitHubAppDetailContent = React.memo(function ManagedGitHubAp
     const busy = pending !== null || !props.surface.mutationsAvailable;
     const directoryRoute = props.surface.routes.directory;
     const teamConsumers = installations.flatMap((installation) => installation.teamConsumers);
+    // The Home derives this from its public server URL and never persists it; it
+    // is absent only when the Home has no public URL to derive one from, and the
+    // manifest flow sets its own `redirect_url`, so only manual setup needs it.
+    const callbackUrl = registration.callbackUrl ?? null;
     return (
         <>
             {state.stale ? <ItemGroup footer={t('homeGovernance.offlineNotice')}><Item title={t('common.retry')} onPress={refresh} showChevron={false} /></ItemGroup> : null}
             <ItemGroup title={managedGitHubAppDisplayName(registration)}>
                 <Item title={t('identityAdministration.githubHost')} detail={new URL(registration.githubHost).hostname} showChevron={false} />
+                {callbackUrl ? (
+                    <Item
+                        testID="github-app-callback-url"
+                        title={t('identityAdministration.callbackUrl')}
+                        subtitle={callbackUrl}
+                        rightElement={<CopiedPill visible={copyFeedback.isCopied()} testID="github-app-callback-url-copied" />}
+                        accessibilityHint={t('identityAdministration.callbackUrlHint')}
+                        onPress={() => void copyCallbackUrl(callbackUrl)}
+                        showChevron={false}
+                    />
+                ) : null}
                 <Item title={t('identityAdministration.githubAppSlug')} detail={registration.githubAppSlug ?? '—'} showChevron={false} />
                 <Item title={t('identityAdministration.githubOwnerLogin')} detail={registration.githubOwnerLogin ?? '—'} showChevron={false} />
                 <Item title={t('identityAdministration.githubPrivateKey')} detail={registration.secretHealth.privateKeyConfigured ? t('identityAdministration.secretSet') : t('identityAdministration.secretNotSet')} showChevron={false} />

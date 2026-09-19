@@ -31,6 +31,10 @@ import {
     buildSessionFollowPickerContextTitle,
     resolveSessionFollowPickerPresentation,
 } from './sessionFollowPickerPresentation';
+import {
+    refineSessionFollowSourceStateWithPreparationReason,
+    sessionFollowSourceRuntimeStateLabel,
+} from './sessionFollowSourcePresentation';
 import { prepareSessionFollowSourceKey, type SessionFollowSourceKeyPreparationResult } from './prepareSessionFollowSourceKey';
 import type { SessionFollowSourcePreparationChange } from './openSessionFollowDestinationPicker';
 
@@ -193,16 +197,19 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
         >{t('session.follow.sources.sourceKeyPreparing')}</Text> : null}
         {preparation && typeof preparation !== 'string' && preparation.kind === 'waiting' ? <Item
             testID="session-follow-source-key-waiting"
-            // An outdated destination runtime is the same version gap the source
-            // list reports, so it uses that one actionable sentence. Repeating the
-            // preparation against it cannot succeed, and the readiness effect
-            // already re-attempts once the Machine advertises new capabilities —
-            // so this state offers no Retry the person could act on.
-            title={preparation.reason === 'unsupported'
-                ? t('session.follow.sources.unsupported')
-                : t('session.follow.sources.sourceKeyWaiting')}
+            // The same refinement owner the sources editor uses, so the two surfaces
+            // cannot disagree about what a reason means. An outdated destination
+            // runtime is the version gap the source list reports, and a destination
+            // holding no usable key material is not a wait at all — repeating the
+            // preparation against either cannot succeed, and the readiness effect
+            // already re-attempts once the Machine advertises new capabilities, so
+            // neither state offers a Retry the person could act on.
+            title={sessionFollowSourceRuntimeStateLabel(
+                refineSessionFollowSourceStateWithPreparationReason('waiting_for_source_key', preparation.reason),
+            )}
             accessibilityLiveRegion="polite"
-            {...(preparation.reason === 'unsupported' ? { mode: 'info' as const } : {
+            {...(preparation.reason === 'unsupported' || preparation.reason === 'runner_key_unavailable'
+                ? { mode: 'info' as const } : {
                 detail: t('common.retry'),
                 disabled: saving,
                 onPress: () => { if (committedRelation) void prepareCommittedRelation(committedRelation); },

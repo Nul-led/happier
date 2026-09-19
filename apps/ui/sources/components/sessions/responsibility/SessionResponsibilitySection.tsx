@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { View } from 'react-native';
 
+import { announceAccessibilityMessage } from '@/components/ui/accessibility/announceAccessibilityMessage';
 import { Avatar } from '@/components/ui/avatar/Avatar';
 import { Icon } from '@/components/ui/icons/Icon';
 import { Item } from '@/components/ui/lists/Item';
@@ -46,6 +47,26 @@ export function SessionResponsibilitySection(props: Readonly<{
     const controller = props.controller;
     const editable = controller.availability === 'editable';
     const pickerHost = props.pickerHost;
+    const responsibleAccountId = controller.responsibleAccountId ?? null;
+    const responsibleName = controller.responsibleAccount
+        ? formatSessionResponsibilityName(controller.responsibleAccount)
+        : null;
+    // Responsibility changes under the reader — their own commit, or someone
+    // else's arriving on the canonical projection — and the row is a quiet
+    // subtitle a screen reader has already passed. Announce only a committed
+    // change observed while mounted, never the value that was there on arrival.
+    const announcedAssignee = React.useRef<string | null | undefined>(undefined);
+    React.useEffect(() => {
+        if (controller.availability === 'loading' || controller.availability === 'unsupported') return;
+        const previous = announcedAssignee.current;
+        announcedAssignee.current = responsibleAccountId;
+        if (previous === undefined || previous === responsibleAccountId) return;
+        announceAccessibilityMessage(responsibleAccountId === null
+            ? t('session.responsibilityA11yEmpty')
+            : t('session.responsibilityA11yReadOnly', {
+                name: responsibleName ?? t('session.responsibilityUnnamedPerson'),
+            }));
+    }, [controller.availability, responsibleAccountId, responsibleName]);
 
     if (controller.availability === 'loading') {
         return (
@@ -60,10 +81,8 @@ export function SessionResponsibilitySection(props: Readonly<{
     // `direct_only` availability is also unsupported: hide rather than claim.
     if (controller.availability === 'unsupported') return null;
 
-    const assigned = controller.responsibleAccountId ?? null;
-    const resolvedName = controller.responsibleAccount
-        ? formatSessionResponsibilityName(controller.responsibleAccount)
-        : null;
+    const assigned = responsibleAccountId;
+    const resolvedName = responsibleName;
     const displayName = assigned === null
         ? t('session.responsibilityNoOne')
         : resolvedName ?? t('session.responsibilityUnnamedPerson');

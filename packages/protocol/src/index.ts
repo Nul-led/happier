@@ -66,6 +66,13 @@ export {
 } from './push/activityRemoteAlert.js';
 
 export {
+  SESSION_CHANGED_WAKE_TYPE,
+  SessionChangedWakeV1Schema,
+  parseSessionChangedWakeV1,
+  type SessionChangedWakeV1,
+} from './push/sessionChangedWake.js';
+
+export {
   resolveActivitySequenceEventIdentityV1,
   resolveActivityTurnEventIdentityV1,
   resolveLegacyActivitySequenceEventIdentityV1,
@@ -2391,6 +2398,7 @@ export {
 } from './connect/buildConnectedServiceCredentialRecord.js';
 
 export { parseBooleanEnv, parseOptionalBooleanEnv } from './env/parseBooleanEnv.js';
+export * from './features/payload/capabilities/automationCapabilities.js';
 export {
   PluginDataCollectionsCapabilitiesSchema,
   type PluginDataCollectionsCapabilities,
@@ -3858,6 +3866,7 @@ export {
   SessionTurnTranscriptAnchorsV1Schema,
   PrimaryTurnStatusV1Schema,
   SessionRuntimeIssueSourceV1Schema,
+  SessionRuntimeTeamCredentialDenialDetailsV1Schema,
   SessionRuntimeTemporaryThrottleDetailsV1Schema,
   SessionRuntimeUsageLimitDetailsV1Schema,
   SessionRuntimeIssueV1Schema,
@@ -3956,6 +3965,7 @@ export {
   type SessionTurnsProjectionV1,
   type SessionTurnTranscriptAnchorsV1,
   type PrimaryTurnStatusV1,
+  type SessionRuntimeTeamCredentialDenialDetailsV1,
   type SessionRuntimeTemporaryThrottleDetailsV1,
   type SessionRuntimeUsageLimitDetailsV1,
   type SessionRuntimeIssueSourceV1,
@@ -8177,6 +8187,7 @@ export {
   type AutomationTriggerRevision,
 } from './automations/automationTriggerIdentity.js';
 export * from './automations/automationApiV3.js';
+export * from './automations/automationApiV2Adapter.js';
 
 export * from './sessionStop.js';
 export * from './clientCompatibility/index.js';

@@ -9,8 +9,17 @@ export { toWindowsExtendedLengthPathForFs } from './runtimeFsPath.js';
 
 const RUNTIME_REMOVAL_MAX_ATTEMPTS = 6;
 const RUNTIME_REMOVAL_RETRY_DELAY_MS = 25;
+// A first-party payload path can be held by the very executable we are
+// replacing, and Windows releases that handle only after the process exits, so
+// the install path waits out a real lock (~10 s).
 const WINDOWS_RUNTIME_REMOVAL_MAX_ATTEMPTS = 101;
 const WINDOWS_RUNTIME_REMOVAL_RETRY_DELAY_MS = 100;
+// The backup is a directory we created ourselves and the promotion has already
+// succeeded when it is swept, so nothing waits on it: a still-locked backup is
+// removed by the next install. Its budget is the short cross-platform one on
+// every platform — never the Windows executable-lock budget above.
+const BACKUP_CLEANUP_MAX_ATTEMPTS = RUNTIME_REMOVAL_MAX_ATTEMPTS;
+const BACKUP_CLEANUP_RETRY_DELAY_MS = RUNTIME_REMOVAL_RETRY_DELAY_MS;
 const PAYLOAD_COMPARISON_BUFFER_SIZE = 64 * 1024;
 
 export class FirstPartyVersionIdConflictError extends Error {
@@ -157,16 +166,11 @@ async function sleep(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function removeRuntimePayloadPath(
+async function removePathWithRetries(
     path: string,
-    platform: NodeJS.Platform = process.platform,
+    maxAttempts: number,
+    retryDelayMs: number,
 ): Promise<void> {
-    const maxAttempts = platform === 'win32'
-        ? WINDOWS_RUNTIME_REMOVAL_MAX_ATTEMPTS
-        : RUNTIME_REMOVAL_MAX_ATTEMPTS;
-    const retryDelayMs = platform === 'win32'
-        ? WINDOWS_RUNTIME_REMOVAL_RETRY_DELAY_MS
-        : RUNTIME_REMOVAL_RETRY_DELAY_MS;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
             await rm(toRuntimeFsPath(path), { recursive: true, force: true });
@@ -180,8 +184,27 @@ export async function removeRuntimePayloadPath(
     }
 }
 
+export async function removeRuntimePayloadPath(
+    path: string,
+    platform: NodeJS.Platform = process.platform,
+): Promise<void> {
+    await removePathWithRetries(
+        path,
+        platform === 'win32'
+            ? WINDOWS_RUNTIME_REMOVAL_MAX_ATTEMPTS
+            : RUNTIME_REMOVAL_MAX_ATTEMPTS,
+        platform === 'win32'
+            ? WINDOWS_RUNTIME_REMOVAL_RETRY_DELAY_MS
+            : RUNTIME_REMOVAL_RETRY_DELAY_MS,
+    );
+}
+
 async function cleanupBackupPathBestEffort(backupPath: string): Promise<void> {
-    await removeRuntimePayloadPath(backupPath).catch(() => undefined);
+    await removePathWithRetries(
+        backupPath,
+        BACKUP_CLEANUP_MAX_ATTEMPTS,
+        BACKUP_CLEANUP_RETRY_DELAY_MS,
+    ).catch(() => undefined);
 }
 
 async function pruneSkippedPayloadPathsRecursively(rootDir: string, currentDir: string = rootDir): Promise<void> {
