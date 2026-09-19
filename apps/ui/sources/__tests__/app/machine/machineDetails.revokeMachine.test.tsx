@@ -273,7 +273,7 @@ describe('MachineDetailScreen (revoke/forget machine)', () => {
 
         const headerRight = stackOptionsState.current?.headerRight;
         expect(headerRight).toBeTypeOf('function');
-        const renameButton = (headerRight as () => React.ReactElement)();
+        const renameButton = (headerRight as () => React.ReactElement<{ onPress: () => Promise<void> }>)();
 
         await act(async () => {
             await renameButton.props.onPress();

@@ -366,8 +366,8 @@ async function createUseCreateNewSessionHarness() {
     // than starting a real reachability-supervised HTTP read.
     vi.spyOn(sync, 'ensureSessionVisibleForMessageRoute').mockImplementation(async (sessionId) => (
         scopeStorage.getState().sessions[sessionId]
-            ? { kind: 'available' as const }
-            : { kind: 'unavailable' as const }
+            ? { kind: 'available' as const, sessionId }
+            : { kind: 'missing' as const, sessionId, cause: 'not_found' as const }
     ));
     const saveAutomationEditorDraftSpy = vi.spyOn(sync, 'saveAutomationEditorDraft');
     const refreshAutomationsSpy = vi.spyOn(sync, 'refreshAutomations');
@@ -1414,21 +1414,21 @@ describe('useCreateNewSession permission seeding', () => {
         expect(syncSendMessageSpy).not.toHaveBeenCalled();
     });
 
-    it('creates an automation instead of spawning immediately when automation mode is enabled without Composer attachments', async () => {
+    /**
+     * New Session does not write Automations. A draft saved before creation
+     * moved to the shared Automation editor can still hydrate with an enabled
+     * inline Automation; the screen hands that work to the shared editor, so
+     * this submit path never reaches the Automation writer.
+     */
+    it('never writes an Automation from New Session submit, even for a hydrated enabled draft', async () => {
         const {
             useCreateNewSession,
-            captured,
             automationCaptured,
             refreshAutomationsSpy,
-            machineBashSpy,
-            automationTemplateEncryption,
         } = await setupUseCreateNewSessionHarness();
 
         let handleCreateSession: null | ReturnType<typeof useCreateNewSession>['handleCreateSession'] = null;
-        const routerPush = vi.fn();
         const routerReplace = vi.fn();
-        const disableDraftPersistence = vi.fn();
-        const settlements: NewSessionAfterCreatedSettlement[] = [];
         const settings = { experiments: false } as unknown as Settings;
         const machineEnvPresence: UseMachineEnvPresenceResult = {
             isPreviewEnvSupported: false,
@@ -1437,198 +1437,17 @@ describe('useCreateNewSession permission seeding', () => {
             refreshedAt: null,
             refresh: () => {},
         };
-        const automationDraft = createScheduleAutomationDraft({
-            name: 'Nightly',
-            description: 'desc',
-        });
-        const connectedServices = {
-            v: 1 as const,
-            bindingsByServiceId: {
-                [GITHUB_CONNECTED_ACCOUNT_KEY]: {
-                    source: 'connected' as const,
-                    selection: 'profile' as const,
-                    profileId: 'work',
-                },
-            },
-        };
 
         function Test() {
             const hook = useCreateNewSession({
-        launchIntentSignature: 'test-launch-intent',
-                router: { push: routerPush, replace: routerReplace },
+                launchIntentSignature: 'test-launch-intent',
+                router: { push: vi.fn(), replace: routerReplace },
                 selectedMachineId: 'm1',
                 selectedPath: '/tmp',
                 selectedMachine: createMachineFixture({ id: 'm1' }),
                 setIsCreating: vi.fn(),
                 setIsResumeSupportChecking: vi.fn(),
-                checkoutCreationDraft: {
-                    kind: 'git_worktree',
-                    displayName: 'feature/auth',
-                    baseRef: 'main',
-                },
                 settings,
-                useProfiles: false,
-                selectedProfileId: null,
-                profileMap: new Map(),
-                recentMachinePaths: [],
-                agentType: 'codex',
-                permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                modelMode: 'default' as ModelMode,
-                acpSessionModeId: 'plan',
-                promptStore: createNewSessionPromptStore('Run the nightly maintenance checklist'),
-                transcriptStorage: 'direct',
-                resumeSessionId: '',
-                agentNewSessionOptions: { connectedServices },
-                mcpSelection: {
-                    v: 1,
-                    managedServersEnabled: false,
-                    forceIncludeServerIds: ['server-portable'],
-                    forceExcludeServerIds: ['server-disabled'],
-                },
-                machineEnvPresence,
-                secrets: [],
-                secretBindingsByProfileId: {},
-                selectedSecretIdByProfileIdByEnvVarName: {},
-                sessionOnlySecretValueByProfileIdByEnvVarName: {},
-                selectedMachineCapabilities: null,
-                targetServerId: undefined,
-                allowedTargetServerIds: ['server-a'],
-                disableDraftPersistence,
-                authoringDraft: buildAutomationAuthoringDraft({
-                    prompt: 'Run the nightly maintenance checklist',
-                    modelMode: 'default' as ModelMode,
-                    permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: automationDraft,
-                    connectedServices,
-                    mcpSelection: {
-                        v: 1,
-                        managedServersEnabled: false,
-                        forceIncludeServerIds: ['server-portable'],
-                        forceExcludeServerIds: ['server-disabled'],
-                    },
-                    transcriptStorage: 'direct',
-                    checkoutCreationDraft: {
-                        kind: 'git_worktree',
-                        displayName: 'feature/auth',
-                        baseRef: 'main',
-                    },
-                    acpSessionModeId: 'plan',
-                }),
-            });
-
-            handleCreateSession = hook.handleCreateSession;
-            return React.createElement('View');
-        }
-
-        await renderScreen(React.createElement(Test));
-
-        await act(async () => {
-            await invokeHandleCreateSession(handleCreateSession, {
-                hasComposerAttachments: false,
-                onAfterCreatedSettled: (settlement) => settlements.push(settlement),
-            });
-        });
-
-        expect(captured.value).toBeNull();
-        expect(machineBashSpy).not.toHaveBeenCalled();
-        // An Automation writer that persisted its definition accepted the
-        // submission. Reporting `rejected` here told the Composer document
-        // owner a save that WORKED had failed, so it never cleared the exact
-        // submitted snapshot.
-        expect(settlements).toEqual([{ status: 'accepted', sessionId: null }]);
-        expect(automationCaptured.value?.name).toBe('Nightly');
-        expect(automationCaptured.value?.pendingAutomationId).toBe(
-            'automation-11111111-1111-4111-8111-111111111111',
-        );
-        expect(automationCaptured.value?.triggers).toEqual([
-            expect.objectContaining({
-                clientId: '22222222-2222-4222-8222-222222222222',
-                persisted: null,
-                definition: expect.objectContaining({
-                    kind: 'schedule',
-                    schedule: expect.objectContaining({ kind: 'interval', everyMs: 900_000 }),
-                }),
-            }),
-        ]);
-        expect(automationCaptured.value?.assignments[0]?.machineId).toBe('m1');
-        expect(refreshAutomationsSpy).toHaveBeenCalledTimes(1);
-        expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
-        expect(routerReplace).toHaveBeenCalledWith('/automations');
-        const templateEnvelope = automationCaptured.value?.executionRecipe.template;
-        expect(templateEnvelope?.t).toBe('encrypted');
-        const templateCiphertext = templateEnvelope?.t === 'encrypted' ? templateEnvelope.c : '';
-        expect(templateCiphertext.length).toBeGreaterThan(0);
-        const templatePayload = await automationTemplateEncryption.decryptAutomationTemplateRaw(templateCiphertext);
-        expect(templatePayload).toEqual({
-            v: 1,
-            prompt: 'Run the nightly maintenance checklist',
-        });
-        const executionTarget = automationCaptured.value?.executionRecipe.target;
-        expect(executionTarget?.kind).toBe('newSession');
-        const spawn = executionTarget?.kind === 'newSession' ? executionTarget.spawn : null;
-        expect(spawn?.mcpSelection).toEqual({
-            v: 1,
-            managedServersEnabled: false,
-            forceIncludeServerIds: ['server-portable'],
-            forceExcludeServerIds: ['server-disabled'],
-        });
-        expect(spawn?.connectedServices).toEqual({
-            v: 2,
-            bindingsByServiceId: {
-                [GITHUB_CONNECTED_ACCOUNT_KEY]: {
-                    source: 'connected',
-                    selection: 'profile',
-                    profileId: 'work',
-                },
-            },
-        });
-        expect(spawn?.transcriptStorage).toBe('direct');
-        expect(spawn?.agentModeId).toBe('plan');
-        expect(spawn?.checkoutCreationDraft).toEqual({
-            kind: 'git_worktree',
-            displayName: 'feature/auth',
-            baseRef: 'main',
-        });
-    });
-
-    it('rejects Composer attachments before scheduled automation creation and retains the New Session draft', async () => {
-        const {
-            useCreateNewSession,
-            captured,
-            automationCaptured,
-            clearNewSessionDraftSpy,
-            refreshAutomationsSpy,
-            modalAlertSpy,
-            automationTemplateEncryption,
-        } = await setupUseCreateNewSessionHarness();
-
-        let handleCreateSession: null | ReturnType<typeof useCreateNewSession>['handleCreateSession'] = null;
-        const routerReplace = vi.fn();
-        const disableDraftPersistence = vi.fn();
-        const setIsCreating = vi.fn();
-        const settlements: NewSessionAfterCreatedSettlement[] = [];
-        const automationDraft = createScheduleAutomationDraft({
-            name: 'Nightly',
-            description: 'desc',
-        });
-        const machineEnvPresence: UseMachineEnvPresenceResult = {
-            isPreviewEnvSupported: false,
-            isLoading: false,
-            meta: {},
-            refreshedAt: null,
-            refresh: () => {},
-        };
-
-        function Test() {
-            const hook = useCreateNewSession({
-                launchIntentSignature: 'scheduled-automation-composer-attachment',
-                router: { push: vi.fn(), replace: routerReplace },
-                selectedMachineId: 'm1',
-                selectedPath: '/tmp',
-                selectedMachine: createMachineFixture({ id: 'm1' }),
-                setIsCreating,
-                setIsResumeSupportChecking: vi.fn(),
-                settings: { experiments: false } as unknown as Settings,
                 useProfiles: false,
                 selectedProfileId: null,
                 profileMap: new Map(),
@@ -1637,448 +1456,36 @@ describe('useCreateNewSession permission seeding', () => {
                 permissionMode: 'acceptEdits' as unknown as PermissionMode,
                 modelMode: 'default' as ModelMode,
                 promptStore: createNewSessionPromptStore('Run the nightly maintenance checklist'),
-                transcriptStorage: 'direct',
                 resumeSessionId: '',
-                agentNewSessionOptions: null,
                 machineEnvPresence,
                 secrets: [],
                 secretBindingsByProfileId: {},
                 selectedSecretIdByProfileIdByEnvVarName: {},
                 sessionOnlySecretValueByProfileIdByEnvVarName: {},
                 selectedMachineCapabilities: null,
-                targetServerId: 'server-a',
+                targetServerId: undefined,
                 allowedTargetServerIds: ['server-a'],
-                disableDraftPersistence,
                 authoringDraft: buildAutomationAuthoringDraft({
                     prompt: 'Run the nightly maintenance checklist',
                     modelMode: 'default' as ModelMode,
                     permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: automationDraft,
-                    transcriptStorage: 'direct',
+                    automation: createScheduleAutomationDraft({ name: 'Nightly', description: 'desc' }),
                 }),
             });
+
             handleCreateSession = hook.handleCreateSession;
             return React.createElement('View');
         }
 
         await renderScreen(React.createElement(Test));
+
         await act(async () => {
-            await invokeHandleCreateSession(handleCreateSession, {
-                hasComposerAttachments: true,
-                onAfterCreatedSettled: (settlement) => settlements.push(settlement),
-            });
+            await invokeHandleCreateSession(handleCreateSession);
         });
 
-        expect(captured.value).toBeNull();
         expect(automationCaptured.value).toBeNull();
-        expect(disableDraftPersistence).not.toHaveBeenCalled();
-        expect(clearNewSessionDraftSpy).not.toHaveBeenCalled();
         expect(refreshAutomationsSpy).not.toHaveBeenCalled();
-        expect(routerReplace).not.toHaveBeenCalled();
-        expect(modalAlertSpy).toHaveBeenCalledWith('common.error', 'newSession.failedToStart');
-        expect(settlements).toEqual([{ status: 'rejected' }]);
-        expect(setIsCreating).toHaveBeenLastCalledWith(false);
-    });
-
-    it('rejects a structured Composer reference the rendered token cannot carry and retains the New Session draft', async () => {
-        const {
-            useCreateNewSession,
-            captured,
-            automationCaptured,
-            clearNewSessionDraftSpy,
-            refreshAutomationsSpy,
-            modalAlertSpy,
-        } = await setupUseCreateNewSessionHarness();
-
-        let handleCreateSession: null | ReturnType<typeof useCreateNewSession>['handleCreateSession'] = null;
-        const routerReplace = vi.fn();
-        const disableDraftPersistence = vi.fn();
-        const setIsCreating = vi.fn();
-        const settlements: NewSessionAfterCreatedSettlement[] = [];
-        const automationDraft = createScheduleAutomationDraft({
-            name: 'Nightly',
-            description: 'desc',
-        });
-        const machineEnvPresence: UseMachineEnvPresenceResult = {
-            isPreviewEnvSupported: false,
-            isLoading: false,
-            meta: {},
-            refreshedAt: null,
-            refresh: () => {},
-        };
-
-        function Test() {
-            const hook = useCreateNewSession({
-                launchIntentSignature: 'scheduled-automation-composer-reference',
-                router: { push: vi.fn(), replace: routerReplace },
-                selectedMachineId: 'm1',
-                selectedPath: '/tmp',
-                selectedMachine: createMachineFixture({ id: 'm1' }),
-                setIsCreating,
-                setIsResumeSupportChecking: vi.fn(),
-                settings: { experiments: false } as unknown as Settings,
-                useProfiles: false,
-                selectedProfileId: null,
-                profileMap: new Map(),
-                recentMachinePaths: [],
-                agentType: 'codex',
-                permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                modelMode: 'default' as ModelMode,
-                promptStore: createNewSessionPromptStore('Review @docs/README.md'),
-                transcriptStorage: 'direct',
-                resumeSessionId: '',
-                agentNewSessionOptions: null,
-                machineEnvPresence,
-                secrets: [],
-                secretBindingsByProfileId: {},
-                selectedSecretIdByProfileIdByEnvVarName: {},
-                sessionOnlySecretValueByProfileIdByEnvVarName: {},
-                selectedMachineCapabilities: null,
-                targetServerId: 'server-a',
-                allowedTargetServerIds: ['server-a'],
-                disableDraftPersistence,
-                authoringDraft: buildAutomationAuthoringDraft({
-                    prompt: 'Review @docs/README.md',
-                    modelMode: 'default' as ModelMode,
-                    permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: automationDraft,
-                    transcriptStorage: 'direct',
-                }),
-            });
-            handleCreateSession = hook.handleCreateSession;
-            return React.createElement('View');
-        }
-
-        await renderScreen(React.createElement(Test));
-        await act(async () => {
-            await invokeHandleCreateSession(handleCreateSession, {
-                composerReferences: [{
-                    kind: MENTION_KIND_V1.session,
-                    ref: buildMentionRefForKindV1(MENTION_KIND_V1.session, 'sess_01HZX'),
-                    token: '@session:nightly-audit-1HZX',
-                    label: 'Nightly audit',
-                }],
-                onAfterCreatedSettled: (settlement) => settlements.push(settlement),
-            });
-        });
-
-        // The stored Automation template retains only the rendered prompt
-        // program. `@session:nightly-audit-1HZX` names no session on its own,
-        // so persisting it would store a look-alike token with no identity.
-        expect(captured.value).toBeNull();
-        expect(automationCaptured.value).toBeNull();
-        expect(disableDraftPersistence).not.toHaveBeenCalled();
-        expect(clearNewSessionDraftSpy).not.toHaveBeenCalled();
-        expect(refreshAutomationsSpy).not.toHaveBeenCalled();
-        expect(routerReplace).not.toHaveBeenCalled();
-        // The refusal names the reference the user has to remove, instead of
-        // the generic launch failure that told them nothing.
-        expect(modalAlertSpy).toHaveBeenCalledWith(
-            'common.error',
-            'automations.unsupportedReference(reference=@session:nightly-audit-1HZX)',
-        );
-        expect(settlements).toEqual([{ status: 'rejected' }]);
-        expect(setIsCreating).toHaveBeenLastCalledWith(false);
-    });
-
-    it('creates a scheduled automation for a file mention whose rendered token reaches the template', async () => {
-        const {
-            useCreateNewSession,
-            captured,
-            automationCaptured,
-            refreshAutomationsSpy,
-            modalAlertSpy,
-            automationTemplateEncryption,
-        } = await setupUseCreateNewSessionHarness();
-
-        let handleCreateSession: null | ReturnType<typeof useCreateNewSession>['handleCreateSession'] = null;
-        const routerReplace = vi.fn();
-        const disableDraftPersistence = vi.fn();
-        const setIsCreating = vi.fn();
-        const settlements: NewSessionAfterCreatedSettlement[] = [];
-        const automationDraft = createScheduleAutomationDraft({
-            name: 'Nightly',
-            description: 'desc',
-        });
-        const machineEnvPresence: UseMachineEnvPresenceResult = {
-            isPreviewEnvSupported: false,
-            isLoading: false,
-            meta: {},
-            refreshedAt: null,
-            refresh: () => {},
-        };
-
-        function Test() {
-            const hook = useCreateNewSession({
-                launchIntentSignature: 'scheduled-automation-file-reference',
-                router: { push: vi.fn(), replace: routerReplace },
-                selectedMachineId: 'm1',
-                selectedPath: '/tmp',
-                selectedMachine: createMachineFixture({ id: 'm1' }),
-                setIsCreating,
-                setIsResumeSupportChecking: vi.fn(),
-                settings: { experiments: false } as unknown as Settings,
-                useProfiles: false,
-                selectedProfileId: null,
-                profileMap: new Map(),
-                recentMachinePaths: [],
-                agentType: 'codex',
-                permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                modelMode: 'default' as ModelMode,
-                promptStore: createNewSessionPromptStore('Review @docs/README.md'),
-                transcriptStorage: 'direct',
-                resumeSessionId: '',
-                agentNewSessionOptions: null,
-                machineEnvPresence,
-                secrets: [],
-                secretBindingsByProfileId: {},
-                selectedSecretIdByProfileIdByEnvVarName: {},
-                sessionOnlySecretValueByProfileIdByEnvVarName: {},
-                selectedMachineCapabilities: null,
-                targetServerId: 'server-a',
-                allowedTargetServerIds: ['server-a'],
-                disableDraftPersistence,
-                authoringDraft: buildAutomationAuthoringDraft({
-                    prompt: 'Review @docs/README.md',
-                    modelMode: 'default' as ModelMode,
-                    permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: automationDraft,
-                    transcriptStorage: 'direct',
-                }),
-            });
-            handleCreateSession = hook.handleCreateSession;
-            return React.createElement('View');
-        }
-
-        await renderScreen(React.createElement(Test));
-        await act(async () => {
-            await invokeHandleCreateSession(handleCreateSession, {
-                composerReferences: [{
-                    kind: MENTION_KIND_V1.file,
-                    ref: buildMentionRefForKindV1(MENTION_KIND_V1.file, 'docs/README.md'),
-                    token: '@docs/README.md',
-                    label: 'README.md',
-                }],
-                onAfterCreatedSettled: (settlement) => settlements.push(settlement),
-            });
-        });
-
-        // "Review @docs/README.md every morning" is a flow that worked. The
-        // rendered token carries the whole path, so the later run reaches the
-        // same file the picker did and there is nothing to fail closed over.
-        expect(captured.value).toBeNull();
-        expect(modalAlertSpy).not.toHaveBeenCalled();
-        expect(settlements).toEqual([{ status: 'accepted', sessionId: null }]);
-        expect(automationCaptured.value?.name).toBe('Nightly');
-        expect(refreshAutomationsSpy).toHaveBeenCalledTimes(1);
-        expect(disableDraftPersistence).toHaveBeenCalledTimes(1);
-        expect(routerReplace).toHaveBeenCalledWith('/automations');
-        const templateEnvelope = automationCaptured.value?.executionRecipe.template;
-        const templateCiphertext = templateEnvelope?.t === 'encrypted' ? templateEnvelope.c : '';
-        const templatePayload = await automationTemplateEncryption.decryptAutomationTemplateRaw(templateCiphertext) as { prompt: string };
-        expect(templatePayload.prompt).toBe('Review @docs/README.md');
-    });
-
-    it('uses the latest automation draft values after rerendering before save', async () => {
-        const {
-            useCreateNewSession,
-            saveAutomationEditorDraftSpy,
-        } = await setupUseCreateNewSessionHarness();
-
-        let handleCreateSession: null | (() => Promise<void>) = null;
-        const routerPush = vi.fn();
-        const routerReplace = vi.fn();
-        const settings = { experiments: false } as unknown as Settings;
-        const machineEnvPresence: UseMachineEnvPresenceResult = {
-            isPreviewEnvSupported: false,
-            isLoading: false,
-            meta: {},
-            refreshedAt: null,
-            refresh: () => {},
-        };
-        const setIsCreating = vi.fn();
-        const setIsResumeSupportChecking = vi.fn();
-        const profileMap = new Map();
-        const recentMachinePaths: never[] = [];
-        const secretBindingsByProfileId = {};
-        const selectedSecretIdByProfileIdByEnvVarName = {};
-        const sessionOnlySecretValueByProfileIdByEnvVarName = {};
-        const allowedTargetServerIds = ['server-a'];
-        const router = { push: routerPush, replace: routerReplace };
-        const selectedMachine = createMachineFixture({ id: 'm1' });
-
-        function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
-            const hook = useCreateNewSession({
-        launchIntentSignature: 'test-launch-intent',
-                router,
-                selectedMachineId: 'm1',
-                selectedPath: '/tmp',
-                selectedMachine,
-                setIsCreating,
-                setIsResumeSupportChecking,
-                settings,
-                useProfiles: false,
-                selectedProfileId: null,
-                profileMap,
-                recentMachinePaths,
-                agentType: 'codex',
-                permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                modelMode: 'gpt-5' as ModelMode,
-                promptStore: createNewSessionPromptStore('Update the scheduled work'),
-                transcriptStorage: 'direct',
-                resumeSessionId: '',
-                agentNewSessionOptions: null,
-                mcpSelection: null,
-                machineEnvPresence,
-                secrets: [],
-                secretBindingsByProfileId,
-                selectedSecretIdByProfileIdByEnvVarName,
-                sessionOnlySecretValueByProfileIdByEnvVarName,
-                selectedMachineCapabilities: null,
-                targetServerId: undefined,
-                allowedTargetServerIds,
-                authoringDraft: buildAutomationAuthoringDraft({
-                    prompt: 'Update the scheduled work',
-                    modelMode: 'gpt-5' as ModelMode,
-                    permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: props.automationDraft,
-                    transcriptStorage: 'direct',
-                }),
-            });
-
-            handleCreateSession = hook.handleCreateSession as () => Promise<void>;
-            return React.createElement('View');
-        }
-
-        const initialDraft = createScheduleAutomationDraft({
-            name: 'Nightly edit',
-            description: 'desc',
-            everyMinutes: 30,
-        });
-        const updatedDraft: NewSessionAutomationDraft = {
-            ...initialDraft,
-            name: 'Nightly edit updated',
-        };
-
-        let tree: renderer.ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(Test, { automationDraft: initialDraft }))).tree;
-        act(() => {
-            tree.update(React.createElement(Test, { automationDraft: updatedDraft }));
-        });
-
-        await act(async () => {
-            await handleCreateSession?.();
-        });
-
-        expect(saveAutomationEditorDraftSpy).toHaveBeenCalledWith(expect.objectContaining({
-            name: 'Nightly edit updated',
-        }), expect.objectContaining({ isCurrent: expect.any(Function) }));
-    });
-
-    it('uses the latest automation draft values even when an older submit handler reference is invoked', async () => {
-        const {
-            useCreateNewSession,
-            saveAutomationEditorDraftSpy,
-        } = await setupUseCreateNewSessionHarness();
-
-        let latestHandleCreateSession: null | (() => Promise<void>) = null;
-        let initialHandleCreateSession: null | (() => Promise<void>) = null;
-        const routerPush = vi.fn();
-        const routerReplace = vi.fn();
-        const settings = { experiments: false } as unknown as Settings;
-        const machineEnvPresence: UseMachineEnvPresenceResult = {
-            isPreviewEnvSupported: false,
-            isLoading: false,
-            meta: {},
-            refreshedAt: null,
-            refresh: () => {},
-        };
-        const setIsCreating = vi.fn();
-        const setIsResumeSupportChecking = vi.fn();
-        const profileMap = new Map();
-        const recentMachinePaths: never[] = [];
-        const secretBindingsByProfileId = {};
-        const selectedSecretIdByProfileIdByEnvVarName = {};
-        const sessionOnlySecretValueByProfileIdByEnvVarName = {};
-        const allowedTargetServerIds = ['server-a'];
-        const router = { push: routerPush, replace: routerReplace };
-        const selectedMachine = createMachineFixture({ id: 'm1' });
-
-        function Test(props: Readonly<{ automationDraft: NewSessionAutomationDraft }>) {
-            const hook = useCreateNewSession({
-        launchIntentSignature: 'test-launch-intent',
-                router,
-                selectedMachineId: 'm1',
-                selectedPath: '/tmp',
-                selectedMachine,
-                setIsCreating,
-                setIsResumeSupportChecking,
-                settings,
-                useProfiles: false,
-                selectedProfileId: null,
-                profileMap,
-                recentMachinePaths,
-                agentType: 'codex',
-                permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                modelMode: 'gpt-5' as ModelMode,
-                promptStore: createNewSessionPromptStore('Update the scheduled work'),
-                transcriptStorage: 'direct',
-                resumeSessionId: '',
-                agentNewSessionOptions: null,
-                mcpSelection: null,
-                machineEnvPresence,
-                secrets: [],
-                secretBindingsByProfileId,
-                selectedSecretIdByProfileIdByEnvVarName,
-                sessionOnlySecretValueByProfileIdByEnvVarName,
-                selectedMachineCapabilities: null,
-                targetServerId: undefined,
-                allowedTargetServerIds,
-                authoringDraft: buildAutomationAuthoringDraft({
-                    prompt: 'Update the scheduled work',
-                    modelMode: 'gpt-5' as ModelMode,
-                    permissionMode: 'acceptEdits' as unknown as PermissionMode,
-                    automation: props.automationDraft,
-                    transcriptStorage: 'direct',
-                }),
-            });
-
-            if (!initialHandleCreateSession) {
-                initialHandleCreateSession = hook.handleCreateSession as () => Promise<void>;
-            }
-            latestHandleCreateSession = hook.handleCreateSession as () => Promise<void>;
-            return React.createElement('View');
-        }
-
-        const initialDraft = createScheduleAutomationDraft({
-            name: 'Nightly edit',
-            description: 'desc',
-            everyMinutes: 30,
-        });
-        const updatedDraft: NewSessionAutomationDraft = {
-            ...initialDraft,
-            name: 'Nightly edit updated again',
-        };
-
-        let tree: renderer.ReactTestRenderer;
-        tree = (await renderScreen(React.createElement(Test, { automationDraft: initialDraft }))).tree;
-        if (!initialHandleCreateSession) {
-            throw new Error('expected initial handleCreateSession');
-        }
-        const staleHandleCreateSession: () => Promise<void> = initialHandleCreateSession;
-        act(() => {
-            tree.update(React.createElement(Test, { automationDraft: updatedDraft }));
-        });
-
-        expect(latestHandleCreateSession).toBeTruthy();
-
-        await act(async () => {
-            await staleHandleCreateSession();
-        });
-
-        expect(saveAutomationEditorDraftSpy).toHaveBeenCalledWith(expect.objectContaining({
-            name: 'Nightly edit updated again',
-        }), expect.objectContaining({ isCurrent: expect.any(Function) }));
+        expect(routerReplace).not.toHaveBeenCalledWith('/automations');
     });
 
     it('keeps vendor resume and the first message in the strict Action request', async () => {
@@ -2283,7 +1690,7 @@ describe('useCreateNewSession permission seeding', () => {
         const machineEnvPresence: UseMachineEnvPresenceResult = {
             isPreviewEnvSupported: true,
             isLoading: false,
-            meta: { ANTHROPIC_API_KEY: { isSet: false } },
+            meta: { ANTHROPIC_API_KEY: { isSet: false, display: 'unset' } },
             refreshedAt: 1,
             refresh: () => {},
         };

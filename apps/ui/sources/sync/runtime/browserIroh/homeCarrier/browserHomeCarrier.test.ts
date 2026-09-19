@@ -5,7 +5,9 @@ import { BrowserIrohClientError } from '../endpointClient';
 import {
     resolveBrowserIrohHomeCarrierEligibility,
     type BrowserIrohHomeCarrierRequest,
+    type BrowserIrohHomeCarrierRequestCommon,
 } from './browserHomeCarrier';
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createBrowserIrohHomeCarrierOwner } from './browserHomeCarrierRuntime';
 import { readIrohHomeTransportDiagnostics } from '@/sync/runtime/irohHomeTransportDiagnostics';
 
@@ -19,8 +21,13 @@ const OTHER_ENDPOINT_ID = 'b'.repeat(64);
 const RELAY_URLS = ['https://relay.happier.test/'] as const;
 const CANONICAL_URL = 'https://home.example.test';
 
+/**
+ * Every case here is an ordinary authenticated Home request, so the overrides are
+ * typed against that arm: `Partial` of the whole union admits an enrollment shape
+ * the spread below can never produce.
+ */
 function request(
-    overrides: Partial<BrowserIrohHomeCarrierRequest> = {},
+    overrides: Partial<BrowserIrohHomeCarrierRequestCommon & Readonly<{ credentials: AuthCredentials }>> = {},
 ): BrowserIrohHomeCarrierRequest {
     return {
         homeServerIdentityId: 'home-identity',

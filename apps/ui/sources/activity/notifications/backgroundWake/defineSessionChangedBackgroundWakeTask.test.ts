@@ -8,7 +8,10 @@ import {
     syncSessionChangedBackgroundWakeTaskRegistration,
 } from './defineSessionChangedBackgroundWakeTask';
 
-const BackgroundNotificationTaskResult = { Failed: 2, NewData: 1, NoData: 0 } as const;
+// Mirrors `expo-notifications`' real `BackgroundNotificationTaskResult` enum
+// (NewData = 0, NoData = 1, Failed = 2) so the stub cannot pass on values the
+// platform never returns.
+const BackgroundNotificationTaskResult = { NewData: 0, NoData: 1, Failed: 2 } as const;
 
 function createTaskManager(defined = new Set<string>()) {
     const tasks = new Map<string, (payload: unknown) => Promise<unknown>>();

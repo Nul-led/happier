@@ -557,7 +557,7 @@ describe('serverProfiles', () => {
             groups: [{ id: 'homes', name: 'Homes', serverIds: ['srv_home_a_marker_1'], presentation: 'grouped' }],
             activeTargetKind: 'server',
             activeTargetId: 'srv_home_a_marker_1',
-        };
+        } as const;
         const storage = seedServerState(scope, {
             ...homeAState(),
             homeViewState: validHomeView,

@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
-import { accountSettingsParse, PUSH_NOTIFICATION_ACTION_IDS } from '@happier-dev/protocol';
+import { PUSH_NOTIFICATION_ACTION_IDS } from '@happier-dev/protocol';
+
+import { settingsParse } from '@/sync/domains/settings/settings';
 
 // The overlay is an Account delivery channel, so every candidate is admitted by its
 // own Home's persisted Account policy. These Homes stay bound to a stable Account
@@ -22,7 +24,7 @@ const desktopOverlayAudienceScopes = vi.hoisted(() => ({
 async function persistDesktopOverlayHomeAccountSettings(): Promise<void> {
     const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
     for (const serverId of DESKTOP_OVERLAY_TEST_HOME_SERVER_IDS) {
-        saveAccountSettings({ serverId, accountId: `account-${serverId}` }, accountSettingsParse({}), 1);
+        saveAccountSettings({ serverId, accountId: `account-${serverId}` }, settingsParse({}), 1);
     }
 }
 

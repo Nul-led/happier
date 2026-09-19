@@ -7,11 +7,15 @@ const harness = vi.hoisted(() => ({
     withRuntime: vi.fn(),
 }));
 
+// The real hook returns referentially stable resolutions; the observation
+// lifetime is keyed on that identity, so the stub must be stable too.
+const boundResolution = vi.hoisted(() => Object.freeze({
+    kind: 'bound' as const,
+    scope: Object.freeze({ serverId: 'home-1', accountId: 'account-1' }),
+}));
+
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', () => ({
-    useServerCredentialAccountScopeResolution: () => ({
-        kind: 'bound',
-        scope: { serverId: 'home-1', accountId: 'account-1' },
-    }),
+    useServerCredentialAccountScopeResolution: () => boundResolution,
 }));
 
 vi.mock('@/sync/runtime/getSyncSingleton', () => ({
@@ -32,10 +36,10 @@ describe('useSessionBoardSnapshot authority renewal', () => {
         const runtimeSession = {
             id: 'session-1',
             serverId: 'home-1',
-            effectiveAccess: {
-                v: 1,
-                level: 'owner',
-                sources: [{ kind: 'owner' }],
+            // The store row carries the published `access` projection, never a raw `effectiveAccess` payload.
+            access: {
+                role: 'owner' as const,
+                level: 'owner' as const,
                 capabilities: { readTranscript: true, editSessionRecords: true },
             },
         };

@@ -318,7 +318,9 @@ describe('resolveLiveActivityReconciliationState', () => {
             sessions: [
                 createSessionFixture({
                     id: 'unbound-session',
-                    serverId: null,
+                    // An unbound Session carries no Home at all; the snapshot builder
+                    // normalizes that to the `serverId: null` asserted below.
+                    serverId: undefined,
                     updatedAt: 20,
                     active: true,
                     presence: 'online',

@@ -64,7 +64,10 @@ const appliedServerSnapshotOverride = vi.hoisted(() => ({
 }));
 const appliedRuntimeAvailableOverride = vi.hoisted(() => ({ current: true }));
 
-vi.mock('@/sync/ops/machineExternalSessions', () => ({
+// Only the three machine-RPC transports are boundaries; the module's resync
+// classifier is internal logic the suite must exercise for real.
+vi.mock('@/sync/ops/machineExternalSessions', async (importOriginal) => ({
+    ...await importOriginal<typeof import('@/sync/ops/machineExternalSessions')>(),
     machineExternalSessionTranscriptPage: machineExternalSessionTranscriptPageMock,
     machineExternalSessionTranscriptReadAfter: machineExternalSessionTranscriptReadAfterMock,
     machineExternalSessionTranscriptRefreshReadAfter: machineExternalSessionTranscriptRefreshReadAfterMock,
@@ -79,6 +82,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onReconnected: vi.fn(),
         disconnect: vi.fn(),
         initialize: vi.fn(),
+        invalidateRequests: vi.fn(),
     },
 }));
 vi.mock('@/utils/system/runtimeFetch', () => ({
@@ -407,7 +411,7 @@ function buildTokenWithSub(sub: string): string {
 }
 
 describe('sync.fetchMessages server-scoped known-session checks', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         vi.stubGlobal('indexedDB', new IDBFactory());
         resetServerFeaturesClientForTests();
         storage.setState(initialStorageState, true);
@@ -430,6 +434,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(undefined);
         resetSessionSurfaceVisibilityForTests();
         resetTranscriptStreamSegmentAssemblyForTests();
+        // `sync` is a module singleton the suite reaches into; without this the
+        // applied transport Home a case sets leaks into every later case and
+        // silently changes which Home the scope owners address.
+        Reflect.set((await import('./sync')).sync, 'appliedServerTarget', null);
     });
 
     afterEach(() => {
@@ -804,6 +812,14 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         }));
 
         const { sync } = await import('./sync');
+        // The reset clears the APPLIED transport Home, not whichever Home the
+        // device selection names, so the applied target has to be the one the
+        // assertions below expect to be cleared.
+        Reflect.set(sync, 'appliedServerTarget', {
+            serverId: activeServer.id,
+            serverUrl: activeServer.serverUrl,
+            generation: getActiveServerSnapshot().generation,
+        });
         (sync as any).externalSessionOlderCursorBySessionId.set(activeSession.id, 'stale-older');
         (sync as any).externalSessionHasMoreOlderBySessionId.set(activeSession.id, true);
         (sync as any).externalSessionTailCursorBySessionId.set(activeSession.id, 'stale-tail');
@@ -857,6 +873,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         }));
 
         const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', {
+            serverId: activeServer.id,
+            serverUrl: activeServer.serverUrl,
+            generation: getActiveServerSnapshot().generation,
+        });
 
         (sync as any).resetServerScopedRuntimeState();
 
@@ -1323,6 +1344,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v1/sessions/${sessionId}/messages?scope=main`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         const messages = storage.getState().sessionMessages[sessionId];
         expect(messages?.messageIdsOldestFirst).toHaveLength(1);
@@ -3023,18 +3045,22 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             const server = await upsertServerProfile({ serverUrl: 'https://active-scope.example', name: 'Active scope' });
             await setActiveServerId(server.id, { scope: 'device' });
             const { sync } = await import('./sync');
-            const activate = (accountId: string) => (sync as any).activateAccountSettingsScopeForCredentials({
-                token: buildTokenWithSub(accountId),
-                secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
-            });
-            await activate('captured-account');
             const appliedSnapshot = getActiveServerSnapshot();
             appliedServerSnapshotOverride.current = {
                 serverId: appliedSnapshot.serverId,
                 serverUrl: appliedSnapshot.serverUrl,
                 generation: appliedSnapshot.generation,
             };
+            // The applied transport target has to be this Home before the scope is
+            // activated: `activateAccountSettingsScope` addresses the profile scope to
+            // `getAppliedTransportTarget()`, so activating first leaves the captured
+            // scope pointing at whichever Home the previous case applied.
             Reflect.set(sync, 'appliedServerTarget', appliedServerSnapshotOverride.current);
+            const activate = (accountId: string) => (sync as any).activateAccountSettingsScopeForCredentials({
+                token: buildTokenWithSub(accountId),
+                secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
+            });
+            await activate('captured-account');
             Reflect.set(sync, 'serverID', 'captured-account');
             const owner = await (sync as any).resolvePendingQueueOwnerContext(sessionId) as Readonly<{
                 request: (path: string, init?: RequestInit) => Promise<Response>;
@@ -3268,6 +3294,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(storage.getState().sessions[sessionId]?.pendingActivationAuthorization).toEqual({
             requestId: localId,
@@ -3588,10 +3615,12 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(requestMock).toHaveBeenCalledWith(
             '/v1/account/encryption/currentness',
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(
             emitSessionMetadataUpdateWithServerScopeMock,
@@ -3899,6 +3928,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             expect.objectContaining({
                 method: 'GET',
             }),
+            undefined,
         );
         expect(emitSessionMetadataUpdateWithServerScopeMock).toHaveBeenCalledWith({
             sessionId,
@@ -4647,6 +4677,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                 boundary: '2:direct-msg-2',
+                hasMore: false,
             },
         });
         machineExternalSessionTranscriptReadAfterMock
@@ -4740,7 +4771,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         };
         (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
 
-        (sync as any).handleEphemeralUpdate(invalidation);
+        (sync as any).handleEphemeralUpdate(invalidation, { serverId: sourceServer.id } as never);
         await vi.waitFor(() => {
             expect(machineExternalSessionTranscriptRefreshReadAfterMock).toHaveBeenCalledTimes(1);
         });
@@ -4748,6 +4779,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(storage.getState().sessions[sessionId]).toEqual(expect.objectContaining({
             id: sessionId,
@@ -4828,6 +4860,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(
             (storage.getState().sessions[sessionId]?.metadata as any)?.externalSessionV1,
@@ -4910,6 +4943,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(machineExternalSessionTranscriptRefreshReadAfterMock).not.toHaveBeenCalled();
     });
@@ -4974,6 +5008,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(requestMock).toHaveBeenCalledWith(
             `/v2/sessions/${sessionId}`,
             expect.objectContaining({ method: 'GET' }),
+            undefined,
         );
         expect(machineExternalSessionTranscriptRefreshReadAfterMock).not.toHaveBeenCalled();
     });
@@ -5082,6 +5117,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                         }],
                         nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTM',
                         boundary: '2:direct-msg-stale-cursor',
+                        hasMore: false,
                     },
                 };
             },
@@ -5136,6 +5172,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                 boundary: '2:direct-msg-wrong-binding',
+                hasMore: false,
             },
         });
 
@@ -5194,6 +5231,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                         }],
                         nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                         boundary: '2:direct-msg-from-duplicate-invalidation',
+                        hasMore: false,
                     },
                 };
             },
@@ -5292,6 +5330,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                 boundary: '2:direct-msg-2',
+                hasMore: false,
             },
         });
         machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
@@ -5424,6 +5463,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                             }],
                             nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                             boundary: '2:direct-msg-2',
+                            hasMore: false,
                         },
                     }), 120);
                 }),
@@ -5675,6 +5715,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }>;
                 nextCursor: string;
                 boundary: string;
+                hasMore: boolean;
             };
         }) => void;
         const refreshResponse = new Promise<Parameters<typeof resolveRefresh>[0]>((resolve) => {
@@ -5730,6 +5771,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }],
                 nextCursor: 'happier_external_cursor_v1:Y3Vyc29yLTI',
                 boundary: '2:direct-msg-stale',
+                hasMore: false,
             },
         });
         await refresh;
@@ -5784,6 +5826,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 }],
                 nextCursor: 'happier_external_cursor_v1:bm90aWZ5LTI',
                 boundary: '2:direct-agent-msg-1',
+                hasMore: false,
             },
         });
 
@@ -5795,7 +5838,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
 
         await (sync as any).fetchMessages(sessionId);
-        await (sync as any).handleEphemeralUpdate(notificationInvalidation);
+        await (sync as any).handleEphemeralUpdate(
+            notificationInvalidation,
+            { serverId: getActiveServerSnapshot().serverId } as never,
+        );
 
         const messagesById = storage.getState().sessionMessages[sessionId]?.messagesById ?? {};
         expect(Object.values(messagesById).some(
@@ -6049,7 +6095,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 createdAt: 1_000,
                 updatedAt: 1_025,
             },
-        })).not.toThrow();
+        }, { serverId: getActiveServerSnapshot().serverId } as never)).not.toThrow();
 
         await new Promise((resolve) => setTimeout(resolve, 0));
 

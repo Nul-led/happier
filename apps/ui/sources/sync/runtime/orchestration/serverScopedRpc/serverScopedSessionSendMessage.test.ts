@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { parseReleasedServerV021Features } from '@/dev/testkit';
 import { storage } from '@/sync/domains/state/storage';
+import type { Encryption } from '@/sync/encryption/encryption';
+import { settingsParse } from '@/sync/domains/settings/settings';
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 import { loadPendingOutboxForSession } from '@/sync/domains/state/pendingOutboxPersistence';
@@ -69,6 +71,28 @@ function createSession(overrides: Partial<Session> = {}): Session {
   };
 }
 
+type ScopedAccountEncryptionStub = Readonly<{
+  decryptEncryptionKey: (value: string) => Promise<Uint8Array | null>;
+  initializeSessions: (keys: Map<string, Uint8Array | null>, scope?: unknown) => Promise<void>;
+  getSessionEncryption: (sessionId: string) => unknown;
+}>;
+
+/**
+ * Account encryption is a real system boundary (Account key material and the crypto worker), and
+ * the scoped send path consumes exactly these three methods. Each case stubs that boundary; this
+ * helper is the single place that presents the stub as the `Encryption` the request context
+ * carries, so no case restates a class it never calls. A method the path starts using that the
+ * stub does not carry fails the case loudly rather than silently.
+ */
+function scopedAccountEncryptionStub(stub?: Partial<ScopedAccountEncryptionStub>): Encryption {
+  return {
+    decryptEncryptionKey: async () => null,
+    initializeSessions: async () => {},
+    getSessionEncryption: () => null,
+    ...stub,
+  } as unknown as Encryption;
+}
+
 function composerAttachmentOnlyMeta(): Record<string, unknown> {
   return {
     [HAPPIER_STRUCTURED_INPUT_METADATA_KEY_V1]: {
@@ -111,12 +135,15 @@ describe('sendSessionMessageWithServerScope', () => {
     const active = await upsertServerProfile({ serverUrl: 'https://active-send.example.test', name: 'Active' });
     const remote = await upsertServerProfile({ serverUrl: 'https://remote-send.example.test', name: 'Remote' });
     await setActiveServerId(active.id, { scope: 'device' });
-    storage.setState((state) => ({ settings: {
+    // `claudeRemoteMaxThinkingTokens` is a plugin-contributed Agent setting (its producer is
+    // `packages/plugins/claude`), so it enters the settings bag through the canonical parser
+    // rather than as an ad-hoc literal property.
+    storage.setState((state) => ({ settings: settingsParse({
       ...state.settings,
       claudeRemoteMaxThinkingTokens: 777,
       experiments: true,
       featureToggles: { ...state.settings.featureToggles, voice: true },
-    } }));
+    }) }));
     const token = `e30.${btoa(JSON.stringify({ sub: 'remote-account' })).replaceAll('=', '')}.signature`;
     vi.spyOn(TokenStorage, 'getCredentialsForServerUrl').mockResolvedValue({ token });
     storage.getState().applySessions([createSession({ id: 'same', serverId: active.id, encryptionMode: 'e2ee', modelMode: 'active-private-model' })]);
@@ -124,9 +151,9 @@ describe('sendSessionMessageWithServerScope', () => {
     serverFeaturesSnapshotMock.mockResolvedValue({
       status: 'ready', features: FeaturesResponseSchema.parse({ features: {}, capabilities: { session: { pendingInput: { protocolVersion: 1 } } } }),
     });
-    saveAccountSettings({ serverId: remote.id, accountId: 'remote-account' }, {
+    saveAccountSettings({ serverId: remote.id, accountId: 'remote-account' }, settingsParse({
       ...storage.getState().settings, claudeRemoteMaxThinkingTokens: 1337,
-    }, 1);
+    }), 1);
     const cancellation = new AbortController();
     const writes: Array<Readonly<{ url: string; body: Record<string, unknown> }>> = [];
     runtimeFetchMock.mockImplementation(async (request: Readonly<{ url: string; init?: RequestInit }>) => {
@@ -262,11 +289,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetAccountId: 'account-remote',
         token: 'token-remote',
         credentials: { token: 'token-remote' },
-        encryption: {
-          decryptEncryptionKey: async () => null,
-          initializeSessions: async () => {},
-          getSessionEncryption: () => null,
-        },
+        encryption: scopedAccountEncryptionStub(),
       })),
     });
     const recipient = { kind: 'execution_run' as const, runId: 'run-remote' };
@@ -585,11 +608,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetAccountId: 'account-1',
         token: 'token-1',
         credentials: { token: 'token-1' },
-        encryption: {
-          decryptEncryptionKey: async () => null,
-          initializeSessions: async () => {},
-          getSessionEncryption: () => null,
-        },
+        encryption: scopedAccountEncryptionStub(),
       })),
     });
 
@@ -673,7 +692,7 @@ describe('sendSessionMessageWithServerScope', () => {
         carrier: 'iroh' as const,
         token: 'token-1',
         credentials: { token: 'token-1' },
-        encryption,
+        encryption: scopedAccountEncryptionStub(encryption),
         release,
       })),
     });
@@ -753,11 +772,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetAccountId: 'account-1',
         token: 'token-1',
         credentials: { token: 'token-1' },
-        encryption: {
-          decryptEncryptionKey: async () => null,
-          initializeSessions: async () => {},
-          getSessionEncryption: () => null,
-        },
+        encryption: scopedAccountEncryptionStub(),
       })),
     });
 
@@ -796,11 +811,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetAccountId: 'account-1',
         token: 'token-1',
         credentials: { token: 'token-1' },
-        encryption: {
-          decryptEncryptionKey: async () => null,
-          initializeSessions: async () => {},
-          getSessionEncryption: () => null,
-        },
+        encryption: scopedAccountEncryptionStub(),
       })),
     });
 
@@ -853,11 +864,7 @@ describe('sendSessionMessageWithServerScope', () => {
         targetAccountId: 'account-1',
         token: 'token-1',
         credentials: { token: 'token-1' },
-        encryption: {
-          decryptEncryptionKey: async () => null,
-          initializeSessions: async () => {},
-          getSessionEncryption: () => null,
-        },
+        encryption: scopedAccountEncryptionStub(),
       })),
     });
 

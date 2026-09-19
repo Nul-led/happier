@@ -128,7 +128,9 @@ describe('sessionDraftEncryption', () => {
         });
         const legacy = document('newSession');
         if (legacy.target.kind !== 'newSession') throw new Error('Expected newSession fixture');
-        legacy.target.authoring.executionTarget = {
+        // The case is precisely a field the canonical authoring catalog does not
+        // carry, so it is written through an index view instead of widening V1.
+        (legacy.target.authoring as Record<string, unknown>).executionTarget = {
             mutationId: '00000000-0000-4000-8000-000000000020', value: { serverId: 'home-a', machineId: 'machine-a' },
         };
         const envelope = { t: 'plain' as const, v: { v: 1 as const, address: newAddress, document: legacy } };

@@ -103,7 +103,7 @@ describe('Home family transport composition', () => {
     it('travels a browser Iroh Home through the canonical HTTP owner carrying its carrier', async () => {
         const homeCarrier = { kind: 'browser-iroh' } as const;
         resolveContext.mockResolvedValue(scopedContext({ homeCarrier }));
-        const carrierFetch = vi.fn(async () => new Response(JSON.stringify(projection()), { status: 200 }));
+        const carrierFetch = vi.fn(async (_path: string, _init?: RequestInit) => new Response(JSON.stringify(projection()), { status: 200 }));
         createServerFetchAtEndpointMock.mockReturnValue(carrierFetch);
 
         await expect(governanceRequest()).resolves.toEqual({ ok: true, value: projection() });

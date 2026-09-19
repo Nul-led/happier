@@ -1,4 +1,4 @@
-import { accountSettingsParse } from '@happier-dev/protocol';
+import { settingsParse } from '@/sync/domains/settings/settings';
 
 /**
  * Deterministic Home identity for badge runtime tests: one Home per `serverId`, each with its own
@@ -22,7 +22,7 @@ export async function persistBadgeHomeAccountSettings(
     const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
     saveAccountSettings(
         { serverId, accountId: resolveBadgeHomeAccountId(serverId) },
-        accountSettingsParse(raw),
+        settingsParse(raw),
         version,
     );
 }

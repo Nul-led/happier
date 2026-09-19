@@ -1,5 +1,4 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { HappyError } from '@/utils/errors/errors';
 
 import {
     clearNativeInvitationEmailVerificationContinuation,
@@ -70,7 +69,7 @@ it.each([404, 405, 501])('reports an unsupported native-auth operation as update
 
     await expect(requestNativeEmailVerification(request, {
         email: 'person@example.test',
-    })).rejects.toMatchObject<Partial<HappyError>>({
+    })).rejects.toMatchObject({
         name: 'HappyError',
         canTryAgain: false,
         status,

@@ -38,7 +38,15 @@ type TaskManagerDefinitionApi = Readonly<{
 }>;
 
 type NotificationsDefinitionApi = Readonly<{
-    BackgroundNotificationTaskResult: typeof BackgroundNotificationTaskResult;
+    /**
+     * Only the three outcomes the executor below returns. Naming them instead of
+     * the whole `expo-notifications` enum object keeps this a real boundary a
+     * platform stub can satisfy without restating the module.
+     */
+    BackgroundNotificationTaskResult: Readonly<Record<
+        'Failed' | 'NewData' | 'NoData',
+        BackgroundNotificationTaskResult
+    >>;
 }>;
 
 /**

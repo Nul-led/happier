@@ -3,18 +3,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { createScopedSnapshotLoader } from './scopedSnapshotLoader';
 import { publishHomeAccountChange } from '@/sync/runtime/orchestration/homeAccountChange';
 
+type HomeCredentialMutationListener = (event: Readonly<{
+    kind: 'credentials_set' | 'credentials_removed';
+    serverId: string;
+    serverUrl: string;
+}>) => void;
+
 const credentialBoundary = vi.hoisted(() => ({
-    listener: null as null | ((event: Readonly<{
-        kind: 'credentials_set' | 'credentials_removed';
-        serverId: string;
-        serverUrl: string;
-    }>) => void),
+    listener: null as HomeCredentialMutationListener | null,
     subscriptions: 0,
     releases: 0,
 }));
 
+/**
+ * The suite resets `listener` to `null` before subscribing, which narrows every
+ * later direct read to `null`. Emitting through this helper reads the field at
+ * its declared type instead.
+ */
+function emitHomeCredentialMutation(event: Parameters<HomeCredentialMutationListener>[0]): void {
+    credentialBoundary.listener?.(event);
+}
+
 vi.mock('@/auth/storage/tokenStorage', () => ({
-    subscribeHomeCredentialMutations: vi.fn((listener: typeof credentialBoundary.listener) => {
+    subscribeHomeCredentialMutations: vi.fn((listener: HomeCredentialMutationListener) => {
         credentialBoundary.listener = listener;
         credentialBoundary.subscriptions += 1;
         return () => {
@@ -53,7 +64,7 @@ describe('createScopedSnapshotLoader', () => {
         const releaseSibling = sibling.observe({ key: 'home-a:sibling', serverId: 'home-a' });
         expect(credentialBoundary.subscriptions).toBe(1);
 
-        credentialBoundary.listener?.({
+        emitHomeCredentialMutation({
             kind: 'credentials_set',
             serverId: 'home-a',
             serverUrl: 'https://home-a.test',

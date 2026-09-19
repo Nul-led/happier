@@ -22,6 +22,7 @@ import {
     useMachine,
     useSessions,
 } from '@/sync/domains/state/storage';
+import { buildSessionFolderAssignmentKey } from '@/sync/domains/session/folders/assignmentKeys';
 import { setServerProfileIdentityForUrl, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { storage } from '@/sync/domains/state/storageStore';
 import type { Session } from '@/sync/domains/state/storageTypes';
@@ -326,10 +327,9 @@ describe('session folder assignment selectors', () => {
             storage.setState((state) => ({
                 ...state,
                 sessionOrganizationFolderAssignmentsBySessionKey: {
-                    'server-a:session-1': 'folder-canonical',
-                },
-                sessionFolderAssignmentsBySessionKey: {
-                    'server-a:session-1': 'folder-stale',
+                    [buildSessionFolderAssignmentKey('server-a', 'session-1')]: {
+                        sessionId: 'session-1', folderId: 'folder-canonical',
+                    },
                 },
             }));
 
@@ -342,7 +342,7 @@ describe('session folder assignment selectors', () => {
 
             expect(hook.getCurrent().assignment).toBe('folder-canonical');
             expect(hook.getCurrent().assignments).toEqual({
-                'server-a:session-1': 'folder-canonical',
+                [buildSessionFolderAssignmentKey('server-a', 'session-1')]: 'folder-canonical',
             });
 
             await hook.unmount();

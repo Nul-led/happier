@@ -114,7 +114,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const fileNavigation = useSessionFilePaneNavigation({ scopeId: props.scopeId, sessionId: props.sessionId, serverId: props.serverId ?? resolveServerIdForSessionIdFromLocalCache(props.sessionId) });
     const resumeSession = useSessionResumeAction();
     const requestSessionResume = React.useCallback(() => {
-        fireAndForget(emitSessionResumeRequest(props.sessionId), {
+        fireAndForget(emitSessionResumeRequest(props.sessionId, props.serverId), {
             tag: 'SessionRightPanelGitView.resumeSession',
         });
     }, [props.sessionId, props.serverId]);

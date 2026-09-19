@@ -47,12 +47,12 @@ function getApprovalScopeResolution(serverId: string) {
 }
 let modalConfirmResult = true;
 const defaultApprovalArtifactBody = {
-    v: 1,
-    status: 'open',
+    v: 1 as const,
+    status: 'open' as const,
     createdAtMs: 1,
     updatedAtMs: 1,
     createdBy: {
-        surface: 'agent',
+        surface: 'agent' as const,
         agentId: 'codex',
         sessionId: 'session-1',
     },

@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
-import { accountSettingsParse } from '@happier-dev/protocol';
+import { settingsParse } from '@/sync/domains/settings/settings';
 
 import { createSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
@@ -250,7 +250,7 @@ async function persistHomeAccountSettings(
     version = 1,
 ): Promise<void> {
     const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
-    saveAccountSettings({ serverId, accountId: `account-${serverId}` }, accountSettingsParse(settings), version);
+    saveAccountSettings({ serverId, accountId: `account-${serverId}` }, settingsParse(settings), version);
 }
 
 function liveActivityStartAddresses(): string[] {

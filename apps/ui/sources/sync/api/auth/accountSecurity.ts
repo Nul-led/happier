@@ -304,7 +304,6 @@ export async function prepareE2eeAccountPasswordChange(request: ServerFetch, inp
     const prepared = await prepareE2eePasswordMutation(request, {
         ...input,
         action,
-        accountId: input.accountId,
         normalizedNativeEmail: input.normalizedNativeEmail,
         preparedCredentialMaterial,
     });
@@ -413,12 +412,16 @@ export async function prepareAccountEncryptionModePasswordCredential(
         || !prepared.challenge) {
         throw new HappyError('Account security request failed', false, { kind: 'auth', code: 'credential_inconsistent' });
     }
+    // Hoisted so the guard above still holds inside the deferred proof callback,
+    // which does not inherit narrowing of a property path.
+    const challenge = prepared.challenge;
+    const targetCredential = prepared.targetCredential;
     return {
         expectedRevision: input.expectedCredentialRevision,
-        credential: prepared.targetCredential,
+        credential: targetCredential,
         proof: preparedCredentialOrThrow(() => createE2eePasswordMutationChallengeProofV1(
             input.secret,
-            prepared.challenge,
+            challenge,
             input.expectedAudience,
             {
                 v: 1,
@@ -427,7 +430,7 @@ export async function prepareAccountEncryptionModePasswordCredential(
                 expectedCredentialRevision: input.expectedCredentialRevision,
                 normalizedNativeEmail: input.normalizedNativeEmail,
                 newCredentialDigest: createPasswordCredentialTargetDigestV1(
-                    prepared.targetCredential,
+                    targetCredential,
                     transitionRequestDigest,
                 ),
             },

@@ -62,6 +62,12 @@ const SESSION_AUTHORING_SUGGESTION_KINDS: readonly ComposerSuggestionKindId[] = 
 ];
 
 /**
+ * A scope without a submit handler is already reported as not submittable, so
+ * send stays inert. One stable identity keeps the composer from re-rendering.
+ */
+const NO_COMPOSER_SUBMIT = (): void => {};
+
+/**
  * Where an authored document's resources, file search and plugin surfaces are
  * addressed from.
  *
@@ -429,7 +435,7 @@ export const ScopedAuthoringComposer = React.forwardRef<
                     : { inputAccessibilityLabel: props.inputAccessibilityLabel })}
                 autocompleteKinds={suggestionKinds}
                 autocompleteSuggestions={resolveSuggestions}
-                onSend={props.onSubmit}
+                onSend={props.onSubmit ?? NO_COMPOSER_SUBMIT}
                 submitAccessibilityLabel={props.submitAccessibilityLabel}
                 isSendDisabled={props.isSubmitDisabled || inputEffects.composerInputLock !== null}
                 disabled={props.editable === false || inputEffects.composerInputLock?.mode === 'editAndSubmit'}

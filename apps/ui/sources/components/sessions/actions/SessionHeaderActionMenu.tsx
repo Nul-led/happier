@@ -853,7 +853,7 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
                       context: {
                         operations: {
                           resumeSession: async (sessionId: string) => {
-                            await emitSessionResumeRequest(sessionId);
+                            await emitSessionResumeRequest(sessionId, sessionServerId);
                           },
                         },
                       },

@@ -67,7 +67,7 @@ function executedArtifact(overrides?: Readonly<{
     return {
         id: overrides?.artifactId ?? 'approval-1',
         title: null,
-        header: { title: null, ...buildApprovalRequestArtifactHeaderV1(request) },
+        header: buildApprovalRequestArtifactHeaderV1(request),
         body: JSON.stringify(request),
         headerVersion: 1,
         bodyVersion: 1,
@@ -119,7 +119,7 @@ function failedArtifact(overrides?: Readonly<{
     return {
         id: 'approval-1',
         title: null,
-        header: { title: null, ...buildApprovalRequestArtifactHeaderV1(request) },
+        header: buildApprovalRequestArtifactHeaderV1(request),
         body: JSON.stringify(request),
         headerVersion: 1,
         bodyVersion: 1,

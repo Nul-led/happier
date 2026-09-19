@@ -7,6 +7,7 @@ import {
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
+import { createAccountEncryptionCurrentnessFixture } from '@/testkit/backends/sessionFixtures';
 import { captureConsoleJsonOutput } from '@/testkit/logger/captureOutput';
 
 import { deriveBoxPublicKeyFromSeed } from '@happier-dev/protocol';
@@ -171,6 +172,17 @@ describe('happier session send plaintext sessions (integration)', () => {
         res.statusCode = 200;
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({ didWrite: true, terminal: false, suppressed: false }));
+        return;
+      }
+
+      // Every owner-authority session snapshot refresh reads Account encryption
+      // currentness (`sessionClient.ts:983,1984`), plaintext Sessions included,
+      // so the integration server has to answer that boundary or the send fails
+      // closed with `Account encryption currentness is unavailable (404)`.
+      if (req.method === 'GET' && url.pathname === '/v1/account/encryption/currentness') {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(createAccountEncryptionCurrentnessFixture({ mode: 'plain' })));
         return;
       }
 

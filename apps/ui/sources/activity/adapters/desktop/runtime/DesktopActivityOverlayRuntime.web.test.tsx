@@ -1,9 +1,8 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { accountSettingsParse } from '@happier-dev/protocol';
-
 import { renderScreen } from '@/dev/testkit';
+import { settingsParse } from '@/sync/domains/settings/settings';
 import { createExpoRouterMock } from '@/dev/testkit/mocks/router';
 
 const isDesktopHostMock = vi.hoisted(() => vi.fn(() => true));
@@ -135,7 +134,7 @@ vi.mock('@/hooks/teams/useSessionAudienceContext', async () => {
 
 async function persistDesktopOverlayWebHomeAccountSettings(): Promise<void> {
     const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
-    saveAccountSettings({ serverId: 'server-1', accountId: 'account-server-1' }, accountSettingsParse({}), 1);
+    saveAccountSettings({ serverId: 'server-1', accountId: 'account-server-1' }, settingsParse({}), 1);
 }
 
 vi.mock('expo-router', () => expoRouterMock.module);

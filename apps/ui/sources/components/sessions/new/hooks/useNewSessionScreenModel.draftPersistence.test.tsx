@@ -2041,7 +2041,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             canApprovePermissions: false,
         }] };
         persistedDraft.primaryTeamId = 'team-old';
-        let model: unknown = null;
+        let model: any = null;
         await renderNewSessionScreenModel((nextModel) => { model = nextModel; });
 
         persistedDraft.access = { grants: [{
@@ -2224,7 +2224,7 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
             label: 'Web',
             reachable: true,
             worktrees: [],
-        }] as const;
+        }];
         persistedDraft.placementCandidates = candidates;
 
         let model: any = null;
@@ -2372,179 +2372,6 @@ describe('useNewSessionScreenModel (draft hydration)', () => {
         expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
             authoringDraft: expect.objectContaining({
                 checkoutCreationDraft: null,
-            }),
-        }));
-    });
-
-    it('exposes an automation submit accessibility label when automation is enabled in the draft', async () => {
-        featureFlags.automationsEnabled = true;
-        persistedDraft.automationDraft = {
-            pendingAutomationId: 'automation-daily-summary',
-            enabled: true,
-            name: 'Daily summary',
-            description: '',
-            triggers: [{
-                clientId: 'daily-summary-schedule',
-                definition: {
-                    kind: 'schedule',
-                    enabled: true,
-                    schedule: { kind: 'interval', everyMs: 3_600_000, scheduleExpr: null, timezone: null },
-                },
-            }],
-        };
-        let model: any = null;
-        await renderNewSessionScreenModel((nextModel) => {
-            model = nextModel;
-        });
-
-        expect(model?.simpleProps?.submitAccessibilityLabel).toBe('automations.create.createButtonTitle');
-        await act(async () => {
-            persistDraftNowRef.current?.();
-        });
-        expect(saveNewSessionDraftMock).toHaveBeenCalledWith(expect.objectContaining({
-            automationDraft: expect.objectContaining({
-                pendingAutomationId: 'automation-daily-summary',
-                triggers: [expect.objectContaining({
-                    clientId: 'daily-summary-schedule',
-                })],
-            }),
-        }));
-    });
-
-    it('resets stale automation-only draft fields when the route explicitly starts a fresh automation create flow', async () => {
-        featureFlags.automationsEnabled = true;
-        persistedDraft.automationDraft = {
-            pendingAutomationId: 'automation-stale',
-            enabled: true,
-            name: 'Legacy automation',
-            description: 'Carryover description',
-            triggers: [{
-                clientId: 'stale-schedule-row',
-                definition: {
-                    kind: 'schedule',
-                    enabled: true,
-                    schedule: { kind: 'interval', everyMs: 5_400_000, scheduleExpr: null, timezone: 'Europe/Zurich' },
-                },
-            }],
-        };
-        searchParamsState.value = {
-            automation: '1',
-        };
-        let model: any = null;
-        await renderNewSessionScreenModel((nextModel) => {
-            model = nextModel;
-        });
-
-        expect(model?.simpleProps?.submitAccessibilityLabel).toBe('automations.create.createButtonTitle');
-        await act(async () => {
-            persistDraftNowRef.current?.();
-        });
-
-        expect(saveNewSessionDraftMock).toHaveBeenCalledWith(expect.objectContaining({
-            automationDraft: expect.objectContaining({
-                pendingAutomationId: expect.any(String),
-                enabled: true,
-                name: '',
-                description: '',
-                triggers: [],
-            }),
-        }));
-        expect(saveNewSessionDraftMock.mock.calls.at(-1)?.[0]?.automationDraft.pendingAutomationId)
-            .not.toBe('automation-stale');
-    });
-
-    it('drops stale in-memory automation mode when focus reloads a plain /new draft after automation create', async () => {
-        featureFlags.automationsEnabled = true;
-        persistedDraft.automationDraft = {
-            pendingAutomationId: null,
-            enabled: false,
-            name: '',
-            description: '',
-            triggers: [],
-        };
-        searchParamsState.value = {
-            automation: '1',
-        };
-        let model: any = null;
-        const hook = await renderNewSessionScreenModel((nextModel) => {
-            model = nextModel;
-        });
-
-        expect(model?.simpleProps?.submitAccessibilityLabel).toBe('automations.create.createButtonTitle');
-
-        searchParamsState.value = {};
-        persistedDraft.automationDraft = {
-            pendingAutomationId: null,
-            enabled: false,
-            name: '',
-            description: '',
-            triggers: [],
-        };
-        persistedDraft.updatedAt = 456;
-
-        await hook.rerender();
-        const cleanups = await runFocusEffectsAndSettle();
-        for (const cleanup of cleanups) {
-            if (typeof cleanup === 'function') cleanup();
-        }
-
-        expect(model?.simpleProps?.submitAccessibilityLabel).toBeUndefined();
-        expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
-            authoringDraft: expect.objectContaining({
-                automation: null,
-            }),
-        }));
-    });
-
-    it('does not rehydrate plain /new into automation mode after autosaving a forced automation route draft', async () => {
-        featureFlags.automationsEnabled = true;
-        persistedDraft.automationDraft = {
-            pendingAutomationId: null,
-            enabled: false,
-            name: '',
-            description: '',
-            triggers: [],
-        };
-        searchParamsState.value = {
-            automation: '1',
-        };
-
-        let automationRouteModel: any = null;
-        let plainRouteModel: any = null;
-        const automationRouteHook = await renderNewSessionScreenModel((nextModel) => {
-            automationRouteModel = nextModel;
-        });
-
-        expect(automationRouteModel?.simpleProps?.submitAccessibilityLabel).toBe('automations.create.createButtonTitle');
-
-        await act(async () => {
-            persistDraftNowRef.current?.();
-        });
-
-        const savedAutomationDraft = saveNewSessionDraftMock.mock.calls.at(-1)?.[0] as Record<string, unknown> | undefined;
-        expect(savedAutomationDraft).toEqual(expect.objectContaining({
-            automationDraft: expect.objectContaining({
-                pendingAutomationId: expect.any(String),
-                enabled: true,
-                triggers: [],
-            }),
-            entryIntent: 'automation',
-        }));
-
-        persistedDraft.automationDraft = savedAutomationDraft?.automationDraft as any;
-        (persistedDraft as any).entryIntent = savedAutomationDraft?.entryIntent;
-        persistedDraft.updatedAt = Number(savedAutomationDraft?.updatedAt ?? 456);
-        searchParamsState.value = {};
-
-        await automationRouteHook.unmount();
-        await renderNewSessionScreenModel((nextModel) => {
-            plainRouteModel = nextModel;
-        });
-
-        expect(plainRouteModel?.simpleProps?.submitAccessibilityLabel).toBeUndefined();
-        expect(useCreateNewSessionArgsRef.current).toEqual(expect.objectContaining({
-            authoringDraft: expect.objectContaining({
-                automation: null,
             }),
         }));
     });

@@ -48,22 +48,28 @@ const TEAM = {
     admission: { historyChoice: { admin: 'choice' as const, member: 'choice' as const, guest: 'hidden' as const } },
 };
 
+type TeamLifecycleConfirmationFixture = Parameters<typeof archiveTeam>[0];
+
 describe('Team lifecycle and logo mutations', () => {
+    // Each case carries its own invocation: `it.each` does not correlate the
+    // operation with its arguments, so a shared argument object would have to
+    // satisfy every operation's input at once.
     it.each([
-        ['archive', archiveTeam, {}],
-        ['restore', restoreTeam, {}],
-        ['set logo', setTeamLogo, { image: { base64: 'aGVsbG8=', mimeType: 'image/png' as const } }],
-        ['remove logo', removeTeamLogo, {}],
-    ] as const)('leaves %s approval policy to the shared Action front door', async (_name, operation, extra) => {
+        ['archive', async (confirmation: TeamLifecycleConfirmationFixture) => { await archiveTeam(confirmation); }],
+        ['restore', async (confirmation: TeamLifecycleConfirmationFixture) => { await restoreTeam(confirmation); }],
+        ['set logo', async (confirmation: TeamLifecycleConfirmationFixture) => {
+            await setTeamLogo({ ...confirmation, image: { mimeType: 'image/png', dataBase64: 'aGVsbG8=' } });
+        }],
+        ['remove logo', async (confirmation: TeamLifecycleConfirmationFixture) => { await removeTeamLogo(confirmation); }],
+    ] as const)('leaves %s approval policy to the shared Action front door', async (_name, invoke) => {
         runTeamActionMock.mockResolvedValueOnce({ kind: 'succeeded', value: TEAM });
 
         const legacySurfaceConfirmation = {
             scope: { serverId: 'home-1', accountId: 'account-1' },
             address: { serverId: 'home-1', teamId: 'team-1' },
             confirmedByPresentUser: true as const,
-            ...extra,
         };
-        await operation(legacySurfaceConfirmation);
+        await invoke(legacySurfaceConfirmation);
 
         expect(runTeamActionMock).toHaveBeenCalledWith(expect.not.objectContaining({
             approval: expect.anything(),

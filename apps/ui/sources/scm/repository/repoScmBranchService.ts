@@ -79,9 +79,10 @@ export class RepoScmBranchService {
 
     async fetchBranchesForSession(input: Readonly<{
         sessionId: string;
+        serverId?: string | null;
         includeRemotes?: boolean;
     }>): Promise<ReadonlyArray<ScmBranchListEntry>> {
-        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId });
+        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId, serverId: input.serverId });
         if (!request) {
             return [];
         }
@@ -89,7 +90,9 @@ export class RepoScmBranchService {
         const includeRemotes = input.includeRemotes === true;
         const requestKey = this.createRequestKey(request.repoIdentityKey, includeRemotes);
         return await this.fetchBranchesForRepoIdentity(requestKey, async () => {
-            const serverId = resolvePreferredServerIdForSessionId(input.sessionId);
+            // A caller that named its Home has already decided which Session this is; same-id
+            // discovery must not send the call to another Home's machine.
+            const serverId = input.serverId ?? resolvePreferredServerIdForSessionId(input.sessionId);
             if (request.machineId) {
                 const branchRequest = {
                     cwd: request.resolvedPath,
@@ -103,7 +106,9 @@ export class RepoScmBranchService {
                 }
             }
 
-            const response = await sessionScmBranchList(input.sessionId, { includeRemotes });
+            const response = serverId
+                ? await sessionScmBranchList(input.sessionId, { includeRemotes }, serverId)
+                : await sessionScmBranchList(input.sessionId, { includeRemotes });
             if (!response.success) {
                 throw new Error(response.error || 'Failed to fetch source-control branches');
             }
@@ -130,9 +135,10 @@ export class RepoScmBranchService {
 
     readCachedBranchesForSession(input: Readonly<{
         sessionId: string;
+        serverId?: string | null;
         includeRemotes?: boolean;
     }>): ReadonlyArray<ScmBranchListEntry> {
-        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId });
+        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId, serverId: input.serverId });
         if (!request) {
             return [];
         }
@@ -144,8 +150,9 @@ export class RepoScmBranchService {
 
     invalidateBranchesForSession(input: Readonly<{
         sessionId: string;
+        serverId?: string | null;
     }>): void {
-        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId });
+        const request = resolveRepoScmSessionRequest({ sessionId: input.sessionId, serverId: input.serverId });
         if (!request) {
             return;
         }

@@ -6272,6 +6272,7 @@ function SessionViewLoaded({
     useSessionResumeRequestListener(
         sessionId,
         React.useCallback(() => handleResumeSession(), [handleResumeSession]),
+        sessionRouteServerId,
     );
 
     const providerName = sessionActionDefaultBackendEntry?.title

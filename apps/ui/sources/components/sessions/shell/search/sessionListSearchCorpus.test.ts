@@ -23,6 +23,7 @@ function homeState(
         freshnessAt: 1,
         failureReason: null,
         failureCode: null,
+        appliedSourceKind: overrides.appliedQueryKey === null ? null : 'query',
         ...overrides,
     };
 }

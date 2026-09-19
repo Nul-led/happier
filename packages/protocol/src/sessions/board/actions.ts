@@ -562,6 +562,19 @@ export function classifySessionBoardMutationTransportResultV1(input: Readonly<{
   };
 }
 
+/**
+ * What a Session Board port implementation returns to the executor: either the
+ * strict Board failure union or the canonical output of the Action it ran. The
+ * executor validates it once at the terminal boundary
+ * (`parseSessionBoardActionPortResultV1`) and only then wraps a success in the
+ * shared `{ ok: true, result }` envelope, so a port never produces that envelope
+ * itself.
+ */
+export type SessionBoardActionPortResultV1 =
+  | SessionBoardActionFailureV1
+  | SessionBoardGetResultV1
+  | SessionBoardMutationActionResultV1;
+
 export type SessionBoardActionPortResultParseV1 =
   | Readonly<{
       success: true;

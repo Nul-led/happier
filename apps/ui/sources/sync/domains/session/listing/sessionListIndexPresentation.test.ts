@@ -29,6 +29,7 @@ function queryState(partial: Partial<SessionListQueryHomeState>): SessionListQue
         freshnessAt: null,
         failureReason: null,
         failureCode: null,
+        appliedSourceKind: null,
         ...partial,
     };
 }

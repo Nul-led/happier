@@ -137,6 +137,7 @@ function homeState(
         freshnessAt: 10,
         failureReason: null,
         failureCode: null,
+        appliedSourceKind: 'query',
     };
 }
 

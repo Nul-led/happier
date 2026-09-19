@@ -105,7 +105,7 @@ it('measures real encrypted hydration and rapid query replacement across three f
     for (let change = 0; change < 5; change += 1) {
         for (const controller of controllers) {
             pending.push(controller.update({
-                queryKey: `query-${change}`, query: { ...QUERY, tagIds: [`tag-${change}`] },
+                query: { ...QUERY, tagIds: [`tag-${change}`] },
                 selected: true, online: true, supported: true,
             }));
         }

@@ -86,7 +86,7 @@ describe('createSessionRouteServerScope legacy link admission', () => {
 
     it('accepts exact qualification without enumerating unrelated Homes', () => {
         const scope = createSessionRouteServerScope({ id: 'same', serverId: 'https://b.example:8443/path' }, {
-            get sessionListIndexByServerId() { throw new Error('Exact qualification must not enumerate'); },
+            get sessionListIndexByServerId(): never { throw new Error('Exact qualification must not enumerate'); },
         });
         expect(scope.buildHref('same')).toBe('/session/same?serverId=https%3A%2F%2Fb.example%3A8443%2Fpath');
         expect(scope.candidateAddresses).toEqual([]);

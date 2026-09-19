@@ -106,6 +106,7 @@ vi.mock('@/auth/encryption/createEncryptionFromAuthCredentials', () => ({
 import { storage } from './domains/state/storage';
 import { renderHook, renderScreen } from '@/dev/testkit';
 import { setActiveServerId, upsertServerProfile } from './domains/server/serverProfiles';
+import { getActiveServerSnapshot } from './domains/server/serverRuntime';
 import { loadSessionMaterializedMaxSeqById } from './domains/state/persistence';
 import type { AccountSettingsScope } from './domains/settings/scope/accountSettingsScope';
 import type { Session } from './domains/state/storageTypes';
@@ -122,10 +123,14 @@ import {
 
 const initialStorageState = storage.getState();
 
-function createSession(params: { sessionId: string }): Session {
+function createSession(params: { sessionId: string; serverId?: string }): Session {
     const now = Date.now();
     return {
         id: params.sessionId,
+        // Every row the store actually holds is addressed to the Home it came from
+        // (`syncSessions` writes `serverId`); an unscoped fixture row is a shape the
+        // runtime never produces and it refuses the message-route fast path.
+        serverId: params.serverId ?? String(getActiveServerSnapshot().serverId ?? '').trim(),
         seq: 0,
         encryptionMode: 'e2ee',
         createdAt: now,
@@ -2521,7 +2526,9 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
 
         storage.getState().applySessions([
             {
-                ...createSession({ sessionId }),
+                // The deep link names the owner Home, so the local row this case seeds
+                // belongs to that Home and must not appear in the active Home's lists.
+                ...createSession({ sessionId, serverId: ownerServer.id }),
                 encryptionMode: 'plain',
             },
         ]);

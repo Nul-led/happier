@@ -25,7 +25,7 @@ import type { IrohEndpointDescriptorV1 } from '@happier-dev/protocol';
 
 import { resolveBrowserIrohHostDecision, type BrowserIrohHostDecision } from '../hostEligibility';
 
-type BrowserIrohHomeCarrierRequestCommon = Readonly<{
+export type BrowserIrohHomeCarrierRequestCommon = Readonly<{
     /** The Home's stable identity; the carrier is scoped to it, never to a tab. */
     homeServerIdentityId: string;
     endpoint: IrohEndpointDescriptorV1;

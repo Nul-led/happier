@@ -253,7 +253,7 @@ describe('teamInvitationOperations', () => {
         expect(await pending.registration.onExecuted({
             id: pending.artifactId,
             title: null,
-            header: { title: null, ...buildApprovalRequestArtifactHeaderV1(executedRequest) },
+            header: buildApprovalRequestArtifactHeaderV1(executedRequest),
             body: JSON.stringify(executedRequest),
             headerVersion: 1,
             bodyVersion: 1,

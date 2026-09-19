@@ -2,10 +2,11 @@ import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act } from 'react-test-renderer';
 import {
-    accountSettingsParse,
     buildLiveActivityRemoteUpdateCapabilityDiagnostics,
     PUSH_NOTIFICATION_ACTION_IDS,
 } from '@happier-dev/protocol';
+
+import { settingsParse } from '@/sync/domains/settings/settings';
 
 import { createSessionFixture as createBaseSessionFixture } from '@/dev/testkit/fixtures/sessionFixtures';
 import { renderScreen } from '@/dev/testkit';
@@ -465,14 +466,14 @@ const ACTIVITY_TEST_HOME_SERVER_IDS = ['server-a', 'server-b', 'local'] as const
 
 function persistDefaultActivityHomeAccountSettings(): void {
     for (const serverId of ACTIVITY_TEST_HOME_SERVER_IDS) {
-        saveAccountSettings({ serverId, accountId: `account-${serverId}` }, accountSettingsParse({}), 1);
+        saveAccountSettings({ serverId, accountId: `account-${serverId}` }, settingsParse({}), 1);
     }
 }
 
 function persistActivityHomeAccountSettings(serverId: string): void {
     saveAccountSettings(
         { serverId, accountId: `account-${serverId}` },
-        accountSettingsParse(settingsState.value),
+        settingsParse(settingsState.value),
         1,
     );
 }

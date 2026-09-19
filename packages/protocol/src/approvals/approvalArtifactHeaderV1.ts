@@ -8,7 +8,19 @@ import {
   type TargetActionApprovalRequestV1,
 } from './targetActionApprovalRequestV1.js';
 
-export type ApprovalArtifactHeaderV1 = Readonly<Record<string, unknown>>;
+/**
+ * What the three builders below actually produce: an Artifact index header that
+ * always carries the human title, plus the family-specific binding fields the
+ * matchers re-check. Artifact stores require the title, so it is declared rather
+ * than left to the passthrough index signature.
+ */
+export type ApprovalArtifactHeaderV1 = Readonly<{ title: string } & Record<string, unknown>>;
+
+/**
+ * What a reader may be handed: any stored Artifact header, including one this
+ * version never wrote. Nothing is assumed about it before the matchers agree.
+ */
+export type ApprovalArtifactHeaderCandidateV1 = Readonly<Record<string, unknown>>;
 
 export type ParsedApprovalArtifactBodyV1 =
   | Readonly<{ family: 'built_in'; request: ApprovalRequest }>
@@ -21,7 +33,7 @@ function optionalExactStringMatches(actual: unknown, expected: string | null): b
     : actual === expected;
 }
 
-function sessionBindingMatches(header: ApprovalArtifactHeaderV1, sessionId: string | null): boolean {
+function sessionBindingMatches(header: ApprovalArtifactHeaderCandidateV1, sessionId: string | null): boolean {
   return optionalExactStringMatches(header.sessionId, sessionId)
     && (sessionId
       ? Array.isArray(header.sessions) && header.sessions.length === 1 && header.sessions[0] === sessionId
@@ -52,7 +64,7 @@ export function buildApprovalRequestArtifactHeaderV1(
 }
 
 export function approvalRequestArtifactHeaderMatches(
-  header: ApprovalArtifactHeaderV1,
+  header: ApprovalArtifactHeaderCandidateV1,
   request: ApprovalRequest,
 ): boolean {
   const origin = request.v === 2 ? request.executionOriginV1 : null;
@@ -100,7 +112,7 @@ export function buildTargetActionApprovalArtifactHeaderV1(
 }
 
 export function targetActionApprovalArtifactHeaderMatches(
-  header: ApprovalArtifactHeaderV1,
+  header: ApprovalArtifactHeaderCandidateV1,
   request: TargetActionApprovalRequestV1,
 ): boolean {
   const origin = request.executionOriginV1;
@@ -141,7 +153,7 @@ export function buildExecutionRunHostActionApprovalArtifactHeaderV1(
 }
 
 export function executionRunHostActionApprovalArtifactHeaderMatches(
-  header: ApprovalArtifactHeaderV1,
+  header: ApprovalArtifactHeaderCandidateV1,
   request: ExecutionRunHostActionApprovalRequestV1,
 ): boolean {
   return header.v === 1
@@ -162,7 +174,7 @@ export function executionRunHostActionApprovalArtifactHeaderMatches(
  * strict family schema and every duplicated header field agree.
  */
 export function approvalArtifactBodyMatchesHeaderV1(
-  header: ApprovalArtifactHeaderV1,
+  header: ApprovalArtifactHeaderCandidateV1,
   body: string | null | undefined,
 ): ParsedApprovalArtifactBodyV1 | null {
   if (typeof body !== 'string') return null;

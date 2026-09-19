@@ -205,7 +205,7 @@ describe('withDefaultActionExecuteContext', () => {
                 serverId: 'home-a',
                 surface: 'ui',
                 authority: 'present_user',
-                presentUserConfirmation: true,
+                presentUserConfirmation: { actionId: 'session.follow.sources.set' },
             },
         );
 
@@ -242,7 +242,7 @@ describe('withDefaultActionExecuteContext', () => {
                 serverId: 'home-a',
                 surface: 'ui',
                 authority: 'present_user',
-                presentUserConfirmation: true,
+                presentUserConfirmation: { actionId: 'session.follow.sources.set' },
             },
         )).resolves.toMatchObject({
             ok: false,

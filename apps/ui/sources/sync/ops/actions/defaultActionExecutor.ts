@@ -474,7 +474,9 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       const input = SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1[args.actionId].parse(args.input);
       const sessionId = input.sessionId ?? args.context.defaultSessionId;
       const serverId = args.context.serverId ?? (sessionId ? opts?.resolveServerIdForSessionId?.(sessionId) : null);
-      if (!sessionId || !serverId) return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action' };
+      if (!sessionId || !serverId) {
+        return { ok: false as const, errorCode: 'unsupported_action' as const, error: 'unsupported_action' as const };
+      }
       const address = { serverId, sessionId };
       let mutationDispatched = false;
       let recoveryDetails: unknown = null;
@@ -482,7 +484,9 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
         // The store row publishes the already-normalized projection; re-normalizing a raw
         // `effectiveAccess` field the row never carries refused every Board mutation.
         const access = runtime.session.access ?? null;
-        if (!access) return { ok: false, errorCode: 'session_board_forbidden', error: 'session_board_forbidden' };
+        if (!access) {
+          return { ok: false as const, errorCode: 'session_board_forbidden' as const, error: 'session_board_forbidden' as const };
+        }
         const snapshot = await getServerFeaturesSnapshot({ serverId });
         const decision = resolveRuntimeFeatureDecisionFromSnapshot({ featureId: 'sessions.board', settings: storage.getState().settings, snapshot });
         if (decision?.state !== 'enabled') {
@@ -510,7 +514,9 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
           },
           capabilities: { readTranscript: access.capabilities.readTranscript, editSessionRecords: access.capabilities.editSessionRecords },
         })(args);
-        if (!result.ok && result.errorCode === 'outcome_unknown') {
+        // A Board port answers with either a strict Board failure or the Action's
+        // canonical output; only the failure arm carries `ok`/`errorCode`.
+        if ('ok' in result && result.ok === false && result.errorCode === 'outcome_unknown') {
           // Retain only the strict canonical recovery packet in this original
           // invocation closure. Scope retirement still discards every ordinary
           // Account-owned result and exposes nothing to the newly active scope.

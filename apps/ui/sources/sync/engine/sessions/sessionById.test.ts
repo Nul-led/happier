@@ -30,6 +30,16 @@ const PLAIN_ACCOUNT_CURRENTNESS = {
   contentKeyFingerprint: null,
   updatedAt: 1,
 } satisfies AccountEncryptionCurrentnessResponse;
+/**
+ * What a plaintext Account actually supplies. `getScopedSessionByIdEncryption(null)` — the only
+ * production producer of this parameter — builds exactly this when the Account carries no client
+ * data-encryption material, so the by-ID owner is never handed `null` at runtime.
+ */
+const PLAINTEXT_ACCOUNT_SESSION_ENCRYPTION: SessionByIdEncryption = {
+  decryptEncryptionKey: async () => null,
+  initializeSessions: async () => {},
+  getSessionEncryption: () => null,
+};
 function sessionDataKey(): Uint8Array {
   return new Uint8Array(32).fill(7);
 }
@@ -168,7 +178,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_qualified_responsibility',
       accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
       credentials: { token: 't' },
-      encryption: null,
+      encryption: PLAINTEXT_ACCOUNT_SESSION_ENCRYPTION,
       sessionDataKeys: new Map<string, Uint8Array>(),
       request,
       applySessions,
@@ -993,7 +1003,7 @@ describe('fetchAndApplySessionById', () => {
       sessionId: 's_responsibility_invalid',
       credentials: { token: 't' } as any,
       accountCurrentness: PLAIN_ACCOUNT_CURRENTNESS,
-      encryption: null,
+      encryption: PLAINTEXT_ACCOUNT_SESSION_ENCRYPTION,
       sessionDataKeys: new Map<string, Uint8Array>(),
       request,
       applySessions,

@@ -55,24 +55,41 @@ const activeServerSnapshot = vi.hoisted(() => ({
     },
 }));
 
+type BadgeRuntimeSessionListIndexItemFixture = Readonly<{
+    type: 'session';
+    sessionId: string;
+    serverId: string;
+    serverName: string | null;
+}>;
+
+/**
+ * The badge reads per-Home projections, so every by-Home map is keyed by an
+ * arbitrary `serverId` rather than the single Home this default builds.
+ */
 function createActivityAttentionSource(sessions: BadgeRuntimeSessionFixture[]) {
+    const sessionsById: Record<string, BadgeRuntimeSessionFixture> = Object.fromEntries(
+        sessions.map((session) => [session.id, session]),
+    );
+    const sessionListRowsByServerId: Record<string, Record<string, BadgeRuntimeSessionFixture>> = {
+        'server-1': Object.fromEntries(sessions.map((session) => [session.id, session])),
+    };
+    const ordinarySessionListMembershipByServerId: Record<string, string[]> = {
+        'server-1': sessions.map((session) => session.id),
+    };
+    const sessionListIndexByServerId: Record<string, BadgeRuntimeSessionListIndexItemFixture[]> = {
+        'server-1': sessions.map((session) => ({
+            type: 'session',
+            sessionId: session.id,
+            serverId: 'server-1',
+            serverName: null,
+        })),
+    };
     return {
         isDataReady: true,
-        sessionsById: Object.fromEntries(sessions.map((session) => [session.id, session])),
-        sessionListRowsByServerId: {
-            'server-1': Object.fromEntries(sessions.map((session) => [session.id, session])),
-        },
-        ordinarySessionListMembershipByServerId: {
-            'server-1': sessions.map((session) => session.id),
-        },
-        sessionListIndexByServerId: {
-            'server-1': sessions.map((session) => ({
-                type: 'session',
-                sessionId: session.id,
-                serverId: 'server-1',
-                serverName: null,
-            })),
-        },
+        sessionsById,
+        sessionListRowsByServerId,
+        ordinarySessionListMembershipByServerId,
+        sessionListIndexByServerId,
         concurrentSessionListCacheByServerId: {},
         activeServerId: 'server-1',
     };

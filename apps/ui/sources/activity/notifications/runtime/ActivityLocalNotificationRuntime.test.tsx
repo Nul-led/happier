@@ -1,9 +1,9 @@
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import renderer, { act } from 'react-test-renderer';
-import { accountSettingsParse } from '@happier-dev/protocol';
 import { createDeferred, createSessionAccessFixture, renderScreen } from '@/dev/testkit';
 import { localSettingsParse } from '@/sync/domains/settings/localSettings';
+import { settingsParse } from '@/sync/domains/settings/settings';
 import {
     createActivityNotificationTextModuleMock,
     installActivityNotificationRuntimeCommonModuleMocks,
@@ -30,7 +30,7 @@ let localSettingsValue: Record<string, unknown> = {
     localNotificationsShowPendingPermissionRequests: true,
     localNotificationsShowPendingUserActionRequests: true,
 };
-let accountSettingsValue = accountSettingsParse({});
+let accountSettingsValue = settingsParse({});
 let sessionsByIdValue: Record<string, unknown> = {
     'session-1': {
         id: 'session-1',
@@ -57,7 +57,7 @@ const sendExpoLocalNotification = vi.hoisted(() => vi.fn(async (_params: ExpoLoc
 const sendTauriLocalNotification = vi.hoisted(() => vi.fn(async () => true));
 
 async function setActiveAccountSettings(raw: Record<string, unknown>): Promise<void> {
-    accountSettingsValue = accountSettingsParse(raw);
+    accountSettingsValue = settingsParse(raw);
     const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
     const accountId = activeServerRuntime.serverId === 'server-b' ? 'account-b' : 'account-a';
     saveAccountSettings({ serverId: activeServerRuntime.serverId, accountId }, accountSettingsValue, 3);
@@ -173,8 +173,8 @@ describe('ActivityLocalNotificationRuntime', () => {
     beforeEach(async () => {
         activeServerRuntime.serverId = 'server-a';
         const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
-        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, accountSettingsParse({}), 1);
-        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({}), 1);
+        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, settingsParse({}), 1);
+        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, settingsParse({}), 1);
     });
 
     afterEach(async () => {
@@ -189,7 +189,7 @@ describe('ActivityLocalNotificationRuntime', () => {
             localNotificationsShowPendingPermissionRequests: true,
             localNotificationsShowPendingUserActionRequests: true,
         };
-        accountSettingsValue = accountSettingsParse({});
+        accountSettingsValue = settingsParse({});
         sessionsByIdValue = {
             'session-1': {
                 id: 'session-1',
@@ -656,13 +656,13 @@ describe('ActivityLocalNotificationRuntime', () => {
 
     it('uses the exact recipient Home policy before and after active-Home switches for equal Session ids', async () => {
         const { saveAccountSettings } = await import('@/sync/domains/state/accountSettingsPersistence');
-        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, accountSettingsParse({
+        saveAccountSettings({ serverId: 'server-a', accountId: 'account-a' }, settingsParse({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 privacy: { defaultPreviewBehavior: 'include_preview' },
             },
         }), 2);
-        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({
+        saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, settingsParse({
             attentionDeliveryPolicyV1: {
                 v: 1,
                 quietHours: {
@@ -716,7 +716,7 @@ describe('ActivityLocalNotificationRuntime', () => {
         }
 
         await act(async () => {
-            saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, accountSettingsParse({
+            saveAccountSettings({ serverId: 'server-b', accountId: 'account-b' }, settingsParse({
                 attentionDeliveryPolicyV1: {
                     v: 1,
                     channels: { local_notification: { enabled: false } },

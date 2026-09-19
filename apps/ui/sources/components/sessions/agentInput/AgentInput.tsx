@@ -321,6 +321,8 @@ function updateViewportMeasurement(
 interface AgentInputProps {
     value: string;
     placeholder: string;
+    /** Accessible name for the text input itself, when the host names each composer. */
+    inputAccessibilityLabel?: string;
     onChangeText: (text: string) => void;
     /** Scope-local observer for the incumbent input's real focus transitions. */
     onComposerFocusChange?: (focused: boolean) => void;
@@ -503,7 +505,8 @@ interface AgentInputProps {
         initialScrollY?: number;
         initialSelection?: TextInputState['selection'];
         restoreToken: string;
-        onScrollYChange: (scrollY: number) => void;
+        /** Omitted by a host that restores the caret but owns no scroll position. */
+        onScrollYChange?: (scrollY: number) => void;
         onSelectionChangePersist: (selection: TextInputState['selection'], textLength: number) => void;
     }>;
     structuredInputMentions?: readonly ComposerStructuredInputMention[];
@@ -2585,7 +2588,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
         const selectedOption = agentPickerOptions.find(
             (option) => option.id === effectiveAgentPickerSelectedOptionId,
         );
-        return selectedOption?.id === armedComposerTarget.backendTargetKey
+        return selectedOption !== undefined && selectedOption.id === armedComposerTarget.backendTargetKey
             ? selectedOption.icon
             : undefined;
     }, [agentPickerOptions, armedComposerTarget, effectiveAgentPickerSelectedOptionId]);
@@ -3310,6 +3313,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         paddingRight={shouldReserveInputExpansionToggleSpace ? INPUT_EXPANSION_TOGGLE_INPUT_PADDING_RIGHT : undefined}
                                         onChangeText={handleComposerTextChange}
                                         placeholder={props.placeholder}
+                                        accessibilityLabel={props.inputAccessibilityLabel}
                                         onKeyPress={handleKeyPress}
                                         onStateChange={handleInputStateChange}
                                         initialScrollY={props.inputPersistence?.initialScrollY}
@@ -3515,6 +3519,7 @@ export const AgentInput = React.memo(React.forwardRef<MultiTextInputHandle, Agen
                                         paddingRight={shouldReserveInputExpansionToggleSpace ? INPUT_EXPANSION_TOGGLE_INPUT_PADDING_RIGHT : undefined}
                                         onChangeText={handleComposerTextChange}
                                         placeholder={props.placeholder}
+                                        accessibilityLabel={props.inputAccessibilityLabel}
                                         onKeyPress={handleKeyPress}
                                         onStateChange={handleInputStateChange}
                                         initialScrollY={props.inputPersistence?.initialScrollY}

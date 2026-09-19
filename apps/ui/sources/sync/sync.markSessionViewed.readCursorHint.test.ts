@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { SessionReadCursorUpdateAck } from '@/sync/api/session/emitSessionReadCursorUpdateWithServerScope';
+
 // Sync imports persistence, which instantiates MMKV. Mock it for deterministic tests.
 const kvStore = vi.hoisted(() => new Map<string, string>());
 vi.mock('react-native-mmkv', () => {
@@ -72,7 +74,9 @@ const emitWithAckMock = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Prom
         readStateV1: { v: 1, sessionSeq: 3, pendingActivityAt: 0, updatedAt: 0 },
     }),
 })));
-const emitReadCursorWithServerScopeMock = vi.hoisted(() => vi.fn(async () => ({ result: 'success' as const })));
+const emitReadCursorWithServerScopeMock = vi.hoisted(() => vi.fn(
+    async (): Promise<SessionReadCursorUpdateAck> => ({ result: 'success' }),
+));
 
 vi.mock('@/sync/api/session/emitSessionReadCursorUpdateWithServerScope', () => ({
     emitSessionReadCursorUpdateWithServerScope: emitReadCursorWithServerScopeMock,

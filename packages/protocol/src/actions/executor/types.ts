@@ -38,6 +38,7 @@ import type {
 import type { ProviderConnectionId } from '../../providers/ids.js';
 import type { BackendTargetRefV1 } from '../../backends/targets/backendTargetRef.js';
 import type { SessionBoardActionIdV1 } from '../../sessions/board/actionIds.js';
+import type { SessionBoardActionPortResultV1 } from '../../sessions/board/actions.js';
 import type { SessionReadStateActionIdV1 } from '../../sessions/readState/actionIds.js';
 import type { CurrentSessionPresentationActionInputV1 } from '../../sessions/presentation/currentSessionPresentationV1.js';
 import type { SessionDiscussionActionIdV1 } from '../../sessions/discussions/actionIds.js';
@@ -1676,7 +1677,7 @@ export type ActionExecutorDeps = Readonly<{
     input: unknown;
     context: ActionExecutorContext;
     signal?: AbortSignal;
-  }>) => Promise<unknown>;
+  }>) => Promise<SessionBoardActionPortResultV1>;
 
   /**
    * One host-stamped current-Session presentation seam. The host resolves the
