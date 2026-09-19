@@ -252,7 +252,7 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
             onRequestClose={props.onClose}
             autoFocusInputOnWeb
             keyboardHintsEnabled
-            heightBehavior="contentDriven"
+            heightBehavior="content"
             showsVerticalScrollIndicator
         />
     </View>;

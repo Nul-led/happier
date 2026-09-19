@@ -1,8 +1,11 @@
 import { z } from 'zod';
 
+import type { AccountScopedCryptoMaterial } from '../crypto/accountScopedCipher.js';
 import { decodeBase64, encodeBase64 } from '../crypto/base64.js';
 import {
   computeRunnerMachineContentKeyFingerprintV1,
+  openRunnerMachineContentKeyVerifierFactV1,
+  readRunnerMachineContentKeyBindingSignedPayloadV1,
   RunnerMachineContentKeyBindingV1Schema,
   verifyRunnerMachineContentKeyBindingV1,
 } from '../ephemeralRunner/machineContentKeyBinding.js';
@@ -149,17 +152,30 @@ export type ExpectedRunnerMachineContentKeyBindingV1 = Readonly<{
   creatorAccountId: string;
   /** Exact Machine selected by the caller; never accepted from the Home-published binding. */
   machineId: string;
-  /** Trusted local Account signing identity, not a Home-published Machine field. */
-  accountSigningPublicKeyBase64Url: string;
+  /**
+   * Creator-device custody verifier. Present only on the creating device; a
+   * Home-published Machine field is never accepted here.
+   */
+  accountSigningPublicKeyBase64Url?: string;
+  /**
+   * Account E2EE material of the reading device. Any authorized device of the
+   * creator Account uses it to open the creator-sealed verifier fact carried by
+   * the binding, which is how a non-creating device or daemon reaches the same
+   * verifier identity. The Home holds no such material and cannot forge one.
+   */
+  accountScopedMaterial?: AccountScopedCryptoMaterial;
 }>;
 
 /**
  * The single post-envelope-open decision for published Machine content keys.
  *
  * Persistent Machines retain the released absent-envelope Account-key fallback.
- * A Runner never does: its opened key is usable only when a locally trusted
- * creator signing identity authenticates the strict binding. Home, creator,
- * and exact Machine come from caller scope; activation and installation are
+ * A Runner never does: its opened key is usable only when a creator signing
+ * identity the reader trusts independently of the Home authenticates the strict
+ * binding. That identity is the creating device's own custody record, or — for
+ * any other authorized device of the same Account — the creator-sealed verifier
+ * fact opened with Account material the Home never holds. Home, creator, and
+ * exact Machine come from caller scope; activation and installation are
  * accepted only as signed values, with installation also matching the row.
  */
 export function resolvePublishedMachineDataEncryptionKeyV1(params: Readonly<{
@@ -225,12 +241,21 @@ export function resolvePublishedMachineDataEncryptionKeyV1(params: Readonly<{
     || binding.data.machineContentKeyFingerprint
       !== computeRunnerMachineContentKeyFingerprintV1(openedDataEncryptionKey)
   ) return { status: 'unavailable' };
-  const { accountSignatureBase64Url: _signature, ...authenticatedPayload } = binding.data;
+  const authenticatedPayload = readRunnerMachineContentKeyBindingSignedPayloadV1(binding.data);
+  const expectedAccountSigningPublicKey = expected.accountSigningPublicKeyBase64Url
+    ?? (expected.accountScopedMaterial
+      ? openRunnerMachineContentKeyVerifierFactV1({
+        ciphertext: binding.data.creatorVerifierFactCiphertext,
+        material: expected.accountScopedMaterial,
+        expectedActivationId: binding.data.activationId,
+        expectedMachineId: expected.machineId,
+      })
+      : null);
+  if (!authenticatedPayload || !expectedAccountSigningPublicKey) return { status: 'unavailable' };
   const verified = verifyRunnerMachineContentKeyBindingV1({
     binding: binding.data,
     expectedPayload: authenticatedPayload,
-    expectedAccountSigningPublicKey:
-      expected.accountSigningPublicKeyBase64Url,
+    expectedAccountSigningPublicKey,
   });
   return verified
     ? { status: 'e2ee', dataKey: openedDataEncryptionKey }

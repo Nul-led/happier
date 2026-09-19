@@ -118,6 +118,27 @@ async function repairSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
     });
 }
 
+async function repairCatalogedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+    scope: ServerAccountScope;
+    resource: HealthySavedSecretResourceMaterialV1;
+    expectedRevision: number;
+    decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
+}>): Promise<void> {
+    if (!params.resource.recipientEnvelope) return;
+    const resourceDataKey = await params.decryptDataKeyEnvelope(params.resource.recipientEnvelope.encryptedDataKey);
+    if (!resourceDataKey) return;
+    try {
+        await repairSavedSecretResourceEnvelopesBestEffort({
+            scope: params.scope,
+            resourceId: params.resource.resourceId,
+            expectedRevision: params.expectedRevision,
+            resourceDataKey,
+        });
+    } finally {
+        resourceDataKey.fill(0);
+    }
+}
+
 async function repairApprovedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
     scope: ServerAccountScope;
     resourceId: string;
@@ -130,18 +151,49 @@ async function repairApprovedSavedSecretResourceEnvelopesBestEffort(params: Read
         isHealthySavedSecretResourceMaterialV1(candidate)
         && candidate.resourceId === params.resourceId
     ));
-    if (!resource?.recipientEnvelope || resource.entry.revision !== params.expectedRevision) return;
-    const resourceDataKey = await params.decryptDataKeyEnvelope(resource.recipientEnvelope.encryptedDataKey);
-    if (!resourceDataKey) return;
-    try {
-        await repairSavedSecretResourceEnvelopesBestEffort({
+    if (!resource || resource.entry.revision !== params.expectedRevision) return;
+    await repairCatalogedSavedSecretResourceEnvelopesBestEffort({
+        scope: params.scope,
+        resource,
+        expectedRevision: params.expectedRevision,
+        decryptDataKeyEnvelope: params.decryptDataKeyEnvelope,
+    });
+}
+
+/**
+ * Prepares the envelopes this Account owes as a custodian, without changing any
+ * resource.
+ *
+ * A recipient becomes able to open a shared Saved Secret only once the
+ * custodian has wrapped its data key for that recipient's content key, and the
+ * mutation paths do that only for the mutation they are already performing. A
+ * recipient who became E2EE-ready afterwards — or whose own content key
+ * changed — therefore waits for a custodian mutation that may never come. This
+ * sweep closes that gap from the Saved Secrets surface: it asks the Home's
+ * census which authorized recipients are ready and still lack a usable
+ * envelope, and prepares exactly those.
+ *
+ * Both Home routes it reaches are custodian-only and E2EE-only, so a resource
+ * received from someone else, or one this Account keeps in plaintext, is not
+ * asked about at all.
+ */
+export async function repairCustodiedSavedSecretResourceEnvelopesBestEffort(params: Readonly<{
+    scope: ServerAccountScope;
+    decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
+}>): Promise<void> {
+    const catalog = await readSavedSecretCatalog(params.scope);
+    if (!catalog.ok) return;
+    for (const candidate of catalog.resources) {
+        if (!isHealthySavedSecretResourceMaterialV1(candidate)) continue;
+        if (candidate.encryptionMode !== 'e2ee' || candidate.entry.relationship !== 'owner') continue;
+        const expectedRevision = candidate.entry.revision;
+        if (expectedRevision === null) continue;
+        await repairCatalogedSavedSecretResourceEnvelopesBestEffort({
             scope: params.scope,
-            resourceId: params.resourceId,
-            expectedRevision: params.expectedRevision,
-            resourceDataKey,
-        });
-    } finally {
-        resourceDataKey.fill(0);
+            resource: candidate,
+            expectedRevision,
+            decryptDataKeyEnvelope: params.decryptDataKeyEnvelope,
+        }).catch(() => undefined);
     }
 }
 

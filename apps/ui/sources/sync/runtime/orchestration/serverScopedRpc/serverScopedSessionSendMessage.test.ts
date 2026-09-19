@@ -199,7 +199,7 @@ describe('sendSessionMessageWithServerScope', () => {
     expect(JSON.stringify(writes)).toContain('provider/claude-sonnet');
     expect(storage.getState().sessions.same).toEqual(activeSession);
   });
-  beforeEach(() => {
+  beforeEach(async () => {
     await resetPendingQueueState();
     kvStore.clear();
     serverFeaturesSnapshotMock.mockReset();

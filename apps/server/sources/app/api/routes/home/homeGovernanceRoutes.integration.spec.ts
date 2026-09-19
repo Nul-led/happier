@@ -495,7 +495,13 @@ describe("Home governance routes", () => {
             const response = await post(app, "/v1/home/governance/get", owner.token, {});
             expect(response.statusCode).toBe(200);
             expect(response.json().authenticationOptions).toMatchObject({
-                methods: [expect.objectContaining({ id: "key_challenge" })],
+                // Native email/password is on by default, so a deployment that
+                // sets no `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__*` key still
+                // projects it; the endpoint-leak assertion below is the subject.
+                methods: [
+                    expect.objectContaining({ id: "key_challenge" }),
+                    expect.objectContaining({ id: "email_password" }),
+                ],
                 permittedAccountModes: ["e2ee"],
                 recommendedProvisioningMode: "e2ee",
                 signInService: { deploymentMode: "external", canDisable: true },

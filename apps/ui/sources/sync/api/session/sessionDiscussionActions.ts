@@ -72,7 +72,6 @@ export async function listSessionDiscussionMentionCandidates(params: Readonly<{
         ...(params.cursor !== undefined ? { cursor: params.cursor } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
     }, {
-        scope: params.scope,
         availability: params.availability,
         ...(params.signal ? { signal: params.signal } : {}),
     });

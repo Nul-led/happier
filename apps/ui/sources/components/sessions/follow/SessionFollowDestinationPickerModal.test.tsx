@@ -48,12 +48,12 @@ vi.mock('@/sync/domains/session/listing/sessionListIndexPresentation', () => ({
 vi.mock('@/sync/domains/server/serverProfiles', () => ({ getServerProfileById: () => ({ name: 'Home' }) }));
 vi.mock('@/modal/components/card/useModalCardChrome', () => ({ useModalCardChrome: () => undefined }));
 vi.mock('@/components/ui/selectionList', () => ({
-    SelectionList: (props: unknown) => React.createElement('SelectionList', props),
+    SelectionList: (props: Record<string, unknown>) => React.createElement('SelectionList', props),
 }));
 vi.mock('@/components/ui/lists/Item', () => ({
-    Item: (props: unknown) => React.createElement('Item', props),
+    Item: (props: Record<string, unknown>) => React.createElement('Item', props),
 }));
-vi.mock('@/components/ui/text/Text', () => ({ Text: (props: unknown) => React.createElement('Text', props) }));
+vi.mock('@/components/ui/text/Text', () => ({ Text: (props: Record<string, unknown>) => React.createElement('Text', props) }));
 
 describe('SessionFollowDestinationPickerModal', () => {
     beforeEach(() => {

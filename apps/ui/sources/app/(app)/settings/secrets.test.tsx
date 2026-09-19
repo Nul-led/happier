@@ -14,6 +14,8 @@ const testState = vi.hoisted(() => ({
     deleteCorruptResource: vi.fn(),
     updateSavedSecretResource: vi.fn(),
     promotePersonalSavedSecretResource: vi.fn(),
+    repairCustodiedSavedSecretResourceEnvelopesBestEffort: vi.fn(async () => undefined),
+    encryption: null as null | Readonly<{ decryptEncryptionKey: (value: string, scope: unknown) => Promise<Uint8Array | null> }>,
 }));
 
 vi.mock('expo-router', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -61,11 +63,16 @@ vi.mock('@/sync/store/settingsWriters', () => ({
     useAccountSettingsScope: () => ({ serverId: 'home-a', accountId: 'account-a' }),
 }));
 vi.mock('@/sync/store/hooks', () => ({ useSettingsVersion: () => 1 }));
-vi.mock('@/sync/runtime/getSyncSingleton', () => ({ getSyncSingleton: () => ({ encryption: null }) }));
+vi.mock('@/sync/runtime/getSyncSingleton', () => ({ getSyncSingleton: () => ({ encryption: testState.encryption }) }));
+vi.mock('@react-navigation/native', async () => {
+    const { createReactNavigationNativeMock } = await import('@/dev/testkit/mocks/reactNavigation');
+    return createReactNavigationNativeMock();
+});
 vi.mock('@/sync/ops/settings/savedSecretResourceOperations', () => ({
     deleteSavedSecretResource: vi.fn(),
     promotePersonalSavedSecretResource: testState.promotePersonalSavedSecretResource,
     updateSavedSecretResource: testState.updateSavedSecretResource,
+    repairCustodiedSavedSecretResourceEnvelopesBestEffort: testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort,
 }));
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     isTeamActionApprovalPendingError: () => false,
@@ -85,6 +92,9 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.deleteCorruptResource.mockReset();
         testState.updateSavedSecretResource.mockReset();
         testState.promotePersonalSavedSecretResource.mockReset();
+        testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort.mockReset();
+        testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort.mockResolvedValue(undefined);
+        testState.encryption = null;
     });
 
     it('opens the grant picker for a still-personal secret and converts nothing until it is saved', async () => {
@@ -206,5 +216,30 @@ describe('SecretsSettingsScreen shared feature decision', () => {
             expect.objectContaining({ destructive: true }),
         );
         expect(testState.deleteCorruptResource).toHaveBeenCalledWith(ownerCorrupt);
+    });
+    it('prepares the envelopes this custodian owes when the surface is opened', async () => {
+        testState.sharedEnabled = true;
+        const decryptEncryptionKey = vi.fn(async () => new Uint8Array(32).fill(3));
+        testState.encryption = { decryptEncryptionKey };
+        const Screen = (await import('./secrets')).default;
+        await renderScreen(<Screen />);
+
+        expect(testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort).toHaveBeenCalledWith({
+            scope: { serverId: 'home-a', accountId: 'account-a' },
+            decryptDataKeyEnvelope: expect.any(Function),
+        });
+        // The sweep opens the resource key through this Account's own content
+        // key; it never receives raw key material from the surface.
+        const [{ decryptDataKeyEnvelope }] = testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort.mock.calls[0];
+        await decryptDataKeyEnvelope('owner-envelope');
+        expect(decryptEncryptionKey).toHaveBeenCalledWith('owner-envelope', { serverId: 'home-a', accountId: 'account-a' });
+    });
+
+    it('asks a plaintext Account for nothing, since it custodies no envelopes at all', async () => {
+        testState.sharedEnabled = true;
+        const Screen = (await import('./secrets')).default;
+        await renderScreen(<Screen />);
+
+        expect(testState.repairCustodiedSavedSecretResourceEnvelopesBestEffort).not.toHaveBeenCalled();
     });
 });

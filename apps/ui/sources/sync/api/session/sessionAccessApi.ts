@@ -236,15 +236,18 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
     actionId: ActionId;
     input: unknown;
 }>): Promise<unknown> {
-    if (!isSessionAccessActionAvailable(params.availability, params.actionId)) {
+    // Hold the narrowed family id in a const so the guard below survives into
+    // the request closures, which cannot re-narrow a property of `params`.
+    const actionId = params.actionId;
+    if (!isSessionAccessActionAvailable(params.availability, actionId)) {
         throw new SessionAccessApiError('unsupported_action');
     }
-    const spec = getActionSpec(params.actionId);
+    const spec = getActionSpec(actionId);
     if (!spec.serverTransport || !spec.outputSchema) throw new SessionAccessApiError('unsupported_action');
-    if (!isSessionAccessActionIdV1(params.actionId)) throw new SessionAccessApiError('unsupported_action');
+    if (!isSessionAccessActionIdV1(actionId)) throw new SessionAccessApiError('unsupported_action');
     const publicInput = spec.inputSchema.parse(params.input);
     if (params.availability === 'direct_only'
-        && (params.actionId === 'session.access.grant.set' || params.actionId === 'session.access.grant.remove')
+        && (actionId === 'session.access.grant.set' || actionId === 'session.access.grant.remove')
         && (publicInput as { subject: PrincipalRefV1 }).subject.kind !== 'account') {
         // The released compatibility transport owns direct Account shares only.
         // Reject current Team/Group subjects before resolving credentials or
@@ -269,18 +272,18 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
             activeRequest: async () => { throw new SessionAccessApiError('session_access_stale_scope'); },
         }, async authority => {
             check();
-            if (params.availability === 'direct_only' && params.actionId.startsWith('session.access.')) {
+            if (params.availability === 'direct_only' && actionId.startsWith('session.access.')) {
                 const { executeLegacySessionAccessAction } = await import('./sessionAccessLegacyAdapter');
-                const value = await executeLegacySessionAccessAction({ authority, actionId: params.actionId, input: publicInput, check, signal });
+                const value = await executeLegacySessionAccessAction({ authority, actionId, input: publicInput, check, signal });
                 check();
                 return spec.outputSchema!.parse(value);
             }
-            const publicBound = bindSessionAccessActionHttpRequestV1(params.actionId, publicInput);
+            const publicBound = bindSessionAccessActionHttpRequestV1(actionId, publicInput);
             let physicalMutation: SessionGrantMutationV1 | null = null;
             let publicLinkMaterial: Readonly<{ token: string; encryptedDataKey?: string }> | null = null;
             let retainedEnvelopeFallback = false;
             let checkMaterializationCurrentness = check;
-            if (params.actionId === 'session.public_link.create') {
+            if (actionId === 'session.public_link.create') {
                 const { sessionId } = publicInput as { sessionId: string };
                 const materialized = await materializePublicLinkCreateMaterial({ authority, check, sessionId });
                 publicLinkMaterial = materialized.encryptedDataKey === undefined
@@ -289,7 +292,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
                 checkMaterializationCurrentness = materialized.checkCurrentness;
                 params.onPublicLinkBearerIssued?.(materialized.token);
             }
-            if (params.actionId === 'session.access.grant.set') {
+            if (actionId === 'session.access.grant.set') {
                 const { sessionId, ...grant } = publicInput as Record<string, unknown> & { sessionId: string };
                 const materialized = await materializeDirectAccountEnvelope({
                     authority,
@@ -304,8 +307,13 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
             // The public Action remains key-free and bearer-free. Only this
             // trusted execution host extends the already-bound physical request
             // with recipient ciphertext or publication material.
-            const physicalExtras = physicalMutation?.accountEnvelopeInput
-                ? { accountEnvelopeInput: physicalMutation.accountEnvelopeInput }
+            // Only the Account arm of the physical mutation carries recipient
+            // ciphertext; Team and Group subjects have no envelope to extend.
+            const accountEnvelopeInput = physicalMutation && 'accountEnvelopeInput' in physicalMutation
+                ? physicalMutation.accountEnvelopeInput
+                : undefined;
+            const physicalExtras = accountEnvelopeInput
+                ? { accountEnvelopeInput }
                 : publicLinkMaterial;
             const bound = physicalExtras && publicBound.body && typeof publicBound.body === 'object'
                 ? { ...publicBound, body: { ...publicBound.body, ...physicalExtras } }
@@ -328,7 +336,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
                     { onIssued: () => { requestIssued = true; } },
                 );
             } catch (error) {
-                if (params.actionId === 'session.public_link.create'
+                if (actionId === 'session.public_link.create'
                     && requestIssued
                     && !signal?.aborted) {
                     try {
@@ -352,7 +360,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
             const payload: unknown = await response.json().catch(() => null);
             check();
             if (!response.ok) {
-                if (params.actionId === 'session.public_link.remove'
+                if (actionId === 'session.public_link.remove'
                     && response.status === 404
                     && (payload as Readonly<Record<string, unknown>> | null)?.error === 'Share not found') {
                     // The desired state already holds; publication removal is idempotent.
@@ -367,7 +375,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
                 );
             }
             try {
-                if (params.actionId === 'session.public_link.remove') {
+                if (actionId === 'session.public_link.remove') {
                     // The released owner acknowledges removal with `success`;
                     // anything else leaves the committed outcome unproven.
                     if ((payload as Readonly<Record<string, unknown>> | null)?.success !== true) {
@@ -375,7 +383,7 @@ export async function executeSessionAccessHttpAction(params: SessionAccessReques
                     }
                     return spec.outputSchema!.parse({ changed: true });
                 }
-                const value = params.actionId === 'session.public_link.get' || params.actionId === 'session.public_link.create'
+                const value = actionId === 'session.public_link.get' || actionId === 'session.public_link.create'
                     ? projectSessionPublicLinkActionResultV1(payload) : payload;
                 return spec.outputSchema!.parse(value);
             } catch (error) {

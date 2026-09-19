@@ -41,7 +41,7 @@ async function activateServerAccount(serverUrl: string, accountId: string) {
     const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
     const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
 
-    const server = upsertAndActivateServer({
+    const server = await upsertAndActivateServer({
         serverUrl,
         source: 'manual',
         scope: 'device',

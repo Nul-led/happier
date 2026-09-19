@@ -1314,6 +1314,38 @@ describe('Happier SDK client', () => {
     });
   });
 
+  it('adds a same-Machine project to machine-bound Workflow start transport', async () => {
+    const fetch = vi.fn(async (_url: string, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'workflow.run.start',
+      execution: { ok: true, result: { run: {}, admission: 'created' } },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    const input = {
+      runId: '11111111-1111-4111-8111-111111111111',
+      source: { kind: 'inline' as const, definition: { blocks: ['work'] } },
+    };
+
+    await client.machine('machine-1').actions.workflow.run.start(input, {
+      project: { machineId: 'machine-1', directory: '/repo' },
+    });
+    expect(JSON.parse(String(fetch.mock.calls[0]?.[1]?.body))).toMatchObject({
+      target: {
+        kind: 'machine',
+        machineId: 'machine-1',
+        project: { machineId: 'machine-1', directory: '/repo' },
+      },
+      input,
+    });
+
+    fetch.mockClear();
+    await expect(client.machine('machine-1').actions.workflow.run.start(input, {
+      project: { machineId: 'machine-2', directory: '/repo' },
+    })).rejects.toMatchObject({ code: 'machine_target_conflict' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('publishes all six Machine Pool methods without changing caller-owned retry identities', async () => {
     const calls: Array<{ actionId: string; input: unknown }> = [];
     const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
@@ -1488,6 +1520,11 @@ describe('Happier SDK client', () => {
       PublicActionInputById['session.spawn_new']['agentModeId']
     >();
     expectTypeOf<HappierSessionSpawnInput['agent']>().toEqualTypeOf<string>();
+    // Raw launch environment reaches the daemon verbatim on this direct-to-daemon path; the
+    // browser-safe server-start draft is where `sessionSpawnNewInputV2.ts` omits it instead.
+    expectTypeOf<HappierSessionSpawnInput['environmentVariables']>().toEqualTypeOf<
+      PublicActionInputById['session.spawn_new']['environmentVariables']
+    >();
 
     const input = {
       directory: '/repo',
@@ -1496,12 +1533,6 @@ describe('Happier SDK client', () => {
       agentModeId: 'review',
       title: 'External agent session',
     } as const satisfies HappierSessionSpawnInput;
-
-    const rawEnvironmentConflict: HappierSessionSpawnInput = {
-      ...input,
-      // @ts-expect-error Raw environment values are not part of the public Session spawn contract.
-      environmentVariables: { TOKEN: 'secret' },
-    };
 
     // @ts-expect-error The target is supplied only by machine(machineId).
     const targetConflict: HappierSessionSpawnInput = { ...input, executionTarget: { serverId: 'wrong', machineId: 'other' } };
@@ -1513,7 +1544,6 @@ describe('Happier SDK client', () => {
         identity: { pluginId: 'happier.agent.codex', localId: 'codex' },
       },
     };
-    void rawEnvironmentConflict;
     void targetConflict;
     void agentTargetConflict;
 

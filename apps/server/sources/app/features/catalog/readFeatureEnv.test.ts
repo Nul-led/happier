@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  readAuthEmailPasswordFeatureEnv,
   readAuthMtlsFeatureEnv,
   readAuthFeatureEnv,
   readConnectedServicesFeatureEnv,
@@ -135,6 +136,22 @@ describe('shipped Session program feature env readers', () => {
     expect(readSessionEphemeralRunnerFeatureEnv({
       HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED: '0',
     }).ephemeralRunnerEnabled).toBe(false);
+  });
+});
+
+describe('readAuthEmailPasswordFeatureEnv', () => {
+  // Native email/password is a shipped authentication method, not a staged
+  // rollout. The functional deciders are the persisted Home governance policy
+  // (`enabledMethodIds`) and transactional-mail readiness; these env keys are
+  // only the operator opt-out, the same shape as `teams` and `search`.
+  it('defaults both deployment values on and honors the operator opt-outs', () => {
+    expect(readAuthEmailPasswordFeatureEnv({})).toEqual({ enabled: true, provisionEnabled: true });
+    expect(readAuthEmailPasswordFeatureEnv({
+      HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '0',
+    }).enabled).toBe(false);
+    expect(readAuthEmailPasswordFeatureEnv({
+      HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: 'false',
+    }).provisionEnabled).toBe(false);
   });
 });
 

@@ -5,6 +5,8 @@ import { encodeBase64 } from '../crypto/base64.js';
 import { RunnerRuntimeBootstrapV1Schema } from './bootstrap.js';
 import {
   computeRunnerMachineContentKeyFingerprintV1,
+  openRunnerMachineContentKeyVerifierFactV1,
+  sealRunnerMachineContentKeyVerifierFactV1,
   signRunnerMachineContentKeyBindingV1,
   verifyRunnerMachineContentKeyBindingV1,
 } from './machineContentKeyBinding.js';
@@ -92,6 +94,52 @@ describe('Runner authority contracts', () => {
       })).toBeNull();
     }
     expect(verifyRunnerMachineContentKeyBindingV1({ binding: { ...binding, authority: 'account' }, expectedPayload: payload, expectedAccountSigningPublicKey: expectedKey })).toBeNull();
+
+    // The creator-sealed verifier fact rides beside the signature. It changes
+    // no signed byte, and it cannot re-point the proof: a reader that opens a
+    // different identity from it simply fails to verify.
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(11) };
+    const carried = {
+      ...binding,
+      creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+        payload: {
+          v: 1,
+          activationId: payload.activationId,
+          machineId: payload.machineId,
+          activationSigningPublicKey: expectedKey,
+        },
+        material,
+        randomBytes: (length: number) => new Uint8Array(length).fill(3),
+      }),
+    };
+    expect(carried.accountSignatureBase64Url).toBe(binding.accountSignatureBase64Url);
+    expect(verifyRunnerMachineContentKeyBindingV1({ binding: carried, expectedPayload: payload, expectedAccountSigningPublicKey: expectedKey })).toEqual(carried);
+    expect(openRunnerMachineContentKeyVerifierFactV1({
+      ciphertext: carried.creatorVerifierFactCiphertext,
+      material,
+      expectedActivationId: payload.activationId,
+      expectedMachineId: payload.machineId,
+    })).toBe(expectedKey);
+    // Another Account's material, another Runner's identities, and a missing
+    // fact all resolve nothing rather than a verifier the Home chose.
+    expect(openRunnerMachineContentKeyVerifierFactV1({
+      ciphertext: carried.creatorVerifierFactCiphertext,
+      material: { type: 'dataKey', machineKey: new Uint8Array(32).fill(12) },
+      expectedActivationId: payload.activationId,
+      expectedMachineId: payload.machineId,
+    })).toBeNull();
+    expect(openRunnerMachineContentKeyVerifierFactV1({
+      ciphertext: carried.creatorVerifierFactCiphertext,
+      material,
+      expectedActivationId: '00000000-0000-4000-8000-000000000008',
+      expectedMachineId: payload.machineId,
+    })).toBeNull();
+    expect(openRunnerMachineContentKeyVerifierFactV1({
+      ciphertext: null,
+      material,
+      expectedActivationId: payload.activationId,
+      expectedMachineId: payload.machineId,
+    })).toBeNull();
   });
 
   it('keeps Plain bootstrap keyless and requires both scoped keys for E2EE', () => {

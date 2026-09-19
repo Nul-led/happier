@@ -511,7 +511,13 @@ describe('createCliActionExecutor', () => {
     fetchSessionById.mockReset();
     fetchSessionsPage.mockReset();
     lookupSessionsByTags.mockReset();
-    lookupSessionsByTags.mockResolvedValue({ state: 'unavailable' });
+    // `state: 'unavailable'` is produced only by a server that 404s
+    // `/v2/sessions/lookup-by-tags` (`sessionsHttp.ts:396-401`), and the current
+    // server registers that route (`registerSessionLookupByTagsRoute.ts:26`).
+    // Deterministic V2 creation reads this before spawning
+    // (`createSpawnedSession.ts:920-928`), so the default must answer as the
+    // real server does; a test that wants the missing-route direction overrides it.
+    lookupSessionsByTags.mockResolvedValue({ state: 'available', tags: [], sessions: [] });
     updateSessionMetadataWithRetry.mockReset();
     sendSessionMessage.mockReset();
     requestSessionStop.mockReset();
@@ -1968,6 +1974,7 @@ describe('createCliActionExecutor', () => {
         terminal: { mode: 'tmux' },
         title: 'Happier Test',
         initialInput: { text: 'Hello rich session' },
+        environmentVariables: { TOKEN: 'raw-launch-value' },
       }),
       { surface: 'cli', defaultSessionId: 'sess-1' },
     );
@@ -2004,7 +2011,10 @@ describe('createCliActionExecutor', () => {
       terminal: { mode: 'tmux' },
       initialTitle: 'Happier Test',
     });
-    expect(richSpawnCall?.request).not.toHaveProperty('environmentVariables');
+    // `session create --env KEY=VALUE` reaches the daemon spawn verbatim.
+    expect(richSpawnCall?.request).toMatchObject({
+      environmentVariables: { TOKEN: 'raw-launch-value' },
+    });
     expect(richSpawnCall?.request).not.toHaveProperty('runtimeDescriptorV1');
     expect(richSpawnCall?.request).not.toHaveProperty('windowsTerminalWindowName');
     expect(sendSessionMessage).toHaveBeenCalledWith(expect.objectContaining({

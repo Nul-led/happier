@@ -99,7 +99,26 @@ describe('useTeamCredentialSelectionCoordinator', () => {
         expect(alertMock).toHaveBeenCalledWith('common.error', 'teams.credentials.edit.conflict');
     });
 
-    it.each(['preparing', 'current', 'stale', 'revoked'] as const)(
+    it('asks a first-time recipient to confirm even once the custodian has published direct material', async () => {
+        const { useTeamCredentialSelectionCoordinator } = await import('./useTeamCredentialSelectionCoordinator');
+        const hook = await renderHook(() => useTeamCredentialSelectionCoordinator('home-1'));
+        // `preparing` is the same pre-disclosure position as `never_delivered`:
+        // the server reaches it only when this recipient holds no material and
+        // has no retained first-disclosure Activity, and the custodian has
+        // merely published the source versions the envelopes will come from.
+        const outcome = await hook.getCurrent()({ resource: resource('preparing'), deliveryMode: 'direct', selection, isCurrent: () => true });
+        expect(confirmMock).toHaveBeenCalledWith(
+            'teams.credentials.directUse.title',
+            'teams.credentials.directUse.body',
+            {
+                confirmText: 'common.continue',
+                cancelText: 'common.cancel',
+            },
+        );
+        expect(outcome).toMatchObject({ kind: 'continue', selection });
+    });
+
+    it.each(['current', 'stale', 'revoked'] as const)(
         'does not repeat the disclosure after retained history projects %s',
         async (directMaterialState) => {
             const { useTeamCredentialSelectionCoordinator } = await import('./useTeamCredentialSelectionCoordinator');

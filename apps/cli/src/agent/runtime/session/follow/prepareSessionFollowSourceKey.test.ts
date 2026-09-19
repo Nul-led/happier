@@ -70,12 +70,33 @@ describe('prepareSessionFollowSourceKey', () => {
     expect(callExactMachineRpc).not.toHaveBeenCalled();
   });
 
-  it('reports current DataKey credentials as waiting without opening an unverified Runner carrier', async () => {
+  it('prepares with DataKey credentials through the same independently trusted Runner scope', async () => {
+    // The verifier identity is the creator-sealed fact on the published
+    // binding, so a DataKey daemon reaches the same proof a legacy one does.
+    callExactMachineRpc.mockResolvedValue({ v: 1, outcome: 'installed' });
+    await expect(prepareSessionFollowSourceKey({
+      credentials: dataKeyCredentials,
+      homeServerIdentityId: 'home-1',
+      machineId: 'machine-1',
+      sourceSessionId: 'source',
+      destinationSessionId: 'destination',
+      sourceDataEncryptionKey: new Uint8Array(32).fill(9),
+    })).resolves.toEqual({ kind: 'prepared' });
+    expect(callExactMachineRpc).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRunnerMachineContentKeyBinding: {
+        homeServerIdentityId: 'home-1',
+        creatorAccountId: 'account-1',
+        machineId: 'machine-1',
+      },
+    }));
+  });
+
+  it('reports a token-only daemon as waiting without opening an unverified Runner carrier', async () => {
     callExactMachineRpc.mockRejectedValue(Object.assign(new Error('unverified Runner key'), {
       code: 'machine_content_key_unavailable',
     }));
     await expect(prepareSessionFollowSourceKey({
-      credentials: dataKeyCredentials,
+      credentials: { token: credentials.token, encryption: null },
       homeServerIdentityId: 'home-1',
       machineId: 'machine-1',
       sourceSessionId: 'source',

@@ -27,6 +27,7 @@ export type AccountScopedBlobKind =
   | 'plugin_account_kv_private_payload'
   | 'review_comment_event_sensitive'
   | 'review_comment_sensitive'
+  | 'runner_machine_content_key_verifier'
   | 'session_first_intent'
   | 'session_owner_metadata'
   | 'session_organization_display'
@@ -71,6 +72,7 @@ const ACCOUNT_SCOPED_KIND_BYTE = Object.freeze({
   workflow_invocation_progress: 29,
   workflow_checkpoint: 30,
   workflow_final_result: 31,
+  runner_machine_content_key_verifier: 32,
 } satisfies Record<AccountScopedBlobKind, number>);
 
 /**

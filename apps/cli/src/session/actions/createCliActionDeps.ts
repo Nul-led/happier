@@ -2749,6 +2749,7 @@ export function createCliActionDeps(params: Readonly<{
       title,
       initialInput,
       agentSessionStartupInstructionsV1,
+      environmentVariables,
       sessionCreationTag,
       sourceContext,
       legacyMetadataLabel,
@@ -3078,6 +3079,10 @@ export function createCliActionDeps(params: Readonly<{
           ...(resolvedModelSelection ? { modelSelection: resolvedModelSelection } : {}),
           ...(profileId ? { profileId } : {}),
           ...(secretReferenceOverlay ? { secretReferenceOverlay } : {}),
+          // Raw launch environment is deliberately absent from the
+          // server-visible creation correspondence above; it reaches only this
+          // direct-to-daemon spawn.
+          ...(environmentVariables ? { environmentVariables } : {}),
           ...(resolvedPermissionMode ? { permissionMode: resolvedPermissionMode } : {}),
           ...(resolvedAgentModeId ? { agentModeId: resolvedAgentModeId } : {}),
           ...(normalizedConfigurationOverrides

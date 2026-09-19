@@ -80,6 +80,13 @@ export const SessionSpawnNewInputV2Schema = z.object({
    * degradation, not compatibility by silent ignore.
    */
   sourceContext: SessionSpawnSourceContextV1Schema.optional(),
+  /**
+   * Raw launch environment forwarded verbatim to the spawned process. Only the
+   * CLI's direct-to-daemon path may carry it: the browser-safe server-start
+   * draft below omits it so values never enter server-visible creation state.
+   * Bounds match the handoff resume plan's environment contract.
+   */
+  environmentVariables: z.record(z.string().min(1).max(128), z.string().max(16 * 1024)).optional(),
 }).strict();
 
 export type SessionSpawnNewInputV2 = z.infer<typeof SessionSpawnNewInputV2Schema>;
@@ -92,9 +99,10 @@ export type SessionSpawnNewInputV2 = z.infer<typeof SessionSpawnNewInputV2Schema
 export const SessionServerStartSpawnDraftV1Schema = SessionSpawnNewInputV2Schema.omit({
   creationKey: true,
   initialInput: true,
+  environmentVariables: true,
 }).strict();
 
 export type SessionServerStartSpawnDraftV1 = Omit<
   SessionSpawnNewInputV2,
-  'creationKey' | 'initialInput'
+  'creationKey' | 'initialInput' | 'environmentVariables'
 >;

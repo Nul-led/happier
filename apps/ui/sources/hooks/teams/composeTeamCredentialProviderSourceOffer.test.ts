@@ -1,12 +1,33 @@
 import { describe, expect, it } from 'vitest';
+import { ProviderConnectionIdSchema, ProviderConnectionSecurityFingerprintV1Schema } from '@happier-dev/protocol';
+
 import {
     composeTeamCredentialProviderSourceOffer,
     isTeamCredentialProviderSourceOfferCurrent,
 } from './composeTeamCredentialProviderSourceOffer';
+import type { TeamCredentialProviderSourceOfferV1 } from './useTeamCredentialProviderSourceOffers';
+
+/** The daemon route witness carries branded Provider identities; fixtures parse them once. */
+function providerOffer(input: Readonly<{
+    machineId: string;
+    serverId: string | null;
+    machineDisplayName: string | null;
+    connectionId: string;
+    connectionSecurityFingerprint: string;
+    credentialSlotId: string;
+    label: string;
+}>): TeamCredentialProviderSourceOfferV1 {
+    return {
+        ...input,
+        connectionId: ProviderConnectionIdSchema.parse(input.connectionId),
+        connectionSecurityFingerprint:
+            ProviderConnectionSecurityFingerprintV1Schema.parse(input.connectionSecurityFingerprint),
+    };
+}
 
 describe('composeTeamCredentialProviderSourceOffer', () => {
     it('projects only the exact content-free Provider source witness', () => {
-        const result = composeTeamCredentialProviderSourceOffer([], [{
+        const result = composeTeamCredentialProviderSourceOffer([], [providerOffer({
             machineId: 'machine-work',
             serverId: 'server-home',
             machineDisplayName: 'Workstation',
@@ -14,7 +35,7 @@ describe('composeTeamCredentialProviderSourceOffer', () => {
             connectionSecurityFingerprint: 'connection-security:v1:current',
             credentialSlotId: 'apiKey',
             label: 'Work gateway',
-        }]);
+        })]);
         expect(result).toEqual([{
             selectionId: '["provider-source-offer",1,"server-home","machine-work","pc-work","apiKey","connection-security:v1:current"]',
             candidate: {
@@ -46,13 +67,13 @@ describe('composeTeamCredentialProviderSourceOffer', () => {
 
     it('withdraws unavailable/revoked offers and does not duplicate daemon candidates', () => {
         expect(composeTeamCredentialProviderSourceOffer([], [])).toEqual([]);
-        const offer = {
+        const offer = providerOffer({
             machineId: 'machine-work', serverId: 'server-home', machineDisplayName: 'Workstation',
             connectionId: 'pc-work',
             connectionSecurityFingerprint: 'connection-security:v1:current',
             credentialSlotId: 'apiKey',
             label: 'Work gateway',
-        } as const;
+        });
         const first = composeTeamCredentialProviderSourceOffer([], [offer]);
         const recomposed = composeTeamCredentialProviderSourceOffer([first[0]!.candidate], [offer]);
         expect(recomposed).toHaveLength(1);
@@ -60,19 +81,19 @@ describe('composeTeamCredentialProviderSourceOffer', () => {
     });
 
     it('projects every current Provider offer from the daemon-owned collection', () => {
-        const offers = [{
+        const offers = [providerOffer({
             machineId: 'machine-work', serverId: 'server-home', machineDisplayName: 'Workstation',
             connectionId: 'pc-work',
             connectionSecurityFingerprint: 'connection-security:v1:work',
             credentialSlotId: 'apiKey',
             label: 'Work gateway',
-        }, {
+        }), providerOffer({
             machineId: 'machine-personal', serverId: 'server-home', machineDisplayName: 'Personal laptop',
             connectionId: 'pc-personal',
             connectionSecurityFingerprint: 'connection-security:v1:personal',
             credentialSlotId: 'token',
             label: 'Personal gateway',
-        }] as const;
+        })] as const;
 
         const result = composeTeamCredentialProviderSourceOffer([], offers);
 
@@ -89,8 +110,8 @@ describe('composeTeamCredentialProviderSourceOffer', () => {
         } as const;
 
         const result = composeTeamCredentialProviderSourceOffer([], [
-            { ...shared, serverId: 'server-home', machineId: 'machine-a', machineDisplayName: 'Laptop' },
-            { ...shared, serverId: 'server-home', machineId: 'machine-b', machineDisplayName: 'Studio' },
+            providerOffer({ ...shared, serverId: 'server-home', machineId: 'machine-a', machineDisplayName: 'Laptop' }),
+            providerOffer({ ...shared, serverId: 'server-home', machineId: 'machine-b', machineDisplayName: 'Studio' }),
         ]);
 
         expect(result).toHaveLength(2);
@@ -99,35 +120,35 @@ describe('composeTeamCredentialProviderSourceOffer', () => {
     });
 
     it('accepts only the current exact Provider connection witness before create', () => {
-        const offer = {
+        const offer = providerOffer({
             machineId: 'machine-work', serverId: 'server-home', machineDisplayName: 'Workstation',
             connectionId: 'pc-work',
             connectionSecurityFingerprint: 'connection-security:v1:current',
             credentialSlotId: 'apiKey',
             label: 'Work gateway',
-        } as const;
+        });
         const source = composeTeamCredentialProviderSourceOffer([], [offer])[0]!.candidate.source;
         if (source.kind !== 'provider_connection') throw new Error('expected Provider source');
 
         expect(isTeamCredentialProviderSourceOfferCurrent(offer, [offer])).toBe(true);
-        expect(isTeamCredentialProviderSourceOfferCurrent(offer, [{
+        expect(isTeamCredentialProviderSourceOfferCurrent(offer, [providerOffer({
             ...offer,
             connectionSecurityFingerprint: 'connection-security:v1:rotated',
-        }])).toBe(false);
-        expect(isTeamCredentialProviderSourceOfferCurrent(offer, [{
+        })])).toBe(false);
+        expect(isTeamCredentialProviderSourceOfferCurrent(offer, [providerOffer({
             ...offer,
             credentialSlotId: 'otherSlot',
-        }])).toBe(false);
+        })])).toBe(false);
         expect(isTeamCredentialProviderSourceOfferCurrent(offer, null)).toBe(false);
         expect(isTeamCredentialProviderSourceOfferCurrent(offer, [
-            { ...offer, connectionSecurityFingerprint: 'connection-security:v1:rotated' },
+            providerOffer({ ...offer, connectionSecurityFingerprint: 'connection-security:v1:rotated' }),
             offer,
         ])).toBe(true);
         expect(isTeamCredentialProviderSourceOfferCurrent(offer, [
-            { ...offer, machineId: 'machine-other' },
+            providerOffer({ ...offer, machineId: 'machine-other' }),
         ])).toBe(false);
         expect(isTeamCredentialProviderSourceOfferCurrent(offer, [
-            { ...offer, serverId: 'server-other' },
+            providerOffer({ ...offer, serverId: 'server-other' }),
         ])).toBe(false);
     });
 });

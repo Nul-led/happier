@@ -1,5 +1,6 @@
 import React from 'react';
 import { useRouter } from 'expo-router';
+import { useFocusEffect } from '@react-navigation/native';
 import { parseSavedSecretCatalogReferenceV1, type SavedSecretCatalogCorruptEntryV1, type SavedSecretCatalogEntryV1 } from '@happier-dev/protocol';
 
 import { SecretsList } from '@/components/secrets/SecretsList';
@@ -13,6 +14,7 @@ import { useAccountSettingsScope } from '@/sync/store/settingsWriters';
 import { useSettingsVersion } from '@/sync/store/hooks';
 import {
     deleteSavedSecretResource,
+    repairCustodiedSavedSecretResourceEnvelopesBestEffort,
     updateSavedSecretResource,
 } from '@/sync/ops/settings/savedSecretResourceOperations';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
@@ -48,6 +50,21 @@ export default React.memo(function SecretsSettingsScreen() {
         setSharingPersonal(null);
         setSharedMutationPending(false);
     }, [scopeKey]);
+
+    // Recipients this Account custodies can be waiting on an envelope no
+    // mutation is coming to write: they became E2EE-ready, or rotated their
+    // content key, after the last grant change. Opening Saved Secrets is the
+    // moment the custodian is present to close that, so prepare what is owed
+    // here. Nothing is mutated and nothing is shown: the sweep either has
+    // work and does it, or asks the census once and stops.
+    useFocusEffect(React.useCallback(() => {
+        const encryption = getSyncSingleton().encryption;
+        if (!scope || !encryption || !catalog.sharedEnabled) return;
+        void repairCustodiedSavedSecretResourceEnvelopesBestEffort({
+            scope,
+            decryptDataKeyEnvelope: (encryptedDataKey) => encryption.decryptEncryptionKey(encryptedDataKey, scope),
+        }).catch(() => undefined);
+    }, [catalog.sharedEnabled, scope]));
 
     const updateResource = React.useCallback(async (
         entry: SavedSecretCatalogEntryV1,

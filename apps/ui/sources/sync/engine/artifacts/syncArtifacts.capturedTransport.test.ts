@@ -17,7 +17,7 @@ afterEach(() => { runtimeFetch.mockReset(); });
 
 describe('artifact captured Home transport', () => {
     it.each(['plain', 'e2ee'] as const)('creates, fetches and updates %s artifacts on B while A is focused', async (mode) => {
-        const homeB = upsertAndActivateServer({ serverUrl: `https://artifact-b-${mode}.test`, scope: 'tab' });
+        const homeB = await upsertAndActivateServer({ serverUrl: `https://artifact-b-${mode}.test`, scope: 'tab' });
         upsertAndActivateServer({ serverUrl: `https://artifact-a-${mode}.test`, scope: 'tab' });
         let stored: Artifact | undefined;
         const requests: string[] = [];

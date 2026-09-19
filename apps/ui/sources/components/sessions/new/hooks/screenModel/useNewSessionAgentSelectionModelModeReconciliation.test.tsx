@@ -31,6 +31,7 @@ describe('useNewSessionAgentSelectionModelModeReconciliation', () => {
     it('clears stale custom modelMode when preflight model discovery is unavailable', async () => {
         const setModelMode = vi.fn();
         const params: ReconciliationParams = {
+            projectionCurrent: true,
             agentType: 'opencode',
             preflightModels: {
                 availableModels: [],
@@ -67,6 +68,7 @@ describe('useNewSessionAgentSelectionModelModeReconciliation', () => {
     it('clears stale freeform modelMode when a constrained provider prefix rejects it after preflight', async () => {
         const setModelMode = vi.fn();
         const params: ReconciliationParams = {
+            projectionCurrent: true,
             agentType: 'gemini',
             preflightModels: {
                 availableModels: [{ id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro' }],

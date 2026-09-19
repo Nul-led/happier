@@ -54,7 +54,6 @@ const platformState = vi.hoisted(() => ({
 }));
 
 const syncLiveActivityBackgroundWakeTaskRegistration = vi.hoisted(() => vi.fn(async () => {}));
-const syncSessionChangedBackgroundWakeTaskRegistration = vi.hoisted(() => vi.fn(async () => {}));
 
 const appStateState = vi.hoisted(() => ({
     currentState: 'active' as 'active' | 'inactive' | 'background',
@@ -338,13 +337,6 @@ vi.mock('../backgroundWake/defineLiveActivityBackgroundWakeTask', async (importO
         typeof import('../backgroundWake/defineLiveActivityBackgroundWakeTask')
     >();
     return { ...actual, syncLiveActivityBackgroundWakeTaskRegistration };
-});
-
-vi.mock('../backgroundWake/defineSessionChangedBackgroundWakeTask', async (importOriginal) => {
-    const actual = await importOriginal<
-        typeof import('../backgroundWake/defineSessionChangedBackgroundWakeTask')
-    >();
-    return { ...actual, syncSessionChangedBackgroundWakeTaskRegistration };
 });
 
 vi.mock('expo-router', () => ({
@@ -704,29 +696,27 @@ describe('ActivitySurfacesRuntime', () => {
         routerPush.mockClear();
         actionExecutorExecute.mockClear();
         syncLiveActivityBackgroundWakeTaskRegistration.mockClear();
-        syncSessionChangedBackgroundWakeTaskRegistration.mockClear();
     });
 
-    // Both closed-app wake legs are registered from this one runtime, and a
+    // The Live Activity fallback wake is this runtime's own leg, and a
     // registration that silently stops happening is invisible until a device is
-    // asleep. The collaborator wake is deliberately not tied to the Live Activity
-    // fallback, so it must be registered even when that fallback is off.
-    it('registers both closed-app background wake tasks on iOS', async () => {
+    // asleep. The collaborator `session_changed` wake is not registered here:
+    // it belongs to `ActivityLocalNotificationRuntime`, which mounts on every
+    // platform, and is asserted there.
+    it('registers the Live Activity closed-app background wake task on iOS', async () => {
         const { ActivitySurfacesRuntime } = await import('./ActivitySurfacesRuntime');
         await renderScreen(React.createElement(ActivitySurfacesRuntime));
 
         expect(syncLiveActivityBackgroundWakeTaskRegistration).toHaveBeenCalled();
-        expect(syncSessionChangedBackgroundWakeTaskRegistration).toHaveBeenCalled();
     });
 
-    it('registers neither closed-app background wake task on another platform', async () => {
+    it('registers no Live Activity background wake task on another platform', async () => {
         platformState.os = 'android';
 
         const { ActivitySurfacesRuntime } = await import('./ActivitySurfacesRuntime');
         await renderScreen(React.createElement(ActivitySurfacesRuntime));
 
         expect(syncLiveActivityBackgroundWakeTaskRegistration).not.toHaveBeenCalled();
-        expect(syncSessionChangedBackgroundWakeTaskRegistration).not.toHaveBeenCalled();
     });
 
     it('ends existing live activity instances when the store is ready but there are no eligible sessions', async () => {

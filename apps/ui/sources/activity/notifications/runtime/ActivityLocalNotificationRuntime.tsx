@@ -36,6 +36,7 @@ import {
     projectSessionContextPresentation,
 } from '@/sync/domains/session/presentation/sessionContextPresentation';
 
+import { syncSessionChangedBackgroundWakeTaskRegistration } from '../backgroundWake/defineSessionChangedBackgroundWakeTask';
 import {
     consumeOtherLegActivityAlertPresentation,
     noteActivityAlertPresented,
@@ -116,6 +117,16 @@ export function ActivityLocalNotificationRuntime(): React.ReactElement | null {
     const localSettings = useActivityLocalNotificationLocalSettings();
     const audienceSource = useActivityAttentionSource();
     const resolveAccountSettings = useExactHomeAccountSettings(audienceSource.audienceScopes);
+
+    // The closed-app `session_changed` wake exists for exactly this runtime: it
+    // hydrates the woken Home so the Activity event below can be presented
+    // while the app is in the background. Reconciling its task registration
+    // here keeps the consumer and its transport together, and the task owner —
+    // not this mount — decides which platforms can run it and unregisters a
+    // registration left behind on one that cannot.
+    React.useEffect(() => {
+        void syncSessionChangedBackgroundWakeTaskRegistration();
+    }, []);
 
     React.useEffect(() => {
         return subscribeActivityLocalNotifications((event) => {

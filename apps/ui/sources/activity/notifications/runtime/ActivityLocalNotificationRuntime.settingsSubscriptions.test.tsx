@@ -14,6 +14,9 @@ const initialStorageState = getStorage().getState();
 
 const sendExpoLocalNotification = vi.hoisted(() => vi.fn(async () => 'notif-1'));
 const sendTauriLocalNotification = vi.hoisted(() => vi.fn(async () => true));
+const syncSessionChangedBackgroundWakeTaskRegistration = vi.hoisted(
+    () => vi.fn(async () => ({ status: 'registered' as const })),
+);
 
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
@@ -54,11 +57,19 @@ vi.mock('../channels/sendTauriLocalNotification', () => ({
     sendTauriLocalNotification,
 }));
 
+// Only the OS task-registry call is replaced; the wake consumer beneath it,
+// including its module-load task definition, stays real.
+vi.mock('../backgroundWake/defineSessionChangedBackgroundWakeTask', async (importOriginal) => ({
+    ...await importOriginal<typeof import('../backgroundWake/defineSessionChangedBackgroundWakeTask')>(),
+    syncSessionChangedBackgroundWakeTaskRegistration,
+}));
+
 describe('ActivityLocalNotificationRuntime settings subscriptions', () => {
     beforeEach(() => {
         getStorage().setState(initialStorageState, true);
         sendExpoLocalNotification.mockClear();
         sendTauriLocalNotification.mockClear();
+        syncSessionChangedBackgroundWakeTaskRegistration.mockClear();
     });
 
     afterEach(async () => {
@@ -110,5 +121,19 @@ describe('ActivityLocalNotificationRuntime settings subscriptions', () => {
         });
 
         expect(updateCount).toBe(0);
+    });
+    // The closed-app `session_changed` wake exists to hydrate the woken Home so
+    // this runtime can present its Activity notification, and this runtime
+    // mounts on every platform. Reconciling the registration from here — with
+    // no platform argument, so the task owner alone decides where it can run —
+    // is what gives the Android hop a consumer at all. A registration that
+    // silently stops happening is invisible until a device is asleep.
+    it('reconciles the closed-app wake task registration and leaves the platform decision to its owner', async () => {
+        const { ActivityLocalNotificationRuntime } = await import('./ActivityLocalNotificationRuntime');
+
+        await renderScreen(<ActivityLocalNotificationRuntime />);
+
+        expect(syncSessionChangedBackgroundWakeTaskRegistration).toHaveBeenCalledTimes(1);
+        expect(syncSessionChangedBackgroundWakeTaskRegistration).toHaveBeenCalledWith();
     });
 });

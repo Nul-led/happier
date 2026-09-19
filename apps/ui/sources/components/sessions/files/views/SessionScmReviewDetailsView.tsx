@@ -402,7 +402,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
             return (
                 <ScmCommitSelectionToggleButton
                     sessionId={props.sessionId}
-                    serverId={props.serverId}
+                    serverId={props.serverId ?? undefined}
                     sessionPath={sessionPath}
                     snapshot={effectiveSnapshot ?? null}
                     scmWriteEnabled={scmWriteEnabled}
@@ -428,7 +428,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
         return (file: ScmFileStatus) => (
             <ScmChangeDiscardButton
                 sessionId={props.sessionId}
-                serverId={props.serverId}
+                serverId={props.serverId ?? undefined}
                 sessionPath={sessionPath}
                 snapshot={effectiveSnapshot ?? null}
                 scmWriteEnabled={scmWriteEnabled}

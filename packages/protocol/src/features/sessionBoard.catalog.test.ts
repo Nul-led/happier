@@ -7,7 +7,8 @@ import { readServerEnabledBit } from './serverEnabledBit.js';
 
 /**
  * The Session Board gate is the single availability decision every client
- * resolves, and it stays closed until an operator opens it on the exact Home.
+ * resolves. It is published on by default, and an operator who does not want
+ * the Board opts that exact Home out.
  * These cases discriminate the gate from the two facts most likely to be
  * mistaken for it: the diagnostic System Records capability, which says the
  * persistence protocol is current but grants nothing, and the parent `sessions`

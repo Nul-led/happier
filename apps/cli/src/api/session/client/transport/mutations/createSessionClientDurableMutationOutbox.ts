@@ -47,14 +47,17 @@ import {
     type SessionClientDurableMutationDeadLetterEntry,
     type SessionClientDurableMutationPersistenceContext,
 } from './sessionClientDurableMutationPersistence';
-import { deliverSessionEndMutation } from './deliverSessionEndMutation';
+import { deliverSessionEndMutation, resetSessionEndDeliverySlotsForTests } from './deliverSessionEndMutation';
 import { deliverSessionTurnMutation, type UnsupportedSessionTurnMutationDiagnostic } from './deliverSessionTurnMutation';
 import { deliverTranscriptMessageMutation } from './deliverTranscriptMessageMutation';
 import {
     findSessionClientDurableMutationDependencyCycles,
     readSessionClientDurableMutationDependencies,
 } from './sessionClientDurableMutationDependencies';
-import { withSessionClientDurableMutationDeliverySlot } from './sessionClientDurableMutationDeliveryLimiter';
+import {
+    resetSessionClientDurableMutationDeliverySlotsForTests,
+    withSessionClientDurableMutationDeliverySlot,
+} from './sessionClientDurableMutationDeliveryLimiter';
 import {
     shouldDeadLetterSessionClientDurableMutation,
 } from './sessionClientDurableMutationDurabilityPolicy';
@@ -211,6 +214,11 @@ export async function resetSessionClientDurableMutationOutboxStateForTests(): Pr
     await Promise.all(closingOutboxes.map(async (closing) => {
         await closing.catch(() => undefined);
     }));
+    // The two delivery limiters are process-wide counters with no other owner.
+    // Reset them here so this stays the single place a suite drains durable
+    // mutation state, instead of each suite discovering them separately.
+    resetSessionClientDurableMutationDeliverySlotsForTests();
+    resetSessionEndDeliverySlotsForTests();
 }
 
 function selectActiveGenericSessionClientDurableMutationOutboxHandle(
@@ -1171,6 +1179,14 @@ function createGenericSessionClientDurableMutationOutboxInstance(
 ): GenericSessionClientDurableMutationOutboxInstance {
     const serverUrl = params.serverUrl ?? resolveServerHttpBaseUrl();
     let closed = false;
+    /**
+     * A closed outbox never writes again. `close()` performs its own final
+     * drain and save and only then seals, so anything still chained behind it —
+     * a delivery that was waiting for the process-wide delivery slot, a retry
+     * that lost the race with close — belongs to a Session this process no
+     * longer owns and must not resurrect its durable state.
+     */
+    let durableWritesSealed = false;
     let mutations: QueuedSessionClientDurableMutation[] = [];
     let inFlightMutations: QueuedSessionClientDurableMutation[] = [];
     let flushInFlight: Promise<void> | null = null;
@@ -1349,7 +1365,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                         queuedMerge.mutations,
                     );
                     const committed = committedMerge.mutations;
-                    await saveSessionClientDurableMutationOutbox(params.sessionId, committed, params.persistenceContext);
+                    await saveDurableOutboxState(committed);
                     applyRegisteredFieldOwnershipReplacements(queuedMerge.replacements);
                     applyRegisteredFieldOwnershipReplacements(committedMerge.replacements);
                     const committedQueued = queuedMerge.mutations.filter((candidate) => committed.includes(candidate));
@@ -1497,18 +1513,28 @@ function createGenericSessionClientDurableMutationOutboxInstance(
         });
     }
 
+    /** The sole durable-state writer for this outbox; sealed by `close()`. */
+    async function saveDurableOutboxState(
+        committed: readonly QueuedSessionClientDurableMutation[],
+    ): Promise<void> {
+        if (durableWritesSealed) return;
+        await saveSessionClientDurableMutationOutbox(
+            params.sessionId,
+            committed,
+            params.persistenceContext,
+        );
+    }
+
     async function persist(): Promise<void> {
         const previousPersist = persistInFlight;
         const nextPersist = previousPersist
             .catch(() => undefined)
             .then(async () => {
-                await saveSessionClientDurableMutationOutbox(
-                    params.sessionId,
+                await saveDurableOutboxState(
                     mergeQueuedSessionClientDurableMutations(
                         inFlightMutations,
                         mutations,
                     ),
-                    params.persistenceContext,
                 );
             });
         persistInFlight = nextPersist;
@@ -2204,7 +2230,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                     prunedEntryCount: 0,
                     referencedPrerequisiteOverflowCount: 0,
                 };
-                if (deadLetters.length > 0) {
+                if (deadLetters.length > 0 && !durableWritesSealed) {
                     try {
                         retention = await appendSessionClientDurableMutationDeadLetters(
                             params.sessionId,
@@ -2378,11 +2404,7 @@ function createGenericSessionClientDurableMutationOutboxInstance(
                 );
                 const committed = committedMerge.mutations;
                 assertCommittedTranscriptAdmission(opts.admission);
-                await saveSessionClientDurableMutationOutbox(
-                    params.sessionId,
-                    committed,
-                    params.persistenceContext,
-                );
+                await saveDurableOutboxState(committed);
                 mutationsNeedPersistBeforeDelivery = false;
                 const admittedOrder = readRegisteredFieldAdmissionOrder(admittedMutation);
                 if (admittedOrder !== null) {
@@ -2561,6 +2583,10 @@ function createGenericSessionClientDurableMutationOutboxInstance(
             if (mutations.length > 0 || inFlightMutations.length > 0) {
                 await persist();
             }
+            // Everything this outbox owed the disk is now on it. Seal so a
+            // late delivery or retry cannot write the Session back.
+            durableWritesSealed = true;
+            await persistInFlight.catch(() => undefined);
         },
     };
 }

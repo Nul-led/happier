@@ -71,7 +71,7 @@ describe('Account Follow editor', () => {
         function Editor() {
             const [notificationLevel, setLevel] = React.useState<'none' | 'important' | 'all_messages'>('important');
             return <AccountSessionFollowEditor state={{
-                projection: { follow: { sessionId: 'session-a', following: true, notificationLevel, includeInVoice: true }, isSessionOwner: false, capabilities: { manageFollow: true } },
+                projection: { follow: { sessionId: 'session-a', following: true, notificationLevel, includeInVoice: true }, isSessionOwner: false, capabilities: { manageFollow: true }, voiceInitialSnapshotPending: false },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }} voiceReadiness="eligible" archived={false} onSet={(next) => {
                 expect(next.includeInVoice).toBe(true);
@@ -79,7 +79,9 @@ describe('Account Follow editor', () => {
             }} onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}} />;
         }
         const screen = await renderSettingsView(<Editor />, {
-            createNodeMock: (element) => ({ focus: () => focused(element.props.testID) }),
+            createNodeMock: (element) => ({
+                focus: () => focused((element.props as { testID?: string }).testID),
+            }),
         });
         const current = screen.findByTestId('session-follow-level-important');
         const event = { key: 'ArrowDown', nativeEvent: { key: 'ArrowDown' }, preventDefault: vi.fn(), stopPropagation: vi.fn() };
@@ -135,7 +137,7 @@ describe('Account Follow editor', () => {
             state={{
                 // No stored row: the Home still tracks the owner and treats them as
                 // Important-eligible, so an Off switch would be a false statement.
-                projection: { follow: null, isSessionOwner: true, capabilities: { manageFollow: true } },
+                projection: { follow: null, isSessionOwner: true, capabilities: { manageFollow: true }, voiceInitialSnapshotPending: false },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
             voiceReadiness="eligible" archived={false} onSet={onSet} onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}}
@@ -153,7 +155,7 @@ describe('Account Follow editor', () => {
     it('shows a non-owner with no stored choice as not following', async () => {
         const screen = await renderSettingsView(<AccountSessionFollowEditor
             state={{
-                projection: { follow: null, isSessionOwner: false, capabilities: { manageFollow: true } },
+                projection: { follow: null, isSessionOwner: false, capabilities: { manageFollow: true }, voiceInitialSnapshotPending: false },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
             voiceReadiness="eligible" archived={false} onSet={() => {}} onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}}
@@ -170,6 +172,7 @@ describe('Account Follow editor', () => {
                     follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: true },
                     isSessionOwner: false,
                     capabilities: { manageFollow: true },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -189,6 +192,7 @@ describe('Account Follow editor', () => {
                     follow: null,
                     isSessionOwner: false,
                     capabilities: { manageFollow: true },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -215,6 +219,7 @@ describe('Account Follow editor', () => {
                     follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: false },
                     isSessionOwner: false,
                     capabilities: { manageFollow: false },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -231,6 +236,7 @@ describe('Account Follow editor', () => {
                 follow: { sessionId: 'session-a', following: true, notificationLevel: 'important' as const, includeInVoice: true },
                 isSessionOwner: false,
                 capabilities: { manageFollow: true },
+                voiceInitialSnapshotPending: false,
             },
             draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
         };
@@ -250,6 +256,7 @@ describe('Account Follow editor', () => {
                     follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: true },
                     isSessionOwner: false,
                     capabilities: { manageFollow: true },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -267,6 +274,7 @@ describe('Account Follow editor', () => {
                     follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: true },
                     isSessionOwner: false,
                     capabilities: { manageFollow: true },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -290,6 +298,7 @@ describe('Account Follow editor', () => {
                     follow: { sessionId: 'session-a', following: true, notificationLevel: 'important', includeInVoice: true },
                     isSessionOwner: false,
                     capabilities: { manageFollow: true },
+                    voiceInitialSnapshotPending: false,
                 },
                 draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
             }}
@@ -298,6 +307,41 @@ describe('Account Follow editor', () => {
         />);
         expect(screen.findByTestId('session-follow-voice')?.props.value).toBe(true);
         expect(screen.getTextContent()).toContain(t('session.follow.voice.providerWithheld'));
+        await screen.unmount();
+    });
+
+    it('explains that a followed external Session with Background sync off may only update while attached', async () => {
+        const state = {
+            projection: {
+                follow: { sessionId: 'session-a', following: true, notificationLevel: 'important' as const, includeInVoice: false },
+                isSessionOwner: false,
+                capabilities: { manageFollow: true },
+                voiceInitialSnapshotPending: false,
+            },
+            draft: null, loading: false, saving: false, online: true, error: null, voiceInitialSnapshotPending: false,
+        };
+        const quiet = await renderSettingsView(<AccountSessionFollowEditor
+            state={state}
+            voiceReadiness="eligible"
+            archived={false} onSet={() => {}} onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}}
+        />);
+        // A Session whose Background sync is on promises nothing extra, so the
+        // explanation must not appear there.
+        expect(quiet.findByTestId('session-follow-external-attached-only')).toBeNull();
+        await quiet.unmount();
+
+        const screen = await renderSettingsView(<AccountSessionFollowEditor
+            state={state}
+            voiceReadiness="eligible"
+            externalBackgroundSyncOff
+            archived={false} onSet={() => {}} onRemove={() => {}} onRetry={() => {}} onOpenNotificationSettings={() => {}}
+        />);
+        expect(screen.findByTestId('session-follow-external-attached-only')).not.toBeNull();
+        expect(screen.getTextContent()).toContain(t('session.follow.editor.externalAttachedOnly'));
+        // It explains a consequence of the external source's acquisition; it is
+        // not a second Follow control and changes nothing the person chose.
+        expect(screen.findByTestId('session-follow-enabled')?.props.value).toBe(true);
+        expect(screen.findByTestId('session-follow-level-important')?.props.accessibilityState?.checked).toBe(true);
         await screen.unmount();
     });
 });

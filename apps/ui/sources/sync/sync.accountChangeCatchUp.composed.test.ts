@@ -502,7 +502,7 @@ describe('sync AccountChange catch-up projection', () => {
         const dispose = subscribeHomeAccountChange((event) => observedWakes.push(event));
         const catchUp = harness.resumeViaChanges({ accountId: ACCOUNT_ID });
         await changesStarted;
-        const focusedServer = upsertAndActivateServer({
+        const focusedServer = await upsertAndActivateServer({
             serverUrl: 'http://localhost:53289',
             scope: 'tab',
         });
@@ -515,6 +515,61 @@ describe('sync AccountChange catch-up projection', () => {
             entityIds: ['self'],
             sessionListQueryAffects: false,
         }]);
+        dispose();
+        harness.disconnectServer();
+    });
+
+    it('keeps an AccountChange refresh on the applied Home while another Home is staged', async () => {
+        const harness = await prepareAccountChangeWakeSchedulingHarness();
+        const { subscribeHomeAccountChange } = await import('./runtime/orchestration/homeAccountChange');
+        const { getActiveServerSnapshot, upsertAndActivateServer } = await import('./domains/server/serverRuntime');
+        const { getActiveServerAccountScope } = await import('./domains/scope/activeServerAccountScope');
+        const { storage } = await import('./domains/state/storage');
+        const appliedSnapshot = getActiveServerSnapshot();
+        const appliedServerId = String(appliedSnapshot.serverId ?? '').trim();
+        Reflect.set(harness, 'appliedServerTarget', {
+            serverId: appliedServerId,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        });
+        harness.changesCursor = '0';
+        harness.settingsSync = { invalidateAndAwait: vi.fn(async () => undefined) };
+        harness.profileSync = { invalidateAndAwait: vi.fn(async () => undefined) };
+        fetchChanges.mockResolvedValueOnce({
+            status: 'ok' as const,
+            changes: [{
+                cursor: 1,
+                kind: 'account' as const,
+                entityId: 'self',
+                changedAt: 1,
+                hint: null,
+            }],
+            nextCursor: '1',
+        });
+
+        await upsertAndActivateServer({
+            serverUrl: 'http://localhost:53289',
+            scope: 'device',
+        });
+        const stagedSnapshot = getActiveServerSnapshot();
+        storage.getState().activateProfileScope({
+            serverId: stagedSnapshot.serverId,
+            accountId: ACCOUNT_ID,
+        });
+        expect(stagedSnapshot.serverId).not.toBe(appliedServerId);
+        expect(getActiveServerAccountScope()).toEqual({
+            serverId: stagedSnapshot.serverId,
+            accountId: ACCOUNT_ID,
+        });
+
+        const observedWakes: Array<{ serverId: string }> = [];
+        const dispose = subscribeHomeAccountChange((event) => observedWakes.push(event));
+        await expect(harness.resumeViaChanges({ accountId: ACCOUNT_ID })).resolves.toMatchObject({
+            status: 'ok',
+        });
+
+        expect(fetchChanges).toHaveBeenCalledOnce();
+        expect(observedWakes).toEqual([expect.objectContaining({ serverId: appliedServerId })]);
         dispose();
         harness.disconnectServer();
     });

@@ -19,7 +19,7 @@ import type { SessionModelProjectionGroup } from '@/components/sessions/modelPic
 import type { sendVoiceSessionComposerText } from '@/voice/binding/sendVoiceSessionComposerText';
 
 import { AppPaneProvider } from '@/components/appShell/panes/AppPaneProvider';
-import { createDeferred, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
+import { createDeferred, createSessionAccessFixture, pressTestInstanceAsync, renderScreen, standardCleanup } from '@/dev/testkit';
 import { localSettingsDefaults, type LocalSettings } from '@/sync/domains/settings/localSettings';
 import { settingsDefaults, type Settings } from '@/sync/domains/settings/settings';
 import { listOpenApprovalArtifactsForSession } from '@/sync/domains/artifacts/approvalArtifacts';
@@ -194,7 +194,11 @@ const draftHookState = vi.hoisted(() => ({
 }));
 const exactAccountBindingState = vi.hoisted(() => ({
   requestedServerIds: [] as readonly string[],
-  current: null as any,
+  // Every Home this device holds credentials for. `SessionView` binds the exact
+  // Home the session belongs to — the route Home when a case names one, the
+  // active Home otherwise — and renders a blocked surface, with no composer,
+  // while that Home has no bound Account scope.
+  bindings: new Map<string, any>(),
 }));
 const quotaSnapshotsState = vi.hoisted(() => ({
   current: {} as Record<string, any>,
@@ -599,23 +603,19 @@ vi.mock('@/hooks/session/useDraft', () => ({
 vi.mock('@/sync/domains/scope/useServerCredentialAccountScopes', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/sync/domains/scope/useServerCredentialAccountScopes')>()),
   useServerCredentialAccountScopeResolution: (serverId: string | null | undefined) => {
-    const binding = exactAccountBindingState.current;
-    return binding && serverId === binding.serverId
-      ? { kind: 'bound', scope: binding.scope }
-      : { kind: 'resolving' };
+    const binding = serverId ? exactAccountBindingState.bindings.get(serverId) : undefined;
+    return binding ? { kind: 'bound', scope: binding.scope } : { kind: 'resolving' };
   },
   useServerCredentialAccountScopeResolutions: (serverIds: readonly string[]) => new Map(serverIds.map((serverId) => {
-    const binding = exactAccountBindingState.current;
-    return [serverId, binding && serverId === binding.serverId
-      ? { kind: 'bound', scope: binding.scope }
-      : { kind: 'resolving' }] as const;
+    const binding = exactAccountBindingState.bindings.get(serverId);
+    return [serverId, binding ? { kind: 'bound', scope: binding.scope } : { kind: 'resolving' }] as const;
   })),
   useServerCredentialAccountScopeBindings: (serverIds: readonly string[]) => {
     exactAccountBindingState.requestedServerIds = serverIds;
-    const binding = exactAccountBindingState.current;
-    return binding && serverIds.includes(binding.serverId)
-      ? new Map([[binding.serverId, binding]])
-      : new Map();
+    return new Map(serverIds.flatMap((serverId) => {
+      const binding = exactAccountBindingState.bindings.get(serverId);
+      return binding ? [[serverId, binding] as const] : [];
+    }));
   },
 }));
 vi.mock('@/components/sessions/model/inactiveSessionUi', () => ({
@@ -816,7 +816,7 @@ describe('SessionView (direct sessions)', () => {
       <AppPaneProvider>
         <SessionView
           id={sessionId}
-          routeServerId={props.routeServerId}
+          routeServerId={props.routeServerId ?? (sessions[sessionId]?.serverId as string | undefined)}
           jumpToSeq={props.jumpToSeq}
         />
       </AppPaneProvider>,
@@ -856,7 +856,7 @@ describe('SessionView (direct sessions)', () => {
         <AppPaneProvider>
           <SessionView
             id={sessionId}
-            routeServerId={props.routeServerId}
+            routeServerId={props.routeServerId ?? (sessions[sessionId]?.serverId as string | undefined)}
             jumpToSeq={props.jumpToSeq}
           />
         </AppPaneProvider>,
@@ -1193,15 +1193,23 @@ describe('SessionView (direct sessions)', () => {
   }
 
   beforeEach(() => {
-    const scope = Object.freeze({ serverId: 'server-route-1', accountId: 'account-route-1' });
-    exactAccountBindingState.current = Object.freeze({
-      serverId: scope.serverId,
-      accountId: scope.accountId,
-      revision: 1,
-      scope,
-      isCurrent: () => true,
-      onRetire: () => Object.freeze({ dispose(): void {} }),
-    });
+    const createAccountBinding = (serverId: string) => {
+      const scope = Object.freeze({ serverId, accountId: 'account-route-1' });
+      return Object.freeze({
+        serverId,
+        accountId: scope.accountId,
+        revision: 1,
+        scope,
+        isCurrent: () => true,
+        onRetire: () => Object.freeze({ dispose(): void {} }),
+      });
+    };
+    // Signed in to both the route Home the explicit cases name and the active
+    // Home the rest fall back to.
+    exactAccountBindingState.bindings = new Map([
+      ['server-route-1', createAccountBinding('server-route-1')],
+      ['server-1', createAccountBinding('server-1')],
+    ]);
     exactAccountBindingState.requestedServerIds = [];
     chatListPropsSpy.mockReset();
     chatHeaderPropsSpy.mockReset();
@@ -1292,6 +1300,9 @@ describe('SessionView (direct sessions)', () => {
     storageState.sessions.s1 = {
       id: 's1',
       seq: 1,
+      // A Session row names the Home it belongs to, and the surface is always
+      // mounted from that Home's route.
+      serverId: 'server-route-1',
       encryptionMode: 'plain',
       presence: 'online',
       active: true,
@@ -1299,6 +1310,10 @@ describe('SessionView (direct sessions)', () => {
       agentStateVersion: 1,
       accessLevel: 'edit',
       canApprovePermissions: false,
+      // `SessionView` reads write capability from `access.capabilities`, not
+      // from the legacy `accessLevel` field, so the row has to carry the same
+      // projection the canonical fixture owner derives.
+      access: createSessionAccessFixture('edit', { approveRuntimePermissions: false }),
       metadata: {
         machineId: 'machine-1',
         host: 'happy-host',
@@ -1708,6 +1723,7 @@ describe('SessionView (direct sessions)', () => {
     storageState.sessions.s1 = {
       ...storageState.sessions.s1,
       accessLevel: 'view',
+      access: createSessionAccessFixture('view'),
     };
 
     const screen = await renderSessionViewAndSettle({ routeServerId: 'server-route-1' });
@@ -3246,6 +3262,7 @@ describe('SessionView (direct sessions)', () => {
 
       const session = storageState.sessions.s1 as any;
       session.canApprovePermissions = true;
+      session.access = createSessionAccessFixture('edit', { approveRuntimePermissions: true });
       session.metadata = {
         ...session.metadata,
         ...buildSystemSessionMetadataV1({ key: 'voice_conversation', hidden: true }),

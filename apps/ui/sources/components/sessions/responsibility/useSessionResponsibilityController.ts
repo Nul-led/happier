@@ -169,7 +169,6 @@ export function useSessionResponsibilityController(
                 ...(input?.query ? { query: input.query } : {}),
                 ...(input?.cursor ? { cursor: input.cursor } : {}),
             }, {
-                scope,
                 availability: collaborationAvailability,
                 isCurrent,
             });
@@ -219,7 +218,6 @@ export function useSessionResponsibilityController(
                 sessionId,
                 responsibleAccountId: accountId,
             }, {
-                scope,
                 availability: collaborationAvailability,
                 isCurrent: isMutationCurrent,
             });

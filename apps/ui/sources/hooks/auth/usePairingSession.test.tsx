@@ -3,6 +3,18 @@ import renderer, { act } from 'react-test-renderer';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { encodeBase64 } from '@/encryption/base64';
+import type { pairingStatus } from '@/sync/api/account/apiPairingAuth';
+import type { HomeConnectionDescriptorReconciliationResult } from '@/sync/domains/server/serverProfiles';
+
+/**
+ * The hook consumes only the reconciliation discriminant and its conflict code, so the
+ * module-boundary mock declares exactly that rather than a whole persisted profile.
+ */
+type ReconciliationOutcomeMock = Readonly<{
+    kind: HomeConnectionDescriptorReconciliationResult['kind'];
+    code?: string;
+    profile?: Readonly<{ id: string }> | null;
+}>;
 
 const appState = vi.hoisted(() => ({ currentState: 'active' as string }));
 const enrollmentTransportCloseMock = vi.hoisted(() => vi.fn(async () => {}));
@@ -35,7 +47,9 @@ const pairingStartMock = vi.fn(async (..._args: unknown[]) => {
     defaultPairingExpiresAt = new Date(Date.now() + 60_000).toISOString();
     return { ok: true, data: { pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } };
 });
-const pairingStatusMock = vi.fn(async () => ({ ok: true, data: { state: 'pending', pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } }));
+const pairingStatusMock = vi.fn<typeof pairingStatus>(
+    async () => ({ ok: true, data: { state: 'pending', pairId: 'pair_123', expiresAt: defaultPairingExpiresAt } }),
+);
 const pairingConsumeMock = vi.fn(async () => ({ ok: true as const }));
 vi.mock('@/sync/api/account/apiPairingAuth', () => ({
     pairingStart: pairingStartMock,
@@ -43,7 +57,9 @@ vi.mock('@/sync/api/account/apiPairingAuth', () => ({
     pairingConsume: pairingConsumeMock,
 }));
 
-const endpointFetchMock = vi.hoisted(() => vi.fn(async () => new Response(null, { status: 200 })));
+const endpointFetchMock = vi.hoisted(
+    () => vi.fn<(path: string, init?: RequestInit) => Promise<Response>>(async () => new Response(null, { status: 200 })),
+);
 const endpointRequestContextMock = vi.hoisted(() => vi.fn());
 vi.mock('@/sync/http/client', () => ({
     createServerFetchAtEndpoint: (context: unknown) => {
@@ -65,17 +81,23 @@ vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     };
 });
 
-let activeServerUrl = 'http://localhost:53288';
-let activeShareableServerUrl: string | null = null;
-let activeShareableServerUrlValidatedAgainstServerUrl: string | null = null;
-let activeRuntimeOrigin: string | null = null;
+/**
+ * Hoisted because the storage singleton now reads the active-Home snapshot while the
+ * module graph is still being evaluated, i.e. before this file's own bindings exist.
+ */
+const activeServer = vi.hoisted(() => ({
+    serverUrl: 'http://localhost:53288',
+    shareableServerUrl: null as string | null,
+    shareableServerUrlValidatedAgainstServerUrl: null as string | null,
+    runtimeOrigin: null as string | null,
+}));
 vi.mock('@/sync/domains/server/serverRuntime', () => ({
     getActiveServerSnapshot: () => ({
         serverId: 'srv-a',
-        serverUrl: activeServerUrl,
-        activeShareableServerUrl,
-        activeShareableServerUrlValidatedAgainstServerUrl,
-        runtimeOrigin: activeRuntimeOrigin,
+        serverUrl: activeServer.serverUrl,
+        activeShareableServerUrl: activeServer.shareableServerUrl,
+        activeShareableServerUrlValidatedAgainstServerUrl: activeServer.shareableServerUrlValidatedAgainstServerUrl,
+        runtimeOrigin: activeServer.runtimeOrigin,
         generation: 0,
     }),
 }));
@@ -94,9 +116,14 @@ let descriptorOverride: import('@happier-dev/protocol').HomeConnectionDescriptor
 const serverProfileMocks = vi.hoisted(() => ({
     getServerProfileById: vi.fn(() => profileReady ? ({ id: 'srv-a' }) : null),
     buildHomeConnectionDescriptorForProfile: vi.fn(),
-    reconcileServerProfileHomeConnectionDescriptor: vi.fn(async () => ({ kind: 'applied' as const, profile: { id: 'srv-a' } })),
+    reconcileServerProfileHomeConnectionDescriptor: vi.fn<
+        (...args: unknown[]) => Promise<ReconciliationOutcomeMock>
+    >(async () => ({ kind: 'applied' as const, profile: { id: 'srv-a' } })),
 }));
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    // `sync/store/domains/settings.ts` reads the persisted Home view at store construction;
+    // this suite has no Home view, which is the module's own `null` answer.
+    loadHomeViewState: () => null,
     getServerProfileById: serverProfileMocks.getServerProfileById,
     buildHomeConnectionDescriptorForProfile: serverProfileMocks.buildHomeConnectionDescriptorForProfile,
     reconcileServerProfileHomeConnectionDescriptor: serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor,
@@ -192,10 +219,10 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         boundQrV2Enabled = true;
         profileReady = true;
         unansweredFeatureProbeAttemptMs = null;
-        activeServerUrl = 'http://localhost:53288';
-        activeShareableServerUrl = null;
-        activeShareableServerUrlValidatedAgainstServerUrl = null;
-        activeRuntimeOrigin = null;
+        activeServer.serverUrl = 'http://localhost:53288';
+        activeServer.shareableServerUrl = null;
+        activeServer.shareableServerUrlValidatedAgainstServerUrl = null;
+        activeServer.runtimeOrigin = null;
         descriptorOverride = null;
         serverProfileMocks.getServerProfileById.mockClear();
         serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor.mockReset();
@@ -204,9 +231,9 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         serverProfileMocks.buildHomeConnectionDescriptorForProfile.mockImplementation(() => {
             if (descriptorOverride) return descriptorOverride;
             if (!cachedCanonicalServerUrl || !cachedServerIdentityId) return null;
-            const endpointUrl = activeShareableServerUrl
-                && activeShareableServerUrlValidatedAgainstServerUrl === activeServerUrl
-                ? activeShareableServerUrl
+            const endpointUrl = activeServer.shareableServerUrl
+                && activeServer.shareableServerUrlValidatedAgainstServerUrl === activeServer.serverUrl
+                ? activeServer.shareableServerUrl
                 : cachedCanonicalServerUrl.replace(/^https:\/\/[^@]+@/u, 'https://');
             return {
                 v: 1,
@@ -244,7 +271,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('issues the direct QR from the freshly authenticated exact descriptor instead of the retained profile descriptor', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         descriptorOverride = {
             v: 1,
             homeServerIdentityId: 'srv_home_a',
@@ -337,7 +364,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     ])('fails closed before direct QR creation when $name', async ({ observation }) => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         observeAuthenticatedServerFeaturesFreshMock.mockResolvedValueOnce(observation);
 
         const { usePairingSession } = await import('./usePairingSession');
@@ -358,7 +385,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('gives up the QR generating state when the Home feature probe never answers', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         // The Home accepts the request and never responds; the shared probe would keep
         // trying for a full minute. A person is watching the QR placeholder, so this
         // flow must fail over on its own budget instead.
@@ -385,7 +412,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('fails closed before direct QR creation when the exact descriptor contradicts retained profile authority', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         serverProfileMocks.reconcileServerProfileHomeConnectionDescriptor.mockResolvedValueOnce({
             kind: 'conflict',
             code: 'equal_revision_conflict',
@@ -411,7 +438,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         cachedCanonicalServerUrl = 'http://localhost:53288';
         cachedServerIdentityId = 'srv_home_a';
         cachedSnapshotOnlyUnscoped = true;
-        activeRuntimeOrigin = 'http://localhost:53288';
+        activeServer.runtimeOrigin = 'http://localhost:53288';
 
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
@@ -433,7 +460,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         cachedServerIdentityId = 'srv_home_a';
         cachedSnapshotOnlyUnscoped = true;
         profileReady = false;
-        activeRuntimeOrigin = 'http://localhost:53288';
+        activeServer.runtimeOrigin = 'http://localhost:53288';
 
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
@@ -453,7 +480,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('preserves the canonical profile descriptor revision and Iroh endpoint', async () => {
         cachedCanonicalServerUrl = 'http://localhost:53288';
         cachedServerIdentityId = 'srv_home_a';
-        activeRuntimeOrigin = 'http://127.0.0.1:59111';
+        activeServer.runtimeOrigin = 'http://127.0.0.1:59111';
         descriptorOverride = {
             v: 1,
             homeServerIdentityId: 'srv_home_a',
@@ -495,7 +522,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         const homeServerIdentityId = 'srv_home_a';
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = homeServerIdentityId;
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         descriptorOverride = {
             v: 1,
             homeServerIdentityId,
@@ -539,7 +566,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         const homeServerIdentityId = 'srv_home_a';
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = homeServerIdentityId;
-        activeServerUrl = cachedCanonicalServerUrl;
+        activeServer.serverUrl = cachedCanonicalServerUrl;
         descriptorOverride = {
             v: 1,
             homeServerIdentityId,
@@ -587,7 +614,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('uses the post-start timestamp for the forward invite issuance window', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         let nowMs = 1_000_000;
         const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => nowMs);
         pairingStartMock.mockImplementationOnce(async () => {
@@ -626,7 +653,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('builds the production Add Phone payload as one strict V2 Home invite and targets that Home', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
 
         const { parseHomeQrInviteDeepLink } = await import('@/auth/pairing/pairingUrl');
         const { usePairingSession } = await import('./usePairingSession');
@@ -766,7 +793,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('sanitizes credentials out of canonical server URLs before embedding', async () => {
         cachedCanonicalServerUrl = 'https://user:pass@api.example.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://active.example.test';
+        activeServer.serverUrl = 'https://active.example.test';
 
         const { usePairingSession } = await import('./usePairingSession');
 
@@ -797,9 +824,9 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('prefers an active shareable relay URL over the canonical server URL', async () => {
         cachedCanonicalServerUrl = 'https://api.example.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://active.example.test';
-        activeShareableServerUrl = 'https://relay.example.ts.net';
-        activeShareableServerUrlValidatedAgainstServerUrl = 'https://active.example.test';
+        activeServer.serverUrl = 'https://active.example.test';
+        activeServer.shareableServerUrl = 'https://relay.example.ts.net';
+        activeServer.shareableServerUrlValidatedAgainstServerUrl = 'https://active.example.test';
 
         const { usePairingSession } = await import('./usePairingSession');
 
@@ -833,9 +860,9 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('ignores an active shareable relay URL that was validated for a different upstream', async () => {
         cachedCanonicalServerUrl = 'https://api.example.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://active.example.test';
-        activeShareableServerUrl = 'https://relay.example.ts.net';
-        activeShareableServerUrlValidatedAgainstServerUrl = 'https://other.example.test';
+        activeServer.serverUrl = 'https://active.example.test';
+        activeServer.shareableServerUrl = 'https://relay.example.ts.net';
+        activeServer.shareableServerUrlValidatedAgainstServerUrl = 'https://other.example.test';
 
         const { usePairingSession } = await import('./usePairingSession');
 
@@ -1099,9 +1126,27 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         vi.useFakeTimers();
         cachedCanonicalServerUrl = 'https://api.example.test';
         cachedServerIdentityId = 'srv_home_a';
+        const staleExpiresAt = new Date(Date.now() + 60_000).toISOString();
+        const staleRequesterPublicKey = new Uint8Array(32).fill(9);
+        const { computeHomeQrBindingProofV2 } = await import('@happier-dev/protocol');
         const staleResult = {
             ok: true as const,
-            data: { state: 'requested' as const, pairId: 'pair_123', expiresAt: new Date(Date.now() + 60_000).toISOString() },
+            data: {
+                state: 'requested' as const,
+                pairId: 'pair_123',
+                expiresAt: staleExpiresAt,
+                requestedPublicKey: encodeBase64(staleRequesterPublicKey),
+                requestedDeviceLabel: null,
+                homeServerIdentityId: 'srv_home_a',
+                bindingProof: computeHomeQrBindingProofV2({
+                    direction: 'trusted_home_displays',
+                    qrSecret: new Uint8Array(32).fill(7),
+                    pairId: 'pair_123',
+                    homeServerIdentityId: 'srv_home_a',
+                    requesterPublicKey: staleRequesterPublicKey,
+                    expiresAtMs: Date.parse(staleExpiresAt),
+                }),
+            },
         };
         let resolveStatus!: () => void;
         pairingStatusMock.mockImplementationOnce(() => new Promise((resolve) => {
@@ -1142,7 +1187,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         vi.useFakeTimers();
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = new Date(Date.now() + 60_000).toISOString();
         pairingStartMock.mockResolvedValueOnce({ ok: true, data: { pairId: 'pair_123', expiresAt } });
@@ -1201,7 +1246,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('does not dispatch credential completion after the displaying screen unmounts', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = new Date(Date.now() + 60_000).toISOString();
         pairingStartMock.mockResolvedValueOnce({ ok: true, data: { pairId: 'pair_123', expiresAt } });
@@ -1243,7 +1288,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('treats already_completed as successful completion', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         endpointFetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'already_completed' }), {
             status: 409,
             headers: { 'Content-Type': 'application/json' },
@@ -1287,7 +1332,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     ])('rejects %s before credential response and exposes one new-QR recovery', async (_label, override) => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = new Date(Date.now() + 60_000).toISOString();
         pairingStartMock.mockResolvedValueOnce({ ok: true, data: { pairId: 'pair_123', expiresAt } });
@@ -1332,7 +1377,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         endpointFetchMock
             .mockRejectedValueOnce(new Error('offline'))
             .mockResolvedValueOnce(new Response(null, { status: 200 }));
@@ -1386,7 +1431,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('allows cancellation only while pending and never submits a credential response', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;
         function Probe() { hookApi = usePairingSession({ enabled: true, isAuthenticated: true }); return null; }
@@ -1409,7 +1454,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('honors a pending cancellation intent when requested status arrives concurrently', async () => {
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = new Date(Date.now() + 60_000).toISOString();
         pairingStartMock.mockResolvedValueOnce({ ok: true, data: { pairId: 'pair_123', expiresAt } });
@@ -1460,7 +1505,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
         vi.useFakeTimers();
         cachedCanonicalServerUrl = 'https://home-a.test';
         cachedServerIdentityId = 'srv_home_a';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
         endpointFetchMock.mockResolvedValue(new Response(null, { status: 403 }));
         const requestedPublicKey = new Uint8Array(32).fill(9);
         const expiresAt = new Date(Date.now() + 60_000).toISOString();
@@ -1496,7 +1541,7 @@ describe('usePairingSession (pairing deep link server URL)', () => {
     it('pairs against an explicitly targeted saved Home instead of the focused one', async () => {
         cachedCanonicalServerUrl = 'https://home-b.test';
         cachedServerIdentityId = 'srv_home_b';
-        activeServerUrl = 'https://home-a.test';
+        activeServer.serverUrl = 'https://home-a.test';
 
         const { usePairingSession } = await import('./usePairingSession');
         let hookApi: ReturnType<typeof usePairingSession> | null = null;

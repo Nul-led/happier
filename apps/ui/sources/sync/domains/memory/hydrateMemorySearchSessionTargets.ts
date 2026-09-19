@@ -236,7 +236,7 @@ export async function readMemorySearchSessionForServerScope(
     }
     const credentials = args.authority.context.credentials;
     if (!credentials) return { ok: false, errorCode: 'credentials_unavailable' };
-    let hydrated: Session | null = null;
+    const hydratedRef: { current: Session | null } = { current: null };
     const result = await fetchSessionByIdWithServerScope({
         sessionId: args.target.sessionId,
         serverId: args.target.serverId,
@@ -249,21 +249,22 @@ export async function readMemorySearchSessionForServerScope(
         sessionDataKeys: new Map(),
         sessionDataKeyEnvelopes: new Map(),
         applySessions: (sessions) => {
-            hydrated = sessions.at(-1) as Session | undefined ?? null;
+            hydratedRef.current = sessions.at(-1) as Session | undefined ?? null;
         },
         getExistingSession: () => null,
         isCurrent: () => !args.signal.aborted,
         includeTurnsProjection: false,
         log: { log: () => {} },
     });
-    if (!result.ok || !hydrated || args.signal.aborted) {
+    const hydratedSession = hydratedRef.current;
+    if (!result.ok || !hydratedSession || args.signal.aborted) {
         return { ok: false, errorCode: result.ok ? 'session_unavailable' : result.errorCode };
     }
     storage.getState().mergeSessionListRowsForServerScope(
         args.target.serverId,
-        [buildSessionListRenderableFromSession(hydrated)],
+        [buildSessionListRenderableFromSession(hydratedSession)],
     );
-    const visibleThroughSeq = hydrated.seq;
+    const visibleThroughSeq = hydratedSession.seq;
     if (!Number.isSafeInteger(visibleThroughSeq) || visibleThroughSeq < 0) {
         return { ok: false, errorCode: 'session_visibility_unavailable' };
     }

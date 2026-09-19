@@ -155,6 +155,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: true,
+            projectionCurrent: true,
             selectedProfileId: 'profile-1',
             profileMap: new Map([[
                 'profile-1',
@@ -200,6 +201,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -252,6 +254,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -300,6 +303,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -342,6 +346,7 @@ describe('useNewSessionAgentPickerControls', () => {
         const codexEntry = createBuiltInBackendEntry('codex', 'Codex', null);
         const initialParams: Parameters<typeof useNewSessionAgentPickerControls>[0] = {
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -425,6 +430,7 @@ describe('useNewSessionAgentPickerControls', () => {
         const setEngineSelectionForBackendTarget = vi.fn();
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -470,6 +476,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: true,
+            projectionCurrent: true,
             selectedProfileId: 'profile-1',
             profileMap: new Map([[
                 'profile-1',
@@ -513,6 +520,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -570,6 +578,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, reviewOnlyEntry],
@@ -601,6 +610,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [configuredEntry],
@@ -636,6 +646,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [antigravityEntry],
@@ -669,6 +680,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -700,6 +712,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -739,6 +752,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -825,6 +839,7 @@ describe('useNewSessionAgentPickerControls', () => {
         const codexEntry = createBuiltInBackendEntry('codex', 'Codex', null);
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -856,6 +871,7 @@ describe('useNewSessionAgentPickerControls', () => {
         const codexEntry = createBuiltInBackendEntry('codex', 'Codex', null);
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -894,6 +910,7 @@ describe('useNewSessionAgentPickerControls', () => {
 
         const hook = await renderHook(() => useNewSessionAgentPickerControls({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claudeEntry, codexEntry],
@@ -963,6 +980,7 @@ describe('useNewSessionAgentPickerControls', () => {
             });
             const picker = useNewSessionAgentPickerControls({
                 useProfiles: false,
+                projectionCurrent: true,
                 selectedProfileId: null,
                 profileMap: new Map(),
                 resolvedBackendEntries: [claudeEntry, codexEntry],

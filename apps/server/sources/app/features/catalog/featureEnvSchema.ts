@@ -206,8 +206,9 @@ export const FEATURE_ENV_KEYS = Object.freeze({
   // Native email/password deployment configuration. This is required server
   // configuration for the `email_password` method decision, not a published
   // per-method feature bit: no `auth.login.emailPassword` capability exists.
-  // Lane 01 Home governance replaces these inputs once its authentication
-  // policy projection exists; until then they are the only enablement source.
+  // Both default on; the persisted Home governance policy and transactional-mail
+  // readiness are the functional deciders, and these keys are the operator
+  // opt-out for a deployment that wants the method off entirely.
   authEmailPasswordEnabled: 'HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED',
   authEmailPasswordProvisionEnabled: 'HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED',
   authMtlsEnabled: 'HAPPIER_FEATURE_AUTH_MTLS__ENABLED',

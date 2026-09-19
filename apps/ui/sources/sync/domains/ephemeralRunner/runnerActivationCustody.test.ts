@@ -31,7 +31,7 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Runner activation custody retirement', () => {
-    it('retains the exact signing key for an invalid claim and removes it only after verified claim binding', async () => {
+    it('retains the exact signing key until the creator proof is published, then removes it', async () => {
         const custody = await createRunnerActivationKeyCustody(scope);
         const secretKey = decodeBase64(await readRunnerActivationSigningKey(scope, custody), 'base64url');
         const installation = tweetnacl.sign.keyPair();
@@ -78,7 +78,40 @@ describe('Runner activation custody retirement', () => {
             activationSecretKey: secretKey,
         });
         secretKey.fill(0);
-        const projection: RunnerActivationProjectionV1 = {
+        const review: NonNullable<RunnerActivationProjectionV1['review']> = {
+            sealedLaunchManifest: 'sealed',
+            authoringCommitment: binding.authoringCommitment,
+            launchManifestCommitment: encodeBase64(new Uint8Array(32).fill(7), 'base64url'),
+            endpointFactsProof: {
+                activationSignature: claim.signature,
+                installationSignature: claim.signature,
+            },
+            agentTargetKey: 'agent:happier.agent.codex/codex',
+            machineContentKeyBinding: null,
+            credentialSelectionBinding: {
+                v: 1,
+                resourceId: 'resource-a',
+                brokerMachineId: 'broker-a',
+                revision: 1,
+                application: {
+                    agentTargetKey: 'agent:happier.agent.codex/codex',
+                    implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+                    endpointTemplateId: 'responses',
+                    protocol: 'openai-responses',
+                },
+                sourceRevision: 'source-revision-a',
+            },
+            displayFacts: {
+                v: 1,
+                homeId: 'home-a',
+                homeName: 'Alice’s Home',
+                requesterId: scope.accountId,
+                requesterName: 'Alice',
+                teamId: 'team-a',
+                teamName: 'Acme',
+            },
+        };
+        const claimedProjection: RunnerActivationProjectionV1 = {
             ...binding,
             draftId: 'draft-a',
             state: 'claimed',
@@ -91,6 +124,7 @@ describe('Runner activation custody retirement', () => {
             readiness: null,
             materialization: null,
         };
+        const projection: RunnerActivationProjectionV1 = { ...claimedProjection, review };
 
         await expect(retireRunnerActivationKeyCustodyAfterVerifiedClaim({
             scope,
@@ -100,6 +134,15 @@ describe('Runner activation custody retirement', () => {
                 claim: { ...claim, signature: encodeBase64(new Uint8Array(64), 'base64url') },
             },
         })).rejects.toThrow('runner_activation_invalid_claim');
+        await expect(openRunnerActivationKeyCustody(scope, custody.activationId)).resolves.toEqual(custody);
+
+        // The proof this key must still sign is not published yet, so the claim
+        // alone must not retire it.
+        await expect(retireRunnerActivationKeyCustodyAfterVerifiedClaim({
+            scope,
+            expectedBinding: binding,
+            projection: claimedProjection,
+        })).rejects.toThrow('runner_activation_review_unpublished');
         await expect(openRunnerActivationKeyCustody(scope, custody.activationId)).resolves.toEqual(custody);
 
         await retireRunnerActivationKeyCustodyAfterVerifiedClaim({ scope, expectedBinding: binding, projection });

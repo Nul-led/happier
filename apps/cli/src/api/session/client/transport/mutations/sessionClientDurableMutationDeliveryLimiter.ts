@@ -32,6 +32,17 @@ async function acquireDeliverySlot(): Promise<void> {
     });
 }
 
+/**
+ * Releases every slot this process is holding. The counters are process-wide by
+ * design, so a suite that instantiates this module once needs the same reset the
+ * shared-outbox registry already offers; nothing in production calls it.
+ */
+export function resetSessionClientDurableMutationDeliverySlotsForTests(): void {
+    activeDeliveries = 0;
+    const waiting = pendingDeliverySlots.splice(0, pendingDeliverySlots.length);
+    for (const resolve of waiting) resolve();
+}
+
 export async function withSessionClientDurableMutationDeliverySlot<T>(fn: () => Promise<T>): Promise<T> {
     await acquireDeliverySlot();
     try {

@@ -4,6 +4,7 @@ import { encodeBase64 } from '../crypto/base64.js';
 import tweetnacl from 'tweetnacl';
 import {
   computeRunnerMachineContentKeyFingerprintV1,
+  sealRunnerMachineContentKeyVerifierFactV1,
   signRunnerMachineContentKeyBindingV1,
 } from '../ephemeralRunner/machineContentKeyBinding.js';
 import {
@@ -226,6 +227,52 @@ describe('machineStoredContent', () => {
         },
       })).toEqual({ status: 'unavailable' });
     }
+
+    // A reader without creator device custody supplies Account material instead,
+    // and the verifier comes from the creator-sealed fact — never a Home field.
+    const material = { type: 'dataKey' as const, machineKey: new Uint8Array(32).fill(21) };
+    const scope = {
+      homeServerIdentityId: payload.homeServerIdentityId,
+      creatorAccountId: payload.creatorAccountId,
+      machineId: payload.machineId,
+    };
+    const carried = {
+      ...binding,
+      creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+        payload: {
+          v: 1,
+          activationId: payload.activationId,
+          machineId: payload.machineId,
+          activationSigningPublicKey: encodeBase64(accountSigning.publicKey, 'base64url'),
+        },
+        material,
+        randomBytes: (length: number) => new Uint8Array(length).fill(3),
+      }),
+    };
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: { ...projection, runnerContentKeyBinding: carried },
+      openedDataEncryptionKey: dataKey,
+      expectedRunnerBinding: { ...scope, accountScopedMaterial: material },
+    })).toEqual({ status: 'e2ee', dataKey });
+    // No fact, another Account's material, and no trust input at all all fail closed.
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: projection,
+      openedDataEncryptionKey: dataKey,
+      expectedRunnerBinding: { ...scope, accountScopedMaterial: material },
+    })).toEqual({ status: 'unavailable' });
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: { ...projection, runnerContentKeyBinding: carried },
+      openedDataEncryptionKey: dataKey,
+      expectedRunnerBinding: {
+        ...scope,
+        accountScopedMaterial: { type: 'dataKey', machineKey: new Uint8Array(32).fill(22) },
+      },
+    })).toEqual({ status: 'unavailable' });
+    expect(resolvePublishedMachineDataEncryptionKeyV1({
+      machine: { ...projection, runnerContentKeyBinding: carried },
+      openedDataEncryptionKey: dataKey,
+      expectedRunnerBinding: scope,
+    })).toEqual({ status: 'unavailable' });
 
     for (const key of ['homeServerIdentityId', 'creatorAccountId', 'machineId'] as const) {
       expect(resolvePublishedMachineDataEncryptionKeyV1({

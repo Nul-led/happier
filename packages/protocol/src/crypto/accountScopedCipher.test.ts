@@ -251,6 +251,12 @@ const FROZEN_CANONICAL_ACCOUNT_SCOPED_VECTORS = [
     ciphertext: 'oR8hIiMkJSYnKCkqKywtLi8wMTIzNDU2Nzjj2km9n8NviRYA48Uq0mRHXf0W69pyVSn/o2gdZTK18RVMyleCai0d6IylQE2jp/M2YN0Hn0DUg74FECq7tg==',
     payload: { slot: 31, source: 'automation-workflows-v1' },
   },
+  {
+    kind: 'runner_machine_content_key_verifier',
+    kindByte: 32,
+    ciphertext: 'oSAhIiMkJSYnKCkqKywtLi8wMTIzNDU2NzhZ3EmA5gxwc+JOzpctA3uXpKF8rplPZpeCbyddzuTfR6ppDwcAW417kskfdskvZqtj3WpZZJ9wzlGctgFQRhrXaDI=',
+    payload: { slot: 32, source: 'ephemeral-session-runner-v1' },
+  },
 ] as const;
 
 const TEST_FILE_DIRECTORY = dirname(fileURLToPath(import.meta.url));
@@ -535,6 +541,10 @@ const CURRENT_ACCOUNT_SCOPED_KIND_ROLLBACK_DISPOSITIONS = {
   },
   workflow_final_result: {
     productionOwner: 'Workflow final-result stored-content owner',
+    remoteDev165A: 'rollback_blocking',
+  },
+  runner_machine_content_key_verifier: {
+    productionOwner: 'Runner Machine content-key verifier fact owner',
     remoteDev165A: 'rollback_blocking',
   },
 } as const satisfies Record<AccountScopedBlobKind, AccountScopedKindRollbackDisposition>;
@@ -1029,6 +1039,7 @@ describe('accountScopedCipher', () => {
         29,
         30,
         31,
+        32,
       ],
     );
   });

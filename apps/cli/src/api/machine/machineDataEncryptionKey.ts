@@ -2,13 +2,12 @@ import type { StoredCredentials } from '@/persistence';
 
 import {
   deriveAccountMachineKeyFromRecoverySecret,
-  encodeBase64 as encodeProtocolBase64,
   isPlainMachineDataKeyMarker,
   openEncryptedDataKeyEnvelopeV1,
   resolvePublishedMachineDataEncryptionKeyV1,
+  type AccountScopedCryptoMaterial,
   type ExpectedRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
-import tweetnacl from 'tweetnacl';
 import { decodeJwtPayload } from '@/cloud/decodeJwtPayload';
 import { decodeBase64, encodeBase64 } from '../encryption';
 import {
@@ -33,18 +32,29 @@ type PublishedMachineContentInput = Readonly<{
   machineKind?: 'persistent' | 'ephemeral_session_runner';
   installationId?: string | null;
   runnerContentKeyBinding?: unknown;
-  /** Independently trusted scope. The local Legacy credential supplies the trusted signer. */
-  expectedRunnerMachineContentKeyBinding?: Omit<
-    ExpectedRunnerMachineContentKeyBindingV1,
-    'accountSigningPublicKeyBase64Url'
-  >;
+  /** Independently trusted Home/Account/Machine scope, never a published field. */
+  expectedRunnerMachineContentKeyBinding?: ExpectedRunnerMachineContentKeyBindingScope;
 }>;
 
-export function resolveLegacyExpectedRunnerMachineContentKeyBinding(params: Readonly<{
+export type ExpectedRunnerMachineContentKeyBindingScope = Pick<
+  ExpectedRunnerMachineContentKeyBindingV1,
+  'homeServerIdentityId' | 'creatorAccountId' | 'machineId'
+>;
+
+/**
+ * The scope a daemon reader independently trusts for a Runner Machine key.
+ *
+ * Every credential kind that holds Account E2EE material qualifies: the
+ * verifier identity itself is recovered from the creator-sealed fact on the
+ * published binding, not derived from the credential, so a DataKey daemon
+ * reaches the same proof a recovery-secret daemon does. A token-only daemon
+ * holds no Account material and stays fail-closed.
+ */
+export function resolveExpectedRunnerMachineContentKeyBindingScope(params: Readonly<{
   credentials: StoredCredentials;
   homeServerIdentityId: string;
   machineId: string;
-}>): Omit<ExpectedRunnerMachineContentKeyBindingV1, 'accountSigningPublicKeyBase64Url'> | null {
+}>): ExpectedRunnerMachineContentKeyBindingScope | null {
   const homeServerIdentityId = params.homeServerIdentityId.trim();
   const machineId = params.machineId.trim();
   const accountId = decodeJwtPayload(params.credentials.token)?.sub;
@@ -53,7 +63,7 @@ export function resolveLegacyExpectedRunnerMachineContentKeyBinding(params: Read
     || !machineId
     || typeof accountId !== 'string'
     || !accountId.trim()
-    || params.credentials.encryption?.type !== 'legacy'
+    || !params.credentials.encryption
   ) return null;
   return {
     homeServerIdentityId,
@@ -72,6 +82,11 @@ export function resolvePublishedMachineEncryptionContext(
 ): MachineContentEncryptionContext {
   const published = params.publishedDataEncryptionKey;
   const encryption = params.credentials.encryption;
+  const accountScopedMaterial: AccountScopedCryptoMaterial | null = encryption?.type === 'dataKey'
+    ? { type: 'dataKey', machineKey: encryption.machineKey }
+    : encryption?.type === 'legacy'
+      ? { type: 'legacy', secret: encryption.secret }
+      : null;
   const accountContentSecret = encryption?.type === 'dataKey'
     ? encryption.machineKey
     : encryption?.type === 'legacy'
@@ -93,14 +108,14 @@ export function resolvePublishedMachineEncryptionContext(
     },
     openedDataEncryptionKey,
     expectedAccountMode: encryption ? 'e2ee' : 'plain',
-    ...(params.expectedRunnerMachineContentKeyBinding && encryption?.type === 'legacy'
+    // The verifier identity is the creator's activation signing key, recovered
+    // from the creator-sealed fact on the published binding. A daemon holds no
+    // creator device custody, so Account material is the whole trust input.
+    ...(params.expectedRunnerMachineContentKeyBinding && accountScopedMaterial
       ? {
           expectedRunnerBinding: {
             ...params.expectedRunnerMachineContentKeyBinding,
-            accountSigningPublicKeyBase64Url: encodeProtocolBase64(
-              tweetnacl.sign.keyPair.fromSeed(encryption.secret).publicKey,
-              'base64url',
-            ),
+            accountScopedMaterial,
           },
         }
       : {}),

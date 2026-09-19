@@ -960,6 +960,7 @@ describe('createCliActionDeps hook dispatch', () => {
           },
         }],
       },
+      environmentVariables: { TOKEN: 'raw-launch-value' },
       actionRequestId: 'spawn-attempt-1',
       actionCaller: {
         kind: 'plugin',
@@ -1033,7 +1034,13 @@ describe('createCliActionDeps hook dispatch', () => {
         }),
       }),
     }));
-    expect(createSpawnedSession.mock.calls[0]?.[0]).not.toHaveProperty('environmentVariables');
+    // Raw launch environment reaches the direct spawn verbatim and never the
+    // server-visible creation correspondence.
+    expect(createSpawnedSession.mock.calls[0]?.[0]).toMatchObject({
+      environmentVariables: { TOKEN: 'raw-launch-value' },
+    });
+    expect(createSpawnedSession.mock.calls[0]?.[0]?.sessionCreationCorrespondence?.recipe)
+      .not.toHaveProperty('environmentVariables');
     expect(createSpawnedSession.mock.calls[0]?.[0]).not.toHaveProperty('pendingFirstInput');
     expect(createSpawnedSession.mock.calls[0]?.[0]).not.toHaveProperty('tag');
     expect(createSpawnedSession.mock.calls[0]?.[0]).not.toHaveProperty('path');

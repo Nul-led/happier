@@ -179,7 +179,7 @@ describe('sync AppState pause/resume', () => {
         const { upsertAndActivateServer, getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
         const { storage } = await import('./domains/state/storage');
         const { savePendingOutboxMessage } = await import('./domains/state/pendingOutboxPersistence');
-        const profile = upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+        const profile = await upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
         const activeScope = {
             serverId: String(getActiveServerSnapshot().serverId ?? profile.id),
             accountId: 'account-a',

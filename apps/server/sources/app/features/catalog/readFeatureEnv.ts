@@ -1147,12 +1147,17 @@ export function readAuthFeatureEnv(env: NodeJS.ProcessEnv): AuthFeatureEnv {
 
 /**
  * Native email/password deployment configuration. Both values default to
- * disabled so an unset or malformed deployment fails closed.
+ * enabled, with the env keys as the operator opt-out — the same shape every
+ * other shipped program bit uses. What actually decides availability is the
+ * persisted Home governance policy (`enabledMethodIds`) for the method and
+ * transactional-mail readiness for self-service provisioning; the effective
+ * auth-method decision owner folds both in, so this reader must not add a
+ * second, deployment-only "off" answer for the same fact.
  */
 export function readAuthEmailPasswordFeatureEnv(env: NodeJS.ProcessEnv): AuthEmailPasswordFeatureEnv {
   return {
-    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordEnabled], false),
-    provisionEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordProvisionEnabled], false),
+    enabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordEnabled], true),
+    provisionEnabled: parseBooleanEnv(env[FEATURE_ENV_KEYS.authEmailPasswordProvisionEnabled], true),
   };
 }
 

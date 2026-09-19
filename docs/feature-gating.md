@@ -356,6 +356,27 @@ never authorizes the route or the client provider decision: the UI requires the 
 a ready capability before choosing the Home provider (`useMemorySearchProvider`). The universal
 search shell itself is ungated; only the Home transcript section depends on this feature.
 
+### Native email/password deployment keys
+
+`HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED` and
+`HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED` are **not** a published feature id:
+there is no `auth.login.emailPassword` capability and nothing in the catalog represents them.
+They are deployment configuration read once by `readAuthEmailPasswordFeatureEnv`
+(`apps/server/sources/app/features/catalog/readFeatureEnv.ts`) and consumed only by the
+`email_password` module of the effective authentication-method decision.
+
+Both **default to `true`**, with each key as the operator opt-out. What actually decides the
+method is the persisted Home governance policy (`enabledMethodIds`, the administrator setting),
+and self-service provisioning additionally requires transactional-mail readiness — the effective
+decision owner folds both in and answers `method_not_enabled`, `provisioning_not_enabled` or
+`email_delivery_unavailable` accordingly. A deployment-only default of `false` would be a second
+decision-maker for a fact the policy owner already holds, and a staging device of exactly the kind
+the rule above retires.
+
+The static `/v1/features` auth projection still omits `email_password` for released 0.2 clients,
+which classify an unknown method id as an OAuth provider; the complete contextual list is
+`POST /v1/auth/entry`. That omission is a compatibility contract, not a gate.
+
 ### Provider feature dependencies
 
 The first-class model-provider program uses these canonical ids:

@@ -6,7 +6,7 @@ async function activateServerAccount(serverUrl: string, accountId: string) {
     const { createServerAccountScope } = await import('@/sync/domains/scope/serverAccountScope');
     const { registerStorageStateReader } = await import('@/sync/domains/state/storageStateReaderBridge');
 
-    const server = upsertAndActivateServer({ serverUrl, source: 'manual', scope: 'device', replaceEquivalentStoredUrl: true });
+    const server = await upsertAndActivateServer({ serverUrl, source: 'manual', scope: 'device', replaceEquivalentStoredUrl: true });
     const scope = createServerAccountScope(server.id, accountId);
     expect(scope).not.toBeNull();
     registerStorageStateReader(() => ({ profileScope: scope } as unknown as StorageState));
@@ -86,7 +86,7 @@ describe('pendingNotificationNav', () => {
         const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
         const { setServerProfileIdentityForUrl } = await import('@/sync/domains/server/serverProfiles');
 
-        const legacyProfile = upsertAndActivateServer({ serverUrl: 'https://notify-nav.example.test', scope: 'device', source: 'manual' });
+        const legacyProfile = await upsertAndActivateServer({ serverUrl: 'https://notify-nav.example.test', scope: 'device', source: 'manual' });
         const legacyScope = createServerAccountScope(legacyProfile.id, 'account-a');
         expect(legacyScope).not.toBeNull();
         if (!legacyScope) return;

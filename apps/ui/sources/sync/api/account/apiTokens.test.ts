@@ -38,7 +38,7 @@ async function loadClient(params?: Readonly<{
 }>) {
     vi.stubEnv('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', `api-token-${crypto.randomUUID()}`);
     const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
-    const profile = upsertAndActivateServer({ serverUrl: 'https://server.example', name: 'Token test Home' });
+    const profile = await upsertAndActivateServer({ serverUrl: 'https://server.example', name: 'Token test Home' });
     const { storage } = await import('@/sync/domains/state/storageStore');
     storage.getState().activateProfileScope({ serverId: profile.id, accountId: 'account-a' });
     const { retireActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');

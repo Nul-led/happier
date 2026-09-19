@@ -1,5 +1,16 @@
 import type { ResolveTerminalHostParams, TerminalHostResolution } from './_types';
 
+/**
+ * Windows ARM64 is the one platform the bundled tool archive has no zellij
+ * build for (`scripts/unpack-tools.cjs` ships `x64-win32` only), so both the
+ * forced and the automatic path refuse it with the same fact.
+ */
+const WINDOWS_ARM64_UNSUPPORTED: TerminalHostResolution = {
+  status: 'disabled',
+  reason: 'windows_arm64_unsupported',
+  message: 'Bundled zellij has no supported Windows ARM64 binary; use WSL2 or a non-terminal runtime.',
+};
+
 export function resolveTerminalHost(params: ResolveTerminalHostParams): TerminalHostResolution {
   const { adapters, platform, preference } = params;
 
@@ -22,19 +33,10 @@ export function resolveTerminalHost(params: ResolveTerminalHostParams): Terminal
   }
 
   if (preference === 'zellij') {
-    if (platform.os === 'win32') {
-      if (platform.arch === 'arm64') {
-        return {
-          status: 'disabled',
-          reason: 'windows_arm64_unsupported',
-          message: 'Bundled zellij has no supported Windows ARM64 binary; use WSL2 or a non-terminal runtime.',
-        };
-      }
-      return {
-        status: 'disabled',
-        reason: 'windows_zellij_unvalidated',
-        message: 'Native Windows zellij background TUI hosting is not enabled until validated; use WSL2 or a non-terminal runtime.',
-      };
+    // Windows x64 ships a real `zellij.exe`, so it falls through to the normal
+    // availability check below; only ARM64 has nothing to run.
+    if (platform.os === 'win32' && platform.arch === 'arm64') {
+      return WINDOWS_ARM64_UNSUPPORTED;
     }
     if (!params.zellijAvailable || !adapters.zellij) {
       if (params.tmuxAvailable && adapters.tmux) {
@@ -64,18 +66,12 @@ export function resolveTerminalHost(params: ResolveTerminalHostParams): Terminal
     if (adapters.windows_console) {
       return { status: 'resolved', adapter: adapters.windows_console, reason: 'windows_console_available' };
     }
+    // No console host: ARM64 has no bundled zellij build either, so there is
+    // nothing left to try. x64 falls through to the shared zellij tail below
+    // (tmux never exists on native Windows).
     if (platform.arch === 'arm64') {
-      return {
-        status: 'disabled',
-        reason: 'windows_arm64_unsupported',
-        message: 'Bundled zellij has no supported Windows ARM64 binary; use WSL2 or a non-terminal runtime.',
-      };
+      return WINDOWS_ARM64_UNSUPPORTED;
     }
-    return {
-      status: 'disabled',
-      reason: 'windows_zellij_unvalidated',
-      message: 'Native Windows zellij background TUI hosting is not enabled until validated; use WSL2 or a non-terminal runtime.',
-    };
   }
 
   if (params.tmuxAvailable && adapters.tmux) {

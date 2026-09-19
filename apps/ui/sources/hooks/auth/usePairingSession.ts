@@ -148,12 +148,12 @@ export function usePairingSession(params: Readonly<{ enabled: boolean; isAuthent
                 }),
             });
             if (!isCurrent()) return { ok: false, status: 409 };
-            const authenticatedIdentity = authenticatedSnapshot.status === 'ready'
-                ? String(authenticatedSnapshot.serverIdentityId ?? '').trim()
-                : '';
-            const descriptor = authenticatedSnapshot.status === 'ready'
-                ? authenticatedSnapshot.features.homeConnectionDescriptor
-                : null;
+            if (authenticatedSnapshot.status !== 'ready') {
+                setCompletionState('completion_failed');
+                return { ok: false, status: 412 };
+            }
+            const authenticatedIdentity = String(authenticatedSnapshot.serverIdentityId ?? '').trim();
+            const descriptor = authenticatedSnapshot.features.homeConnectionDescriptor;
             if (
                 !descriptor
                 || authenticatedIdentity !== retainedDescriptor.homeServerIdentityId

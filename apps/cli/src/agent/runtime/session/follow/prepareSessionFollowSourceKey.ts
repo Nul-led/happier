@@ -11,7 +11,7 @@ import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { encodeBase64 } from '@/api/encryption';
 import type { StoredCredentials } from '@/persistence';
 import { callExactMachineRpc } from '@/session/transport/rpc/machineRpc';
-import { resolveLegacyExpectedRunnerMachineContentKeyBinding } from '@/api/machine/machineDataEncryptionKey';
+import { resolveExpectedRunnerMachineContentKeyBindingScope } from '@/api/machine/machineDataEncryptionKey';
 import type { ActionExecutorContext } from '@happier-dev/protocol/actions';
 import type { ExternalActionMachineRequestSigningKey } from '@/api/externalActionExecutionAuthorization';
 
@@ -49,7 +49,7 @@ export async function prepareSessionFollowSourceKey(input: Readonly<{
     ...relation,
     sourceDataEncryptionKeyBase64: encodeBase64(input.sourceDataEncryptionKey),
   });
-  const expectedRunnerMachineContentKeyBinding = resolveLegacyExpectedRunnerMachineContentKeyBinding({
+  const expectedRunnerMachineContentKeyBinding = resolveExpectedRunnerMachineContentKeyBindingScope({
     credentials: input.credentials,
     homeServerIdentityId: input.homeServerIdentityId,
     machineId: input.machineId,

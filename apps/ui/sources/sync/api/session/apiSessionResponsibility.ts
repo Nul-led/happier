@@ -76,6 +76,9 @@ export type SessionResponsibilityRequestOptions = Readonly<{
     signal?: AbortSignal;
 }>;
 
+/** What a caller may still choose once `scope` is already the first argument. */
+export type SessionResponsibilityCallOptions = Omit<SessionResponsibilityRequestOptions, 'scope'>;
+
 function readAvailability(options: SessionResponsibilityRequestOptions): SessionCollaborationAvailability | undefined {
     return options.availability;
 }
@@ -137,7 +140,7 @@ async function executeViaSharedExecutor(params: SessionResponsibilityRequestOpti
 export async function setSessionResponsibleAccount(
     scope: ServerAccountScope,
     input: Readonly<{ sessionId: string; responsibleAccountId: string | null }>,
-    options?: SessionResponsibilityRequestOptions,
+    options?: SessionResponsibilityCallOptions,
 ): Promise<SetSessionResponsibilityResponse> {
     const merged: SessionResponsibilityRequestOptions = { scope, ...(options?.availability ? { availability: options.availability } : {}), ...(options?.isCurrent ? { isCurrent: options.isCurrent } : {}), ...(options?.signal ? { signal: options.signal } : {}) };
     const value = await executeViaSharedExecutor({
@@ -195,7 +198,7 @@ export async function readSessionResponsibleAccount(
 export async function listSessionResponsibilityCandidates(
     scope: ServerAccountScope,
     input: Readonly<{ sessionId: string; query?: string; cursor?: string; limit?: number }>,
-    options?: SessionResponsibilityRequestOptions & Readonly<{ purpose?: SessionResponsibilityCandidatePurposeV1 }>,
+    options?: SessionResponsibilityCallOptions & Readonly<{ purpose?: SessionResponsibilityCandidatePurposeV1 }>,
 ): Promise<SessionResponsibilityCandidatesResponse> {
     const purpose = options?.purpose ?? 'assignment';
     const merged: SessionResponsibilityRequestOptions = { scope, ...(options?.availability ? { availability: options.availability } : {}), ...(options?.isCurrent ? { isCurrent: options.isCurrent } : {}), ...(options?.signal ? { signal: options.signal } : {}) };
@@ -224,7 +227,7 @@ export async function listSessionResponsibilityCandidates(
 export async function listSessionResponsibilityMentionCandidates(
     scope: ServerAccountScope,
     input: Readonly<{ sessionId: string; query?: string; cursor?: string; limit?: number }>,
-    options?: SessionResponsibilityRequestOptions,
+    options?: SessionResponsibilityCallOptions,
 ): Promise<SessionResponsibilityCandidatesResponse> {
-    return listSessionResponsibilityCandidates(scope, input, { ...options, scope, purpose: 'mention' });
+    return listSessionResponsibilityCandidates(scope, input, { ...options, purpose: 'mention' });
 }

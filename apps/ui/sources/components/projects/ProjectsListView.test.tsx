@@ -6,20 +6,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { createThemeFixture } from '@/dev/testkit/fixtures/themeFixtures';
 import type { Machine } from '@/sync/domains/state/storageTypes';
+import type { RemoveWorkspaceRefFromAccountResult } from '@/sync/ops/workspaceRefs';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 const openMachinePathBrowserModalSpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>());
 const workspaceListDirectorySpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<any>>());
 const modalAlertSpy = vi.hoisted(() => vi.fn());
-const modalConfirmSpy = vi.hoisted(() => vi.fn(async () => true));
+const modalConfirmSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<boolean>>(async () => true));
 const modalPromptSpy = vi.hoisted(() => vi.fn<(...args: any[]) => Promise<string | null>>());
-const terminateRelationshipSpy = vi.hoisted(() => vi.fn(async () => {}));
-const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const, workspaceRefId: 'added-ref' })));
-const renameWorkspaceRefInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
-const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
-const setWorkspaceRefPinnedInAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
-const removeWorkspaceRefFromAccountSpy = vi.hoisted(() => vi.fn(async () => ({ ok: true as const })));
+const terminateRelationshipSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<void>>(async () => {}));
+const addWorkspaceRefToAccountSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ ok: true; workspaceRefId: string }>>(async () => ({ ok: true as const, workspaceRefId: 'added-ref' })));
+const renameWorkspaceRefInAccountSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ ok: true }>>(async () => ({ ok: true as const })));
+const resetWorkspaceRefNameInAccountSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ ok: true }>>(async () => ({ ok: true as const })));
+const setWorkspaceRefPinnedInAccountSpy = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<{ ok: true }>>(async () => ({ ok: true as const })));
+const removeWorkspaceRefFromAccountSpy = vi.hoisted(
+    () => vi.fn<(...args: unknown[]) => Promise<RemoveWorkspaceRefFromAccountResult>>(async () => ({ ok: true as const })),
+);
 const routerPushSpy = vi.hoisted(() => vi.fn());
 let workspaceSyncRelationshipSummariesMock: any[] = [];
 let translationPrefixMock = '';

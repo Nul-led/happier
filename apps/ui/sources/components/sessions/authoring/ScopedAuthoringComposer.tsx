@@ -1,7 +1,6 @@
 import { pluginJsonValuesEqual } from '@happier-dev/protocol';
 import type {
     ComposerAttachmentDraftV1,
-    ComposerRefV1,
     ComposerSnapshotV1,
     ComposerTransactionResultV1,
     MentionRefV1,
@@ -22,13 +21,18 @@ import type { AgentInputExtraActionChip } from '@/components/sessions/agentInput
 import { resolveSessionComposerSuggestions } from '@/components/sessions/agentInput/sessionComposerSuggestions';
 import type { ComposerStructuredInputMention } from '@/components/sessions/agentInput/structuredInputMentions';
 import { projectComposerAttachmentRowItems } from '@/components/sessions/composer/composerAttachmentProjection';
+import type { ComposerDraftDocument } from '@/components/sessions/composer/composerDocumentOwner';
 import {
     composerAttachmentDraftToView,
     composerReferencesFromStructuredMentions,
     composerStructuredMentionsFromReferences,
     placePositionlessComposerReferences,
 } from '@/components/sessions/composer/composerScopeAdapters';
-import { useEphemeralComposerDocumentOwner } from '@/components/sessions/composer/useEphemeralComposerDocumentOwner';
+import {
+    projectPortableAuthoringDocument,
+    useAuthoringComposerDocumentOwner,
+    type AuthoringComposerCustodyEntry,
+} from '@/components/sessions/authoring/authoringComposerCustody';
 import { useSessionMachineTarget } from '@/components/sessions/model/useSessionMachineTarget';
 // The machine + folder resolver an authoring surface with no Session uses. It is
 // the canonical counterpart of `resolveWorkspaceTargetForSession` and is shared
@@ -100,13 +104,25 @@ export type ScopedAuthoringComposerHandle = Readonly<{ focus: () => void }>;
 export const ScopedAuthoringComposer = React.forwardRef<
     ScopedAuthoringComposerHandle,
     Readonly<{
-        composerRef: ComposerRefV1;
+        /**
+         * The host's custody of this document. It owns the exact Composer
+         * address, the live document and the caret, so the composer can be
+         * re-placed — moved into a group, hidden behind another view — without
+         * rebuilding anything the portable form cannot express.
+         */
+        custody: AuthoringComposerCustodyEntry;
         scope: AuthoringComposerScope;
         document: ScopedAuthoringDocument;
         onChangeDocument: (document: ScopedAuthoringDocument) => void;
         attachmentsEnabled: boolean;
         editable?: boolean;
         placeholder: string;
+        /**
+         * The accessible name of the actual text input, for a host that mounts
+         * several composers (a workflow names each by its step). The input
+         * itself carries it; a label on a wrapper view is never read.
+         */
+        inputAccessibilityLabel?: string;
         submitAccessibilityLabel?: string;
         onSubmit?: () => void;
         isSubmitDisabled?: boolean;
@@ -127,6 +143,7 @@ export const ScopedAuthoringComposer = React.forwardRef<
     }>
 >((props, forwardedRef) => {
     const { scope } = props;
+    const composerRef = props.custody.ref;
     const sessionId = scope.kind === 'session' ? scope.sessionId : null;
     const preferredServerId = usePreferredServerIdForSession(
         { serverId: scope.serverId, sessionId: sessionId ?? '' },
@@ -164,30 +181,16 @@ export const ScopedAuthoringComposer = React.forwardRef<
     ), [accountLifetime]);
     const onChangeDocumentRef = React.useRef(props.onChangeDocument);
     onChangeDocumentRef.current = props.onChangeDocument;
-    /**
-     * The portable document this composer last handed its host.
-     *
-     * Mention ranges and staged attachment content are Composer custody: the
-     * portable form drops both on purpose, because a saved definition must not
-     * carry an offset into text it no longer owns or device-local bytes. But the
-     * host stores that portable form and hands it straight back, and re-adopting
-     * it re-placed every mention at the leftmost matching token — so a mention on
-     * the second of two identical tokens jumped to the first — and discarded
-     * staged attachment content on the next keystroke. Recognising this
-     * composer's own echo keeps the live document authoritative while it is
-     * mounted; the portable projection still happens on the way out.
-     */
-    const lastPublishedDocumentRef = React.useRef<ScopedAuthoringDocument | null>(null);
     const attachmentEntriesRef = React.useRef<ReturnType<typeof useComposerScopePluginPresentation>['attachmentEntriesById']>(null);
-    const documentOwner = useEphemeralComposerDocumentOwner({
-        ref: props.composerRef,
+    const documentOwner = useAuthoringComposerDocumentOwner({
+        custody: props.custody,
         capabilities: {
             text: true,
             references: true,
             attachments: props.attachmentsEnabled,
             submit: props.onSubmit !== undefined,
         },
-        initialDocument: {
+        createInitialDocument: () => ({
             text: props.document.text,
             structuredInputMentions: composerStructuredMentionsFromReferences({
                 references: placePositionlessComposerReferences({
@@ -197,27 +200,14 @@ export const ScopedAuthoringComposer = React.forwardRef<
                 existing: [],
             }),
             composerAttachments: props.document.attachments as readonly ComposerAttachmentDraftV1[],
-        },
+        }),
         isCurrent,
         onDocumentChange: (next) => {
-            const references = composerReferencesFromStructuredMentions({
-                text: next.text,
-                mentions: next.structuredInputMentions,
-            }).map(({ start: _start, end: _end, ...reference }) => reference);
-            const published: ScopedAuthoringDocument = {
-                text: next.text,
-                references,
-                attachments: next.composerAttachments.map((attachment) => {
-                    const { content: _content, ...portable } = attachment;
-                    return portable;
-                }),
-            };
-            lastPublishedDocumentRef.current = published;
-            onChangeDocumentRef.current(published);
-            notifyComposerPresentationTargetChanged(props.composerRef);
+            onChangeDocumentRef.current(projectPortableAuthoringDocument(next));
+            notifyComposerPresentationTargetChanged(composerRef);
         },
     });
-    const inputEffects = useComposerPresentationInputEffects({ ref: props.composerRef });
+    const inputEffects = useComposerPresentationInputEffects({ ref: composerRef });
     const referenceHostRef = React.useRef<ComposerReferenceSearchHost | null>(null);
     const referenceHost = React.useMemo<ComposerReferenceSearchHost | null>(() => {
         const projection = daemonProjection.inputs?.pluginProjectionV2 ?? null;
@@ -233,7 +223,7 @@ export const ScopedAuthoringComposer = React.forwardRef<
     }, [daemonProjection.inputs?.pluginProjectionV2, daemonProjection.phase, isCurrent, machineId, serverId]);
     referenceHostRef.current = referenceHost;
     const pluginPresentation = useComposerScopePluginPresentation({
-        composer: props.composerRef,
+        composer: composerRef,
         // A captured Session is a real physical surface and Resource context. A
         // Machine-addressed draft has neither, so it takes the same app/global
         // pair New Session uses rather than borrowing another Session's.
@@ -257,9 +247,8 @@ export const ScopedAuthoringComposer = React.forwardRef<
 
     React.useEffect(() => {
         // Our own portable projection coming back is not a host edit.
-        const published = lastPublishedDocumentRef.current;
-        if (published !== null && pluginJsonValuesEqual(published, props.document)) return;
         const current = documentOwner.read().document;
+        if (pluginJsonValuesEqual(projectPortableAuthoringDocument(current), props.document)) return;
         documentOwner.replaceDocument({
             text: props.document.text,
             structuredInputMentions: composerStructuredMentionsFromReferences({
@@ -271,7 +260,6 @@ export const ScopedAuthoringComposer = React.forwardRef<
             }),
             composerAttachments: props.document.attachments as readonly ComposerAttachmentDraftV1[],
         });
-        lastPublishedDocumentRef.current = props.document;
     }, [documentOwner, props.document]);
 
     const readSnapshot = React.useCallback((): ComposerSnapshotV1 => {
@@ -279,7 +267,7 @@ export const ScopedAuthoringComposer = React.forwardRef<
         const lock = inputEffects.readComposerInputLock();
         return {
             revision: current.revision,
-            ref: props.composerRef,
+            ref: composerRef,
             text: current.document.text,
             references: [...composerReferencesFromStructuredMentions({
                 text: current.document.text,
@@ -300,12 +288,12 @@ export const ScopedAuthoringComposer = React.forwardRef<
                 ...(lock ? { inputLock: lock } : {}),
             },
         };
-    }, [documentOwner, inputEffects.readComposerInputLock, props.composerRef, props.onSubmit]);
+    }, [documentOwner, inputEffects.readComposerInputLock, composerRef, props.onSubmit]);
     const commitDocument = React.useCallback((input: Readonly<{
         expectedRevision: number;
         mutation: ComposerPresentationDocumentMutation;
     }>): ComposerTransactionResultV1 => documentOwner.apply(input.expectedRevision, input.mutation), [documentOwner]);
-    const target = useStableComposerPresentationTarget(props.composerRef, {
+    const target = useStableComposerPresentationTarget(composerRef, {
         readRevision: () => documentOwner.read().revision,
         replace: (text, expectedRevision) => {
             if (documentOwner.read().revision !== expectedRevision) return documentOwner.read().revision;
@@ -323,20 +311,20 @@ export const ScopedAuthoringComposer = React.forwardRef<
             return true;
         },
     } satisfies ComposerPresentationTarget);
-    React.useEffect(() => registerComposerPresentationTarget(props.composerRef, target), [props.composerRef, target]);
-    React.useEffect(() => notifyComposerPresentationTargetChanged(props.composerRef), [pluginPresentation.attachmentEntriesById, props.composerRef]);
+    React.useEffect(() => registerComposerPresentationTarget(composerRef, target), [composerRef, target]);
+    React.useEffect(() => notifyComposerPresentationTargetChanged(composerRef), [pluginPresentation.attachmentEntriesById, composerRef]);
 
     const removeAttachment = React.useCallback((instanceId: string) => {
-        const snapshot = readComposerPresentationSnapshot(props.composerRef);
+        const snapshot = readComposerPresentationSnapshot(composerRef);
         if (!snapshot) return;
         applyComposerPresentationTransaction({
-            ref: props.composerRef,
+            ref: composerRef,
             transaction: {
                 expectedRevision: snapshot.revision,
                 operations: [{ kind: 'attachment.remove', instanceId }],
             },
         });
-    }, [props.composerRef]);
+    }, [composerRef]);
 
     // File search is addressed per call, so a Machine or folder chosen after the
     // composer mounted starts offering files without a remount.
@@ -389,6 +377,23 @@ export const ScopedAuthoringComposer = React.forwardRef<
     });
     const extraActionChips = [...(props.extraActionChips ?? []), ...pluginPresentation.extraActionChips];
     const context = props.agentInputContext;
+    /**
+     * The caret, through the composer's own restore seam.
+     *
+     * A re-placed document keeps its text and references, so leaving the caret
+     * behind would still drop the author where they were not typing. The restore
+     * generation is the custody entry's, which a freshly mounted input consumes
+     * exactly once: resuming a placement restores the caret, while ordinary
+     * typing is never interrupted by it.
+     */
+    const custodySelection = props.custody.readSelection();
+    const inputPersistence = React.useMemo(() => ({
+        restoreToken: props.custody.selectionRestoreToken,
+        ...(custodySelection === null ? {} : { initialSelection: custodySelection }),
+        onSelectionChangePersist: (selection: Readonly<{ start: number; end: number }>) => {
+            props.custody.writeSelection(selection);
+        },
+    }), [custodySelection, props.custody]);
 
     return (
         <PluginContextualResourceStoreProvider>
@@ -403,21 +408,25 @@ export const ScopedAuthoringComposer = React.forwardRef<
                 })}
                 onComposerFocusChange={(focused) => {
                     focusedRef.current = focused;
-                    notifyComposerPresentationTargetChanged(props.composerRef);
+                    notifyComposerPresentationTargetChanged(composerRef);
                     if (focused) props.onFocus?.();
                     else props.onBlur?.();
                 }}
                 onComposerFocusRequestChange={(request) => { focusRequestRef.current = request; }}
                 onComposerActionBarLayoutChange={(layout) => {
                     actionBarLayoutRef.current = layout;
-                    notifyComposerPresentationTargetChanged(props.composerRef);
+                    notifyComposerPresentationTargetChanged(composerRef);
                 }}
                 composerDecorations={inputEffects.composerDecorations}
                 composerInputLock={inputEffects.composerInputLock}
-                composerRef={props.composerRef}
+                composerRef={composerRef}
+                inputPersistence={inputPersistence}
                 sessionAddress={voiceSessionAddress}
                 {...(sessionId === null ? {} : { sessionId })}
                 placeholder={props.placeholder}
+                {...(props.inputAccessibilityLabel === undefined
+                    ? {}
+                    : { inputAccessibilityLabel: props.inputAccessibilityLabel })}
                 autocompleteKinds={suggestionKinds}
                 autocompleteSuggestions={resolveSuggestions}
                 onSend={props.onSubmit}
@@ -431,7 +440,7 @@ export const ScopedAuthoringComposer = React.forwardRef<
                 agentType={context?.agentType}
                 agentLabel={context?.agentLabel}
                 permissionMode={context?.permissionMode}
-                modelMode={context?.modelMode}
+                modelMode={context?.modelMode ?? undefined}
                 machineName={context?.machineName}
                 currentPath={context?.currentPath ?? undefined}
                 profileId={context?.profileId ?? undefined}

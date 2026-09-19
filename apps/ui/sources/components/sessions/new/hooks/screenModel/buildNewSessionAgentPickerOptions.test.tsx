@@ -86,6 +86,7 @@ describe('buildNewSessionAgentPickerOptions', () => {
 
         const result = buildNewSessionAgentPickerOptions({
             useProfiles: false,
+            projectionCurrent: true,
             selectedProfileId: null,
             profileMap: new Map(),
             resolvedBackendEntries: [claude, antigravity, codeRabbit, deepSec],

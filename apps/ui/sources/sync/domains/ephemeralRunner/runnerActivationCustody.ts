@@ -21,8 +21,15 @@ export type RunnerActivationCustody = Readonly<{
 
 /**
  * Retire creator-only signing custody only after the Home projection proves the
- * endpoint claim against the immutable binding previously accepted locally.
- * The exact activation-id removal remains idempotent for remount/retry.
+ * endpoint claim against the immutable binding previously accepted locally
+ * **and** carries the creator-authenticated review this key had to sign.
+ *
+ * The activation signing identity is the proof root for the scoped Machine
+ * content key, so retiring it at claim would destroy the key the review must
+ * still be signed with. Custody is therefore held through successful review
+ * publication, which is the first projection fact that proves the creator's own
+ * proof reached the Home. The exact activation-id removal remains idempotent
+ * for remount/retry.
  */
 export async function retireRunnerActivationKeyCustodyAfterVerifiedClaim(input: Readonly<{
     scope: ServerAccountScope;
@@ -41,6 +48,9 @@ export async function retireRunnerActivationKeyCustodyAfterVerifiedClaim(input: 
     if (projection.data.claim === null
         || !verifyRunnerClaimV1({ claim: projection.data.claim, expectedBinding: expectedBinding.data })) {
         throw new Error('runner_activation_invalid_claim');
+    }
+    if (projection.data.review === null) {
+        throw new Error('runner_activation_review_unpublished');
     }
     await removeRunnerActivationKeyCustodyByActivationId(input.scope, expectedBinding.data.activationId);
 }

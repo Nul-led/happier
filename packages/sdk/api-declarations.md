@@ -22203,6 +22203,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             }, z.core.$strict>
                         ], "type">;
                     }, z.core.$strict>>;
+                    environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
                 }, z.core.$strict>;
                 readonly bindInput: typeof bindApiSessionSpawnNewInput;
                 readonly inputHints: {
@@ -22785,6 +22786,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             }, z.core.$strict>
                         ], "type">;
                     }, z.core.$strict>>;
+                    environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
                     creationKey: z.core.$ZodBranded<z.ZodString, "SessionCreationKeyV1", "out">;
                 }, z.core.$strict>;
                 readonly decodeInput: typeof identityActionSurfaceValue;
@@ -23763,6 +23765,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     }, z.core.$strict>
                 ], "type">;
             }, z.core.$strict>>;
+            environmentVariables: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         }, z.core.$strict>;
     },
     {
@@ -95373,6 +95376,7 @@ const EphemeralRunnerActionOutputSchemasV1: {
                 installationId: z.ZodString;
                 machineContentKeyFingerprint: z.ZodString;
                 accountSignatureBase64Url: z.ZodString;
+                creatorVerifierFactCiphertext: z.ZodOptional<z.ZodString>;
             }, z.core.$strict>>;
             credentialSelectionBinding: z.ZodObject<{
                 v: z.ZodLiteral<1>;
@@ -95869,6 +95873,7 @@ const EphemeralRunnerActionOutputSchemasV1: {
                 installationId: z.ZodString;
                 machineContentKeyFingerprint: z.ZodString;
                 accountSignatureBase64Url: z.ZodString;
+                creatorVerifierFactCiphertext: z.ZodOptional<z.ZodString>;
             }, z.core.$strict>>;
             credentialSelectionBinding: z.ZodObject<{
                 v: z.ZodLiteral<1>;
@@ -110430,6 +110435,7 @@ const WorkflowActionInputSchemasV1: {
     readonly 'workflow.run.list': z.ZodObject<{
         cursor: z.ZodOptional<z.ZodString>;
         limit: z.ZodOptional<z.ZodNumber>;
+        runId: z.ZodOptional<z.ZodString>;
         origin: z.ZodOptional<z.ZodEnum<{
             automation: "automation";
             direct: "direct";

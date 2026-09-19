@@ -569,8 +569,8 @@ describe('useTemporaryComputerLaunch', () => {
         expect(readByDraft).toHaveBeenCalledTimes(2);
     });
 
-    it('retires creator signing-key custody once for a verified endpoint claim', async () => {
-        const claimed = projection('claimed');
+    it('retires creator signing-key custody once for a published creator proof', async () => {
+        const claimed = projection('claimed', { reviewed: true });
         const onClaimed = vi.fn(async () => undefined);
         const readByDraft = vi.fn(async () => claimed);
         const hook = await renderHook(() => useTemporaryComputerLaunch({
@@ -589,16 +589,26 @@ describe('useTemporaryComputerLaunch', () => {
         expect(onClaimed).toHaveBeenCalledTimes(1);
     });
 
-    it('does not prepare review until claim custody retirement succeeds, and retries a failed retirement', async () => {
+    it('prepares the e2ee review while creator signing custody is still retained, then retires it', async () => {
+        // The e2ee review signs the scoped Machine content key with the
+        // activation signing identity, so a review prepared after retirement
+        // fails closed at `runner_activation_signing_custody_unavailable`.
         const claimed = projection('claimed');
-        const retirement = createDeferred<void>();
-        const onClaimed = vi.fn()
-            .mockImplementationOnce(async () => retirement.promise)
-            .mockResolvedValueOnce(undefined);
-        const prepareReview = vi.fn(async () => await new Promise<never>(() => undefined));
-        const hook = await renderHook(() => useTemporaryComputerLaunch({
+        const reviewed = projection('claimed', { reviewed: true });
+        let custodyRetired = false;
+        let reviewPublished = false;
+        const reviewPublication = createDeferred<void>();
+        const onClaimed = vi.fn(async () => { custodyRetired = true; });
+        const prepareReview = vi.fn(async () => {
+            if (custodyRetired) throw new Error('runner_activation_signing_custody_unavailable');
+            await reviewPublication.promise;
+            reviewPublished = true;
+        });
+        // The published review only becomes visible once the creator proof lands.
+        const readByDraft = vi.fn(async () => (reviewPublished ? reviewed : claimed));
+        await renderHook(() => useTemporaryComputerLaunch({
             serverId: 'server-1',
-            client: { readByDraft: vi.fn(async () => claimed) } as unknown as RunnerActivationClient,
+            client: { readByDraft } as unknown as RunnerActivationClient,
             draftId: 'draft-claim-retirement',
             existingPublicRef: null,
             prepareActivation: vi.fn(),
@@ -608,15 +618,37 @@ describe('useTemporaryComputerLaunch', () => {
             onMaterialized: vi.fn(),
         }));
 
+        await vi.waitFor(() => expect(prepareReview).toHaveBeenCalledWith(claimed, expect.any(AbortSignal)));
+        // Still signing: the key the proof needs must not have been retired.
+        expect(onClaimed).not.toHaveBeenCalled();
+        await act(async () => reviewPublication.resolve());
+        await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledWith(reviewed));
+    });
+
+    it('retries a failed custody retirement without losing the published proof', async () => {
+        const reviewed = projection('claimed', { reviewed: true });
+        const retirement = createDeferred<void>();
+        const onClaimed = vi.fn()
+            .mockImplementationOnce(async () => retirement.promise)
+            .mockResolvedValueOnce(undefined);
+        const hook = await renderHook(() => useTemporaryComputerLaunch({
+            serverId: 'server-1',
+            client: { readByDraft: vi.fn(async () => reviewed) } as unknown as RunnerActivationClient,
+            draftId: 'draft-claim-retirement-retry',
+            existingPublicRef: null,
+            prepareActivation: vi.fn(),
+            persistPublicRef: vi.fn(),
+            onClaimed,
+            onMaterialized: vi.fn(),
+        }));
+
         await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledTimes(1));
-        expect(prepareReview).not.toHaveBeenCalled();
         await act(async () => retirement.reject(new Error('secure storage busy')));
         await vi.waitFor(() => expect(hook.getCurrent().status).toBe('failed'));
-        expect(prepareReview).not.toHaveBeenCalled();
 
         await act(async () => { await hook.getCurrent().retry(); });
         await vi.waitFor(() => expect(onClaimed).toHaveBeenCalledTimes(2));
-        await vi.waitFor(() => expect(prepareReview).toHaveBeenCalledWith(claimed, expect.any(AbortSignal)));
+        await vi.waitFor(() => expect(hook.getCurrent().status).toBe('waiting_for_approval'));
     });
 
     it('does not materialize until claim custody retirement succeeds', async () => {

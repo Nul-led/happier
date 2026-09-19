@@ -539,8 +539,8 @@ describe('SessionFollowSourcesEditor', () => {
         ] } });
         followState.rows = {
             'home-a': {
-                'source-a': createSessionListRenderableSessionFixture({ id: 'source-a', metadata: { name: 'Alpha source' }, encryptionMode: 'plain' }),
-                'source-b': createSessionListRenderableSessionFixture({ id: 'source-b', metadata: { name: 'Beta source' }, encryptionMode: 'plain' }),
+                'source-a': createSessionListRenderableSessionFixture({ id: 'source-a', metadata: { name: 'Alpha source', path: '/repo/alpha' }, encryptionMode: 'plain' }),
+                'source-b': createSessionListRenderableSessionFixture({ id: 'source-b', metadata: { name: 'Beta source', path: '/repo/beta' }, encryptionMode: 'plain' }),
             },
         };
         followState.machinesByServer = {
@@ -652,7 +652,7 @@ describe('SessionFollowSourcesEditor', () => {
             serverId="home-a"
             destinationMachineId="runner-a"
         />, {
-            createNodeMock: (element) => ({ focus: () => focused(element.props.testID) }),
+            createNodeMock: (element) => ({ focus: () => focused((element.props as { testID?: string }).testID) }),
         });
         await vi.waitFor(() => expect(screen.findByTestId('session-follow-source-source-a-remove')).not.toBeNull());
         await act(async () => {

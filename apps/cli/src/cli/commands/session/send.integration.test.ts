@@ -81,6 +81,13 @@ describe('happier session send (integration)', () => {
           path: '/tmp',
           tag: 'MyTag',
           host: 'host1',
+          // Every Session the daemon creates records its Agent identity, and the
+          // shared testkit metadata does the same (`testkit/backends/sessionMetadata.ts:11`).
+          // Without it `resolveAgentIdFromSessionMetadata` answers null and a
+          // persisted model intent correctly fails closed
+          // (`resolveSessionMessageModel.ts:110-113`), so every send here would
+          // die as `model_selection_agent_target_unknown` before any send logic.
+          flavor: 'claude',
           permissionMode: 'safe-yolo',
           permissionModeUpdatedAt: 10,
           modelOverrideV1: { v: 1, updatedAt: 11, modelId: 'claude-sonnet-4-0' },
@@ -548,6 +555,8 @@ describe('happier session send (integration)', () => {
           path: '/tmp',
           tag: 'MyTag',
           host: 'host1',
+          // Same Agent identity the daemon records; see the note above.
+          flavor: 'claude',
           permissionMode: 'safe-yolo',
           permissionModeUpdatedAt: 10,
           modelOverrideV1: { v: 1, updatedAt: 11, modelId: 'claude-sonnet-4-0' },

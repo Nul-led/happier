@@ -4,6 +4,7 @@ import tweetnacl from 'tweetnacl';
 import {
     computeRunnerMachineContentKeyFingerprintV1,
     resolvePublishedMachineDataEncryptionKeyV1,
+    sealRunnerMachineContentKeyVerifierFactV1,
     signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@/encryption/base64';
@@ -23,14 +24,64 @@ const TOKEN = 'e30.eyJzdWIiOiJhY2NvdW50LW9uZSJ9.signature';
 const ACTIVATION_ID = '11111111-1111-4111-8111-111111111111';
 const scope = { serverId: 'home-one', accountId: 'account-one' } as const;
 
+const ACCOUNT_MACHINE_KEY = new Uint8Array(32).fill(6);
+const OTHER_ACCOUNT_MACHINE_KEY = new Uint8Array(32).fill(16);
+const accountMaterial = { type: 'dataKey', machineKey: ACCOUNT_MACHINE_KEY } as const;
+
 /** A modern credential that carries no Account signing authority at all. */
 const dataKeyCredentials = {
     token: TOKEN,
     encryption: {
-        publicKey: encodeBase64(new Uint8Array(32).fill(5), 'base64url'),
-        machineKey: encodeBase64(new Uint8Array(32).fill(6), 'base64url'),
+        publicKey: encodeBase64(new Uint8Array(32).fill(5), 'base64'),
+        machineKey: encodeBase64(ACCOUNT_MACHINE_KEY, 'base64'),
     },
 } as const;
+
+/** A second authorized device of the same Account: same material, no custody. */
+const secondDeviceCredentials = dataKeyCredentials;
+
+function sealVerifierFact(input: Readonly<{
+    activationId?: string;
+    machineId?: string;
+    activationSigningPublicKey: string;
+    machineKey?: Uint8Array;
+}>): string {
+    return sealRunnerMachineContentKeyVerifierFactV1({
+        payload: {
+            v: 1,
+            activationId: input.activationId ?? ACTIVATION_ID,
+            machineId: input.machineId ?? 'machine-one',
+            activationSigningPublicKey: input.activationSigningPublicKey,
+        },
+        material: { type: 'dataKey', machineKey: input.machineKey ?? ACCOUNT_MACHINE_KEY },
+        randomBytes: (length: number) => new Uint8Array(length).fill(3),
+    });
+}
+
+function signRunnerBinding(input: Readonly<{
+    secretKey: Uint8Array;
+    dataKey: Uint8Array;
+    machineId?: string;
+    activationId?: string;
+    creatorVerifierFactCiphertext?: string;
+}>) {
+    const binding = signRunnerMachineContentKeyBindingV1({
+        payload: {
+            v: 1,
+            purpose: 'happier.ephemeral-runner.machine-content-key',
+            homeServerIdentityId: 'home-one',
+            activationId: input.activationId ?? ACTIVATION_ID,
+            creatorAccountId: 'account-one',
+            machineId: input.machineId ?? 'machine-one',
+            installationId: 'installation-one',
+            machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(input.dataKey),
+        },
+        activationSigningSecretKey: input.secretKey,
+    });
+    return input.creatorVerifierFactCiphertext
+        ? { ...binding, creatorVerifierFactCiphertext: input.creatorVerifierFactCiphertext }
+        : binding;
+}
 
 let values: Map<string, string>;
 
@@ -148,18 +199,127 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
         })).toEqual({ status: 'unavailable' });
     });
 
-    it('resolves nothing on a device without creator activation custody', async () => {
-        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
-            credentials: dataKeyCredentials,
-            homeServerIdentityId: 'home-one',
-            machineId: 'machine-one',
-        })).toBeNull();
+    it('resolves the Account-material route on a device without creator activation custody', async () => {
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one')).resolves.toBeNull();
         expect(resolveExpectedRunnerMachineContentKeyBindingV1({
-            credentials: dataKeyCredentials,
+            credentials: secondDeviceCredentials,
+            homeServerIdentityId: 'home-one',
+            machineId: 'machine-one',
+        })).toEqual({
+            homeServerIdentityId: 'home-one',
+            creatorAccountId: 'account-one',
+            machineId: 'machine-one',
+            accountScopedMaterial: accountMaterial,
+        });
+    });
+
+    it('locks the Runner Machine for a token-only device, which holds neither custody nor Account material', async () => {
+        expect(resolveExpectedRunnerMachineContentKeyBindingV1({
+            credentials: { token: TOKEN } as never,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
         })).toBeNull();
+    });
+
+    it('opens the Runner Machine on a second device from the creator-sealed verifier fact alone', async () => {
+        const activationSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(7));
+        const dataKey = new Uint8Array(32).fill(11);
+        const binding = signRunnerBinding({
+            secretKey: activationSigning.secretKey,
+            dataKey,
+            creatorVerifierFactCiphertext: sealVerifierFact({
+                activationSigningPublicKey: encodeBase64(activationSigning.publicKey, 'base64url'),
+            }),
+        });
+        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+            credentials: secondDeviceCredentials,
+            homeServerIdentityId: 'home-one',
+            machineId: 'machine-one',
+        });
+
+        expect(resolvePublishedMachineDataEncryptionKeyV1({
+            machine: {
+                id: 'machine-one',
+                kind: 'ephemeral_session_runner',
+                installationId: 'installation-one',
+                dataEncryptionKey: 'wrapped-runner-key',
+                runnerContentKeyBinding: binding,
+            },
+            openedDataEncryptionKey: dataKey,
+            expectedAccountMode: 'e2ee',
+            expectedRunnerBinding: expected!,
+        })).toEqual({ status: 'e2ee', dataKey });
+    });
+
+    it('rejects a substituted verifier fact, binding and envelope on a second device', async () => {
+        // The Home holds no Account material, so the best it can do is publish a
+        // consistent triple whose verifier fact it cannot seal under the Account.
+        const colluding = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(23));
+        const substitutedKey = new Uint8Array(32).fill(12);
+        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+            credentials: secondDeviceCredentials,
+            homeServerIdentityId: 'home-one',
+            machineId: 'machine-one',
+        });
+
+        for (const substitutedFact of [
+            undefined,
+            // Sealed under material the Home could hold; never the Account's.
+            sealVerifierFact({
+                activationSigningPublicKey: encodeBase64(colluding.publicKey, 'base64url'),
+                machineKey: OTHER_ACCOUNT_MACHINE_KEY,
+            }),
+        ]) {
+            expect(resolvePublishedMachineDataEncryptionKeyV1({
+                machine: {
+                    id: 'machine-one',
+                    kind: 'ephemeral_session_runner',
+                    installationId: 'installation-one',
+                    dataEncryptionKey: 'wrapped-runner-key',
+                    runnerContentKeyBinding: signRunnerBinding({
+                        secretKey: colluding.secretKey,
+                        dataKey: substitutedKey,
+                        ...(substitutedFact ? { creatorVerifierFactCiphertext: substitutedFact } : {}),
+                    }),
+                },
+                openedDataEncryptionKey: substitutedKey,
+                expectedAccountMode: 'e2ee',
+                expectedRunnerBinding: expected!,
+            })).toEqual({ status: 'unavailable' });
+        }
+    });
+
+    it('rejects an authentic verifier fact replayed from another Runner', async () => {
+        // A colluding Runner host signs for its own Machine, then the Home moves
+        // the creator-sealed fact of a different Runner onto this Machine row.
+        const otherRunnerSigning = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(31));
+        const dataKey = new Uint8Array(32).fill(13);
+        const expected = resolveExpectedRunnerMachineContentKeyBindingV1({
+            credentials: secondDeviceCredentials,
+            homeServerIdentityId: 'home-one',
+            machineId: 'machine-one',
+        });
+
+        expect(resolvePublishedMachineDataEncryptionKeyV1({
+            machine: {
+                id: 'machine-one',
+                kind: 'ephemeral_session_runner',
+                installationId: 'installation-one',
+                dataEncryptionKey: 'wrapped-runner-key',
+                runnerContentKeyBinding: signRunnerBinding({
+                    secretKey: otherRunnerSigning.secretKey,
+                    dataKey,
+                    creatorVerifierFactCiphertext: sealVerifierFact({
+                        machineId: 'machine-two',
+                        activationId: '22222222-2222-4222-8222-222222222222',
+                        activationSigningPublicKey: encodeBase64(otherRunnerSigning.publicKey, 'base64url'),
+                    }),
+                }),
+            },
+            openedDataEncryptionKey: dataKey,
+            expectedAccountMode: 'e2ee',
+            expectedRunnerBinding: expected!,
+        })).toEqual({ status: 'unavailable' });
     });
 
     it('serves the retained identity after a remount once the record is loaded', async () => {
@@ -171,7 +331,7 @@ describe('resolveExpectedRunnerMachineContentKeyBindingV1', () => {
             credentials: dataKeyCredentials,
             homeServerIdentityId: 'home-one',
             machineId: 'machine-one',
-        })).toBeNull();
+        })?.accountSigningPublicKeyBase64Url).toBeUndefined();
         await expect(loadRunnerCreatorMachineContentKeyTrust(scope, 'machine-one'))
             .resolves.toEqual({
                 activationId: ACTIVATION_ID,

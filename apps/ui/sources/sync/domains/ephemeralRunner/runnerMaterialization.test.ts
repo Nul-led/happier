@@ -10,7 +10,7 @@ import { signRunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/conse
 import { signRunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
 import { signRunnerBrokerReadinessRequestV1 } from '@happier-dev/protocol/teams';
 import { openBoxBundleWithSecretKey } from '@happier-dev/protocol/crypto/boxBundle';
-import { computeRunnerMachineContentKeyFingerprintV1, verifyRunnerMachineContentKeyBindingV1 } from '@happier-dev/protocol/ephemeralRunner/machineContentKeyBinding';
+import { computeRunnerMachineContentKeyFingerprintV1, openRunnerMachineContentKeyVerifierFactV1, verifyRunnerMachineContentKeyBindingV1 } from '@happier-dev/protocol/ephemeralRunner/machineContentKeyBinding';
 import { MACHINE_PLAIN_DATA_KEY_MARKER, decodePlainMachineStoredContent, sealBoxBundle, signAccountContentKeyBindingV1, computeContentPublicKeyFingerprint, openEncryptedDataKeyEnvelopeV1, openSessionOwnerMetadataEnvelopeV1 } from '@happier-dev/protocol';
 import type { RunnerEndpointFactsRecipientV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
 import { RunnerRuntimeBootstrapV1Schema } from '@happier-dev/protocol/ephemeralRunner/bootstrap';
@@ -489,6 +489,21 @@ describe('creator Runner review and materialization', () => {
                 activationId: fixture.binding.activationId,
                 activationSigningPublicKey: fixture.binding.activationSigningPublicKey,
             });
+        // …and seals the same non-secret verifier for every other authorized
+        // device of the Account, bound to this exact activation and Machine.
+        const material = { type: 'dataKey', machineKey: encryption.getContentPrivateKey() } as const;
+        expect(openRunnerMachineContentKeyVerifierFactV1({
+            ciphertext: binding.creatorVerifierFactCiphertext,
+            material,
+            expectedActivationId: fixture.binding.activationId,
+            expectedMachineId: fixture.binding.machineId,
+        })).toBe(fixture.binding.activationSigningPublicKey);
+        expect(openRunnerMachineContentKeyVerifierFactV1({
+            ciphertext: binding.creatorVerifierFactCiphertext,
+            material,
+            expectedActivationId: fixture.binding.activationId,
+            expectedMachineId: 'another-runner-machine',
+        })).toBeNull();
     });
 
     it('refuses to sign the scoped Machine key without creator activation custody', async () => {

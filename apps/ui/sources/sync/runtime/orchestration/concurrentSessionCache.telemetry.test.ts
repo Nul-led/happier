@@ -109,7 +109,7 @@ describe('concurrent session cache telemetry', () => {
 
         const profiles = await import('@/sync/domains/server/serverProfiles');
         const runtime = await import('@/sync/domains/server/serverRuntime');
-        const active = runtime.upsertAndActivateServer({ serverUrl: 'https://home-a.example.test', scope: 'tab' });
+        const active = await runtime.upsertAndActivateServer({ serverUrl: 'https://home-a.example.test', scope: 'tab' });
         const secondary = await profiles.upsertServerProfile({ serverUrl: 'https://home-b.example.test', name: 'Home B' });
         const { TokenStorage } = await import('@/auth/storage/tokenStorage');
         await TokenStorage.setCredentialsForServerUrl(

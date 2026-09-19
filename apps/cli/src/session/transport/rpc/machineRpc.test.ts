@@ -41,6 +41,8 @@ import {
   verifyExternalActionMachineRequestV1,
   verifyExternalActionMachineRpcRequestV1,
   computeRunnerMachineContentKeyFingerprintV1,
+  encodeBase64 as encodeProtocolBase64,
+  sealRunnerMachineContentKeyVerifierFactV1,
   signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol';
 import { RPC_ERROR_CODES, RPC_ERROR_MESSAGES, RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -462,10 +464,24 @@ describe('callMachineRpc', () => {
         machineContentKeyFingerprint:
           computeRunnerMachineContentKeyFingerprintV1(scopedMachineKey),
       };
-      const binding = signRunnerMachineContentKeyBindingV1({
-        payload: bindingPayload,
-        activationSigningSecretKey: signing.secretKey,
-      });
+      const binding = {
+        ...signRunnerMachineContentKeyBindingV1({
+          payload: bindingPayload,
+          activationSigningSecretKey: signing.secretKey,
+        }),
+        // The daemon holds no creator device custody, so the verifier identity
+        // comes from the creator-sealed Account-scoped fact.
+        creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+          payload: {
+            v: 1,
+            activationId: bindingPayload.activationId,
+            machineId: bindingPayload.machineId,
+            activationSigningPublicKey: encodeProtocolBase64(signing.publicKey, 'base64url'),
+          },
+          material: { type: 'legacy', secret: credentials.encryption.secret },
+          randomBytes: (length: number) => new Uint8Array(length).fill(3),
+        }),
+      };
       const machine = {
         id: 'runner-one',
         kind: 'ephemeral_session_runner',

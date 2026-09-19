@@ -80,6 +80,7 @@ function createDefaultConnection(): DaemonProviderConnectionViewV1 {
             effectiveState: 'valid',
         },
         credential: null,
+        teamCredentialSourceOffer: null,
         deployment: { kind: 'external' },
         managedLocalOption: null,
         endpoints: [],

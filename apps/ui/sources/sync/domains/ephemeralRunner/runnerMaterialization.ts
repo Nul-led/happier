@@ -22,6 +22,7 @@ import {
 } from '@happier-dev/protocol/ephemeralRunner/launchManifest';
 import {
     computeRunnerMachineContentKeyFingerprintV1,
+    sealRunnerMachineContentKeyVerifierFactV1,
     signRunnerMachineContentKeyBindingV1,
 } from '@happier-dev/protocol/ephemeralRunner/machineContentKeyBinding';
 import {
@@ -60,6 +61,7 @@ import {
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
 import { createServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
+import { resolveAccountScopedCryptoMaterialFromCredentials } from '@/sync/domains/connectedServices/resolveAccountScopedCryptoMaterialFromCredentials';
 import {
     openRunnerActivationKeyCustody,
     readRunnerActivationSigningKey,
@@ -255,6 +257,23 @@ export async function prepareRunnerActivationReviewV1(input: Readonly<{
                 },
                 activationSigningSecretKey: secretKey,
             });
+            // The same non-secret verifier, kept twice for the two reader
+            // classes: device-local for this creator, and Account-sealed for
+            // every other authorized device or daemon of the same Account. The
+            // Home relays the sealed blob but holds no material to forge it.
+            machineContentKeyBinding = {
+                ...machineContentKeyBinding,
+                creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+                    payload: {
+                        v: 1,
+                        activationId: expectedBinding.activationId,
+                        machineId: expectedBinding.machineId,
+                        activationSigningPublicKey: expectedBinding.activationSigningPublicKey,
+                    },
+                    material: resolveAccountScopedCryptoMaterialFromCredentials(input.credentials),
+                    randomBytes: getRandomBytes,
+                }),
+            };
             await retainRunnerCreatorMachineContentKeyTrust({
                 scope: expectedBinding,
                 machineId: expectedBinding.machineId,

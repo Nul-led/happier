@@ -32,9 +32,9 @@ const params = {
 let profileScope: ServerAccountScope | null = null;
 
 describe('useExternalSessionBrowseCandidates Account lifetime', () => {
-    beforeEach(() => {
+    beforeEach(async () => {
         candidatesListSpy.mockReset();
-        const profile = upsertAndActivateServer({ serverUrl: 'https://account-lifetime.test' });
+        const profile = await upsertAndActivateServer({ serverUrl: 'https://account-lifetime.test' });
         profileScope = { serverId: profile.id, accountId: 'account-a' };
         registerStorageStateReader(() => ({ profileScope } as unknown as StorageState));
     });

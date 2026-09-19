@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { RunnerResourceIdSchema, RunnerSignatureSchema } from './activation.js';
+import { RunnerPublicKeySchema, RunnerResourceIdSchema, RunnerSignatureSchema } from './activation.js';
 
 export const RUNNER_MACHINE_CONTENT_KEY_FINGERPRINT_PREFIX = 'runner-machine-content-key-sha256:' as const;
 
@@ -22,7 +22,44 @@ export type RunnerMachineContentKeyBindingPayloadV1 = z.infer<
   typeof RunnerMachineContentKeyBindingPayloadV1Schema
 >;
 
+/**
+ * Creator-sealed verifier fact carried beside the signature.
+ *
+ * The signed payload authenticates the Machine content key against the
+ * creator's activation signing identity, but a reader that never held creator
+ * device custody has no trusted copy of that identity. This optional field
+ * carries it under the Account-scoped cipher, so every authorized DataKey or
+ * legacy device of the same Account recovers it and no Home can forge or alter
+ * it. It is outside the signed payload by construction: the creator seals it
+ * after signing, and both the signer and the verifier ignore it.
+ */
+export const RunnerMachineContentKeyVerifierFactPayloadV1Schema = z.object({
+  v: z.literal(1),
+  activationId: z.string().uuid(),
+  machineId: RunnerResourceIdSchema,
+  activationSigningPublicKey: RunnerPublicKeySchema,
+}).strict();
+export type RunnerMachineContentKeyVerifierFactPayloadV1 = z.infer<
+  typeof RunnerMachineContentKeyVerifierFactPayloadV1Schema
+>;
+
 export const RunnerMachineContentKeyBindingV1Schema = RunnerMachineContentKeyBindingPayloadV1Schema.extend({
   accountSignatureBase64Url: RunnerSignatureSchema,
+  /** Account-sealed `RunnerMachineContentKeyVerifierFactPayloadV1`; never signed. */
+  creatorVerifierFactCiphertext: z.string().min(1).max(4096).optional(),
 }).strict();
 export type RunnerMachineContentKeyBindingV1 = z.infer<typeof RunnerMachineContentKeyBindingV1Schema>;
+
+/** The non-signature fields the activation signature actually covers. */
+export function readRunnerMachineContentKeyBindingSignedPayloadV1(
+  value: unknown,
+): RunnerMachineContentKeyBindingPayloadV1 | null {
+  if (value === null || typeof value !== 'object') return null;
+  const {
+    accountSignatureBase64Url: _signature,
+    creatorVerifierFactCiphertext: _fact,
+    ...payload
+  } = value as Record<string, unknown>;
+  const parsed = RunnerMachineContentKeyBindingPayloadV1Schema.safeParse(payload);
+  return parsed.success ? parsed.data : null;
+}

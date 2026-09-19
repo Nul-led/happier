@@ -508,4 +508,119 @@ describe('savedSecretResourceOperations', () => {
         }));
         expect([...openedKey]).toEqual(new Array(32).fill(0));
     });
+    it('prepares an owed envelope for a custodied resource without mutating the resource', async () => {
+        const openedKey = new Uint8Array(32).fill(9);
+        readSavedSecretCatalog.mockResolvedValueOnce({
+            ok: true,
+            resources: [
+                {
+                    // Shared with this Account by someone else: the census and
+                    // repair routes are custodian-only, so asking here is a 403.
+                    resourceId: 'resource-received', encryptionMode: 'e2ee',
+                    entry: {
+                        ref: 'happier:shared-secret:v1:resource-received', source: 'shared_resource', relationship: 'recipient',
+                        name: 'Theirs', kind: 'apiKey', ownerAccountId: 'owner-b', revision: 2, materialStatus: 'ready',
+                        capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+                    },
+                    storedContent: { t: 'encrypted', c: 'AA==' },
+                    recipientEnvelope: { encryptedDataKey: 'their-envelope', recipientContentPublicKeyFingerprint: 'owner-key' },
+                },
+                {
+                    // Plain custody carries no envelopes at all.
+                    resourceId: 'resource-plain', encryptionMode: 'plain',
+                    entry: {
+                        ref: 'happier:shared-secret:v1:resource-plain', source: 'shared_resource', relationship: 'owner',
+                        name: 'Plain', kind: 'token', ownerAccountId: 'owner-a', revision: 1, materialStatus: 'ready',
+                        capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+                    },
+                    storedContent: { t: 'plain', v: { v: 1, name: 'Plain', kind: 'token', value: 'v' } },
+                    recipientEnvelope: null,
+                },
+                {
+                    resourceId: 'resource-a', encryptionMode: 'e2ee',
+                    entry: {
+                        ref: 'happier:shared-secret:v1:resource-a', source: 'shared_resource', relationship: 'owner',
+                        name: 'Key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 3, materialStatus: 'ready',
+                        capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+                    },
+                    storedContent: { t: 'encrypted', c: 'AA==' },
+                    recipientEnvelope: { encryptedDataKey: 'owner-envelope', recipientContentPublicKeyFingerprint: 'owner-key' },
+                },
+            ],
+        });
+        requestHomeDomain.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                resourceId: 'resource-a', revision: 3,
+                recipients: [
+                    { account: { kind: 'account', accountId: 'owner-a' }, readiness: { status: 'available', contentPublicKey: 'owner-public', contentPublicKeyFingerprint: 'owner-key' }, envelopeStatus: 'prepared' },
+                    { account: { kind: 'account', accountId: 'e2ee-a' }, readiness: { status: 'available', contentPublicKey: 'public-key', contentPublicKeyFingerprint: 'fp' }, envelopeStatus: 'missing' },
+                ],
+                nextCursor: null,
+            },
+        });
+        requestHomeDomain.mockResolvedValueOnce({ ok: true, value: { resourceId: 'resource-a', revision: 3 } });
+
+        const { repairCustodiedSavedSecretResourceEnvelopesBestEffort } = await import('./savedSecretResourceOperations');
+        await repairCustodiedSavedSecretResourceEnvelopesBestEffort({
+            scope: { serverId: 'home-a', accountId: 'owner-a' },
+            decryptDataKeyEnvelope: async () => openedKey,
+        });
+
+        // Only the custodied E2EE resource is asked about, and the sweep writes
+        // nothing but the owed envelopes.
+        expect(runTeamAction).not.toHaveBeenCalled();
+        expect(requestHomeDomain).toHaveBeenCalledTimes(2);
+        expect(requestHomeDomain).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            path: '/v1/account/saved-secrets/resources/envelope-census',
+            input: expect.objectContaining({ resourceId: 'resource-a' }),
+        }));
+        expect(requestHomeDomain).toHaveBeenNthCalledWith(2, expect.objectContaining({
+            path: '/v1/account/saved-secrets/resources/envelopes/repair',
+            method: 'POST',
+            input: {
+                resourceId: 'resource-a',
+                expectedRevision: 3,
+                keyEnvelopes: [{
+                    recipientAccountId: 'e2ee-a', encryptedDataKey: 'wrapped-key', recipientContentPublicKeyFingerprint: 'fp',
+                }],
+            },
+        }));
+        expect([...openedKey]).toEqual(new Array(32).fill(0));
+    });
+
+    it('writes nothing when every available recipient already holds a prepared envelope', async () => {
+        readSavedSecretCatalog.mockResolvedValueOnce({
+            ok: true,
+            resources: [{
+                resourceId: 'resource-a', encryptionMode: 'e2ee',
+                entry: {
+                    ref: 'happier:shared-secret:v1:resource-a', source: 'shared_resource', relationship: 'owner',
+                    name: 'Key', kind: 'apiKey', ownerAccountId: 'owner-a', revision: 3, materialStatus: 'ready',
+                    capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+                },
+                storedContent: { t: 'encrypted', c: 'AA==' },
+                recipientEnvelope: { encryptedDataKey: 'owner-envelope', recipientContentPublicKeyFingerprint: 'owner-key' },
+            }],
+        });
+        requestHomeDomain.mockResolvedValueOnce({
+            ok: true,
+            value: {
+                resourceId: 'resource-a', revision: 3,
+                recipients: [
+                    { account: { kind: 'account', accountId: 'owner-a' }, readiness: { status: 'available', contentPublicKey: 'owner-public', contentPublicKeyFingerprint: 'owner-key' }, envelopeStatus: 'prepared' },
+                    { account: { kind: 'account', accountId: 'plain-a' }, readiness: { status: 'unavailable', reason: 'plain_account' }, envelopeStatus: 'missing' },
+                ],
+                nextCursor: null,
+            },
+        });
+
+        const { repairCustodiedSavedSecretResourceEnvelopesBestEffort } = await import('./savedSecretResourceOperations');
+        await repairCustodiedSavedSecretResourceEnvelopesBestEffort({
+            scope: { serverId: 'home-a', accountId: 'owner-a' },
+            decryptDataKeyEnvelope: async () => new Uint8Array(32).fill(9),
+        });
+
+        expect(requestHomeDomain).toHaveBeenCalledTimes(1);
+    });
 });

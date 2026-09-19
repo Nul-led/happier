@@ -35,6 +35,13 @@ function drainPendingSessionEndDeliverySlots(): void {
     }
 }
 
+/** Test-only counterpart of the durable delivery limiter's reset; see that owner. */
+export function resetSessionEndDeliverySlotsForTests(): void {
+    activeSessionEndDeliveries = 0;
+    const waiting = pendingSessionEndDeliverySlots.splice(0, pendingSessionEndDeliverySlots.length);
+    for (const resolve of waiting) resolve();
+}
+
 async function acquireSessionEndDeliverySlot(): Promise<void> {
     if (activeSessionEndDeliveries < resolveSessionEndDeliveryConcurrency()) {
         activeSessionEndDeliveries += 1;

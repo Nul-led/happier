@@ -411,15 +411,15 @@ export function useMachineSelectionListModel(
             // They are deliberately ordinary disabled options: the shared destination-count owner
             // continues to count only actual Machines, Pools and Temporary computers.
             if (poolGroup.pools.length === 0) {
-                const statusLabel = poolGroup.featureStatus === 'disabled'
-                    ? t('machinePools.featureUnavailable')
-                    : poolGroup.featureStatus === 'error' || poolGroup.status === 'error'
-                        ? t('machinePools.refreshFailed')
-                        : poolGroup.featureStatus === 'loading'
-                            || poolGroup.status === 'loading'
-                            || poolGroup.projectionReady === false
-                            ? t('common.loading')
-                            : null;
+                // A settled feature-off Home already returned above, so this row only
+                // ever explains an error or a still-loading projection.
+                const statusLabel = poolGroup.featureStatus === 'error' || poolGroup.status === 'error'
+                    ? t('machinePools.refreshFailed')
+                    : poolGroup.featureStatus === 'loading'
+                        || poolGroup.status === 'loading'
+                        || poolGroup.projectionReady === false
+                        ? t('common.loading')
+                        : null;
                 if (statusLabel) {
                     options.push({
                         id: `pool-status:${poolGroup.serverId}`,

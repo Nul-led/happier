@@ -198,7 +198,12 @@ export function useTemporaryComputerLaunch(input: Readonly<{
     prepareReview?: (projection: RunnerActivationProjectionV1, signal: AbortSignal) => Promise<void>;
     /** Exact materialization producer. It is invoked only after reviewed endpoint readiness exists. */
     materialize?: (projection: RunnerActivationProjectionV1) => Promise<RunnerMaterializationResponseV1>;
-    /** Retires creator-only signing custody after the first verified endpoint claim. */
+    /**
+     * Retires creator-only signing custody once the creator's own proof is
+     * published. The activation signing identity signs the scoped Machine
+     * content-key proof carried by the review, so it is retained through review
+     * publication rather than dropped at the endpoint claim.
+     */
     onClaimed?: (projection: RunnerActivationProjectionV1) => Promise<void> | void;
     onMaterialized: (sessionId: string, projection: RunnerActivationProjectionV1) => Promise<void> | void;
     /** Removes exact device-local/public custody only after server-acknowledged closure. */
@@ -279,8 +284,11 @@ export function useTemporaryComputerLaunch(input: Readonly<{
         setProjection(next);
         setError(null);
         const onClaimed = lifecycleCallbacksRef.current.onClaimed;
+        // Retirement is owed by the first projection that carries the published
+        // review: that proof is signed with the activation signing key, so the
+        // claim alone must not retire it.
         const claimRetirementRequired = next.state !== 'closed'
-            && next.claim !== null
+            && next.review !== null
             && onClaimed !== undefined;
         const claimRetirementComplete = !claimRetirementRequired
             || claimedActivationIdsRef.current.has(next.activationId);
@@ -307,8 +315,8 @@ export function useTemporaryComputerLaunch(input: Readonly<{
                 claimingActivationIdsRef.current.delete(next.activationId);
             });
         }
-        // Claim retirement is a security-sensitive local commit. Review,
-        // materialization, and materialized-session presentation cannot race it.
+        // Custody retirement is a security-sensitive local commit.
+        // Materialization and materialized-session presentation cannot race it.
         if (!claimRetirementComplete) return;
         if (next.state === 'materialized') completeMaterialized(next);
         else if (!closureAlreadyHandled) setStatus(projectTemporaryComputerLaunchStatus(next));
@@ -425,7 +433,6 @@ export function useTemporaryComputerLaunch(input: Readonly<{
 
     React.useEffect(() => {
         if (!projection || projection.state !== 'claimed' || projection.review !== null) return;
-        if (input.onClaimed && !claimedActivationIdsRef.current.has(projection.activationId)) return;
         const prepareReview = lifecycleCallbacksRef.current.prepareReview;
         if (!prepareReview) {
             setStatus('review_unavailable');
@@ -447,7 +454,7 @@ export function useTemporaryComputerLaunch(input: Readonly<{
             reviewingActivationIdsRef.current.delete(projection.activationId);
         });
         return () => controller.abort(new Error('runner_activation_review_superseded'));
-    }, [claimRetirementRevision, input.onClaimed !== undefined, input.prepareReview !== undefined, projection, refresh]);
+    }, [input.prepareReview !== undefined, projection, refresh]);
 
     React.useEffect(() => {
         if (!projection || projection.state !== 'consented' || projection.readiness === null) return;

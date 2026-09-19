@@ -28,7 +28,8 @@ vi.mock('@/text', () => ({
     t: (key: string) => key,
 }));
 
-vi.mock('@/auth/storage/tokenStorage', () => ({
+vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('@/auth/storage/tokenStorage')>()),
     TokenStorage: {
         getCredentials: vi.fn(async () => storedCredentials),
     },
@@ -202,7 +203,7 @@ describe('seedDemoWorld and clearDemoWorld', () => {
     });
 
     it('activates the demo server while seeded and restores the previous active server on clear', async () => {
-        const previous = upsertAndActivateServer({
+        const previous = await upsertAndActivateServer({
             serverUrl: 'https://previous-demo-seed.example.test',
             name: 'Previous seed test server',
             scope: 'device',
@@ -224,7 +225,7 @@ describe('seedDemoWorld and clearDemoWorld', () => {
 
     it('keeps the durable active-target selection coherent when the demo profile is removed', async () => {
         const persistedBefore = loadSettings();
-        const previous = upsertAndActivateServer({
+        const previous = await upsertAndActivateServer({
             serverUrl: 'https://durable-demo-restore.example.test',
             name: 'Durable restore test server',
             scope: 'device',
@@ -304,7 +305,7 @@ describe('seedDemoWorld and clearDemoWorld', () => {
     });
 
     it('uses and restores the canonical initialized HomeView target while seeded', async () => {
-        const previous = upsertAndActivateServer({
+        const previous = await upsertAndActivateServer({
             serverUrl: 'https://home-view-demo-restore.example.test',
             name: 'HomeView restore test server',
             scope: 'device',

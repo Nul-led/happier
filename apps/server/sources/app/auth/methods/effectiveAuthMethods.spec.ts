@@ -17,19 +17,48 @@ function baseEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     };
 }
 
+/** A deployment that used the operator opt-out to turn native password auth off entirely. */
+function emailPasswordOptedOutEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+    return baseEnv({ HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "0", ...overrides });
+}
+
 describe("effective auth method decisions", () => {
     it("requires the effective Key Challenge finalizer for E2EE password login", () => {
         const env = baseEnv({ HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1" });
         const login = (inputs: EffectiveAuthMethodInputs) => findEffectiveAuthMethodDecision(inputs, "email_password")
             ?.actions.find(({ id }) => id === "login");
+        // Without the finalizer the keyed branch of password login is withdrawn;
+        // the Plain branch does not depend on it and survives as `keyless`.
         expect(login({ env: { ...env, HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0" } }))
-            .toMatchObject({ enabled: false });
+            .toMatchObject({ enabled: true, mode: "keyless" });
         expect(login({ env, homeAuthenticationPolicy: { status: "narrowed", policy: {
             v: 1, enabledMethodIds: ["email_password"],
-        } } })).toMatchObject({ enabled: false });
+        } } })).toMatchObject({ enabled: true, mode: "keyless" });
         expect(login({ env: { ...env, HAPPIER_FEATURE_AUTH_LOGIN__KEY_CHALLENGE_ENABLED: "0",
             HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1", HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional" } }))
             .toMatchObject({ enabled: true, mode: "keyless" });
+        // The operator opt-out is still the one answer that removes login.
+        expect(login({ env: emailPasswordOptedOutEnv() })).toMatchObject({ enabled: false, reason: "method_not_enabled" });
+    });
+    it("keeps deployment Account-mode narrowing on provisioning so an existing Plain Account can still sign in", () => {
+        // A Home that created Plain password Accounts and later turned keyless
+        // accounts off (or required E2EE) must not strand them: the deployment
+        // Account-mode policy governs construction of new Accounts only.
+        const e2eeOnlyDeployment = findEffectiveAuthMethodDecision({
+            env: baseEnv({
+                HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+                HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: "1",
+                HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "required_e2ee",
+            }),
+            emailDeliveryReady: true,
+        }, "email_password");
+        expect([...e2eeOnlyDeployment!.allowedProvisionModes]).toEqual(["e2ee"]);
+        expect(e2eeOnlyDeployment!.actions.find((a) => a.id === "provision"))
+            .toMatchObject({ enabled: true, mode: "keyed" });
+        expect(e2eeOnlyDeployment!.actions.find((a) => a.id === "login"))
+            .toMatchObject({ enabled: true, mode: "either" });
+        expect(e2eeOnlyDeployment!.actions.find((a) => a.id === "connect"))
+            .toMatchObject({ enabled: true, mode: "either" });
     });
     it("narrows only provisioning to permitted Account modes and preserves existing-Account actions", () => {
         const decision = findEffectiveAuthMethodDecision({
@@ -58,7 +87,10 @@ describe("effective auth method decisions", () => {
         };
         expect(findEffectiveAuthMethodDecision(inputs, "key_challenge")?.actions.every((a) => !a.enabled)).toBe(true);
         expect(isEffectiveAuthMethodActionEnabled(inputs, "key_challenge", "login")).toBe(false);
-        expect(isEffectiveAuthMethodActionEnabled(inputs, "email_password", "login")).toBe(false);
+        // Disabling `key_challenge` withdraws the keyed branch of password login,
+        // not the method: an existing Plain password Account must still sign in.
+        expect(findEffectiveAuthMethodDecision(inputs, "email_password")?.actions
+            .find(({ id }) => id === "login")).toMatchObject({ enabled: true, mode: "keyless" });
         const publication = toOldClientSafeAuthMethods(resolveEffectiveAuthMethodDecisions(inputs));
         expect(publication.find((m) => m.id === "key_challenge")?.actions.every((a) => !a.enabled)).toBe(true);
     });
@@ -75,32 +107,26 @@ describe("effective auth method decisions", () => {
         expect(decision?.actions.find((a) => a.id === "login")?.enabled).toBe(true);
     });
 
-    it("keeps email_password known but disables every action when the deployment has not enabled it", () => {
-        const decisions = resolveEffectiveAuthMethodDecisions({ env: baseEnv() });
+    it("keeps email_password known but disables every action when the operator opted the deployment out", () => {
+        const decisions = resolveEffectiveAuthMethodDecisions({ env: emailPasswordOptedOutEnv() });
         expect(decisions.map((d) => d.id)).toContain("key_challenge");
-        expect(findEffectiveAuthMethodDecision({ env: baseEnv() }, "email_password")?.actions
+        expect(findEffectiveAuthMethodDecision({ env: emailPasswordOptedOutEnv() }, "email_password")?.actions
             .every((action) => !action.enabled)).toBe(true);
     });
 
-    it("publishes login/connect for an enabled email_password Home and keeps provisioning closed by default", () => {
-        const env = baseEnv({ HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1" });
-        const decision = findEffectiveAuthMethodDecision({ env }, "email_password");
+    it("publishes login/connect on a default Home with no deployment opt-in", () => {
+        // No `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__*` key is set: the method is
+        // a shipped capability, and the Home governance policy plus mail
+        // readiness are what decide it. Nothing answers `method_not_enabled`.
+        const decision = findEffectiveAuthMethodDecision({ env: baseEnv() }, "email_password");
         expect(decision).not.toBeNull();
-        const login = decision!.actions.find((a) => a.id === "login");
-        const connect = decision!.actions.find((a) => a.id === "connect");
-        const provision = decision!.actions.find((a) => a.id === "provision");
-        expect(login?.enabled).toBe(true);
-        expect(connect?.enabled).toBe(true);
-        // Self-service admission is a separate deployment decision.
-        expect(provision?.enabled).toBe(false);
-        expect(provision?.reason).toBe("provisioning_not_enabled");
+        expect(decision!.actions.find((a) => a.id === "login")?.enabled).toBe(true);
+        expect(decision!.actions.find((a) => a.id === "connect")?.enabled).toBe(true);
+        expect(decision!.actions.some((a) => a.reason === "method_not_enabled")).toBe(false);
     });
 
     it("fails self-service provisioning closed while transactional mail readiness is unknown", () => {
-        const env = baseEnv({
-            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
-            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED: "1",
-        });
+        const env = baseEnv();
         const unknownReadiness = findEffectiveAuthMethodDecision({ env }, "email_password");
         const provision = unknownReadiness!.actions.find((a) => a.id === "provision");
         expect(provision?.enabled).toBe(false);
@@ -135,13 +161,14 @@ describe("effective auth method decisions", () => {
         );
         expect([...e2eeOnly!.allowedProvisionModes]).toEqual(["e2ee"]);
         expect(e2eeOnly!.recommendedProvisionMode).toBe("e2ee");
-        expect(e2eeOnly!.actions.find((a) => a.id === "login")?.mode).toBe("keyed");
+        expect(e2eeOnly!.actions.find((a) => a.id === "provision")?.mode).toBe("keyed");
+        expect(e2eeOnly!.actions.find((a) => a.id === "login")?.mode).toBe("either");
     });
 
     it("answers route admission from the same decision that publication uses", () => {
-        const enabled = baseEnv({ HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1" });
+        const enabled = baseEnv();
         expect(isEffectiveAuthMethodActionEnabled({ env: enabled }, "email_password", "login")).toBe(true);
-        expect(isEffectiveAuthMethodActionEnabled({ env: baseEnv() }, "email_password", "login")).toBe(false);
+        expect(isEffectiveAuthMethodActionEnabled({ env: emailPasswordOptedOutEnv() }, "email_password", "login")).toBe(false);
         // Unknown methods and unknown actions fail closed.
         expect(isEffectiveAuthMethodActionEnabled({ env: enabled }, "totally_unknown", "login")).toBe(false);
     });

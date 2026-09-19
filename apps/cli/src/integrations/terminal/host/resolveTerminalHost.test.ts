@@ -93,7 +93,9 @@ describe('resolveTerminalHost', () => {
     });
   });
 
-  it('fails closed for native Windows zellij until background TUI use is validated', () => {
+  it('uses the bundled zellij on native Windows x64 and refuses only the architecture with no binary', () => {
+    // A Windows x64 `zellij.exe` ships in the bundled tool archive, so nothing
+    // but the missing ARM64 build stops the zellij host on native Windows.
     const windowsX64 = resolveTerminalHost({
       preference: 'auto',
       platform: { os: 'win32', arch: 'x64' },
@@ -116,9 +118,23 @@ describe('resolveTerminalHost', () => {
       zellijAvailable: true,
     });
 
-    expect(windowsX64).toMatchObject({ status: 'disabled', reason: 'windows_zellij_unvalidated' });
+    expect(windowsX64).toMatchObject({ status: 'resolved', adapter: { kind: 'zellij' }, reason: 'tmux_unavailable' });
     expect(windowsArm64).toMatchObject({ status: 'disabled', reason: 'windows_arm64_unsupported' });
-    expect(forcedWindowsZellij).toMatchObject({ status: 'disabled', reason: 'windows_zellij_unvalidated' });
+    expect(forcedWindowsZellij).toMatchObject({ status: 'resolved', adapter: { kind: 'zellij' }, reason: 'zellij_forced' });
+  });
+
+  it('reports zellij as unavailable on native Windows x64 when the bundled binary is missing', () => {
+    // tmux never exists on native Windows, so there is nothing to fall back to
+    // and the refusal must name the missing binary, not the platform.
+    expect(
+      resolveTerminalHost({
+        preference: 'zellij',
+        platform: { os: 'win32', arch: 'x64' },
+        adapters: {},
+        tmuxAvailable: false,
+        zellijAvailable: false,
+      }),
+    ).toMatchObject({ status: 'disabled', reason: 'zellij_unavailable' });
   });
 
   it('rejects forced tmux on native Windows', () => {

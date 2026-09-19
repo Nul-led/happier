@@ -1474,8 +1474,11 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
     approvalsGet: async ({ artifactId }) => {
       const local = accountContext ? null : storage.getState().artifacts[artifactId] ?? null;
       const localBody = local?.body;
-      if (typeof localBody === 'string') {
-        const parsed = approvalArtifactBodyMatchesHeaderV1(local.header, localBody);
+      const localHeader = local?.header;
+      // The reader is body-authoritative but still indexes on the header, so a
+      // locked or header-less Artifact has nothing to match against.
+      if (localHeader && typeof localBody === 'string') {
+        const parsed = approvalArtifactBodyMatchesHeaderV1(localHeader, localBody);
         if (parsed?.family === 'built_in') return parsed.request;
       }
 
@@ -1483,7 +1486,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       if (full) {
         if (!accountContext) storage.getState().updateArtifact(full);
         const body = full.body;
-        if (typeof body !== 'string') return null;
+        if (typeof body !== 'string' || !full.header) return null;
         const parsed = approvalArtifactBodyMatchesHeaderV1(full.header, body);
         return parsed?.family === 'built_in' ? parsed.request : null;
       }

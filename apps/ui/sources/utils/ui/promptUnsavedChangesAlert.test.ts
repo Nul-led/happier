@@ -53,6 +53,22 @@ describe('promptUnsavedChangesAlert', () => {
         await expect(promise).resolves.toBe('keepEditing');
     });
 
+    it('omits the Save button when the caller has no save path', () => {
+        let capturedButtons: AlertButton[] = [];
+        const { saveText: _saveText, ...withoutSave } = basePromptOptions;
+        promptUnsavedChangesAlert(
+            (_title, _message, buttons) => {
+                capturedButtons = buttons ?? [];
+            },
+            withoutSave,
+        );
+
+        expect(capturedButtons.map((button) => [button.text, button.style])).toEqual([
+            ['Discard', 'destructive'],
+            ['Keep editing', 'cancel'],
+        ]);
+    });
+
     it('provides exactly three action buttons with expected styles', () => {
         let capturedButtons: AlertButton[] = [];
         promptUnsavedChangesAlert(

@@ -172,12 +172,21 @@ describe('SessionSpawnNewInputV2Schema', () => {
     }).success).toBe(false);
   });
 
-  it('rejects raw launch environment variables at the canonical V2 boundary', () => {
+  it('carries raw launch environment on the direct-to-daemon V2 input but never into the server-start draft', () => {
+    const environmentVariables = { TOKEN: 'secret-value' } as const;
+    expect(SessionSpawnNewInputV2Schema.parse({
+      ...input,
+      environmentVariables,
+    }).environmentVariables).toEqual(environmentVariables);
+    expect(sessionSpawnInput.SessionServerStartSpawnDraftV1Schema.safeParse({
+      ...input,
+      creationKey: undefined,
+      initialInput: undefined,
+      environmentVariables,
+    }).success).toBe(false);
     expect(SessionSpawnNewInputV2Schema.safeParse({
       ...input,
-      environmentVariables: {
-        TOKEN: 'secret-value',
-      },
+      environmentVariables: { '': 'unnamed' },
     }).success).toBe(false);
   });
 

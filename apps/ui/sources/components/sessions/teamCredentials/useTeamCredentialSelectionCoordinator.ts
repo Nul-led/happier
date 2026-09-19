@@ -23,10 +23,14 @@ export function projectTeamCredentialSelectionConsequence(
     const includesDirect = deliveryMode === 'direct';
     return {
         deliveryMode,
-        // The server derives `never_delivered` from the absence of both
-        // recipient material and its retained first-disclosure Activity fact.
-        // Reuse that canonical history instead of keeping UI acknowledgement.
-        directDisclosure: includesDirect && resource.directMaterialState === 'never_delivered'
+        // The server derives both pre-disclosure states from the absence of
+        // recipient material and of the retained first-disclosure Activity
+        // fact; they differ only in whether the custodian has already
+        // published the source versions the envelopes will come from
+        // (`preparing`) or not yet (`never_delivered`). Reuse that canonical
+        // history instead of keeping UI acknowledgement.
+        directDisclosure: includesDirect
+            && (resource.directMaterialState === 'never_delivered' || resource.directMaterialState === 'preparing')
             ? 'required'
             : 'not_applicable',
         recipient: { mode: 'current_account', count: 1 },

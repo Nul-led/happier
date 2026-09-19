@@ -3406,6 +3406,7 @@ export type PluginActionInputById = {
                 upToSeqInclusive: number;
             };
         };
+        environmentVariables?: Record<string, string> | undefined;
     };
     readonly "paths.list_recent": {
         [x: string]: unknown;

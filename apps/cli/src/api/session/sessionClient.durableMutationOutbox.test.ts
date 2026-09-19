@@ -17,6 +17,21 @@ import type { createSessionSocketTransport } from './connection/createSessionSoc
 import type { RegisteredSessionStateFieldMutationV1 } from './client/transport/mutations/sessionClientDurableMutationTypes';
 import type { createUserScopedSocket } from './sockets';
 
+import axios from 'axios';
+
+import { reloadConfiguration } from '@/configuration';
+import { logger } from '@/ui/logger';
+import { createRuntimeSessionClientDurableMutationOutbox } from './client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox';
+import { resetSessionClientDurableMutationOutboxStateForTests } from './client/transport/mutations/createSessionClientDurableMutationOutbox';
+import {
+  appendSessionClientDurableMutationDeadLetters,
+  loadSessionClientDurableMutationOutbox,
+  resolveSessionClientDurableMutationDeadLetterPath,
+  resolveSessionClientDurableMutationOutboxPath,
+  saveSessionClientDurableMutationOutbox,
+} from './client/transport/mutations/sessionClientDurableMutationPersistence';
+import { ApiSessionClient } from './sessionClient';
+
 type SessionSocketTransportResult = ReturnType<typeof createSessionSocketTransport>;
 type UserScopedSocket = ReturnType<typeof createUserScopedSocket>;
 
@@ -54,7 +69,6 @@ const originalOutboxTranscriptFlushBatchLimit = process.env.HAPPIER_SESSION_MUTA
 const originalOutboxDeliveryConcurrency = process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DELIVERY_CONCURRENCY;
 const originalOutboxDeadLetterMaxEntries = process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DEAD_LETTER_MAX_ENTRIES;
 const originalOutboxReferencedPrerequisiteMaxEntries = process.env.HAPPIER_SESSION_MUTATION_OUTBOX_REFERENCED_PREREQUISITE_MAX_ENTRIES;
-let axiosModulePromise: Promise<typeof import('axios')> | null = null;
 
 function restoreEnvValue(key: string, value: string | undefined): void {
   if (value === undefined) {
@@ -65,6 +79,29 @@ function restoreEnvValue(key: string, value: string | undefined): void {
 }
 
 vi.mock('axios');
+
+/**
+ * Persistence is a real module here: every export delegates to the real one
+ * unless a test installs an exact override. That keeps this file on one module
+ * instance (the whole `sessionClient` graph) while still letting the
+ * save-serialization case observe and block individual persistence calls.
+ */
+const persistenceOverrides = vi.hoisted(() => new Map<string, unknown>());
+
+vi.mock('./client/transport/mutations/sessionClientDurableMutationPersistence', async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import('./client/transport/mutations/sessionClientDurableMutationPersistence')
+  >();
+  return Object.fromEntries(Object.entries(actual).map(([name, value]) => [
+    name,
+    typeof value === 'function'
+      ? (...args: unknown[]) => {
+          const override = persistenceOverrides.get(name) ?? value;
+          return (override as (...callArgs: unknown[]) => unknown)(...args);
+        }
+      : value,
+  ]));
+});
 
 vi.mock('./sockets', () => ({
   createUserScopedSocket: () => {
@@ -109,6 +146,12 @@ vi.mock('@happier-dev/connection-supervisor', () => ({
 async function useTempHappyHome(): Promise<void> {
   tempHomeDir = await mkdtemp(join(tmpdir(), 'happier-cli-session-outbox-'));
   process.env.HAPPIER_HOME_DIR = tempHomeDir;
+  // `configuration` is a module singleton built at import time, and the outbox
+  // path owner reads `configuration.activeServerDir`
+  // (`sessionClientDurableMutationPersistence.ts:150-156`). Without this the
+  // suite would keep writing under the real home and the temporary-home reset
+  // below would clean nothing, leaking durable state between tests.
+  reloadConfiguration();
 }
 
 async function resetTempHappyHome(): Promise<void> {
@@ -120,6 +163,7 @@ async function resetTempHappyHome(): Promise<void> {
     retryDelay: 50,
   });
   await mkdir(tempHomeDir, { recursive: true });
+  reloadConfiguration();
 }
 
 function restoreDurableMutationOutboxTestEnv(): void {
@@ -136,36 +180,24 @@ function restoreDurableMutationOutboxTestEnv(): void {
 }
 
 async function resetSharedDurableMutationOutboxes(): Promise<void> {
-  const { resetSessionClientDurableMutationOutboxStateForTests } = await import(
-    './client/transport/mutations/createSessionClientDurableMutationOutbox'
-  );
   await resetSessionClientDurableMutationOutboxStateForTests();
 }
 
-function resetDurableMutationOutboxTestModules(): void {
-  axiosModulePromise = null;
-  vi.resetModules();
-}
-
-async function getAxiosModule(): Promise<typeof import('axios')> {
-  axiosModulePromise ??= import('axios');
-  return await axiosModulePromise;
-}
-
+// `axios` is auto-mocked for this file, so the spies are the module's own
+// exports. The suite instantiates the production module graph once, like its
+// `createDaemonSessionClientDurableMutationOutbox` sibling: every outbox knob
+// this file drives is read from `process.env` per call, and the temporary home
+// directory keeps one stable path, so nothing here needs a fresh module
+// registry per test.
 async function getAxiosPostMock() {
-  const { default: mockedAxios } = await getAxiosModule();
-  return vi.mocked(mockedAxios.post);
+  return vi.mocked(axios.post);
 }
 
 async function getAxiosGetMock() {
-  const { default: mockedAxios } = await getAxiosModule();
-  return vi.mocked(mockedAxios.get);
+  return vi.mocked(axios.get);
 }
 
 async function readPersistedOutboxMutationCount(sessionId: string): Promise<number> {
-  const { resolveSessionClientDurableMutationOutboxPath } = await import(
-    './client/transport/mutations/sessionClientDurableMutationPersistence'
-  );
   const filePath = resolveSessionClientDurableMutationOutboxPath(sessionId);
   try {
     const parsed = JSON.parse(await readFile(filePath, 'utf8')) as { mutations?: unknown[] };
@@ -176,9 +208,6 @@ async function readPersistedOutboxMutationCount(sessionId: string): Promise<numb
 }
 
 async function readPersistedOutboxMutations(sessionId: string): Promise<unknown[]> {
-  const { resolveSessionClientDurableMutationOutboxPath } = await import(
-    './client/transport/mutations/sessionClientDurableMutationPersistence'
-  );
   const filePath = resolveSessionClientDurableMutationOutboxPath(sessionId);
   try {
     const parsed = JSON.parse(await readFile(filePath, 'utf8')) as { mutations?: unknown[] };
@@ -189,9 +218,6 @@ async function readPersistedOutboxMutations(sessionId: string): Promise<unknown[
 }
 
 async function readPersistedOutboxDeadLetters(sessionId: string): Promise<unknown[]> {
-  const { resolveSessionClientDurableMutationDeadLetterPath } = await import(
-    './client/transport/mutations/sessionClientDurableMutationPersistence'
-  );
   const filePath = resolveSessionClientDurableMutationDeadLetterPath(sessionId);
   try {
     const parsed = JSON.parse(await readFile(filePath, 'utf8')) as { entries?: unknown[] };
@@ -294,7 +320,6 @@ function createTranscriptAppendMutation(params: Readonly<{
 }
 
 async function saveQueuedSessionTurnMutation(mutation: SessionTurnMutationV1): Promise<void> {
-  const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
   await saveSessionClientDurableMutationOutbox(mutation.sessionId, [{
     kind: 'session_turn_mutation',
     mutationId: mutation.mutationId,
@@ -360,15 +385,15 @@ function createWorkStateMutation(): RegisteredSessionStateFieldMutationV1 {
 describe('ApiSessionClient durable mutation outbox', () => {
   beforeAll(async () => {
     await useTempHappyHome();
-    resetDurableMutationOutboxTestModules();
   });
 
   beforeEach(async () => {
-    vi.doUnmock('./client/transport/mutations/sessionClientDurableMutationPersistence');
+    persistenceOverrides.clear();
     await resetTempHappyHome();
     restoreDurableMutationOutboxTestEnv();
     if (!tempHomeDir) throw new Error('Missing durable mutation outbox test home');
     process.env.HAPPIER_HOME_DIR = tempHomeDir;
+    reloadConfiguration();
     process.env.HAPPIER_SESSION_SOCKET_ACK_TIMEOUT_MS = '50';
 
     const axiosPost = await getAxiosPostMock();
@@ -390,8 +415,7 @@ describe('ApiSessionClient durable mutation outbox', () => {
       userSocketStub = null;
       vi.useRealTimers();
       vi.restoreAllMocks();
-      vi.doUnmock('./client/transport/mutations/sessionClientDurableMutationPersistence');
-      resetDurableMutationOutboxTestModules();
+      persistenceOverrides.clear();
       restoreDurableMutationOutboxTestEnv();
       await resetTempHappyHome();
     }
@@ -422,9 +446,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       state: 'unknown',
     });
     const workState = createWorkStateMutation();
-    const {
-      saveSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s-startup-overlay', [
       createQueuedRegisteredFieldMutation(oldActivity),
       createQueuedRegisteredFieldMutation(workState),
@@ -434,9 +455,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       mutationId: string;
       persistedMutationIds: readonly string[];
     }>> = [];
-    const {
-      createRuntimeSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outboxParams = {
       token: 'tok',
       sessionId: 's-startup-overlay',
@@ -511,7 +529,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -537,6 +554,40 @@ describe('ApiSessionClient durable mutation outbox', () => {
     await outbox.close();
   });
 
+  it('never writes durable state again after the outbox is closed', async () => {
+    process.env.HAPPIER_SESSION_MUTATION_OUTBOX_BASE_RETRY_MS = '60000';
+    process.env.HAPPIER_SESSION_MUTATION_OUTBOX_JITTER_MS = '0';
+    const axiosPost = await getAxiosPostMock();
+    axiosPost.mockRejectedValue(new Error('server offline'));
+    sessionSocketStub = createApiSessionSocketStub({ connected: false });
+
+    const outbox = createRuntimeSessionClientDurableMutationOutbox({
+      token: 'tok',
+      sessionId: 'closed-outbox',
+      getSocket: () => sessionSocketStub,
+      requestReconnect: () => {},
+    });
+    await outbox.enqueueSessionTurnMutation({
+      v: 1,
+      sessionId: 'closed-outbox',
+      mutationId: 'mutation-after-close',
+      action: 'complete',
+      turnId: 'turn-1',
+      observedAt: 125,
+    });
+    expect(await readPersistedOutboxMutationCount('closed-outbox')).toBe(1);
+
+    // Closing the shared instance does not close the handles still holding it,
+    // which is how a later flush used to resurrect a Session this process no
+    // longer owns — and, in this suite, wrote one test's mutation into the next
+    // test's home.
+    await resetSharedDurableMutationOutboxes();
+    await rm(resolveSessionClientDurableMutationOutboxPath('closed-outbox'), { force: true });
+    await outbox.flush('flush');
+
+    expect(await readPersistedOutboxMutationCount('closed-outbox')).toBe(0);
+  });
+
   it('retains ordinary session turn custody after generic socket and HTTP success', async () => {
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_BASE_RETRY_MS = '60000';
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_JITTER_MS = '0';
@@ -547,7 +598,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       emitWithAck: async () => ({ result: 'success' }),
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -578,7 +628,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
     const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 'transport-disposal' }));
 
     await client.close();
@@ -592,7 +641,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
     const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 'semantic-session-end' }));
 
     await Promise.all([
@@ -600,9 +648,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       client.endSessionAndClose(),
     ]);
 
-    const { loadSessionClientDurableMutationOutbox } = await import(
-      './client/transport/mutations/sessionClientDurableMutationPersistence'
-    );
     const persisted = await loadSessionClientDurableMutationOutbox('semantic-session-end');
     expect(persisted).toEqual([
       expect.objectContaining({
@@ -623,9 +668,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     }));
 
     axiosPost.mockResolvedValue({ status: 200, data: { ok: true } } as never);
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import(
-      './client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox'
-    );
     const restarted = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 'semantic-session-end',
@@ -653,7 +695,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -699,7 +740,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     axiosPost.mockRejectedValue(new Error('server offline'));
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -730,7 +770,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     axiosPost.mockRejectedValue(new Error('server offline'));
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -773,7 +812,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       text: 'older persisted snapshot',
       updatedAt: 200,
     });
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [newer, older].map((mutation) => ({
       kind: 'transcript_message_append',
       mutationId: mutation.mutationId,
@@ -783,7 +821,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: 0,
     } as any)));
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -810,7 +847,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     axiosPost.mockRejectedValue(new Error('server offline'));
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -838,7 +874,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
   });
 
   it('reports closed transcript enqueues as non-persisted', async () => {
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -858,7 +893,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     axiosPost.mockResolvedValue({ status: 200, data: { ok: true } } as never);
     sessionSocketStub = createApiSessionSocketStub({ connected: false });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [{
       kind: 'transcript_message_append',
       mutationId: 'custom-transcript-id',
@@ -871,7 +905,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: 0,
     } as any]);
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -892,9 +925,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
 
   it('caps durable outbox dead letters while retaining the terminal-failure ledger', async () => {
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DEAD_LETTER_MAX_ENTRIES = '2';
-    const {
-      appendSessionClientDurableMutationDeadLetters,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
 
     await appendSessionClientDurableMutationDeadLetters('s1', [
       {
@@ -933,10 +963,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
 
   it('keeps dead-letter prerequisites referenced by queued dependents beyond the ordinary cap', async () => {
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DEAD_LETTER_MAX_ENTRIES = '2';
-    const {
-      appendSessionClientDurableMutationDeadLetters,
-      saveSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
 
     await saveSessionClientDurableMutationOutbox('s1', [{
       kind: 'registered_session_state_field',
@@ -1016,11 +1042,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
   it('keeps an old referenced prerequisite outside the dead-letter load window', async () => {
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DEAD_LETTER_MAX_ENTRIES = '2';
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_REFERENCED_PREREQUISITE_MAX_ENTRIES = '2';
-    const {
-      appendSessionClientDurableMutationDeadLetters,
-      resolveSessionClientDurableMutationDeadLetterPath,
-      saveSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
 
     await saveSessionClientDurableMutationOutbox('s1', [{
       kind: 'registered_session_state_field',
@@ -1097,12 +1118,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
   });
 
   it('preserves the sibling dead-letter ledger when saving an empty durable outbox', async () => {
-    const {
-      appendSessionClientDurableMutationDeadLetters,
-      resolveSessionClientDurableMutationDeadLetterPath,
-      resolveSessionClientDurableMutationOutboxPath,
-      saveSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     const mutation = createFailTurnMutation({
       mutationId: 'mutation-to-clear',
     });
@@ -1166,7 +1181,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1222,7 +1236,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [
       createTranscriptAppendMutation({ localId: 'stream-1', text: 'one', updatedAt: 100 }),
       createTranscriptAppendMutation({ localId: 'stream-2', text: 'two', updatedAt: 200 }),
@@ -1236,7 +1249,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: 0,
     } as any)));
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1273,7 +1285,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1309,20 +1320,19 @@ describe('ApiSessionClient durable mutation outbox', () => {
   });
 
   it('serializes durable outbox persistence so older saves cannot overwrite newer queued mutations', async () => {
-    resetDurableMutationOutboxTestModules();
     const saveCalls: Array<{
       mutations: readonly unknown[];
       deferred: ReturnType<typeof createDeferred<void>>;
     }> = [];
     let persistedSnapshot: readonly unknown[] = [];
-    vi.doMock('./client/transport/mutations/sessionClientDurableMutationPersistence', async (importOriginal) => ({
-      ...(await importOriginal<typeof import('./client/transport/mutations/sessionClientDurableMutationPersistence')>()),
-      resolveSessionClientDurableMutationReferencedPrerequisiteMaxEntries: vi.fn(() => 1_000),
-      loadSessionClientDurableMutationOutbox: vi.fn(async () => []),
-      loadSessionClientDurableMutationDeadLetters: vi.fn(async () => []),
-      recoverAuthoritativeSessionClientDurableMutationDeadLetters: vi.fn(async () => []),
-      markAuthoritativeSessionClientDurableMutationDeadLettersRecovered: vi.fn(async () => undefined),
-      saveSessionClientDurableMutationOutbox: vi.fn(async (_sessionId: string, mutations: readonly unknown[]) => {
+    persistenceOverrides.set('resolveSessionClientDurableMutationReferencedPrerequisiteMaxEntries', () => 1_000);
+    persistenceOverrides.set('loadSessionClientDurableMutationOutbox', async () => []);
+    persistenceOverrides.set('loadSessionClientDurableMutationDeadLetters', async () => []);
+    persistenceOverrides.set('recoverAuthoritativeSessionClientDurableMutationDeadLetters', async () => []);
+    persistenceOverrides.set('markAuthoritativeSessionClientDurableMutationDeadLettersRecovered', async () => undefined);
+    persistenceOverrides.set(
+      'saveSessionClientDurableMutationOutbox',
+      async (_sessionId: string, mutations: readonly unknown[]) => {
         const deferred = createDeferred<void>();
         saveCalls.push({ mutations, deferred });
         if (saveCalls.length > 2) {
@@ -1331,20 +1341,19 @@ describe('ApiSessionClient durable mutation outbox', () => {
         }
         await deferred.promise;
         persistedSnapshot = mutations;
-      }),
-      appendSessionClientDurableMutationDeadLetters: vi.fn(async () => ({
-        cappedDeadLetterCount: 0,
-        referencedRetainedEntryCount: 0,
-        referencedPrerequisiteOverflowCount: 0,
-        prunedEntryCount: 0,
-      })),
-      createSessionClientDurableMutationDeadLetterEntry: vi.fn((input: unknown) => input),
+      },
+    );
+    persistenceOverrides.set('appendSessionClientDurableMutationDeadLetters', async () => ({
+      cappedDeadLetterCount: 0,
+      referencedRetainedEntryCount: 0,
+      referencedPrerequisiteOverflowCount: 0,
+      prunedEntryCount: 0,
     }));
+    persistenceOverrides.set('createSessionClientDurableMutationDeadLetterEntry', (input: unknown) => input);
     const axiosPost = await getAxiosPostMock();
     const blockedDelivery = createDeferred<never>();
     axiosPost.mockImplementation(async () => await blockedDelivery.promise);
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1384,13 +1393,11 @@ describe('ApiSessionClient durable mutation outbox', () => {
     } finally {
       blockedDelivery.reject(new Error('stop background delivery'));
       await outbox.close().catch(() => {});
-      vi.doUnmock('./client/transport/mutations/sessionClientDurableMutationPersistence');
-      resetDurableMutationOutboxTestModules();
+      persistenceOverrides.clear();
     }
   });
 
   it('does not expose the legacy primary turn runtime state writer', { timeout: 60_000 }, async () => {
-    const { ApiSessionClient } = await import('./sessionClient');
     expect(ApiSessionClient.prototype).not.toHaveProperty('updatePrimaryTurnRuntimeState');
   });
 
@@ -1399,7 +1406,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     const axiosPost = await getAxiosPostMock();
     axiosPost.mockRejectedValue({ response: { status: 404 } });
     const deliveredEvents: string[] = [];
-    const { logger } = await import('@/ui/logger');
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
     sessionSocketStub = createApiSessionSocketStub({
       connected: true,
@@ -1413,7 +1419,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const mutation = createFailTurnMutation();
     await saveQueuedSessionTurnMutation(mutation);
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -1467,7 +1472,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const mutation = createFailTurnMutation();
     await saveQueuedSessionTurnMutation(mutation);
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -1511,7 +1515,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const mutation = createFailTurnMutation();
     await saveQueuedSessionTurnMutation(mutation);
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -1555,7 +1558,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
     const mutation = createFailTurnMutation({ mutationId: 'redrive-after-connect' });
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [{
       kind: 'session_turn_mutation',
       mutationId: mutation.mutationId,
@@ -1565,7 +1567,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: Date.now() + 60_000,
     }]);
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1596,7 +1597,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
           : { ok: true };
       },
     });
-    const { resolveSessionClientDurableMutationDeadLetterPath } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     const deadLetterPath = resolveSessionClientDurableMutationDeadLetterPath('s1');
     const recoveredMutation = createFailTurnMutation({ mutationId: 'recover-queued-mutation' });
     await mkdir(dirname(deadLetterPath), { recursive: true });
@@ -1647,7 +1647,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       ],
     }), 'utf8');
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1683,7 +1682,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
           : { ok: true };
       },
     });
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const first = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1726,7 +1724,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       ),
       { response: { status: 401 } },
     ));
-    const { logger } = await import('@/ui/logger');
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
     sessionSocketStub = createApiSessionSocketStub({
       connected: false,
@@ -1736,7 +1733,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     });
 
     try {
-      const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
       const mutation = createFailTurnMutation();
       await saveQueuedSessionTurnMutation(mutation);
       const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -1777,7 +1773,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { resolveSessionClientDurableMutationOutboxPath } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     const filePath = resolveSessionClientDurableMutationOutboxPath('s1');
     await mkdir(dirname(filePath), { recursive: true });
     await writeFile(filePath, JSON.stringify({
@@ -1798,7 +1793,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       }],
     }), 'utf8');
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1840,7 +1834,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     });
     const reconnectReasons: string[] = [];
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -1929,7 +1922,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     const axiosPost = await getAxiosPostMock();
     axiosPost.mockRejectedValue({ response: { status: 404 } });
     const deliveredEvents: string[] = [];
-    const { logger } = await import('@/ui/logger');
     const debugSpy = vi.spyOn(logger, 'debug').mockImplementation(() => {});
     sessionSocketStub = createApiSessionSocketStub({
       connected: false,
@@ -1939,7 +1931,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const mutation = createFailTurnMutation();
     await saveQueuedSessionTurnMutation(mutation);
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
@@ -2001,7 +1992,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       agentTurnId: 'turn-1',
       observedAt: 200,
     };
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [touchActive, complete].map((mutation) => ({
       kind: 'session_turn_mutation',
       mutationId: mutation.mutationId,
@@ -2011,7 +2001,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: 0,
     })));
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2032,7 +2021,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     try {
-      const { ApiSessionClient } = await import('./sessionClient');
       const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
       const durableMutationOutbox: {
         enqueueSessionTurnMutation: (mutation: SessionTurnMutationV1) => Promise<void>;
@@ -2113,7 +2101,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     });
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
-    const { ApiSessionClient } = await import('./sessionClient');
     const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's-runtime-activity' }));
     await drainAsyncWork();
     sessionSocketStub.connected = true;
@@ -2188,7 +2175,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     userSocketStub = createApiSessionSocketStub({ connected: true, emitWithAckResult: { ok: true } });
 
     try {
-      const { ApiSessionClient } = await import('./sessionClient');
       const client = createTestApiSessionClient(ApiSessionClient, 'tok', createPlainSessionFixture({ id: 's1' }));
       const durableMutationOutbox: {
         enqueueSessionTurnMutation: (mutation: SessionTurnMutationV1) => Promise<void>;
@@ -2257,8 +2243,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
         throw new Error('socket emit should not be reached while disconnected');
       },
     });
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
 
     const staleEnd = {
       v: 1 as const,
@@ -2364,7 +2348,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     for (const sessionId of ['s1', 's2']) {
       const mutation = createTranscriptAppendMutation({ sessionId, localId: 'stream-1' });
       await saveSessionClientDurableMutationOutbox(sessionId, [{
@@ -2377,7 +2360,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       }]);
     }
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox1 = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2422,7 +2404,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
   });
 
   it('loads persisted registered session-state field mutations as durable outbox entries', async () => {
-    const { resolveSessionClientDurableMutationOutboxPath, loadSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     const filePath = resolveSessionClientDurableMutationOutboxPath('s1');
     const fieldMutation = {
       kind: 'registered_session_state_field',
@@ -2476,7 +2457,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [
       {
         kind: 'registered_session_state_field',
@@ -2525,7 +2505,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     ]);
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2570,7 +2549,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [{
       kind: 'registered_session_state_field',
       mutationId: 'mutation-prerequisite',
@@ -2589,7 +2567,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       nextAttemptAt: 0,
     }]);
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const firstOutbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2680,10 +2657,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
 
   it('does not deliver a restarted dependent after the dead-letter cap evicts its prerequisite marker', async () => {
     process.env.HAPPIER_SESSION_MUTATION_OUTBOX_DEAD_LETTER_MAX_ENTRIES = '2';
-    const {
-      appendSessionClientDurableMutationDeadLetters,
-      saveSessionClientDurableMutationOutbox,
-    } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await appendSessionClientDurableMutationDeadLetters('s1', [
       {
         v: 1,
@@ -2751,7 +2724,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     }]);
 
     const deliveredFields: string[] = [];
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2799,7 +2771,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       },
     });
 
-    const { saveSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/sessionClientDurableMutationPersistence');
     await saveSessionClientDurableMutationOutbox('s1', [
       {
         kind: 'registered_session_state_field',
@@ -2854,7 +2825,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
     ]);
 
     const deliveredFields: string[] = [];
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',
@@ -2946,7 +2916,6 @@ describe('ApiSessionClient durable mutation outbox', () => {
       observedAt: 100,
     });
 
-    const { createRuntimeSessionClientDurableMutationOutbox } = await import('./client/transport/mutations/createRuntimeSessionClientDurableMutationOutbox');
     const outbox = createRuntimeSessionClientDurableMutationOutbox({
       token: 'tok',
       sessionId: 's1',

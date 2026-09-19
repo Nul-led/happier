@@ -2,11 +2,12 @@ import { EXPLICIT_SESSION_UNFOLLOW_STATE_V1 } from '@happier-dev/protocol';
 import type {
     GetSessionFollowResponse,
     RemoveSessionFollowResponse,
-    SessionAddress,
     SessionFollowErrorCodeV1,
     SetSessionFollowRequest,
     SetSessionFollowResponse,
 } from '@happier-dev/protocol';
+
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 export type FollowTransportResult<T> =
     | Readonly<{ kind: 'ok'; value: T }>
