@@ -3,7 +3,9 @@ import type { SessionAccessGrantsListResponseV1 } from '@happier-dev/protocol';
 import { projectSessionAccessEditorSnapshot, projectSessionAccessPrincipal } from './projectSessionAccessEditorSnapshot';
 
 const capabilities = {readTranscript:true,submitAgentInput:true,editSessionRecords:true,approveRuntimePermissions:true,manageAccess:true,managePermissionDelegation:true,managePublicLink:true,archiveSession:true,renameSession:true,assignResponsibility:true,stopSession:true,deleteSession:true};
-function snapshot(): SessionAccessGrantsListResponseV1 {
+type CompleteSessionAccessSnapshot = Extract<SessionAccessGrantsListResponseV1, { visibility: 'complete' }>;
+
+function snapshot(): CompleteSessionAccessSnapshot {
     return {visibility:'complete',owner:{kind:'account',accountId:'owner',firstName:'Owner',lastName:null,username:null,avatarUrl:null},primaryTeamId:null,effectiveAccess:{v:1,level:'owner',sources:[{kind:'owner'}],capabilities},grants:[{grant:{subject:{kind:'team',teamId:'team'},accessLevel:'view',canApprovePermissions:false,requiredByTeamPolicy:true},principal:{kind:'team',teamId:'team',name:'Acme'},allowedTransitions:{accessLevels:[],canChangePermissionDelegation:false,canRemove:false,reason:'session_access_team_policy_required'}}]};
 }
 describe('access editor server projection',()=>{
@@ -27,17 +29,16 @@ describe('access editor server projection',()=>{
         ['admin', { kind: 'group', teamId: 'private-team-id', groupId: 'private-group-id' }, 'Group access'],
     ] as const)('projects truthful %s access from the applicable source without exposing server identifiers', (level, source, sourceLabel) => {
         const original = snapshot();
-        const result = projectSessionAccessEditorSnapshot({ snapshot: {
-            ...original,
-            visibility: level === 'admin' ? 'complete' : 'self',
-            grants: level === 'admin' ? original.grants : [],
-            effectiveAccess: {
-                ...original.effectiveAccess,
-                level,
-                sources: [source],
-                capabilities: { ...capabilities, manageAccess: level === 'admin' },
-            },
-        } });
+        const effectiveAccess = {
+            ...original.effectiveAccess,
+            level,
+            sources: [source],
+            capabilities: { ...capabilities, manageAccess: level === 'admin' },
+        };
+        const listed: SessionAccessGrantsListResponseV1 = level === 'admin'
+            ? { ...original, effectiveAccess }
+            : { ...original, visibility: 'self', grants: [], effectiveAccess };
+        const result = projectSessionAccessEditorSnapshot({ snapshot: listed });
 
         expect(result.viewerAccess).toMatchObject({ level, sourceLabels: [sourceLabel] });
         expect(JSON.stringify(result.viewerAccess)).not.toContain('private-share-id');

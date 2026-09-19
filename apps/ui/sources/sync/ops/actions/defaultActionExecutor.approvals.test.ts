@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApprovalRequestSchema, buildApprovalRequestArtifactHeaderV1 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
+import type { ArtifactHeader } from '@/sync/domains/artifacts/artifactTypes';
+
 type TestState = {
     settings: any;
     sessions: Record<string, any>;
@@ -17,7 +19,9 @@ let state: TestState = {
 const patchSessionMetadataWithRetry = vi.fn(async () => {});
 const sessionRename = vi.fn(async () => ({ success: true as const }));
 const sessionStopWithServerScope = vi.fn(async () => ({ success: true as const }));
-const updateArtifactWithHeader = vi.fn(async () => {});
+const updateArtifactWithHeader = vi.fn(
+    async (_artifactId: string, _header: ArtifactHeader, _body: string | null) => {},
+);
 const sessionExecutionRunStart = vi.fn(async () => ({}));
 const reviewCommentExecute = vi.fn(async () => ({ items: [], cursor: null }));
 const pluginPermissionGrantExecute = vi.fn(async () => ({ grants: [], pendingRequests: [] }));
@@ -319,6 +323,14 @@ describe('createDefaultActionExecutor approvals', () => {
         listCurrentAccountApiTokens.mockClear();
         revokeCurrentAccountApiToken.mockClear();
         revokeAllCurrentAccountApiTokens.mockClear();
+    });
+
+    it('exposes the approval replay entry point through the app client executor', async () => {
+        const { createDefaultActionExecutor } = await import('./defaultActionExecutor');
+        const executor = createDefaultActionExecutor();
+
+        await expect(executor.replayApprovedApprovalRequest({ artifactId: 'artifact-missing' }))
+            .resolves.toEqual({ ok: false, errorCode: 'approval_not_found', error: 'approval_not_found' });
     });
 
     it('routes durable review-comment actions through the shared HTTP action executor', async () => {

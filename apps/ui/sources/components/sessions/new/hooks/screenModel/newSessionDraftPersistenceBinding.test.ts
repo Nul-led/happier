@@ -6,8 +6,8 @@ import {
 } from './newSessionDraftPersistenceBinding';
 
 describe('newSessionDraftPersistenceBinding', () => {
-    const homeA = { serverId: 'home-a', accountId: 'account-a' } as const;
-    const homeB = { serverId: 'home-b', accountId: 'account-b' } as const;
+    const homeA: Readonly<{ serverId: string; accountId: string }> = { serverId: 'home-a', accountId: 'account-a' };
+    const homeB: Readonly<{ serverId: string; accountId: string }> = { serverId: 'home-b', accountId: 'account-b' };
 
     it('pauses immutable launch review, rebinds target-first, and resumes only the exact destination', () => {
         const binding = createNewSessionDraftPersistenceBinding(homeA);

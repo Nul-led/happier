@@ -52,12 +52,12 @@ async function loadClientWithActiveCarrier(carrier: HomeCarrier | null) {
         getActiveServerHomeCarrier: () => carrier,
     }));
     vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
-        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        importOriginal: async <T,>() => await importOriginal<T>(),
         tokenStorage: {
             getCredentials: vi.fn(async () => ({ token: 'home-token' })),
             getCredentialsForServerUrl: vi.fn(async () => ({ token: 'home-token' })),
             invalidateCredentialsTokenForServerUrl: vi.fn(async () => false),
-            classifyPendingExternalAuthFirstKeyRejectedCredential: vi.fn(async () => ({ kind: 'allowed' })),
+            classifyPendingExternalAuthFirstKeyRejectedCredential: vi.fn(async (..._args: unknown[]) => ({ kind: 'allowed' as const })),
         },
     }));
     return await import('./client');

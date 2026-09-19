@@ -95,19 +95,18 @@ Server operators control which role(s) are enabled via `/v1/features` (policy + 
 
 ## Native email and password (0.3 development)
 
-:::caution Activation status
-The source owners and focused automated checks exist, but native email/password
-remains default-off and unreleased. Current certification has not exercised a
-real SMTP provider or the complete web, desktop, iOS, Android, and mixed-version
-journeys. Treat the configuration below as the development activation contract,
-not proof that a production deployment is ready to enable it.
+:::caution Release status
+Native email/password ships unreleased, as part of 0.3 development. The source
+owners and focused automated checks exist; real SMTP delivery and the complete
+web, desktop, iOS, Android, and mixed-version journeys are release checks.
 :::
 
-Native email/password authentication is an optional Home method. Enable login with
-`HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED=1`; enable new-Account provisioning
-separately with `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED=1`.
-The Home's effective authentication policy remains authoritative, so enabling the
-feature does not by itself make every action or Account mode available.
+Native email/password authentication is a Home method. Login and new-Account
+provisioning are on by default; set `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED=0`
+or `HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__PROVISION_ENABLED=0` to opt a deployment
+out. The Home's effective authentication policy and transactional-mail readiness
+remain authoritative, so a deployment that has not opted out still publishes only
+the actions those two facts allow.
 
 Verification, password reset, sign-in email changes, and authentication-change
 notices require SMTP delivery. At minimum configure:

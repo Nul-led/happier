@@ -77,12 +77,12 @@ Both hosts are attachable: `happier attach <session-id>` drops you into the same
 
 ### Windows
 
-On native Windows, Happier hosts the unified runtime in a **Windows console host** and neither tmux nor zellij is used:
+On native Windows, **Auto** hosts the unified runtime in a **Windows console host**; tmux is never used:
 
 - **tmux** is refused outright — it is not supported on native Windows.
-- **zellij** is refused on native Windows because the bundled build is not validated there, and on Windows ARM64 because there is no upstream zellij binary for that architecture.
+- **zellij** works on native Windows x64 using the bundled build; it is refused on Windows ARM64 only, because no zellij binary ships for that architecture.
 
-Both refusals name WSL2 as the way to get a `tmux`- or zellij-hosted unified session on a Windows machine. Leaving **Terminal host** on **Auto** is the path that works on Windows as it stands.
+The refusals name WSL2 as the way to get a `tmux`-hosted unified session, or a zellij-hosted one on ARM64. Leaving **Terminal host** on **Auto** keeps the Windows console host; picking **zellij** explicitly is supported on x64.
 
 ## Unified-only settings
 

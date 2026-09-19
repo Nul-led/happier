@@ -264,7 +264,7 @@ import {
     trackPaywallRestored,
     trackPaywallError,
 } from '@/track';
-import { getActiveServerSnapshot } from './domains/server/serverRuntime';
+import { getActiveServerHomeCarrier, getActiveServerSnapshot } from './domains/server/serverRuntime';
 import {
     areServerProfileIdentifiersEquivalent,
     getServerProfileById,
@@ -334,6 +334,7 @@ import {
     resumeAutomationDefinition,
     runAutomationDefinitionNow,
     updateAutomationSettings,
+    type AutomationRequestContext,
 } from './api/automations/apiAutomations';
 import type { AutomationEditorDraft } from './domains/automations/automationEditorDraft';
 import { saveAutomationEditorDraft as saveAutomationEditorDraftOwner } from './domains/automations/automationEditorWriter';
@@ -520,6 +521,7 @@ import { publishPermissionModeToMetadata as publishPermissionModeToMetadataEngin
 import { publishAcpSessionModeOverrideToMetadata as publishAcpSessionModeOverrideToMetadataEngine } from './state/acpSessionModeOverridePublish';
 import { publishAcpConfigOptionOverrideToMetadata as publishAcpConfigOptionOverrideToMetadataEngine, type AcpConfigOptionOverrideValueId } from './state/acpConfigOptionOverridePublish';
 import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import type { ResolvedServerScopedTransport } from '@/sync/runtime/orchestration/serverScopedRpc/resolveServerScopedTransport';
 import { isRpcMethodNotFoundResult, RPC_ERROR_CODES, SESSION_RPC_METHODS } from '@happier-dev/protocol/rpc';
 import { isRpcMethodNotAvailableError, isRpcMethodNotFoundError, readRpcErrorCode } from '@/sync/runtime/rpcErrors';
 import { MessageAckResponseSchema, type MessageAckResponse } from '@happier-dev/protocol/updates';
@@ -559,7 +561,7 @@ import {
     type AutomationV3Settings,
     type AccountSettingMutationV1,
 } from '@happier-dev/protocol';
-import { serverFetch } from './http/client';
+import type { ServerFetch } from './http/client';
 import {
     buildUpdatedSessionFromSocketUpdate,
     fetchAndApplySessions,
@@ -971,24 +973,6 @@ function ensureSessionRuntimeAfterCommittedPrompt(params: Readonly<{
     );
 }
 
-function recordTerminalAuthSyncError(
-    error: unknown,
-    options?: Readonly<{
-        serverId?: string | null;
-    }>,
-): void {
-    const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
-    const scopedServerId = String(options?.serverId ?? '').trim();
-    const serverId = scopedServerId || activeServerId;
-    storage.getState().setSyncError({
-        message: error instanceof Error ? error.message : 'Authentication required',
-        retryable: false,
-        kind: 'auth',
-        at: Date.now(),
-        ...(serverId ? { serverId } : {}),
-    });
-}
-
 function normalizeScopedServerId(value: unknown): string | undefined {
     const serverId = String(value ?? '').trim();
     return serverId || undefined;
@@ -998,8 +982,16 @@ function isKnownServerId(serverId: string, activeServerId: string | undefined): 
     return areServerProfileIdentifiersEquivalent(serverId, activeServerId) || getServerProfileById(serverId) !== null;
 }
 
-function resolveMessageRouteHydrationServerId(sessionId: string, explicitServerIdRaw: unknown): string | undefined {
-    const activeServerId = normalizeScopedServerId(getActiveServerSnapshot().serverId);
+function resolveMessageRouteHydrationServerId(
+    sessionId: string,
+    explicitServerIdRaw: unknown,
+    appliedServerIdRaw?: unknown,
+): string | undefined {
+    // A live Sync owns a prepared Home independently of profile selection.
+    // Only cold callers with no prepared target retain the selected-Home
+    // fallback needed before Sync has applied its first connection.
+    const activeServerId = normalizeScopedServerId(appliedServerIdRaw)
+        ?? normalizeScopedServerId(getActiveServerSnapshot().serverId);
     const explicitServerId = normalizeScopedServerId(explicitServerIdRaw);
     if (explicitServerId && isKnownServerId(explicitServerId, activeServerId)) {
         return explicitServerId;
@@ -1163,12 +1155,6 @@ type AckedOutboundUserMessageCommitInput = Readonly<{
     removePending?: boolean;
 }>;
 
-function requireActivePendingOutboxScope(): ServerAccountScope {
-    const scope = getActiveServerAccountScope();
-    if (!scope) throw new Error('Pending enqueue requires an active server-account scope');
-    return scope;
-}
-
 /**
  * Outcome of the changes-based resume catch-up.
  *
@@ -1186,10 +1172,14 @@ export type SessionSystemRecordRuntime = Readonly<{
     scope: ServerAccountScope;
     request: ServerAccountRequestAuthority['request'];
     repository: SessionSystemRecordRepository;
-    session: NonNullable<Awaited<ReturnType<typeof fetchSessionByIdWithServerScope>>['session']>;
+    /**
+     * The exact Session row the store holds for this address. The runtime reads it from
+     * `storage.getState().sessions`, so this is the store projection, not the raw fetch payload.
+     */
+    session: Session;
     contentContext: SessionStoredContentContext | null;
     /** Read the exact current Session projection without trusting a same-id row from another Home. */
-    readSession(): NonNullable<Awaited<ReturnType<typeof fetchSessionByIdWithServerScope>>['session']> | null;
+    readSession(): Session | null;
     /** Read the current canonical Session key context without rehydrating the Session. */
     readContentContext(): SessionStoredContentContext | null;
     isCurrent(): boolean;
@@ -1201,6 +1191,9 @@ class Sync {
         serverID!: string;
         anonID!: string;
         private credentials!: AuthCredentials;
+        private appliedServerTarget: SyncServerTarget | null = null;
+        private readonly requestViaConfiguredSocket: ServerFetch = async (path, init, options) =>
+            await apiSocket.request(path, init, options);
         private pauseController = new PauseController();
         private userRequestLeaseOwner = createUserRequestLeaseOwner();
         private activeEndpointSupervisor: ManagedEndpointSupervisor | null = null;
@@ -1221,6 +1214,7 @@ class Sync {
     private fetchSessionsInFlight: {
         serverScopeGeneration: number;
         snapshotGeneration: number;
+        target: SyncServerTarget;
         promise: Promise<FetchSessionsResult | undefined>;
     } | null = null;
     private fetchMoreSessionsInFlight: Promise<void> | null = null;
@@ -1246,10 +1240,7 @@ class Sync {
           fetchAccountEncryptionCurrentness: (credentials, request) =>
               fetchAccountEncryptionCurrentness(credentials, { request }),
           randomBytes: getRandomBytes,
-          request: (path, init, authority) => serverFetch(path, init, {
-              includeAuth: false,
-              expectedActiveServer: authority.expectedActiveServer,
-          }),
+          request: (path, init) => this.requestViaConfiguredSocket(path, init),
           hydrate: (sessionId, authority) => this.ensureSessionVisibleForMessageRoute(sessionId, {
               forceRefresh: true,
               authority,
@@ -1363,6 +1354,12 @@ class Sync {
                 if (!areServerProfileIdentifiersEquivalent(repository.scope.serverId, serverId)) continue;
                 repository.retire();
                 this.sessionSystemRecordRepositories.delete(key);
+            }
+            if (this.isAppliedTransportServer(serverId)) {
+                // A request captured with the replaced Home credential must not
+                // finish over the previous direct transport while connection
+                // lifecycle prepares the replacement.
+                apiSocket.invalidateRequests('credentials-changed');
             }
         });
         // Decrypted plaintext deliberately does NOT hang off the transcript-derived-cache
@@ -1881,8 +1878,10 @@ class Sync {
           }), { tag });
       }
 
-      private configureEncryptionRuntime(encryption: Encryption, accountId: string): void {
-          const serverId = String(getActiveServerSnapshot().serverId ?? '').trim() || null;
+    private configureEncryptionRuntime(encryption: Encryption, accountId: string): void {
+          const configuredServerId = this.getAppliedTransportTarget()?.serverId
+              ?? String(getActiveServerSnapshot().serverId ?? '').trim();
+          const serverId = configuredServerId || null;
           encryption.configureAesBatchConcurrencyLimit(this.syncTuning.encryptionAesBatchConcurrencyLimit);
           // Routing is NOT set here. It arrives with the instance: Encryption resolves it
           // from SyncTuning at construction, so every instance — active, server-scoped RPC,
@@ -1920,10 +1919,157 @@ class Sync {
         this.messageTransport = createDefaultMessageTransport();
     }
 
+    private captureAppliedServerTarget(target?: SyncServerTarget): SyncServerTarget {
+        const snapshot = target ?? getActiveServerSnapshot();
+        return {
+            serverId: String(snapshot.serverId ?? '').trim(),
+            serverUrl: String(snapshot.serverUrl ?? '').trim(),
+            generation: snapshot.generation,
+            ...(target?.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
+            ...(target?.carrier ? { carrier: target.carrier } : {}),
+            ...(target?.homeCarrier !== undefined ? { homeCarrier: target.homeCarrier } : {}),
+        };
+    }
+
+    /**
+     * The direct `apiSocket` is configured for this target, not the Home that is
+     * currently staged in profile selection. Keep that distinction local to
+     * Sync: connectionManager owns the public applied snapshot, while Sync
+     * cannot import it without a cycle.
+     */
+    private getAppliedTransportTarget(): SyncServerTarget | null {
+        const target = this.appliedServerTarget;
+        if (!target || !target.serverId.trim() || !target.serverUrl.trim()) return null;
+        return target;
+    }
+
+    /**
+     * Terminal direct-transport errors belong to the immutable Sync target,
+     * never to a Home that happens to be staged in selection. Exact outbox
+     * callers pass their persisted scope explicitly.
+     */
+    private recordTerminalAuthSyncError(
+        error: unknown,
+        options?: Readonly<{ serverId?: string | null }>,
+    ): void {
+        const scopedServerId = String(options?.serverId ?? '').trim();
+        const appliedServerId = String(this.getAppliedTransportTarget()?.serverId ?? '').trim();
+        const serverId = scopedServerId || appliedServerId;
+        storage.getState().setSyncError({
+            message: error instanceof Error ? error.message : 'Authentication required',
+            retryable: false,
+            kind: 'auth',
+            at: Date.now(),
+            ...(serverId ? { serverId } : {}),
+        });
+    }
+
+    /**
+     * The focused switch already owns this prepared carrier. Feature refreshes
+     * borrow it without taking a second lease, so a staged Home cannot replace
+     * the bootstrap Home's feature request.
+     */
+    private createPreparedFeatureTransport(target: SyncServerTarget): ResolvedServerScopedTransport {
+        return {
+            canonicalServerUrl: target.serverUrl,
+            runtimeOrigin: target.runtimeOrigin ?? target.serverUrl,
+            carrier: target.carrier ?? 'https',
+            ...(target.homeCarrier ? { homeCarrier: target.homeCarrier } : {}),
+            release: async () => {},
+        };
+    }
+
+    /**
+     * Direct Sync HTTP is issued only through apiSocket's immutable prepared
+     * configuration. The returned request remains safe to pass through an
+     * asynchronous feature or storage decision: apiSocket refuses issuance
+     * after a later Home has replaced that configuration.
+     */
+    private createAppliedTransportRequest(target: SyncServerTarget): ServerFetch {
+        return apiSocket.createRequestForPreparedTarget({
+            endpoint: target.serverUrl,
+            serverId: target.serverId,
+            generation: target.generation,
+            ...(target.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
+            ...(target.carrier ? { carrier: target.carrier } : {}),
+            ...(target.homeCarrier !== undefined ? { homeCarrier: target.homeCarrier } : {}),
+        });
+    }
+
+    private createAppliedSettingsRequestContext(
+        settingsScope: AccountSettingsScope | null | undefined,
+    ): SyncSettingsParams['requestContext'] {
+        const target = this.getAppliedTransportTarget();
+        if (
+            !settingsScope
+            || !target
+            || !areServerProfileIdentifiersEquivalent(settingsScope.serverId, target.serverId)
+        ) {
+            return undefined;
+        }
+        return {
+            scope: settingsScope,
+            endpointUrl: target.serverUrl,
+            request: this.createAppliedTransportRequest(target),
+        };
+    }
+
+    /**
+     * Sync's direct Automation calls are incumbent transport work. Pair the
+     * already-configured socket request with the same target identity used for
+     * capability decisions so neither can follow a staged Home.
+     */
+    private createAppliedAutomationRequestContext(
+        target: SyncServerTarget | null = this.getAppliedTransportTarget(),
+    ): AutomationRequestContext {
+        if (!target) {
+            throw new Error('Applied Home transport is not ready');
+        }
+        return {
+            request: this.createAppliedTransportRequest(target),
+            serverId: target.serverId,
+        };
+    }
+
+    private createAppliedTransportScopeGuard(target: SyncServerTarget): () => boolean {
+        const serverScopeGuard = this.createServerScopeGuard();
+        return () => serverScopeGuard() && this.isAppliedTransportTargetCurrent(target);
+    }
+
+    private prepareAppliedAutomationExecution(): Readonly<{
+        requestContext: AutomationRequestContext;
+        shouldContinue: () => boolean;
+    }> {
+        const target = this.getAppliedTransportTarget();
+        if (!target) {
+            throw new Error('Applied Home transport is not ready');
+        }
+        return {
+            requestContext: this.createAppliedAutomationRequestContext(target),
+            shouldContinue: this.createAppliedTransportScopeGuard(target),
+        };
+    }
+
+    private isAppliedTransportTargetCurrent(target: SyncServerTarget): boolean {
+        const current = this.getAppliedTransportTarget();
+        return current !== null
+            && current.serverId === target.serverId
+            && current.serverUrl === target.serverUrl
+            && current.generation === target.generation;
+    }
+
+    private isAppliedTransportServer(serverId: string | null | undefined): boolean {
+        const target = this.getAppliedTransportTarget();
+        return Boolean(
+            target
+            && areServerProfileIdentifiersEquivalent(serverId, target.serverId),
+        );
+    }
+
     private getActiveEndpointTarget(): { serverId: string; serverUrl: string } | null {
-        const activeServer = getActiveServerSnapshot();
-        const serverId = String(activeServer.serverId ?? '').trim();
-        const serverUrl = String(activeServer.serverUrl ?? '').trim();
+        const activeServer = this.getAppliedTransportTarget();
+        const serverId = String(activeServer?.serverId ?? '').trim();
+        const serverUrl = String(activeServer?.serverUrl ?? '').trim();
         if (!serverId || !serverUrl) {
             return null;
         }
@@ -2039,11 +2185,18 @@ class Sync {
     }
 
     private getChangesCursorScope(): ChangesCursorScope | null {
-        return this.buildCursorScopeForServer(String(getActiveServerSnapshot().serverId ?? '').trim());
+        return this.buildCursorScopeForServer(
+            this.getAppliedTransportTarget()?.serverId
+            ?? String(getActiveServerSnapshot().serverId ?? '').trim(),
+        );
     }
 
     private getExternalSessionCursorScope(sessionId: string): ChangesCursorScope | null {
-        return this.buildCursorScopeForServer(this.getExternalSessionServerScope(sessionId) ?? String(getActiveServerSnapshot().serverId ?? '').trim());
+        return this.buildCursorScopeForServer(
+            this.getExternalSessionServerScope(sessionId)
+            ?? this.getAppliedTransportTarget()?.serverId
+            ?? String(getActiveServerSnapshot().serverId ?? '').trim(),
+        );
     }
 
     private clearActiveAccountSettingsScope(): void {
@@ -2061,7 +2214,8 @@ class Sync {
     }
 
     private async activateAccountSettingsScope(accountId: string): Promise<AccountSettingsScope | null> {
-        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const serverId = this.getAppliedTransportTarget()?.serverId
+            ?? String(getActiveServerSnapshot().serverId ?? '').trim();
         const scope = createAccountSettingsScope(serverId, accountId);
         if (!scope) {
             this.clearActiveAccountSettingsScope();
@@ -2174,14 +2328,20 @@ class Sync {
         });
     };
 
-    async create(credentials: AuthCredentials, encryption: Encryption | null) {
+    async create(credentials: AuthCredentials, encryption: Encryption | null, target?: SyncServerTarget) {
+        const appliedServerTarget = this.captureAppliedServerTarget(target);
         const accountId = this.parseAccountIdForSettingsScope(credentials, 'create');
         if (!accountId) throw new Error('Invalid auth token');
+        // The socket is already configured for this prepared target. Bind the
+        // matching Sync authority before publishing its credentials or awaiting
+        // any bootstrap helper, so no request can combine the former Home with
+        // this Home's bearer.
+        this.appliedServerTarget = appliedServerTarget;
+        this.credentials = credentials;
+        this.encryption = encryption;
         if (encryption) {
             this.configureEncryptionRuntime(encryption, accountId);
         }
-        this.credentials = credentials;
-        this.encryption = encryption;
         this.anonID = encryption?.anonID ?? '';
         this.serverID = accountId;
         if (this.anonID) {
@@ -2193,7 +2353,9 @@ class Sync {
         await this.configureSettingsSecretKeys(credentials, settingsScope);
         this.scheduleWarmCachesHydrationForActiveServerBoot();
         this.syncJsThreadLagTelemetryRuntime();
+        assertSyncServerTargetCurrent(appliedServerTarget);
         await this.#init();
+        assertSyncServerTargetCurrent(appliedServerTarget);
 
         // UX: avoid blocking login forever if initial sync fetches hang/retry indefinitely.
         // We still kick off the sync work in #init(); this just bounds the time we block the login call.
@@ -2204,21 +2366,28 @@ class Sync {
             this.purchasesSync.awaitQueue({ timeoutMs: initialAwaitTimeoutMs }),
         ]);
         fireAndForget(
-            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+            refreshAuthenticatedServerFeaturesSnapshot({
+                credentials,
+                force: true,
+                serverId: appliedServerTarget.serverId,
+                scopedTransport: this.createPreparedFeatureTransport(appliedServerTarget),
+            }),
             { tag: 'Sync.refreshAuthenticatedServerFeatures.create' },
         );
     }
 
-    async restore(credentials: AuthCredentials, encryption: Encryption | null) {
+    async restore(credentials: AuthCredentials, encryption: Encryption | null, target?: SyncServerTarget) {
+        const appliedServerTarget = this.captureAppliedServerTarget(target);
         const accountId = this.parseAccountIdForSettingsScope(credentials, 'restore');
         if (!accountId) throw new Error('Invalid auth token');
+        this.appliedServerTarget = appliedServerTarget;
+        this.credentials = credentials;
+        this.encryption = encryption;
         // NOTE: No awaiting anything here, we're restoring from a disk (ie app restarted)
         // Purchases sync is invalidated in #init() and will complete asynchronously
         if (encryption) {
             this.configureEncryptionRuntime(encryption, accountId);
         }
-        this.credentials = credentials;
-        this.encryption = encryption;
         this.anonID = encryption?.anonID ?? '';
         this.serverID = accountId;
         if (this.anonID) {
@@ -2230,15 +2399,23 @@ class Sync {
         await this.configureSettingsSecretKeys(credentials, settingsScope);
         this.scheduleWarmCachesHydrationForActiveServerBoot();
         this.syncJsThreadLagTelemetryRuntime();
+        assertSyncServerTargetCurrent(appliedServerTarget);
         await this.#init();
+        assertSyncServerTargetCurrent(appliedServerTarget);
         fireAndForget(
-            refreshAuthenticatedServerFeaturesSnapshot({ credentials, force: true }),
+            refreshAuthenticatedServerFeaturesSnapshot({
+                credentials,
+                force: true,
+                serverId: appliedServerTarget.serverId,
+                scopedTransport: this.createPreparedFeatureTransport(appliedServerTarget),
+            }),
             { tag: 'Sync.refreshAuthenticatedServerFeatures.restore' },
         );
     }
 
     private scheduleWarmCachesHydrationForActiveServerBoot(): void {
-        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const serverId = this.getAppliedTransportTarget()?.serverId
+            ?? String(getActiveServerSnapshot().serverId ?? '').trim();
         const accountId = resolveWarmCacheAccountScope(loadPersistedProfile().id);
         if (!serverId || !accountId) return;
         const generation = this.serverScopeGeneration;
@@ -2264,7 +2441,9 @@ class Sync {
         accountId?: string;
         preserveFetchedState?: boolean;
     }>): void {
-        const serverId = options?.serverId ?? String(getActiveServerSnapshot().serverId ?? '').trim();
+        const serverId = options?.serverId
+            ?? this.getAppliedTransportTarget()?.serverId
+            ?? String(getActiveServerSnapshot().serverId ?? '').trim();
         const accountId = options?.accountId ?? resolveWarmCacheAccountScope(loadPersistedProfile().id);
         if (!serverId || !accountId) return;
 
@@ -2315,7 +2494,7 @@ class Sync {
         try {
             authority = await captureServerRequestAuthorityForServerAccountScope({
                 serverId: sessionAddress.serverId,
-                activeRequest: (path, init, options) => apiSocket.request(path, init, options),
+                activeRequest: this.requestViaConfiguredSocket,
             });
         } catch {
             unsubscribeCredentialChange();
@@ -2348,7 +2527,7 @@ class Sync {
                     scope: authority.scope,
                     request: createServerRequestForServerAccountScope({
                         scope: authority.scope,
-                        activeRequest: (path, init) => apiSocket.request(path, init),
+                        activeRequest: this.requestViaConfiguredSocket,
                     }),
                 });
                 this.sessionSystemRecordRepositories.set(key, repository);
@@ -2410,7 +2589,7 @@ class Sync {
                 ? createApiSessionDraftsTransport({
                     request: createServerRequestForServerAccountScope({
                         scope,
-                        activeRequest: (path, init) => apiSocket.request(path, init),
+                        activeRequest: this.requestViaConfiguredSocket,
                     }),
                 })
                 : undefined,
@@ -2496,7 +2675,8 @@ class Sync {
         }
     }
 
-    private resetServerScopedRuntimeState = () => {
+    private resetServerScopedRuntimeState = (targetToReset?: SyncServerTarget | null) => {
+        apiSocket.invalidateRequests('server-switch');
         this.automationRunTraversalTokensByAutomationId.clear();
         this.changesCatchUpQueuedAfterResume = false;
         this.postSubscriptionChangesCatchUpPending = false;
@@ -2598,7 +2778,9 @@ class Sync {
         }
         this.changesCursor = null;
 
-        const activeServerIdForReset = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const activeServerIdForReset = String(
+            targetToReset?.serverId ?? this.getAppliedTransportTarget()?.serverId ?? '',
+        ).trim();
         const withoutActiveServerEntry = <T>(entries: Readonly<Record<string, T>>): Readonly<Record<string, T>> => {
             if (!activeServerIdForReset || !(activeServerIdForReset in entries)) return entries;
             const next = { ...entries };
@@ -2611,11 +2793,10 @@ class Sync {
             profile: { ...profileDefaults },
             sessions: {},
             concurrentSessionListCacheByServerId: (() => {
-                const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
-                if (!activeServerId) return state.concurrentSessionListCacheByServerId;
-                if (!(activeServerId in state.concurrentSessionListCacheByServerId)) return state.concurrentSessionListCacheByServerId;
+                if (!activeServerIdForReset) return state.concurrentSessionListCacheByServerId;
+                if (!(activeServerIdForReset in state.concurrentSessionListCacheByServerId)) return state.concurrentSessionListCacheByServerId;
                 const next = { ...state.concurrentSessionListCacheByServerId };
-                delete next[activeServerId];
+                delete next[activeServerIdForReset];
                 return next;
             })(),
             sessionListRowsByServerId: withoutActiveServerEntry(
@@ -2628,27 +2809,24 @@ class Sync {
                 state.archivedSessionListMembershipByServerId ?? {},
             ),
             sessionListIndexByServerId: (() => {
-                const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
                 const previous = state.sessionListIndexByServerId ?? {};
-                if (!activeServerId) return previous;
-                if (!(activeServerId in previous)) return previous;
-                const { [activeServerId]: _, ...rest } = previous;
+                if (!activeServerIdForReset) return previous;
+                if (!(activeServerIdForReset in previous)) return previous;
+                const { [activeServerIdForReset]: _, ...rest } = previous;
                 return rest;
             })(),
             machineListByServerId: (() => {
-                const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
-                if (!activeServerId) return state.machineListByServerId;
-                if (!(activeServerId in state.machineListByServerId)) return state.machineListByServerId;
+                if (!activeServerIdForReset) return state.machineListByServerId;
+                if (!(activeServerIdForReset in state.machineListByServerId)) return state.machineListByServerId;
                 const next = { ...state.machineListByServerId };
-                delete next[activeServerId];
+                delete next[activeServerIdForReset];
                 return next;
             })(),
             machineListStatusByServerId: (() => {
-                const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
-                if (!activeServerId) return state.machineListStatusByServerId;
-                if (!(activeServerId in state.machineListStatusByServerId)) return state.machineListStatusByServerId;
+                if (!activeServerIdForReset) return state.machineListStatusByServerId;
+                if (!(activeServerIdForReset in state.machineListStatusByServerId)) return state.machineListStatusByServerId;
                 const next = { ...state.machineListStatusByServerId };
-                delete next[activeServerId];
+                delete next[activeServerIdForReset];
                 return next;
             })(),
             sessionScmStatus: {},
@@ -2705,12 +2883,14 @@ class Sync {
         // them only after it captures and parses this credential's Account.
         if (targetServerId) storage.getState().clearMachinePoolsForServer(targetServerId);
         apiSocket.initialize(buildSyncSocketConfig(credentials, target), encryption);
-        await this.restore(credentials, encryption);
+        await this.restore(credentials, encryption, target);
     }
 
     public disconnectServer(): void {
-        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
-        this.resetServerScopedRuntimeState();
+        const disconnectedTarget = this.getAppliedTransportTarget();
+        this.appliedServerTarget = null;
+        const serverId = disconnectedTarget?.serverId ?? '';
+        this.resetServerScopedRuntimeState(disconnectedTarget);
         // Signed-out is a transient availability state, not evidence that this Account's last
         // known definitions disappeared. Keep them visible but inert until credential recovery.
         if (serverId) storage.getState().setMachinePoolListStatus(serverId, 'signedOut');
@@ -3016,12 +3196,13 @@ class Sync {
         ensureHostedSystemSession = async (
             input: Pick<EnsureHostedSystemSessionInput, 'tag' | 'metadata'>,
         ): Promise<HostedSystemSessionEnsureResult> => {
-            const activeServer = getActiveServerSnapshot();
+            const activeServer = this.appliedServerTarget;
             const scope = getActiveServerAccountScope();
             const credentials = this.credentials;
             const encryption = this.encryption;
             if (
-                !scope
+                !activeServer
+                || !scope
                 || !credentials
                 || scope.accountId !== this.serverID
                 || !areServerProfileIdentifiersEquivalent(scope.serverId, activeServer.serverId)
@@ -3030,7 +3211,7 @@ class Sync {
             }
             const authority = await captureServerRequestAuthorityForServerAccountScope({
                 scope,
-                activeRequest: (path, init) => apiSocket.request(path, init),
+                activeRequest: this.requestViaConfiguredSocket,
             });
             try {
             if (
@@ -3083,8 +3264,12 @@ class Sync {
                         }
                     })()
                 );
-            const preferredServerId = resolveMessageRouteHydrationServerId(normalized, options?.serverId);
-            const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+            const activeServerId = String(this.getAppliedTransportTarget()?.serverId ?? '').trim();
+            const preferredServerId = resolveMessageRouteHydrationServerId(
+                normalized,
+                options?.serverId,
+                activeServerId || undefined,
+            );
             const prefersActiveServer = !preferredServerId || areServerProfileIdentifiersEquivalent(preferredServerId, activeServerId);
 
             // Fast-path when we already know the session exists on this server and the stored record is
@@ -3172,7 +3357,7 @@ class Sync {
                         activeEncryption: this.encryption,
                         sessionDataKeys: this.sessionDataKeys,
                         sessionDataKeyEnvelopes: this.sessionDataKeyEnvelopes,
-                        activeRequest: (path, init) => apiSocket.request(path, init),
+                        activeRequest: this.requestViaConfiguredSocket,
                         getExistingSession: (sessionId) => storage.getState().sessions[sessionId] ?? null,
                         applySessions: (sessions) => this.applySessions(sessions),
                         log,
@@ -3257,7 +3442,7 @@ class Sync {
                     );
                 } catch (err) {
                     if (isTerminalAuthError(err)) {
-                        recordTerminalAuthSyncError(err, { serverId: preferredServerId });
+                        this.recordTerminalAuthSyncError(err, { serverId: preferredServerId });
                         return createMissingSessionRouteResult(normalized, preferredServerId, 'unauthorized');
                     }
                     log.log(`⚠️ ensureSessionVisibleForMessageRoute failed for ${normalized}: ${err instanceof Error ? err.message : 'unknown error'}`);
@@ -3304,7 +3489,7 @@ class Sync {
     };
 
     public invalidateSessionListSnapshot = (serverId?: string | null): void => {
-        if (serverId && !areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)) return;
+        if (serverId && !areServerProfileIdentifiersEquivalent(serverId, this.appliedServerTarget?.serverId)) return;
         this.sessionListSnapshotGeneration += 1;
         this.fetchSessionsInFlight = null;
         this.sessionsSync.invalidate();
@@ -3791,7 +3976,9 @@ class Sync {
             return { localId, seq: ack.seq, persistence: 'transcript_committed' };
         } catch (e) {
             if (isTerminalAuthError(e)) {
-                recordTerminalAuthSyncError(e);
+                this.recordTerminalAuthSyncError(e, {
+                    serverId: exactAccountLifetime?.scope.serverId,
+                });
             }
             storage.getState().clearSessionOptimisticThinking(sessionId);
             throw e;
@@ -3846,7 +4033,7 @@ class Sync {
                 ? areServerProfileIdentifiersEquivalent(projectedSession.serverId, requestedAddress.serverId)
                 : areServerProfileIdentifiersEquivalent(
                     requestedAddress.serverId,
-                    getActiveServerSnapshot().serverId,
+                    this.getAppliedTransportTarget()?.serverId,
                 ),
         );
         if (!recipient && ownsProjectedSessionState) {
@@ -3915,7 +4102,7 @@ class Sync {
                 await this.fetchPendingMessages(sessionId, outboxScope, recipient).catch(() => {});
             }
             if (isTerminalAuthError(e)) {
-                recordTerminalAuthSyncError(e);
+                this.recordTerminalAuthSyncError(e, { serverId: outboxScope.serverId });
             }
             if (!recipient && ownsProjectedSessionState) storage.getState().clearSessionOptimisticThinking(sessionId);
             throw e;
@@ -4044,7 +4231,7 @@ class Sync {
                     }
                     if (isTerminalAuthError(terminalError)) {
                         terminalAuthFailure = true;
-                        recordTerminalAuthSyncError(terminalError);
+                        this.recordTerminalAuthSyncError(terminalError);
                         storage.getState().removePendingMessage(params.sessionId, params.localId);
                         storage.getState().clearSessionOptimisticThinking(params.sessionId);
                         clearRetry();
@@ -4162,7 +4349,7 @@ class Sync {
                 });
             } catch (error) {
                 if (isTerminalAuthError(error)) {
-                    recordTerminalAuthSyncError(error);
+                    this.recordTerminalAuthSyncError(error, { serverId: params.outboxScope.serverId });
                 }
                 await markSendFailed();
                 clearRetry();
@@ -4217,7 +4404,7 @@ class Sync {
 
     isSessionTargetRemoteToActiveServer = (sessionId: string): boolean => {
         const preferredServerId = resolvePreferredServerIdForSessionId(sessionId);
-        const activeServerId = getActiveServerSnapshot().serverId;
+        const activeServerId = this.appliedServerTarget?.serverId;
         return Boolean(preferredServerId && !areServerProfileIdentifiersEquivalent(preferredServerId, activeServerId));
     }
 
@@ -4425,7 +4612,7 @@ class Sync {
                 activeEncryption: this.encryption,
                 sessionDataKeys: this.sessionDataKeys,
                 sessionDataKeyEnvelopes: this.sessionDataKeyEnvelopes,
-                activeRequest: (path, init) => apiSocket.request(path, init),
+                activeRequest: this.requestViaConfiguredSocket,
                 applySessions: (sessions) => this.applySessions(sessions),
                 getExistingSession: (targetSessionId) => storage.getState().sessions[targetSessionId] ?? null,
                 log,
@@ -4703,7 +4890,7 @@ class Sync {
 
     private readSessionAtAddress(address: SessionAddress): Session | SessionListRenderableSession | null {
         const state = storage.getState();
-        if (areServerProfileIdentifiersEquivalent(address.serverId, getActiveServerSnapshot().serverId)) {
+        if (this.isAppliedTransportServer(address.serverId)) {
             const session = state.sessions[address.sessionId];
             if (session && (!session.serverId || areServerProfileIdentifiersEquivalent(session.serverId, address.serverId))) {
                 return session;
@@ -4725,7 +4912,7 @@ class Sync {
         const effectiveViewedSeq = Math.max(existingViewedSeq, nextViewedSeq);
         if (session.lastViewedSessionSeq === effectiveViewedSeq) return;
 
-        if (areServerProfileIdentifiersEquivalent(address.serverId, getActiveServerSnapshot().serverId) && state.sessions[address.sessionId] === session) {
+        if (this.isAppliedTransportServer(address.serverId) && state.sessions[address.sessionId] === session) {
             state.applySessions([{ ...(session as Session), lastViewedSessionSeq: effectiveViewedSeq }]);
             return;
         }
@@ -4741,7 +4928,7 @@ class Sync {
         const { serverId, sessionId } = address;
         const session = this.readSessionAtAddress(address);
         if (!session || !isSessionPersonallyTrackedForViewer(session)) return;
-        const usedActiveSession = areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId);
+        const usedActiveSession = this.isAppliedTransportServer(serverId);
         const activeCredentials = this.credentials;
 
         const sessionSeq = Math.max(0, Math.trunc(opts?.sessionSeq ?? session.seq ?? 0));
@@ -4771,7 +4958,7 @@ class Sync {
                             : current.seq,
                     };
                     const state = storage.getState();
-                    if (areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId) && state.sessions[sessionId] === current) {
+                    if (this.isAppliedTransportServer(serverId) && state.sessions[sessionId] === current) {
                         state.applySessions([next as Session]);
                     } else {
                         state.applyServerScopedSessionListRowPatches(serverId, [{
@@ -4795,7 +4982,7 @@ class Sync {
             }
         }
 
-        if (!areServerProfileIdentifiersEquivalent(getActiveServerSnapshot().serverId, serverId)) return;
+        if (!this.isAppliedTransportServer(serverId)) return;
         const current = storage.getState().sessions[sessionId];
         if (!current || !isSessionPersonallyTrackedForViewer(current)) return;
         const ownerMetadata = readSessionOwnerMetadataView(current);
@@ -5102,6 +5289,29 @@ class Sync {
         }, undefined, options?.serverId, options?.accountLifetime);
     }
 
+    /**
+     * The only Account scope that may use Sync's direct socket. Profile scope
+     * follows staged Home selection and can move before its transport applies,
+     * so a staged scope is never enough to authorize the applied socket.
+     */
+    private getAppliedTransportAccountScope(): ServerAccountScope | null {
+        const target = this.appliedServerTarget;
+        const scope = storage.getState().profileScope;
+        if (
+            !target
+            || !scope
+            || scope.accountId !== this.serverID
+            || !areServerProfileIdentifiersEquivalent(scope.serverId, target.serverId)
+        ) {
+            return null;
+        }
+        return scope;
+    }
+
+    private isAppliedTransportAccountScopeCurrent(scope: ServerAccountScope): boolean {
+        return areServerAccountScopesEqual(this.getAppliedTransportAccountScope(), scope);
+    }
+
     private async resolvePendingQueueOwnerContext(
         sessionId: string,
         expectedActiveScope?: ServerAccountScope,
@@ -5169,8 +5379,35 @@ class Sync {
             });
         }
         if (expectedActiveScope) {
+            const appliedScope = this.getAppliedTransportAccountScope();
+            if (!areServerAccountScopesEqual(appliedScope, expectedActiveScope)) {
+                const authority = await captureServerRequestAuthorityForServerAccountScope({
+                    scope: expectedActiveScope,
+                    activeRequest: this.createSessionRequest(sessionId),
+                });
+                const isCurrent = () => areServerAccountScopesEqual(
+                    getActiveServerAccountScope(),
+                    expectedActiveScope,
+                ) && areServerAccountScopesEqual(authority.scope, expectedActiveScope);
+                if (!isCurrent()) {
+                    await authority.release();
+                    throw new Error('Pending owner server-account scope changed');
+                }
+                return await withServerWireMode({
+                    outboxScope: expectedActiveScope,
+                    request: async (path, init) => {
+                        if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
+                        const response = await authority.request(path, init);
+                        if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
+                        return response;
+                    },
+                    isCurrent,
+                    encryption: authority.context.encryption,
+                    release: authority.release,
+                });
+            }
             const assertCapturedActiveScope = (): void => {
-                if (!areServerAccountScopesEqual(getActiveServerAccountScope(), expectedActiveScope)) {
+                if (!this.isAppliedTransportAccountScopeCurrent(expectedActiveScope)) {
                     throw new Error('Pending owner server-account scope changed');
                 }
             };
@@ -5178,28 +5415,25 @@ class Sync {
                 outboxScope: expectedActiveScope,
                 request: async (path, init) => {
                     assertCapturedActiveScope();
-                    const response = await apiSocket.request(path, init);
+                    const response = await this.requestViaConfiguredSocket(path, init);
                     assertCapturedActiveScope();
                     return response;
                 },
-                isCurrent: () => areServerAccountScopesEqual(
-                    getActiveServerAccountScope(),
-                    expectedActiveScope,
-                ),
+                isCurrent: () => this.isAppliedTransportAccountScopeCurrent(expectedActiveScope),
                 encryption: this.encryption,
                 release: async () => undefined,
             });
         }
         const activeRequest = this.createSessionRequest(sessionId);
-        const fenceActiveRequest = (capturedScope: ServerAccountScope) => async (
+        const fenceAppliedRequest = (capturedScope: ServerAccountScope) => async (
             path: string,
             init?: RequestInit,
         ): Promise<Response> => {
-            if (!areServerAccountScopesEqual(getActiveServerAccountScope(), capturedScope)) {
+            if (!this.isAppliedTransportAccountScopeCurrent(capturedScope)) {
                 throw new Error('Pending owner server-account scope changed');
             }
             const response = await activeRequest(path, init);
-            if (!areServerAccountScopesEqual(getActiveServerAccountScope(), capturedScope)) {
+            if (!this.isAppliedTransportAccountScopeCurrent(capturedScope)) {
                 throw new Error('Pending owner server-account scope changed');
             }
             return response;
@@ -5208,32 +5442,40 @@ class Sync {
             ? expectedServerId.trim()
             : null;
         const preferredServerId = explicitServerId ?? resolvePreferredServerIdForSessionId(sessionId);
-        const activeOutboxScope = getActiveServerAccountScope();
-        const activeServerId = getActiveServerSnapshot().serverId;
+        const appliedOutboxScope = this.getAppliedTransportAccountScope();
+        const targetsAppliedTransport = !preferredServerId
+            || areServerProfileIdentifiersEquivalent(preferredServerId, this.appliedServerTarget?.serverId);
         if (
-            activeOutboxScope
-            && (
-                !preferredServerId
-                || areServerProfileIdentifiersEquivalent(preferredServerId, activeServerId)
-            )
+            appliedOutboxScope
+            && targetsAppliedTransport
         ) {
             return await withServerWireMode({
-                outboxScope: activeOutboxScope,
-                request: fenceActiveRequest(activeOutboxScope),
-                isCurrent: () => areServerAccountScopesEqual(getActiveServerAccountScope(), activeOutboxScope),
+                outboxScope: appliedOutboxScope,
+                request: fenceAppliedRequest(appliedOutboxScope),
+                isCurrent: () => this.isAppliedTransportAccountScopeCurrent(appliedOutboxScope),
                 encryption: this.encryption,
                 release: async () => undefined,
             });
         }
-        const context = await resolveServerAccountRequestContext({
+        let context = await resolveServerAccountRequestContext({
             serverId: preferredServerId ?? null,
+            ...(targetsAppliedTransport && !appliedOutboxScope ? { preferScoped: true } : {}),
         });
+        if (context.scope === 'active' && !this.getAppliedTransportAccountScope()) {
+            context = await resolveServerAccountRequestContext({
+                serverId: preferredServerId ?? null,
+                preferScoped: true,
+            });
+        }
         if (context.scope === 'active') {
-            const outboxScope = requireActivePendingOutboxScope();
+            const outboxScope = this.getAppliedTransportAccountScope();
+            if (!outboxScope) {
+                throw new Error('Pending enqueue requires an applied transport account scope');
+            }
             return await withServerWireMode({
                 outboxScope,
-                request: fenceActiveRequest(outboxScope),
-                isCurrent: () => areServerAccountScopesEqual(getActiveServerAccountScope(), outboxScope),
+                request: fenceAppliedRequest(outboxScope),
+                isCurrent: () => this.isAppliedTransportAccountScopeCurrent(outboxScope),
                 encryption: this.encryption,
                 release: async () => undefined,
             });
@@ -5253,12 +5495,17 @@ class Sync {
                     typeof currentPreferredServerId !== 'string'
                     || !areServerProfileIdentifiersEquivalent(currentPreferredServerId, outboxScope.serverId)
                 ) return false;
-                const currentContext = await resolveServerAccountRequestContext({ serverId: currentPreferredServerId });
+                const currentContext = await resolveServerAccountRequestContext({
+                    serverId: currentPreferredServerId,
+                    preferScoped: true,
+                });
                 try {
-                const currentScope = currentContext.scope === 'active'
-                    ? getActiveServerAccountScope()
-                    : createServerAccountScope(currentContext.targetServerId, currentContext.targetAccountId);
-                return areServerAccountScopesEqual(currentScope, outboxScope);
+                    if (currentContext.scope !== 'scoped') return false;
+                    const currentScope = createServerAccountScope(
+                        currentContext.targetServerId,
+                        currentContext.targetAccountId,
+                    );
+                    return areServerAccountScopesEqual(currentScope, outboxScope);
                 } finally {
                     if (currentContext.scope === 'scoped') await currentContext.release?.();
                 }
@@ -5301,7 +5548,7 @@ class Sync {
         if (
             !options?.serverId
             || (projectedServerId && areServerProfileIdentifiersEquivalent(projectedServerId, outboxScope.serverId))
-            || (!projectedServerId && areServerProfileIdentifiersEquivalent(outboxScope.serverId, getActiveServerSnapshot().serverId))
+            || (!projectedServerId && areServerProfileIdentifiersEquivalent(outboxScope.serverId, this.appliedServerTarget?.serverId))
         ) {
             this.markSessionLiveTailIntent(sessionId);
         }
@@ -5318,7 +5565,9 @@ class Sync {
                 this.schedulePendingOutboxOperationRetry({ sessionId, localId, outboxScope });
             }
         } catch (error) {
-            if (isTerminalAuthError(error)) recordTerminalAuthSyncError(error);
+            if (isTerminalAuthError(error)) {
+                this.recordTerminalAuthSyncError(error, { serverId: outboxScope.serverId });
+            }
             await setPendingMessageSendState(sessionId, localId, 'failed', outboxScope);
         }
         }, undefined, options?.serverId);
@@ -5556,8 +5805,22 @@ class Sync {
         });
     }
 
-    async assumeUsers(userIds: string[]): Promise<void> {
-        if (!this.credentials || userIds.length === 0) return;
+    async assumeUsers(
+        userIds: string[],
+        options?: Readonly<{
+            credentials?: AuthCredentials;
+            request?: ServerFetch;
+            shouldContinue?: () => boolean;
+        }>,
+    ): Promise<void> {
+        const credentials = options?.credentials ?? this.credentials;
+        if (!credentials || userIds.length === 0) return;
+        const shouldContinue = options?.shouldContinue ?? (() => true);
+        if (!shouldContinue()) return;
+        const request = options?.request ?? (() => {
+            const target = this.getAppliedTransportTarget();
+            return target ? this.createAppliedTransportRequest(target) : this.requestViaConfiguredSocket;
+        })();
         
         const state = storage.getState();
         // Filter out users we already have in cache (including null for 404s)
@@ -5581,7 +5844,7 @@ class Sync {
         const results = await Promise.all(
             missingIds.map(async (id) => {
                 try {
-                    const profile = await getUserProfile(this.credentials!, id);
+                    const profile = await getUserProfile(credentials, id, { request, retry: 'none' });
                     return { id, profile, cache: true };
                 } catch (error) {
                     if (isNotFoundError(error)) {
@@ -5598,7 +5861,7 @@ class Sync {
             usersMap[r.id] = r.profile;
         }
 
-        if (Object.keys(usersMap).length > 0) {
+        if (shouldContinue() && Object.keys(usersMap).length > 0) {
             storage.getState().applyUsers(usersMap);
         }
     }
@@ -5633,6 +5896,8 @@ class Sync {
 
     private fetchSessions = async (options?: FetchSessionsOptions) => {
         if (!this.credentials) return;
+        const appliedTransportTarget = this.getAppliedTransportTarget();
+        if (!appliedTransportTarget) return;
         const serverScopeGeneration = this.serverScopeGeneration;
         const snapshotGeneration = this.sessionListSnapshotGeneration;
         if (canShareFetchSessionsInFlight(options)) {
@@ -5641,11 +5906,12 @@ class Sync {
                 existing
                 && existing.serverScopeGeneration === serverScopeGeneration
                 && existing.snapshotGeneration === snapshotGeneration
+                && this.isAppliedTransportTargetCurrent(existing.target)
             ) {
                 return existing.promise;
             }
         }
-        const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const activeServerId = appliedTransportTarget.serverId;
         this.publishActiveSessionListObservation(
             !activeServerId || storage.getState().concurrentSessionListCacheByServerId[activeServerId]?.listObservation?.lastSuccessAt == null
                 ? 'loading'
@@ -5653,7 +5919,12 @@ class Sync {
             undefined,
             activeServerId,
         );
-        const runFetch = this.fetchSessionsOnce(options, serverScopeGeneration, snapshotGeneration).catch((error) => {
+        const runFetch = this.fetchSessionsOnce(
+            options,
+            serverScopeGeneration,
+            snapshotGeneration,
+            appliedTransportTarget,
+        ).catch((error) => {
             this.publishActiveSessionListObservation(this.socketStatus === 'disconnected' || this.socketStatus === 'error'
                 ? 'offline'
                 : 'error', undefined, activeServerId);
@@ -5668,6 +5939,7 @@ class Sync {
             this.fetchSessionsInFlight = {
                 serverScopeGeneration,
                 snapshotGeneration,
+                target: appliedTransportTarget,
                 promise: sharedFetch,
             };
             return sharedFetch;
@@ -5680,7 +5952,7 @@ class Sync {
         lastSuccessAt?: number,
         expectedServerId?: string,
     ): void => {
-        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const serverId = this.getAppliedTransportTarget()?.serverId ?? '';
         if (!serverId || (expectedServerId && serverId !== expectedServerId)) return;
         storage.setState((state) => {
             const previous = state.concurrentSessionListCacheByServerId[serverId];
@@ -5706,14 +5978,15 @@ class Sync {
         options: FetchSessionsOptions | undefined,
         serverScopeGeneration: number,
         snapshotGeneration: number,
+        appliedTransportTarget: SyncServerTarget,
     ) => {
         const shouldContinue = () => (
             this.serverScopeGeneration === serverScopeGeneration
             && this.sessionListSnapshotGeneration === snapshotGeneration
+            && this.isAppliedTransportTargetCurrent(appliedTransportTarget)
         );
         const initialState = storage.getState();
-        const activeServerSnapshot = getActiveServerSnapshot();
-        const activeServerId = String(activeServerSnapshot.serverId ?? '').trim() || null;
+        const activeServerId = appliedTransportTarget.serverId || null;
         const activeRows = activeServerId ? initialState.sessionListRowsByServerId[activeServerId] ?? {} : {};
         const cachedSessionListEntries = buildSessionListCacheEntriesFromRenderables(activeRows);
         const activeHydrationSessionIds = this.getActiveSessionHydrationIds();
@@ -5733,6 +6006,7 @@ class Sync {
             attentionNextCursor: this.sessionListAttentionNextCursor,
             attentionHasNext: this.sessionListAttentionHasMore,
         };
+        const sessionRequest = this.createAppliedTransportRequest(appliedTransportTarget);
         const continuation = isAppend
             ? resolveOrdinarySessionListContinuation(previousFrontier)
             : null;
@@ -5743,7 +6017,8 @@ class Sync {
             ? fetchAndApplySessionOrganizationSnapshot({
                 credentials: this.credentials,
                 serverId: activeServerId,
-                serverUrl: activeServerSnapshot.serverUrl,
+                serverUrl: appliedTransportTarget.serverUrl,
+                requestAtEndpoint: sessionRequest,
                 request: createSessionListOrganizationSnapshotRequest(),
                 shouldContinue,
             })
@@ -5762,8 +6037,6 @@ class Sync {
             ...(options?.requiredHydrationSessionIds ?? []),
             ...organizationPinnedSessionIds,
         ]));
-        const sessionRequest = (path: string, init: RequestInit) =>
-            apiSocket.request(path, init);
         const result = await fetchAndApplySessions({
             clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
                 syncedSettings: storage.getState().settings,
@@ -5850,7 +6123,7 @@ class Sync {
                     activeEncryption,
                     sessionDataKeys: stagedSessionDataKeys,
                     sessionDataKeyEnvelopes: stagedSessionDataKeyEnvelopes,
-                    activeRequest: (path, init) => apiSocket.request(path, init),
+                    activeRequest: sessionRequest,
                     accountCurrentness: result.accountCurrentness,
                     getExistingSession: (targetSessionId) => storage.getState().sessions[targetSessionId] ?? null,
                     applySessions: (sessions) => {
@@ -5911,26 +6184,29 @@ class Sync {
         serverIdRaw: string,
         page: SessionListQueryPageRequest,
     ) => {
-        const activeServer = getActiveServerSnapshot();
+        const appliedServer = this.appliedServerTarget;
         const serverId = String(serverIdRaw ?? '').trim();
         const credentials = this.credentials;
         if (
             !serverId
             || !credentials
-            || !areServerProfileIdentifiersEquivalent(serverId, activeServer.serverId)
+            || !appliedServer
+            || !areServerProfileIdentifiersEquivalent(serverId, appliedServer.serverId)
         ) {
             throw new HappyError('Selected Home query runtime is unavailable', true, {
                 kind: 'network',
                 code: 'home_unavailable',
             });
         }
-        const capturedGeneration = activeServer.generation;
+        const capturedAppliedServer = appliedServer;
         const capturedToken = credentials.token;
+        const sessionRequest = this.createAppliedTransportRequest(capturedAppliedServer);
         const shouldContinue = () => (
             !page.signal.aborted
             && this.credentials?.token === capturedToken
-            && getActiveServerSnapshot().generation === capturedGeneration
-            && areServerProfileIdentifiersEquivalent(serverId, getActiveServerSnapshot().serverId)
+            && this.appliedServerTarget?.serverId === capturedAppliedServer.serverId
+            && this.appliedServerTarget.serverUrl === capturedAppliedServer.serverUrl
+            && this.appliedServerTarget.generation === capturedAppliedServer.generation
         );
         return fetchAndApplySessions({
             clientEncryptionRequirement: resolveUiClientEncryptionRequirement({
@@ -5948,7 +6224,7 @@ class Sync {
             encryption: this.encryption,
             sessionDataKeys: this.sessionDataKeys,
             sessionDataKeyEnvelopes: this.sessionDataKeyEnvelopes,
-            request: (path, init) => apiSocket.request(path, { ...init, signal: page.signal }),
+            request: (path, init) => sessionRequest(path, { ...init, signal: page.signal }),
             getExistingSession: () => null,
             getCurrentSessionListRenderable: (sessionId) => (
                 storage.getState().sessionListRowsByServerId?.[serverId]?.[sessionId]
@@ -5995,7 +6271,7 @@ class Sync {
         serverId: string | null;
         coverage: 'complete' | 'incomplete';
     }> => {
-        const serverId = String(getActiveServerSnapshot().serverId ?? '').trim() || null;
+        const serverId = this.getAppliedTransportTarget()?.serverId ?? null;
         const observation = serverId
             ? storage.getState().concurrentSessionListCacheByServerId[serverId]?.listObservation
             : null;
@@ -6041,7 +6317,7 @@ class Sync {
 
     private isHydrationSourceActiveServer = (sourceServerId?: string | null): boolean => {
         const normalizedSourceServerId = String(sourceServerId ?? '').trim();
-        const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const activeServerId = this.getAppliedTransportTarget()?.serverId ?? '';
         if (!normalizedSourceServerId) return true;
         return areServerProfileIdentifiersEquivalent(normalizedSourceServerId, activeServerId);
     }
@@ -6063,7 +6339,7 @@ class Sync {
         if (!normalized) return;
 
         const state = storage.getState();
-        const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const activeServerId = this.getAppliedTransportTarget()?.serverId ?? '';
         if (!activeServerId) return;
         const currentIndex = state.sessionListIndexByServerId?.[activeServerId];
         if (currentIndex?.some((item) => item.type === 'session' && item.sessionId === normalized)) {
@@ -6118,7 +6394,7 @@ class Sync {
     private createSessionRequest = (sessionId: string): ((path: string, init?: RequestInit) => Promise<Response>) => {
         return createServerRequestWithServerScope({
             serverId: resolvePreferredServerIdForSessionId(sessionId),
-            activeRequest: (path, init) => apiSocket.request(path, init),
+            activeRequest: this.requestViaConfiguredSocket,
         });
     }
 
@@ -6419,7 +6695,7 @@ class Sync {
           }
           this.pluginAvailabilityProjectionHydrator.reset();
           clearPluginAccountAvailabilityProjection();
-          const refreshedServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+          const refreshedServerId = this.getAppliedTransportTarget()?.serverId ?? '';
           if (refreshedServerId) publishHomeAccountChange(refreshedServerId);
 
           const invalidateBounded = async (syncUnit: InvalidateSync, timeoutMs: number): Promise<void> => {
@@ -6483,7 +6759,7 @@ class Sync {
           }
           this.pluginAvailabilityProjectionHydrator.reset();
           clearPluginAccountAvailabilityProjection();
-          const refreshedServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+          const refreshedServerId = this.getAppliedTransportTarget()?.serverId ?? '';
           if (refreshedServerId) publishHomeAccountChange(refreshedServerId);
 
           const invalidateBounded = async (syncUnit: InvalidateSync, timeoutMs: number): Promise<void> => {
@@ -6647,12 +6923,13 @@ class Sync {
      * was in flight.
      */
     public loadMoreAutomations = async (expectedCursor: string): Promise<{ nextCursor: string | null }> => {
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         const expectedTraversalToken = this.automationDefinitionTraversalToken;
         const result = await fetchAndApplyAutomations({
             credentials: this.credentials,
             cursor: expectedCursor,
             traversalToken: expectedTraversalToken ?? undefined,
+            requestContext,
             shouldContinue,
             applyAutomations: (automations, nextCursor) =>
                 storage.getState().applyAutomations(automations, nextCursor),
@@ -6671,8 +6948,8 @@ class Sync {
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const settings = await getAutomationSettings(credentials);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const settings = await getAutomationSettings(credentials, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6685,8 +6962,8 @@ class Sync {
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const settings = await updateAutomationSettings(credentials, input);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const settings = await updateAutomationSettings(credentials, input, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6702,8 +6979,8 @@ class Sync {
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const result = await clearAutomationRunHistory(credentials, automationId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const result = await clearAutomationRunHistory(credentials, automationId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6722,7 +6999,7 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         const expectedTraversalToken = cursor
             ? this.automationRunTraversalTokensByAutomationId.get(automationId) ?? null
             : null;
@@ -6732,6 +7009,7 @@ class Sync {
             limit,
             cursor,
             traversalToken: expectedTraversalToken ?? undefined,
+            requestContext,
             shouldContinue,
             setAutomationRuns: (id, runs, nextCursor) => storage.getState().setAutomationRuns(id, runs, nextCursor),
             appendAutomationRuns: (id, expectedCursor, traversalToken, runs, nextCursor) =>
@@ -6759,10 +7037,11 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         const updated = await saveAutomationEditorDraftOwner({
             credentials: this.credentials,
             draft,
+            requestContext,
             isCurrent: () => shouldContinue() && (options.isCurrent?.() ?? true),
             ...(this.encryption ? {
                 sealAutomationTriggerDefinition: (params) => (
@@ -6780,8 +7059,8 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const updated = await replaceAutomationDefinitionAssignments(this.credentials, automationId, assignments);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const updated = await replaceAutomationDefinitionAssignments(this.credentials, automationId, assignments, requestContext);
         return this.projectAndUpsertAutomationDefinition(updated, shouldContinue, { replaceEqualRevision: true });
     }
 
@@ -6789,9 +7068,9 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         const currentBeforeRequest = storage.getState().automations[automationId] ?? null;
-        const updated = await pauseAutomationDefinition(this.credentials, automationId);
+        const updated = await pauseAutomationDefinition(this.credentials, automationId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6806,9 +7085,9 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         const currentBeforeRequest = storage.getState().automations[automationId] ?? null;
-        const updated = await resumeAutomationDefinition(this.credentials, automationId);
+        const updated = await resumeAutomationDefinition(this.credentials, automationId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6824,9 +7103,9 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
         try {
-            return await this.readAndUpsertAutomationDefinition(automationId, shouldContinue);
+            return await this.readAndUpsertAutomationDefinition(automationId, requestContext, shouldContinue);
         } catch (error) {
             if (!isAutomationApiErrorCode(error, 'automation_stored_content_unavailable') || !shouldContinue()) {
                 throw error;
@@ -6843,13 +7122,14 @@ class Sync {
 
     private async readAndUpsertAutomationDefinition(
         automationId: string,
+        requestContext: AutomationRequestContext,
         shouldContinue: () => boolean,
     ): Promise<AutomationDefinition> {
         const credentials = this.credentials;
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const detail = await getAutomationDefinition(credentials, automationId);
+        const detail = await getAutomationDefinition(credentials, automationId, requestContext);
         return this.projectAndUpsertAutomationDefinition(detail, shouldContinue);
     }
 
@@ -6898,8 +7178,8 @@ class Sync {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        await deleteAutomationDefinition(this.credentials, automationId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        await deleteAutomationDefinition(this.credentials, automationId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6913,12 +7193,15 @@ class Sync {
      * the declared workflow correspondence travels back to the caller so it can
      * open that exact managed Run. Nothing here infers the correspondence.
      */
-    public async runAutomationNow(automationId: string): Promise<AutomationRunNowAdmission> {
+    public async runAutomationNow(
+        automationId: string,
+        targetType: AutomationDefinition['targetType'],
+    ): Promise<AutomationRunNowAdmission> {
         if (!this.credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const admitted = await runAutomationDefinitionNow(this.credentials, automationId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const admitted = await runAutomationDefinitionNow(this.credentials, automationId, targetType, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6939,15 +7222,17 @@ class Sync {
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const detail = await getAutomationRunDetail(credentials, automationId, runId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const detail = await getAutomationRunDetail(credentials, automationId, runId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
 
         let accountCurrentness: Awaited<ReturnType<typeof fetchAccountEncryptionCurrentness>>;
         try {
-            accountCurrentness = await fetchAccountEncryptionCurrentness(credentials);
+            accountCurrentness = await fetchAccountEncryptionCurrentness(credentials, {
+                request: (path, init) => requestContext.request(path, init, { includeAuth: false }),
+            });
         } catch {
             if (!shouldContinue()) {
                 throw new Error('Automation server-account scope changed');
@@ -6984,8 +7269,8 @@ class Sync {
         if (!credentials) {
             throw new Error('Not authenticated');
         }
-        const shouldContinue = this.createServerScopeGuard();
-        const run = await cancelAutomationRun(credentials, runId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const run = await cancelAutomationRun(credentials, runId, requestContext);
         if (!shouldContinue()) {
             throw new Error('Automation server-account scope changed');
         }
@@ -6997,8 +7282,8 @@ class Sync {
     public async retryAutomationReplyHandoff(runId: string): Promise<AutomationDefinitionRun> {
         const credentials = this.credentials;
         if (!credentials) throw new Error('Not authenticated');
-        const shouldContinue = this.createServerScopeGuard();
-        const run = await retryAutomationReplyHandoff(credentials, runId);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const run = await retryAutomationReplyHandoff(credentials, runId, requestContext);
         if (!shouldContinue()) throw new Error('Automation server-account scope changed');
         storage.getState().upsertAutomationRun(run);
         return run;
@@ -7015,8 +7300,8 @@ class Sync {
     }>): Promise<AutomationDefinitionRun> {
         const credentials = this.credentials;
         if (!credentials) throw new Error('Not authenticated');
-        const shouldContinue = this.createServerScopeGuard();
-        const run = await deliverAutomationResultAgain(credentials, input);
+        const { requestContext, shouldContinue } = this.prepareAppliedAutomationExecution();
+        const run = await deliverAutomationResultAgain(credentials, input, requestContext);
         if (!shouldContinue()) throw new Error('Automation server-account scope changed');
         storage.getState().upsertAutomationRun(run);
         return run;
@@ -7130,13 +7415,19 @@ class Sync {
 
     private fetchMachines = async () => {
         if (!this.credentials) return;
+        const appliedTransportTarget = this.getAppliedTransportTarget();
+        if (!appliedTransportTarget) return;
         const generation = this.serverScopeGeneration;
-        const shouldContinue = () => this.serverScopeGeneration === generation;
-        const sourceServerId = String(getActiveServerSnapshot().serverId ?? '').trim() || null;
+        const shouldContinue = () => (
+            this.serverScopeGeneration === generation
+            && this.isAppliedTransportTargetCurrent(appliedTransportTarget)
+        );
+        const sourceServerId = appliedTransportTarget.serverId;
         const cachedMachineDisplayEntries = buildMachineDisplayCacheEntriesFromRenderables(storage.getState().machineDisplayById);
 
         await fetchAndApplyMachines({
             credentials: this.credentials,
+            request: this.createAppliedTransportRequest(appliedTransportTarget),
             encryption: this.encryption,
             machineDataKeys: this.machineDataKeys,
             throwOnError: false,
@@ -7159,9 +7450,13 @@ class Sync {
 
     private fetchFriends = async () => {
         if (!this.credentials) return;
-        const shouldContinue = this.createServerScopeGuard();
+        const target = this.getAppliedTransportTarget();
+        if (!target) return;
+        const shouldContinue = this.createAppliedTransportScopeGuard(target);
         await fetchAndApplyFriends({
             credentials: this.credentials,
+            request: this.createAppliedTransportRequest(target),
+            serverId: target.serverId,
             shouldContinue,
             applyFriends: (friends) => storage.getState().applyFriends(friends),
         });
@@ -7174,15 +7469,24 @@ class Sync {
     }
 
     private fetchTodos = async () => {
-        if (!this.credentials) return;
-        const shouldContinue = this.createServerScopeGuard();
-        await fetchTodosEngine({ credentials: this.credentials, shouldContinue });
+        const credentials = this.credentials;
+        const target = this.getAppliedTransportTarget();
+        if (!credentials || !target) return;
+        await fetchTodosEngine({
+            credentials,
+            request: this.createAppliedTransportRequest(target),
+            shouldContinue: this.createAppliedTransportScopeGuard(target),
+        });
     }
 
     private fetchAutomations = async () => {
-        const shouldContinue = this.createServerScopeGuard();
+        const credentials = this.credentials;
+        const target = this.getAppliedTransportTarget();
+        if (!credentials || !target) return;
+        const shouldContinue = this.createAppliedTransportScopeGuard(target);
         const result = await fetchAndApplyAutomations({
-            credentials: this.credentials,
+            credentials,
+            requestContext: this.createAppliedAutomationRequestContext(target),
             shouldContinue,
             applyAutomations: (automations, nextCursor) =>
                 storage.getState().applyAutomations(automations, nextCursor),
@@ -7198,11 +7502,17 @@ class Sync {
     private fetchAccountPets = async () => {
         const credentials = this.credentials;
         if (!credentials) return;
-        const activeServer = getActiveServerSnapshot();
-        const serverId = String(activeServer.serverId ?? '').trim() || undefined;
-        const shouldContinue = this.createServerScopeGuard();
+        const appliedTransportTarget = this.getAppliedTransportTarget();
+        if (!appliedTransportTarget) return;
+        const serverId = appliedTransportTarget.serverId;
+        const serverScopeGuard = this.createServerScopeGuard();
+        const shouldContinue = () => (
+            serverScopeGuard()
+            && this.isAppliedTransportTargetCurrent(appliedTransportTarget)
+        );
         const params = {
             credentials,
+            request: this.createAppliedTransportRequest(appliedTransportTarget),
             shouldContinue,
             applyAccountPets: (pets: AccountPetMetadata[]) => storage.getState().applyAccountPets(pets),
         };
@@ -7220,13 +7530,17 @@ class Sync {
     }
 
     private fetchFeed = async () => {
-        if (!this.credentials) return;
-        const shouldContinue = this.createServerScopeGuard();
+        const credentials = this.credentials;
+        const target = this.getAppliedTransportTarget();
+        if (!credentials || !target) return;
+        const request = this.createAppliedTransportRequest(target);
+        const shouldContinue = this.createAppliedTransportScopeGuard(target);
         await fetchAndApplyFeed({
-            credentials: this.credentials,
+            credentials,
+            request,
             getFeedItems: () => storage.getState().feedItems,
             getFeedHead: () => storage.getState().feedHead,
-            assumeUsers: (userIds) => this.assumeUsers(userIds),
+            assumeUsers: (userIds) => this.assumeUsers(userIds, { credentials, request, shouldContinue }),
             getUsers: () => storage.getState().users,
             shouldContinue,
             applyFeedItems: (items) => storage.getState().applyFeedItems(items),
@@ -7237,10 +7551,13 @@ class Sync {
     private syncSettings = async () => {
         if (!this.credentials) return;
         const settingsScope = this.pendingSettingsScope;
+        const requestContext = this.createAppliedSettingsRequestContext(settingsScope);
+        if (!requestContext) return;
         const settingsSyncParams: SyncSettingsParams = {
             credentials: this.credentials,
             encryption: this.encryption,
             settingsScope,
+            requestContext,
             pendingSettings: this.pendingSettings,
             // A capable client repairs an absent/stale derived policy through the
             // same exact-Home CAS owner that fetched the encrypted settings winner.
@@ -7327,10 +7644,13 @@ class Sync {
             || !areAccountSettingsScopesEqual(this.pendingSettingsScope, settingsScope)) {
             throw new Error('Account settings scope changed while mutating settings');
         }
+        const requestContext = this.createAppliedSettingsRequestContext(settingsScope);
+        if (!requestContext) throw new Error('Account settings transport changed before mutation');
         await syncSettingsEngine({
             credentials,
             encryption,
             settingsScope,
+            requestContext,
             pendingSettings: {},
             settingsSecretsKey,
             settingsSecretsReadKeys,
@@ -7380,11 +7700,14 @@ class Sync {
             || !areAccountSettingsScopesEqual(this.pendingSettingsScope, settingsScope)) {
             throw new Error('Account settings scope changed while mutating settings');
         }
+        const requestContext = this.createAppliedSettingsRequestContext(settingsScope);
+        if (!requestContext) throw new Error('Account settings transport changed before mutation');
         const result = await syncSettingsEngine({
             signal: input.signal,
             credentials,
             encryption,
             settingsScope,
+            requestContext,
             pendingSettings: {},
             settingsSecretsKey,
             settingsSecretsReadKeys,
@@ -7400,12 +7723,16 @@ class Sync {
     }
 
     private fetchProfile = async () => {
-        if (!this.credentials) return;
+        const credentials = this.credentials;
+        const target = this.getAppliedTransportTarget();
+        if (!credentials || !target) return;
         const generation = this.serverScopeGeneration;
-        const shouldContinue = () => this.serverScopeGeneration === generation;
+        const targetCurrent = this.createAppliedTransportScopeGuard(target);
+        const shouldContinue = () => this.serverScopeGeneration === generation && targetCurrent();
         const profileScope = this.pendingSettingsScope;
         await fetchAndApplyProfile({
-            credentials: this.credentials,
+            credentials,
+            request: this.createAppliedTransportRequest(target),
             shouldContinue,
             applyProfile: (profile) => {
                 if (!shouldContinue()) return;
@@ -7436,7 +7763,7 @@ class Sync {
             const version = Constants.expoConfig?.version!;
             const appId = (Platform.OS === 'ios' ? Constants.expoConfig?.ios?.bundleIdentifier! : Constants.expoConfig?.android?.package!);
 
-            const response = await serverFetch('/v1/version', {
+            const response = await this.requestViaConfiguredSocket('/v1/version', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -9747,8 +10074,22 @@ class Sync {
           const CHANGES_PAGE_LIMIT = this.syncTuning.changesPageLimit;
           const afterCursor = this.changesCursor ?? '0';
           const shouldContinue = opts.shouldContinue ?? (() => true);
-          const cursorScope = this.getChangesCursorScope();
-          const sessionRecordChangeScope = getActiveServerAccountScope();
+          const appliedTransportTarget = this.getAppliedTransportTarget();
+          // Before the first successful connection there is no applied target
+          // yet; that bootstrap has no older socket to distinguish from its
+          // selected target. Once one exists, every direct-socket decision
+          // below stays on it until the next successful apply.
+          const transportTarget = appliedTransportTarget ?? this.captureAppliedServerTarget();
+          // A changes page arrives through Sync's direct socket. Its cursor and
+          // Account projections therefore belong to that applied transport,
+          // never to a Home merely staged in profile selection.
+          const cursorScope = this.buildCursorScopeForServer(transportTarget.serverId);
+          const sessionRecordChangeScope = appliedTransportTarget
+              ? createServerAccountScope(appliedTransportTarget.serverId, this.serverID)
+              : createServerAccountScope(transportTarget.serverId, this.serverID) ?? getActiveServerAccountScope();
+          const isAppliedTransportCurrent = (): boolean => (
+              !appliedTransportTarget || this.isAppliedTransportTargetCurrent(appliedTransportTarget)
+          );
           let aborted = false;
           // Only a *completed* refresh counts: a failed one must still be retried by the resume tail.
           const refreshedByCatchUp = { sessions: false, machines: false };
@@ -9855,9 +10196,9 @@ class Sync {
 	                    await this.snapshotRefreshOnResume({ mode: 'long-offline', reason: 'snapshot-refresh' });
 	                    resetActivePluginCollectionUiQueryWatches();
 	                    resetActiveScopedPluginSettingsChangeWatches();
-	                },
+                },
                 applyPlanned: async (planned) => {
-                    const plannedServerId = sessionRecordChangeScope?.serverId ?? '';
+                    const plannedServerId = transportTarget.serverId || sessionRecordChangeScope?.serverId || '';
                     return await applyPlannedChangeActions({
                         planned,
                         credentials: this.credentials,
@@ -9918,9 +10259,10 @@ class Sync {
                             machinePools: async () => {
                                 if (
                                     !plannedServerId
+                                    || !isAppliedTransportCurrent()
                                     || !areServerProfileIdentifiersEquivalent(
                                         plannedServerId,
-                                        getActiveServerSnapshot().serverId,
+                                        transportTarget.serverId,
                                     )
                                 ) {
                                     throw new Error('Machine Pool AccountChange scope changed before refresh');
@@ -9949,8 +10291,14 @@ class Sync {
                                 refreshedByCatchUp.sessions = true;
                             },
                             sessionFolderAssignments: async (sessionIds) => {
-                                const serverId = String(getActiveServerSnapshot().serverId ?? '').trim();
-                                if (!serverId) {
+                                if (
+                                    !plannedServerId
+                                    || !isAppliedTransportCurrent()
+                                    || !areServerProfileIdentifiersEquivalent(
+                                        plannedServerId,
+                                        transportTarget.serverId,
+                                    )
+                                ) {
                                     throw new Error('Cannot refresh session folder assignments without an active server');
                                 }
                                 await fetchAndApplySessionFolderAssignments({
@@ -9962,10 +10310,11 @@ class Sync {
                             todos: () => this.todosSync.invalidateAndAwait(),
                         },
                         refreshSessionOrganization: async (plan) => {
-                            const serverSnapshot = getActiveServerSnapshot();
+                            const serverSnapshot = transportTarget;
                             if (
                                 !plannedServerId
                                 || !shouldContinue()
+                                || !isAppliedTransportCurrent()
                                 || !areServerProfileIdentifiersEquivalent(plannedServerId, serverSnapshot.serverId)
                             ) {
                                 throw new Error('Session organization AccountChange scope changed before refresh');
@@ -10018,14 +10367,17 @@ class Sync {
                         kvBulkGet,
                         convergePendingForSession: (sessionId) => this.fetchPendingMessages(sessionId),
                         materializeSessionDraft: async (address) => {
-                            const scope = getActiveServerAccountScope();
-                            if (!scope || !shouldContinue()) {
+                            if (
+                                !sessionRecordChangeScope
+                                || !shouldContinue()
+                                || !isAppliedTransportCurrent()
+                            ) {
                                 throw new Error('Session draft scope changed before materialization');
                             }
-                            await materializeExactSessionDraft(scope, address);
+                            await materializeExactSessionDraft(sessionRecordChangeScope, address);
                             if (
                                 !shouldContinue()
-                                || !areServerAccountScopesEqual(getActiveServerAccountScope(), scope)
+                                || !isAppliedTransportCurrent()
                             ) {
                                 throw new Error('Session draft scope changed during materialization');
                             }
@@ -10067,8 +10419,14 @@ class Sync {
       }
 
     private handleUpdate = async (update: unknown) => {
-          const sourceServerId = String(getActiveServerSnapshot().serverId ?? '').trim() || null;
-          const shouldContinue = this.createServerScopeGuard();
+          const appliedTransportTarget = this.getAppliedTransportTarget();
+          if (!appliedTransportTarget) return;
+          const sourceServerId = appliedTransportTarget.serverId;
+          const serverScopeGuard = this.createServerScopeGuard();
+          const shouldContinue = () => (
+              serverScopeGuard()
+              && this.isAppliedTransportTargetCurrent(appliedTransportTarget)
+          );
           await handleSocketUpdate({
               update,
               encryption: this.encryption,
@@ -10603,7 +10961,7 @@ class Sync {
         presence?: "online" | number;
     })[]) => {
         const active = storage.getState().getActiveSessions();
-        const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
+        const activeServerId = this.getAppliedTransportTarget()?.serverId ?? '';
         const authorityBeforeBySessionId = new Map<string, string>();
         for (const incoming of sessions) {
             const current = storage.getState().sessions[incoming.id] ?? null;
@@ -10701,7 +11059,7 @@ class Sync {
         }
         const resolvedAuthority = await captureServerRequestAuthorityForServerAccountScope({
             scope,
-            activeRequest: (path, init) => apiSocket.request(path, init),
+            activeRequest: this.requestViaConfiguredSocket,
         });
         try {
         if (resolvedAuthority.context.token !== activeCredentials.token) {
@@ -10971,16 +11329,15 @@ function assertSyncServerTargetCurrent(target: SyncServerTarget | undefined): vo
 
 function buildSyncSocketConfig(credentials: AuthCredentials, target?: SyncServerTarget) {
     const snapshot = target ?? getActiveServerSnapshot();
+    const homeCarrier = target?.homeCarrier ?? getActiveServerHomeCarrier();
     return {
         endpoint: snapshot.serverUrl,
         token: credentials.token,
-        ...(target ? {
-            serverId: target.serverId,
-            generation: target.generation,
-            ...(target.runtimeOrigin ? { runtimeOrigin: target.runtimeOrigin } : {}),
-            ...(target.carrier ? { carrier: target.carrier } : {}),
-            ...(target.homeCarrier !== undefined ? { homeCarrier: target.homeCarrier } : {}),
-        } : {}),
+        serverId: snapshot.serverId,
+        generation: snapshot.generation,
+        ...(snapshot.runtimeOrigin ? { runtimeOrigin: snapshot.runtimeOrigin } : {}),
+        ...(snapshot.carrier ? { carrier: snapshot.carrier } : {}),
+        ...(homeCarrier !== undefined ? { homeCarrier } : {}),
     };
 }
 
@@ -11066,8 +11423,8 @@ async function syncInit(credentials: AuthCredentials, restore: boolean, target?:
 
     // Initialize sessions engine
     if (restore) {
-        await sync.restore(credentials, encryption);
+        await sync.restore(credentials, encryption, target);
     } else {
-        await sync.create(credentials, encryption);
+        await sync.create(credentials, encryption, target);
     }
 }

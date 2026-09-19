@@ -1,7 +1,7 @@
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { renderHook } from '@/dev/testkit';
+import { renderHook, type RenderHookResult } from '@/dev/testkit';
 import { flushHookEffects } from '@/dev/testkit/hooks/flushHookEffects';
 import { syncPerformanceTelemetry } from '@/sync/runtime/syncPerformanceTelemetry';
 import { storage } from '@/sync/domains/state/storageStore';
@@ -13,6 +13,9 @@ import type { SessionListIndexItem } from '@/sync/domains/sessionList/sessionLis
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
 
 import { useSessionListRenderModels } from './useSessionListRenderModels';
+
+type SessionListRenderModels = ReturnType<typeof useSessionListRenderModels>;
+type RowSubscriptionProps = Readonly<{ rowSubscriptionKeys: ReadonlySet<string> | null }>;
 import { computeVisibleSessionListIndex } from '@/sync/domains/session/listing/computeVisibleSessionListIndex';
 import { TokenStorage } from '@/auth/storage/tokenStorage';
 import { removeServerProfile, upsertServerProfile } from '@/sync/domains/server/serverProfiles';
@@ -75,11 +78,12 @@ describe('useSessionListRenderModels', () => {
             }),
             responsibleAccountId: 'account-a',
             responsibleAccount: {
-                kind: 'human' as const,
+                kind: 'account' as const,
                 accountId: 'account-a',
                 firstName: 'Alice',
                 lastName: 'Private',
                 username: 'alice-private',
+                avatarUrl: null,
             },
         } satisfies SessionListRenderableSession;
         const bRow = {
@@ -92,11 +96,12 @@ describe('useSessionListRenderModels', () => {
             }),
             responsibleAccountId: 'account-b',
             responsibleAccount: {
-                kind: 'human' as const,
+                kind: 'account' as const,
                 accountId: 'account-b',
                 firstName: 'Bob',
                 lastName: 'Current',
                 username: 'bob-current',
+                avatarUrl: null,
             },
         } satisfies SessionListRenderableSession;
         const unrelatedRow = makeRenderable('unrelated-session', {
@@ -141,7 +146,7 @@ describe('useSessionListRenderModels', () => {
             showPinnedServerBadge: false,
             clocksActive: false,
         };
-        let hook: Awaited<ReturnType<typeof renderHook>> | null = null;
+        let hook: RenderHookResult<SessionListRenderModels, RowSubscriptionProps> | null = null;
 
         try {
             await TokenStorage.setCredentialsForServerUrl(profile.serverUrl, { serverId }, {
@@ -158,8 +163,8 @@ describe('useSessionListRenderModels', () => {
                     [otherServerId]: { [unrelatedRow.id]: unrelatedRow },
                 },
             }));
-            hook = await renderHook(
-                (props: { rowSubscriptionKeys: ReadonlySet<string> | null }) => useSessionListRenderModels({
+            hook = await renderHook<SessionListRenderModels, RowSubscriptionProps>(
+                (props) => useSessionListRenderModels({
                     ...common,
                     rowSubscriptionKeys: props.rowSubscriptionKeys,
                 }),
@@ -305,7 +310,7 @@ describe('useSessionListRenderModels', () => {
                 resolveSessionRow: (serverId, id) => rowsByServer[serverId ?? '']?.[id] ?? null,
                 hideInactiveSessions: false, pinnedSessionKeysV1: [], sessionListGroupOrderV1: {},
                 sessionListSectionModeV1: 'single', sessionListLayoutChoice: layout,
-                presentation: { enabled: false, presentation: 'flat' }, nowMs: 1_700_000_000_000,
+                presentation: { enabled: false, presentation: 'grouped' }, nowMs: 1_700_000_000_000,
             });
             indexTimes.push({ layout, durationMs: performance.now() - start });
             return result;
@@ -314,7 +319,7 @@ describe('useSessionListRenderModels', () => {
         const pane = (index: ReadonlyArray<SessionListIndexItem> | null) => ({
             summary: { sessionsReady: true, sessionCount: count },
             visibleSessionListIndex: index, hasHiddenInactiveSessions: false,
-            folderFocus: null, showLoading: false, showEmptyState: false,
+            folderFocus: null, folderFeatureEnabledServerIds: [], showLoading: false, showEmptyState: false,
         } as VisibleSessionListPaneState);
         const common = {
             collapsedGroupKeys: {}, machineDisplayById: {}, workspaceLabels: {}, workspaceRefs: [],
@@ -324,7 +329,10 @@ describe('useSessionListRenderModels', () => {
         };
         storage.setState({ sessionListRowsByServerId: rowsByServer });
         const started = performance.now();
-        const hook = await renderHook((props: { paneState: VisibleSessionListPaneState; rowSubscriptionKeys: ReadonlySet<string> | null }) => {
+        const hook = await renderHook<
+            SessionListRenderModels,
+            Readonly<{ paneState: VisibleSessionListPaneState } & RowSubscriptionProps>
+        >((props) => {
             renderCount += 1;
             return useSessionListRenderModels({ ...common, ...props });
         }, { initialProps: { paneState: pane(buildIndex('projects')), rowSubscriptionKeys: null } });
@@ -416,6 +424,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -454,7 +463,7 @@ describe('useSessionListRenderModels', () => {
 
     it('does not rerender parent render models when a subscribed row renderable changes without reachability changes', async () => {
         const previousState = storage.getState();
-        let hook: Awaited<ReturnType<typeof renderHook>> | null = null;
+        let hook: RenderHookResult<SessionListRenderModels, void> | null = null;
         try {
             const row = makeRenderable('session-1', {
                 machineId: 'machine-1',
@@ -484,6 +493,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -547,6 +557,7 @@ describe('useSessionListRenderModels', () => {
             visibleSessionListIndex: [],
             hasHiddenInactiveSessions: false,
             folderFocus: null,
+            folderFeatureEnabledServerIds: [],
             showLoading: false,
             showEmptyState: true,
         };
@@ -600,6 +611,7 @@ describe('useSessionListRenderModels', () => {
             ] satisfies ReadonlyArray<SessionListIndexItem>,
             hasHiddenInactiveSessions: false,
             folderFocus: null,
+            folderFeatureEnabledServerIds: [],
             showLoading: false,
             showEmptyState: false,
         } as VisibleSessionListPaneState;
@@ -679,6 +691,7 @@ describe('useSessionListRenderModels', () => {
             ] satisfies ReadonlyArray<SessionListIndexItem>,
             hasHiddenInactiveSessions: false,
             folderFocus: null,
+            folderFeatureEnabledServerIds: [],
             showLoading: false,
             showEmptyState: false,
         } as VisibleSessionListPaneState;
@@ -750,6 +763,7 @@ describe('useSessionListRenderModels', () => {
             ] satisfies ReadonlyArray<SessionListIndexItem>,
             hasHiddenInactiveSessions: false,
             folderFocus: null,
+            folderFeatureEnabledServerIds: [],
             showLoading: false,
             showEmptyState: false,
         } as VisibleSessionListPaneState;
@@ -832,6 +846,7 @@ describe('useSessionListRenderModels', () => {
             ] satisfies ReadonlyArray<SessionListIndexItem>,
             hasHiddenInactiveSessions: false,
             folderFocus: null,
+            folderFeatureEnabledServerIds: [],
             showLoading: false,
             showEmptyState: false,
         } as VisibleSessionListPaneState;
@@ -900,6 +915,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -1005,6 +1021,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -1128,6 +1145,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -1229,6 +1247,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;
@@ -1360,6 +1379,7 @@ describe('useSessionListRenderModels', () => {
                 ] satisfies ReadonlyArray<SessionListIndexItem>,
                 hasHiddenInactiveSessions: false,
                 folderFocus: null,
+                folderFeatureEnabledServerIds: [],
                 showLoading: false,
                 showEmptyState: false,
             } as VisibleSessionListPaneState;

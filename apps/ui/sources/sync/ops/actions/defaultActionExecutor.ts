@@ -133,7 +133,6 @@ import { sessionReadStateAction } from '@/sync/api/session/sessionReadStateActio
 import { createSessionBoardActionAdapter } from '@/sync/api/session/sessionBoardActions';
 import { machineContributionRegistryProjectionDescribe } from '@/sync/ops/machineContributionRegistryProjection';
 import { EMPTY_PLUGIN_UI_PROJECTION, resolvePluginUiProjectionState } from '@/sync/domains/plugins/ui/projection';
-import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { getServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { resolveRuntimeFeatureDecisionFromSnapshot } from '@/sync/domains/features/featureDecisionRuntime';
 import { sync } from '@/sync/sync';
@@ -331,7 +330,15 @@ export async function replayApprovalRequestAtExactDaemon(input: Readonly<{
  */
 export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly<{
   artifactId: string;
-  executionTarget: Readonly<{ serverId: string; machineId: string }>;
+  executionTarget: Readonly<{
+    /** Current-device profile id used only to route the RPC transport. */
+    serverId: string;
+    machineId: string;
+    /** Stable Home identity retained by the replay route; not part of this payload. */
+    serverIdentityId?: string;
+    /** Immutable creator-local profile id retained by the replay route; not part of this payload. */
+    originServerId?: string;
+  }>;
   signal?: AbortSignal;
 }>): Promise<ActionExecuteResult> {
   return await machineRpcWithServerScope<ActionExecuteResult, Readonly<{ artifactId: string }>>({
@@ -472,7 +479,9 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       let mutationDispatched = false;
       let recoveryDetails: unknown = null;
       const executed = await sync.withSessionSystemRecordRuntime(address, async (runtime) => {
-        const access = normalizeSessionAccessProjection({ effectiveAccess: runtime.session.effectiveAccess });
+        // The store row publishes the already-normalized projection; re-normalizing a raw
+        // `effectiveAccess` field the row never carries refused every Board mutation.
+        const access = runtime.session.access ?? null;
         if (!access) return { ok: false, errorCode: 'session_board_forbidden', error: 'session_board_forbidden' };
         const snapshot = await getServerFeaturesSnapshot({ serverId });
         const decision = resolveRuntimeFeatureDecisionFromSnapshot({ featureId: 'sessions.board', settings: storage.getState().settings, snapshot });
@@ -838,7 +847,6 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       legacyMetadataLabel: _legacyMetadataLabel,
       actionCaller: _actionCaller,
       callerSurface: _callerSurface,
-      callerPermissionMode: _callerPermissionMode,
       sessionAgentSpawnPolicyV1: _sessionAgentSpawnPolicyV1,
       actionRequestId: _actionRequestId,
       resumeActionRequest: _resumeActionRequest,
@@ -1596,6 +1604,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
   return {
     prepare: async (actionId, input, context) => await executor.prepare(actionId, input, resolveContext(context)),
     execute: async (actionId, input, context) => await executor.execute(actionId, input, resolveContext(context)),
+    replayApprovedApprovalRequest: async (args) => await executor.replayApprovedApprovalRequest(args),
   };
 }
 
@@ -1658,9 +1667,10 @@ export function createDefaultActionExecutor(opts?: DefaultActionExecutorOptions)
     : null;
   return {
     execute: async (actionId, input, context) => {
-      if (!context?.serverId) return await unscoped.execute(actionId, input, context);
+      const serverId = context?.serverId;
+      if (!serverId) return await unscoped.execute(actionId, input, context);
       try {
-        return await withDefaultActionExecuteContext(opts, context, async (executor, account) => (
+        return await withDefaultActionExecuteContext(opts, { ...context, serverId }, async (executor, account) => (
           await executor.execute(actionId, input, {
             ...context,
             ...(account.serverIdentityId ? { serverIdentityId: account.serverIdentityId } : {}),

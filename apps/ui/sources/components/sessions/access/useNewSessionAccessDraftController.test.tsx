@@ -14,10 +14,12 @@ import type { SessionAccessCandidateRowModel } from './sessionAccessEditorTypes'
 vi.mock('@/text', async () => (await import('@/dev/testkit/mocks/text')).createTextModuleMock());
 
 // Directory sources are the network boundary; the draft owner below stays real.
-const runTeamActionMock = vi.hoisted(() => vi.fn(async () => ({
-    kind: 'failed' as const,
-    failure: { kind: 'unreachable' as const, retryable: true, code: null },
-})));
+const runTeamActionMock = vi.hoisted(() => vi.fn(
+    async (_request: Readonly<{ input: Record<string, unknown> }>) => ({
+        kind: 'failed' as const,
+        failure: { kind: 'unreachable' as const, retryable: true, code: null },
+    }),
+));
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     runTeamAction: runTeamActionMock,
 }));

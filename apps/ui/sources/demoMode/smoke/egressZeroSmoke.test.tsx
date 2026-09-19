@@ -362,6 +362,7 @@ function createJourneyWizardSurfaceProps(): OnboardingWizardSurfaceProps {
         layout: 'landscape',
         isDesktopShell: true,
         authEntryOptions: {
+            authEntryUnavailable: false,
             authenticationCatalog: { provenance: 'legacy', methods: [] },
             authenticationActions: [],
             keyChallengeV2Available: false,
@@ -550,6 +551,7 @@ describe('demo mode egress-zero smoke', () => {
                             visibleSessionListIndex: activeIndex,
                             hasHiddenInactiveSessions: false,
                             folderFocus: null,
+                            folderFeatureEnabledServerIds: [],
                             showLoading: false,
                             showEmptyState: sessionCount === 0,
                         }}

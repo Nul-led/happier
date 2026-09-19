@@ -9,6 +9,7 @@ import {
     encodeMaskedClientFrame,
     secureWebSocketMask,
 } from './webSocketFrames';
+import type { WebSocketFrame } from './webSocketFrames';
 
 /**
  * Builds a server-to-client frame the way a compliant server does: unmasked.
@@ -135,7 +136,7 @@ describe('browserIroh/homeCarrier/webSocketFrames server decoding', () => {
         const decoder = new WebSocketFrameDecoder();
         const payload = new Uint8Array(2 * 1024 * 1024).fill(7);
         const wire = serverFrame(WEB_SOCKET_OPCODE.binary, payload);
-        let frames = [];
+        let frames: WebSocketFrame[] = [];
 
         for (let offset = 0; offset < wire.length; offset += 64 * 1024) {
             frames = decoder.push(wire.subarray(offset, offset + 64 * 1024));

@@ -5,7 +5,11 @@ const mocks = vi.hoisted(() => ({
     deletePushToken: vi.fn(),
     getCredentialsForServerUrl: vi.fn(),
     readPushPermission: vi.fn(),
-    credentialMutationListeners: new Set<() => void>(),
+    credentialMutationListeners: new Set<(event: Readonly<{
+        kind: 'credentials_set' | 'credentials_removed';
+        serverId: string;
+        serverUrl: string;
+    }>) => void>(),
     expoPushTokenListeners: new Set<() => void>(),
 }));
 
@@ -112,15 +116,11 @@ vi.mock('@/sync/runtime/nativeIrohTunnels', () => ({
     acquireIrohHomeRuntimeOrigin: vi.fn(async () => {
         throw new Error('no iroh endpoint in this fixture');
     }),
-    classifyIrohHomeTunnelSwitchFailure: () => ({
-        fallbackAllowed: false,
-        failureClass: 'carrier-unavailable',
-    }),
     subscribeIrohHomeTunnelRecoveryRequired: () => () => {},
 }));
 
-vi.mock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-    startNativeSshTunnelRuntimeAppStateLifecycle: vi.fn(),
+vi.mock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+    startNativeLoopbackTunnelRuntimeAppStateLifecycle: vi.fn(),
 }));
 
 vi.mock('socket.io-client', () => ({ io: vi.fn() }));
@@ -224,7 +224,7 @@ describe('device-level push token reconciliation lifecycle', () => {
 
         expect(mocks.credentialMutationListeners.size).toBeGreaterThan(0);
         for (const listener of mocks.credentialMutationListeners) {
-            listener();
+            listener({ kind: 'credentials_set', serverId: 'server-a', serverUrl: 'https://home-a.example' });
         }
 
         await flushSchedulerTurn();

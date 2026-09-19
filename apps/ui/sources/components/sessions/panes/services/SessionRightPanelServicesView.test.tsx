@@ -382,8 +382,8 @@ describe('SessionRightPanelServicesView', () => {
         const before = storage.getState();
         const ownMachine = createMachineFixture({ id: 'machine-a', active: true });
         const otherMachine = createMachineFixture({ id: 'machine-other', active: true });
-        const ownSession = createSessionFixture({ id: 'session-a', serverId: 'server-a', active: true, metadata: { machineId: 'machine-a', path: '/a' } });
-        const otherSession = createSessionFixture({ id: 'session-a', serverId: 'server-other', active: true, metadata: { machineId: 'machine-other', path: '/other' } });
+        const ownSession = createSessionFixture({ id: 'session-a', serverId: 'server-a', active: true, metadata: { machineId: 'machine-a', path: '/a', host: 'host-a' } });
+        const otherSession = createSessionFixture({ id: 'session-a', serverId: 'server-other', active: true, metadata: { machineId: 'machine-other', path: '/other', host: 'host-other' } });
         storage.setState({
             sessions: { 'session-a': otherSession },
             machines: { 'machine-a': ownMachine, 'machine-other': otherMachine },

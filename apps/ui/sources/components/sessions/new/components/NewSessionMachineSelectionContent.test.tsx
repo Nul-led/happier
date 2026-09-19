@@ -448,14 +448,12 @@ describe('NewSessionMachineSelectionContent', () => {
         const destinations = buildMachineDestinationModel({
             groups: [{
                 serverId: 'server-a',
-                serverName: 'Server A',
                 loading: false,
                 signedOut: false,
                 machines: [scopedMachine],
             }],
             poolGroups: [{
                 serverId: 'server-a',
-                accountId: 'account-a',
                 pools: [],
                 featureStatus: 'loading',
                 status: 'loading',
@@ -513,14 +511,12 @@ describe('NewSessionMachineSelectionContent', () => {
         const destinations = buildMachineDestinationModel({
             groups: [{
                 serverId: 'server-a',
-                serverName: 'Server A',
                 loading: false,
                 signedOut: false,
                 machines: [scopedMachine],
             }],
             poolGroups: [{
                 serverId: 'server-a',
-                accountId: 'account-a',
                 pools: [],
                 featureStatus: 'disabled',
                 status: 'idle',
@@ -579,14 +575,12 @@ describe('NewSessionMachineSelectionContent', () => {
         const destinations = buildMachineDestinationModel({
             groups: [{
                 serverId: 'server-a',
-                serverName: 'Server A',
                 loading: false,
                 signedOut: false,
                 machines: [scopedMachine],
             }],
             poolGroups: [{
                 serverId: 'server-a',
-                accountId: 'account-a',
                 pools: [],
                 featureStatus: 'error',
                 status: 'error',

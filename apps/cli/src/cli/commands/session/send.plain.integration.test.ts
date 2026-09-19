@@ -69,6 +69,12 @@ describe('happier session send plaintext sessions (integration)', () => {
       path: '/tmp',
       tag: 'MyTag',
       host: 'host1',
+      // Every Session the daemon creates records its Agent identity, and the
+      // shared testkit metadata does the same (`testkit/backends/sessionMetadata.ts:11`).
+      // Without it `resolveAgentIdFromSessionMetadata` answers null and the
+      // persisted model intent below correctly fails closed
+      // (`resolveSessionMessageModel.ts:110-113`).
+      flavor: 'claude',
       permissionMode: 'safe-yolo',
       permissionModeUpdatedAt: 10,
       modelOverrideV1: { v: 1, updatedAt: 11, modelId: 'claude-sonnet-4-0' },

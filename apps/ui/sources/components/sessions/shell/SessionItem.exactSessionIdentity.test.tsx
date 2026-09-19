@@ -25,7 +25,9 @@ type ContextMenuTestInstance = Readonly<{
 const DUPLICATE_SESSION_ID = 'sess_shared_id';
 
 const openForkFlowSpy = vi.hoisted(() => vi.fn());
-const copyDebugSpy = vi.hoisted(() => vi.fn(async () => true));
+const copyDebugSpy = vi.hoisted(() => vi.fn(
+    async (_information: Readonly<{ text: string; happierSessionLogPath: string | null }>) => true,
+));
 
 const themeColors = vi.hoisted(() => ({
     surface: '#fff',
@@ -174,7 +176,9 @@ vi.mock('@/components/sessions/fork/openSessionForkStrategyFlow', () => ({
     openSessionForkStrategyFlow: (input: unknown) => openForkFlowSpy(input),
 }));
 vi.mock('@/components/sessions/debug/sessionDebugClipboard', () => ({
-    copySessionDebugInformationToClipboard: (information: unknown) => copyDebugSpy(information),
+    copySessionDebugInformationToClipboard: (
+        information: Readonly<{ text: string; happierSessionLogPath: string | null }>,
+    ) => copyDebugSpy(information),
 }));
 
 function createHomeARow(): SessionListRenderableSession {
@@ -278,12 +282,9 @@ describe('SessionItem exact Home-qualified row actions', () => {
         });
         await vi.waitFor(() => expect(copyDebugSpy).toHaveBeenCalledTimes(1));
 
-        const information = copyDebugSpy.mock.calls[0]?.[0] as Readonly<{
-            text: string;
-            happierSessionLogPath: string | null;
-        }>;
-        expect(information.happierSessionLogPath).toBe('/home-a/session.log');
-        expect(information.text).not.toContain('/home-b/session.log');
+        const information = copyDebugSpy.mock.calls[0]?.[0];
+        expect(information?.happierSessionLogPath).toBe('/home-a/session.log');
+        expect(information?.text).not.toContain('/home-b/session.log');
 
         await screen.unmount();
     });

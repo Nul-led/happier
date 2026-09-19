@@ -334,6 +334,7 @@ describe('global Voice post-End permission custody', () => {
             metadata: {
                 name: 'Secondary Home session',
                 path: '/Users/tester/private-project',
+                host: 'tester.local',
                 homeDir: '/Users/tester',
                 machineId: 'shared-machine',
             },

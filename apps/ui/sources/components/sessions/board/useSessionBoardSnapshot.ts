@@ -3,7 +3,6 @@ import * as React from 'react';
 import { projectSessionBoard } from '@/sync/domains/session/board';
 import { normalizeSessionAddress } from '@/sync/domains/session/sessionAddress';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
-import { normalizeSessionAccessProjection } from '@/sync/engine/sessions/normalizeSessionAccessProjection';
 import { getSyncSingleton } from '@/sync/runtime/getSyncSingleton';
 import { observeSessionBoard, type SessionBoardAuthority, type SessionBoardBinding } from './observeSessionBoard';
 
@@ -50,7 +49,7 @@ export function useSessionBoardSnapshot(input: SessionBoardSnapshotInput): Sessi
             const readCapabilities = (current: typeof runtime): SessionBoardAuthority['capabilities'] => {
                 const session = current.readSession();
                 if (!session) return null;
-                return normalizeSessionAccessProjection({ effectiveAccess: session.effectiveAccess })?.capabilities ?? null;
+                return session.access?.capabilities ?? null;
             };
             const initialCapabilities = readCapabilities(runtime);
             if (!initialCapabilities) {

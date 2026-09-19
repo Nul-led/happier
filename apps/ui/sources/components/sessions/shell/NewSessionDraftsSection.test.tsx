@@ -6,6 +6,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen, standardCleanup } from '@/dev/testkit';
 import { FocusReturnProvider, useFocusReturnFallbackRef } from '@/keyboard/focusReturn';
 import type { NewSessionDraftProjection } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
+
+type CataloguedNewSessionDraftDocument = Extract<
+    NewSessionDraftProjection['document'],
+    { target: { kind: 'newSession' } }
+>;
+
+function assertCataloguedNewSessionDocument(
+    document: NewSessionDraftProjection['document'],
+): asserts document is CataloguedNewSessionDraftDocument {
+    if (document.v !== 2 || document.target.kind !== 'newSession') {
+        throw new Error('expected a catalogued new-session draft');
+    }
+}
 import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
 import {
     resolveNewSessionDraftAgentId,
@@ -999,9 +1012,7 @@ describe('NewSessionDraftsSection', () => {
     it('reads the Agent badge identity from the catalogued V2 authoring target', () => {
         const projection = temporaryComputerDraft({ serverId: 'server-a' });
         const document = projection.document;
-        if (document.v !== 2 || document.target.kind !== 'newSession') {
-            throw new Error('expected a catalogued new-session draft');
-        }
+        assertCataloguedNewSessionDocument(document);
         const v2Projection = {
             ...projection,
             document: {

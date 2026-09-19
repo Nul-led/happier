@@ -118,7 +118,7 @@ vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => ({
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
-        importOriginal: importOriginal as () => Promise<typeof import('@/auth/storage/tokenStorage')>,
+        importOriginal: importOriginal as <T = typeof import('@/auth/storage/tokenStorage')>() => Promise<T>,
         tokenStorage: {
             getCredentialsForServerUrl: async (_url, options) => ({
                 token: credentialAccounts.get(options?.serverId ?? '') ?? '',

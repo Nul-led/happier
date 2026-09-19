@@ -910,7 +910,7 @@ describe('machine direct sessions ops server-scoped routing', () => {
 
     describe('externalSessionTranscriptReadAfterRequiresResyncV1', () => {
         const releasedTail = (overrides: Partial<Extract<
-            Awaited<ReturnType<typeof machineExternalSessionTranscriptReadAfter>>,
+            Awaited<ReturnType<typeof import('./machineExternalSessions').machineExternalSessionTranscriptReadAfter>>,
             { ok: true }
         >> = {}) => ({
             ok: true as const,

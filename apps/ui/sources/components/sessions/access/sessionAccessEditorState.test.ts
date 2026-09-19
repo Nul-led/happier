@@ -25,14 +25,14 @@ describe('access acknowledged state',()=>{
     kind:'error',error:{code:'outcome_unknown',message:'Unknown',retryable:true},reconcileIntent:intent,
    },
   });
-  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,grants:[{
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,visibility:'complete',grants:[{
    grant:{subject,accessLevel:'view',canApprovePermissions:false},
    principal:{kind:'account',accountId:'recipient',firstName:null,lastName:null,username:'recipient',avatarUrl:null},
    allowedTransitions:{accessLevels:['view','edit','admin'],canChangePermissionDelegation:true,canRemove:true},
   }]}});
   expect(state.operations['account:recipient']?.kind).toBe('error');
 
-  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,grants:[{
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,visibility:'complete',grants:[{
    grant:{subject,accessLevel:'edit',canApprovePermissions:false},
    principal:{kind:'account',accountId:'recipient',firstName:null,lastName:null,username:'recipient',avatarUrl:null},
    allowedTransitions:{accessLevels:['view','edit','admin'],canChangePermissionDelegation:true,canRemove:true},
@@ -52,7 +52,7 @@ describe('access acknowledged state',()=>{
     reconcileIntent:{kind:'remove',subject},
    },
   });
-  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,grants:[row]}});
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:{...snapshot,visibility:'complete',grants:[row]}});
   expect(state.operations['account:recipient']?.kind).toBe('error');
   state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot});
   expect(state.operations['account:recipient']).toBeUndefined();

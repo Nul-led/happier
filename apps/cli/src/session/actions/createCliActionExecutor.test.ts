@@ -163,6 +163,7 @@ import {
   resetActiveAccountSettingsSnapshotForTests,
   setActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
+import { resolveAccountSettingsScopeKeyForToken } from '@/settings/accountSettings/accountSettingsScopeKey';
 import { registerSessionSpawnNewRpcHandlers } from '@/rpc/handlers/sessionLifecycle';
 import type { RpcHandler, RpcHandlerRegistrar } from '@/api/rpc/types';
 import {
@@ -1750,7 +1751,12 @@ describe('createCliActionExecutor', () => {
       settingsVersion: 1,
       loadedAtMs: 1,
       settingsSecretsReadKeys: [],
-      scopeKey: 'account:agent-spawn-policy',
+      // The executor binds its settings provider to the credential-derived
+      // Account scope (`createCliActionExecutor` → `createActionSettingsProvider`),
+      // and a snapshot published under any other scope is deliberately ignored so
+      // a different active Account cannot retarget a constructed runtime. The
+      // policy under test only reaches the Action executor through this scope.
+      scopeKey: resolveAccountSettingsScopeKeyForToken('token'),
     });
     const executor = createPlainExecutor();
 
@@ -2136,15 +2142,18 @@ describe('createCliActionExecutor', () => {
         ref: { agentTargetKey: 'backend:claude', providerConnectionId: null, modelId: 'gpt-5' },
       },
       spawnNonce: expect.any(String),
+      // The one defaulting owner keys the spawn request by the Agent catalog's
+      // qualified Connected Account service ids; the bare ids above are the
+      // released legacy settings ingress, which upconverts to these.
       connectedServices: {
-        v: 1,
+        v: 2,
         bindingsByServiceId: {
-          'claude-subscription': {
+          'happier.agent.claude/claude-subscription': {
             source: 'connected',
             selection: 'group',
             groupId: 'claude',
           },
-          anthropic: { source: 'native' },
+          'happier.agent.claude/anthropic': { source: 'native' },
         },
       },
     }));

@@ -11,7 +11,7 @@ describe('UI testkit mock factories', () => {
     it('preserves account-encryption-mode exports while allowing a focused reader override', async () => {
         const fetchAccountEncryptionMode = vi.fn(async () => ({ mode: 'plain' as const, updatedAt: 0 }));
         const moduleMock = await createAccountEncryptionModeModuleMock({
-            importOriginal: async () => await import('@/sync/api/account/apiAccountEncryptionMode'),
+            importOriginal: async <T,>() => await import('@/sync/api/account/apiAccountEncryptionMode') as T,
             overrides: { fetchAccountEncryptionMode },
         });
 
@@ -23,7 +23,7 @@ describe('UI testkit mock factories', () => {
 
     it('preserves token-storage exports and supplies a removable credential-mutation boundary', async () => {
         const moduleMock = await createTokenStorageModuleMock({
-            importOriginal: async () => await import('@/auth/storage/tokenStorage'),
+            importOriginal: async <T,>() => await import('@/auth/storage/tokenStorage') as T,
             tokenStorage: {
                 getCredentialsForServerUrl: vi.fn(async () => ({ token: 'test-token' })),
             },

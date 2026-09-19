@@ -92,6 +92,12 @@ Target a different directory:
 hdev spawn --path /path/to/repo --title "Repo session"
 ```
 
+- `--env KEY=VALUE` sets one environment variable on the spawned process and can
+  be repeated for several (`--env API_BASE=… --env LOG_LEVEL=debug`); the value
+  is everything after the first `=`. It is carried only on the CLI's
+  direct-to-daemon creation path, so it never enters server-visible creation
+  state and is not available when a Session is started from the app or the API.
+
 ### Agent targeting (`--agent`)
 
 `--agent` accepts a friendly Agent id from the installed Agent catalog:

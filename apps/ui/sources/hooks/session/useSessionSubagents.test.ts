@@ -22,7 +22,7 @@ const externalSessionRuntimeState = {
 const runningExecutionRunsState = { current: [] as readonly any[] };
 const useSessionRunningExecutionRunsSpy = vi.fn<(...args: any[]) => any>(() => runningExecutionRunsState.current);
 const useExternalSessionRuntimeSpy = vi.fn<(...args: any[]) => any>(() => externalSessionRuntimeState);
-const useFeatureEnabledSpy = vi.fn(() => true);
+const useFeatureEnabledSpy = vi.fn((..._args: unknown[]) => true);
 
 vi.mock('@/hooks/server/useFeatureEnabled', () => ({
     useFeatureEnabled: (...args: any[]) => useFeatureEnabledSpy(...args),

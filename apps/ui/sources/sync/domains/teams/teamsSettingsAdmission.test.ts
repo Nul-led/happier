@@ -8,7 +8,10 @@ import { resolveTeamsSettingsAdmission as resolveTeamsSettingsAdmissionOwner } f
 function resolveTeamsSettingsAdmission(
     params: Omit<Parameters<typeof resolveTeamsSettingsAdmissionOwner>[0], 'settings'>,
 ) {
-    return resolveTeamsSettingsAdmissionOwner({ ...params, settings: {} });
+    return resolveTeamsSettingsAdmissionOwner({
+        ...params,
+        settings: { experiments: false, featureToggles: {} },
+    });
 }
 
 function readySnapshot(teamsEnabled: boolean): ServerFeaturesSnapshot {

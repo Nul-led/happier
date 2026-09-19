@@ -4,6 +4,7 @@ import { IrohEndpointDescriptorV1Schema } from '../../connectivity/iroh/endpoint
 import { RunnerCredentialSelectionBindingV1Schema } from '../../ephemeralRunner/review.js';
 import { PluginContributionIdentityV1Schema } from '../../plugins/contributionIdentity.js';
 import { asProtocolZod } from '../../plugins/actions/internalProtocolZodAdapter.js';
+import { TeamCredentialUsageLimitMetricV1Schema } from './usageV1.js';
 
 export {
   createRunnerBrokerReadinessSigningInputV1,
@@ -39,7 +40,10 @@ export const TeamCredentialResourceReadinessV1Schema = z.discriminatedUnion('kin
   z.object({ kind: z.literal('policy_denied') }).strict(),
   z.object({
     kind: z.literal('limit_reached'),
-    metric: z.enum(['request_count', 'total_tokens', 'cost_usd']),
+    // The one metric vocabulary: the limit owner decides with it, the catalog
+    // read copies the denial's metric into this readiness, and the picker
+    // labels it. A second spelling here makes the whole catalog entry throw.
+    metric: TeamCredentialUsageLimitMetricV1Schema,
     resetsAtUtc: z.string().datetime(),
   }).strict(),
 ]);

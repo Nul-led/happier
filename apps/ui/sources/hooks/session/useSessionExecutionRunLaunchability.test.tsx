@@ -21,8 +21,8 @@ const resumeCapabilityOptionsSpy = vi.hoisted(() =>
 );
 const canLaunchExecutionRunsForSessionSpy = vi.hoisted(() => vi.fn());
 const featureScopeSpy = vi.hoisted(() => vi.fn());
-const machineReachabilitySpy = vi.hoisted(() => vi.fn(() => ({ machineReachable: true })));
-const externalSessionRuntimeSpy = vi.hoisted(() => vi.fn(() => ({
+const machineReachabilitySpy = vi.hoisted(() => vi.fn((..._args: unknown[]) => ({ machineReachable: true })));
+const externalSessionRuntimeSpy = vi.hoisted(() => vi.fn((..._args: unknown[]) => ({
     externalSessionLink: null,
     status: { runnerActive: true },
 })));

@@ -249,7 +249,8 @@ describe('SessionItem outer row accessible semantics', () => {
         });
         const row = readOuterRow(screen, 'row-single-actionable');
         const rowPressables = screen.tree.root.findAll((node) => (
-            node.type === 'Pressable'
+            // A host element's node type is its tag string; components never stringify to it.
+            String(node.type) === 'Pressable'
             && node.props?.testID === 'session-list-item-row-single-actionable'
         ));
         expect(rowPressables).toHaveLength(1);

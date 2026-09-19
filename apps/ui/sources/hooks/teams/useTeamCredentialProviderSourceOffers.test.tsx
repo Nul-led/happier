@@ -1,6 +1,10 @@
 import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createProviderErrorV1 } from '@happier-dev/protocol';
+import {
+    createProviderErrorV1,
+    ProviderConnectionIdSchema,
+    ProviderConnectionSecurityFingerprintV1Schema,
+} from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
 
 import {
@@ -31,8 +35,9 @@ function success(machineId: string) {
         connections: [createProviderConnectionViewFixture({
             connectionId: 'pc-shared',
             teamCredentialSourceOffer: {
-                connectionId: 'pc-shared',
-                connectionSecurityFingerprint: 'connection-security:v1:same',
+                connectionId: ProviderConnectionIdSchema.parse('pc-shared'),
+                connectionSecurityFingerprint:
+                    ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:same'),
                 credentialSlotId: 'apiKey',
                 label: `Gateway on ${machineId}`,
             },

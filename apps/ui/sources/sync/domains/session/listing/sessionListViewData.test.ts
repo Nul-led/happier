@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
-import { buildSessionListViewData } from './sessionListViewData';
+import { buildSessionListViewData, type SessionListViewItem } from './sessionListViewData';
+
+type SessionListViewHeader = Extract<SessionListViewItem, { type: 'header' }>;
+
+function isProjectHeader(item: SessionListViewItem): item is SessionListViewHeader {
+    return item.type === 'header' && item.headerKind === 'project';
+}
 
 function makeSession(partial: Partial<Session> & Pick<Session, 'id'>): Session {
     const active = partial.active ?? false;
@@ -719,7 +725,7 @@ describe('buildSessionListViewData', () => {
 
     it('keeps delimiter-adversarial Machine and path tuples as independent project groups', () => {
         const machineA = makeMachine({ id: 'm', metadata: { host: 'a', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
-        const machineB = makeMachine({ id: 'm:/repo', metadata: { host: 'b', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h' } });
+        const machineB = makeMachine({ id: 'm:/repo', metadata: { host: 'b', platform: 'darwin', happyCliVersion: '0.0.0', happyHomeDir: '/h', homeDir: '/' } });
         const data = buildSessionListViewData({
             a: makeSession({
                 id: 'a', active: true, createdAt: 2, updatedAt: 2,
@@ -735,7 +741,7 @@ describe('buildSessionListViewData', () => {
             serverScope: { serverId: 'home-a' },
         });
 
-        const headers = data.filter((item) => item.type === 'header' && item.headerKind === 'project');
+        const headers = data.filter(isProjectHeader);
         expect(headers).toHaveLength(2);
         expect(new Set(headers.map((item) => item.groupKey)).size).toBe(2);
         expect(new Set(headers.map((item) => item.workspaceKey)).size).toBe(2);
@@ -759,7 +765,7 @@ describe('buildSessionListViewData', () => {
             serverScope: { serverId: 'home-a' },
         });
 
-        const headers = data.filter((item) => item.type === 'header' && item.headerKind === 'project');
+        const headers = data.filter(isProjectHeader);
         expect(headers).toHaveLength(2);
         expect(new Set(headers.map((item) => item.groupKey)).size).toBe(2);
         expect(new Set(headers.map((item) => item.workspaceKey)).size).toBe(2);
@@ -776,7 +782,7 @@ describe('buildSessionListViewData', () => {
             sectionModeV1: 'single',
             activeGroupingV1: 'project',
             serverScope: { serverId },
-        }).find((item) => item.type === 'header' && item.headerKind === 'project');
+        }).find(isProjectHeader);
 
         const homeA = buildForHome('home-a');
         const homeB = buildForHome('home-b');

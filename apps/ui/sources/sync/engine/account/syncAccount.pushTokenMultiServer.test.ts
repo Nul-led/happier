@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PermissionStatus } from 'expo-modules-core';
+import { DEFAULT_ATTENTION_DELIVERY_POLICY_V1 } from '@happier-dev/protocol';
 
 import type { AuthCredentials } from '@/auth/storage/tokenStorage';
 import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
@@ -563,7 +564,12 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
                 return {};
             },
             getAccountSettings: () => ({
-                attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+                attentionDeliveryPolicyV1: {
+                ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
+                channels: {
+                    expo_push: { ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1.channels.expo_push, enabled: false },
+                },
+            },
             }),
         });
 
@@ -1022,7 +1028,12 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
         await serverProfiles.setActiveServerId(homeB.id, { scope: 'device' });
         await storage.getState().activateSettingsScope(scopeB);
         storage.getState().applySettingsLocal({
-            attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+            attentionDeliveryPolicyV1: {
+                ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
+                channels: {
+                    expo_push: { ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1.channels.expo_push, enabled: false },
+                },
+            },
         });
         finishHomeARegistration();
         await run;
@@ -1073,7 +1084,12 @@ describe('registerPushTokenIfAvailable (multi-server)', () => {
         await storage.getState().activateSettingsScope(scopeB);
         storage.getState().applySettingsForScope(scopeA, {
             ...settingsDefaults,
-            attentionDeliveryPolicyV1: { v: 1, channels: { expo_push: { enabled: false } } },
+            attentionDeliveryPolicyV1: {
+                ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1,
+                channels: {
+                    expo_push: { ...DEFAULT_ATTENTION_DELIVERY_POLICY_V1.channels.expo_push, enabled: false },
+                },
+            },
         }, 1);
         finishHomeARegistration();
         await run;

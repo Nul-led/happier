@@ -18,6 +18,7 @@ import {
   signRunnerBrokerReadinessRequestV1,
   verifyRunnerBrokerReadinessRequestV1,
 } from './readinessV1.js';
+import { TeamCredentialUsageLimitMetricV1Schema } from './usageV1.js';
 
 function fixture() {
   const activationKey = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(1));
@@ -174,6 +175,18 @@ describe('Runner broker readiness protocol', () => {
       kind: 'limit_reached', metric: 'total_tokens', resetsAtUtc: '2026-09-09T00:00:00.000Z',
     }).kind).toBe('limit_reached');
     expect(TeamCredentialResourceReadinessV1Schema.safeParse({ kind: 'broker_offline', machineId: 'private' }).success).toBe(false);
+    // The readiness a recipient reads carries the same metric vocabulary the
+    // limit owner decided with: the catalog read copies the denial's metric
+    // straight from the usage evaluation, so any spelling this schema does not
+    // accept makes the whole catalog entry throw for that recipient.
+    for (const metric of TeamCredentialUsageLimitMetricV1Schema.options) {
+      expect(TeamCredentialResourceReadinessV1Schema.parse({
+        kind: 'limit_reached', metric, resetsAtUtc: '2026-09-09T00:00:00.000Z',
+      })).toEqual({ kind: 'limit_reached', metric, resetsAtUtc: '2026-09-09T00:00:00.000Z' });
+    }
+    expect(TeamCredentialResourceReadinessV1Schema.safeParse({
+      kind: 'limit_reached', metric: 'request_count', resetsAtUtc: '2026-09-09T00:00:00.000Z',
+    }).success).toBe(false);
     expect(RunnerBrokerReadinessResponseV1Schema.safeParse({
       v: 1, binding: { ...binding, accountId: 'must-not-leak' }, credentialSelectionBinding, readiness: { kind: 'available' },
     }).success).toBe(false);

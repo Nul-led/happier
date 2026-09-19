@@ -1296,6 +1296,7 @@ describe('SessionsList (native virtualization)', () => {
     });
 
     it('retains a selected tag through a temporary missing organization projection', async () => {
+        const { SessionsList } = await import('./SessionsList');
         sessionTagsV1 = { 'server_a:sess_a': ['important'], 'server_a:sess_b': ['later'] };
         const screen = await renderSessionsList();
         const tagMenu = expectPresent(

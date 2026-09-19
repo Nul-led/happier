@@ -196,7 +196,7 @@ function mockConcurrentSessionCacheRuntimeDeps() {
 
 function mockTokenStorageCredentialReads() {
     vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
-        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        importOriginal: async <T,>() => await importOriginal<T>(),
         tokenStorage: {
             getCredentialsForServerUrl: (...args: unknown[]) => getCredentialsForServerUrlSpy(...args),
         },

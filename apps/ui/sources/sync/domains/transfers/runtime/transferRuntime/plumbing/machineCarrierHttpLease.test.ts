@@ -44,7 +44,7 @@ const boundaries = vi.hoisted(() => {
         createBrowserBinding: vi.fn(),
         createBrowserHttpConnection: vi.fn(),
         acquireBrowserStream: vi.fn(),
-        getReadyServerFeatures: vi.fn(async () => ({
+        getReadyServerFeatures: vi.fn(async (..._args: unknown[]) => ({
             features: {
                 machines: { transfer: { enabled: true, directPeer: { enabled: true } } },
             },

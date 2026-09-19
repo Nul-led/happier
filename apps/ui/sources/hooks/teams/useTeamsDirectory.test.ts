@@ -16,7 +16,7 @@ vi.mock('@/sync/runtime/connectivity/serverReachabilityRuntimeFetch', () => ({
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const { createTokenStorageModuleMock } = await import('@/dev/testkit');
     return createTokenStorageModuleMock({
-        importOriginal: importOriginal as () => Promise<typeof import('@/auth/storage/tokenStorage')>,
+        importOriginal: importOriginal as <T = typeof import('@/auth/storage/tokenStorage')>() => Promise<T>,
         tokenStorage: { getCredentialsForServerUrl: getCredentialsForServerUrlMock },
     });
 });
@@ -49,6 +49,7 @@ function team(id: string, name = `Team ${id}`, archivedAt: number | null = null)
         description: null,
         logo: null,
         archivedAt,
+        recovery: null,
         policy: {
             v: 1,
             sessionCreationPolicy: 'team_default',
@@ -63,7 +64,7 @@ function team(id: string, name = `Team ${id}`, archivedAt: number | null = null)
     };
 }
 
-async function addHome(name: string, serverUrl: string, teamsEnabled: boolean): string {
+async function addHome(name: string, serverUrl: string, teamsEnabled: boolean): Promise<string> {
     const id = (await upsertServerProfile({ serverUrl, name })).id;
     // The real Home payload, with only the canonical `teams` bit varied through
     // its own writer: the enabled-bit path is the feature owner's, not this
@@ -97,7 +98,7 @@ afterEach(() => {
 
 describe('useTeamsDirectory', () => {
     it('reads each capable Home as the Account that Home is signed in as', async () => {
-        const home = addHome('Home A', 'https://home-a.example', true);
+        const home = await addHome('Home A', 'https://home-a.example', true);
         await setActiveServerId(home, { scope: 'device' });
         runtimeFetchMock.mockImplementation(async () => new Response(
             JSON.stringify({ items: [team('t1', 'Acme')], nextCursor: null }),
@@ -118,7 +119,7 @@ describe('useTeamsDirectory', () => {
     });
 
     it('never asks a Home whose feature decision refused Teams', async () => {
-        const refusing = addHome('Home B', 'https://home-b.example', false);
+        const refusing = await addHome('Home B', 'https://home-b.example', false);
         await setActiveServerId(refusing, { scope: 'device' });
 
         const rendered = await renderHook(() => useTeamsDirectory());
@@ -132,7 +133,7 @@ describe('useTeamsDirectory', () => {
     });
 
     it('names a Home that could not answer instead of showing an empty directory', async () => {
-        const home = addHome('Home A', 'https://home-a.example', true);
+        const home = await addHome('Home A', 'https://home-a.example', true);
         await setActiveServerId(home, { scope: 'device' });
         runtimeFetchMock.mockImplementation(async () => {
             throw new Error('network down');
@@ -158,7 +159,7 @@ describe('useTeamsDirectory', () => {
     });
 
     it('requests the archived sequence only once that section is opened', async () => {
-        const home = addHome('Home A', 'https://home-a.example', true);
+        const home = await addHome('Home A', 'https://home-a.example', true);
         await setActiveServerId(home, { scope: 'device' });
         runtimeFetchMock.mockImplementation(async () => new Response(
             JSON.stringify({ items: [], nextCursor: null }),

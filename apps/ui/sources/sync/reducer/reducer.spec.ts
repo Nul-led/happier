@@ -23,7 +23,7 @@ describe('reducer', () => {
         expect(reducer(state, [initial]).messages[0]).toMatchObject({ accountActor: initial.accountActor });
         const { accountActor: _actor, ...omitted } = initial;
         expect(reducer(state, [{ ...omitted, isAuthoritativeUpdate: true }]).messages).toEqual([]);
-        const updated = { ...initial, isAuthoritativeUpdate: true, accountActor: { ...initial.accountActor!, serverId: 'home-b' } };
+        const updated = { ...initial, isAuthoritativeUpdate: true as const, accountActor: { ...initial.accountActor!, serverId: 'home-b' } };
         expect(reducer(state, [updated]).messages[0]).toMatchObject({
             accountActor: updated.accountActor, realID: initial.id, seq: 7, text: 'unchanged',
         });

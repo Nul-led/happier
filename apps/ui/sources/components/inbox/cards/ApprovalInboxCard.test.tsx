@@ -1,13 +1,19 @@
 import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { createMachineFixture, createSessionFixture, renderScreen } from '@/dev/testkit';
-import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
+import type { ArtifactHeader, DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { WorkspaceRefV1 } from '@/sync/domains/workspaces/workspaceRefModel';
 import { installApprovalCommonModuleMocks } from '../../approvals/approvalsTestHelpers';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const APPROVAL_ARTIFACT_HEADER: ArtifactHeader = {
+    title: 'Approve answering the user',
+    actionId: 'session.user_action.answer',
+    sessionId: 'session-1',
+};
 
 function createApprovalArtifact(): Extract<DecryptedArtifact, { isDecrypted: true }> {
     return {
@@ -18,11 +24,7 @@ function createApprovalArtifact(): Extract<DecryptedArtifact, { isDecrypted: tru
         createdAt: 1,
         updatedAt: 1,
         isDecrypted: true,
-        header: {
-            title: 'Approve answering the user',
-            actionId: 'session.user_action.answer',
-            sessionId: 'session-1',
-        },
+        header: { ...APPROVAL_ARTIFACT_HEADER },
     };
 }
 
@@ -214,7 +216,7 @@ describe('ApprovalInboxCard', () => {
         const artifact = {
             ...createApprovalArtifact(),
             header: {
-                ...createApprovalArtifact().header,
+                ...APPROVAL_ARTIFACT_HEADER,
                 serverId: 'server-b',
             },
         } satisfies DecryptedArtifact;
@@ -260,7 +262,7 @@ describe('ApprovalInboxCard', () => {
             <ApprovalInboxCard
                 artifact={{
                     ...createApprovalArtifact(),
-                    header: { ...createApprovalArtifact().header, serverId: 'server-b' },
+                    header: { ...APPROVAL_ARTIFACT_HEADER, serverId: 'server-b' },
                 } satisfies DecryptedArtifact}
                 onPress={() => {}}
                 workspaceRefs={[]}
@@ -282,6 +284,7 @@ describe('ApprovalInboxCard', () => {
             metadata: {
                 name: 'Private cached Inbox title',
                 path: '/Users/private/inbox-secret',
+                host: 'secondary.local',
                 homeDir: '/Users/private',
                 machineId: 'machine-secondary',
             },
@@ -292,7 +295,7 @@ describe('ApprovalInboxCard', () => {
                 <ApprovalInboxCard
                     artifact={{
                         ...createApprovalArtifact(),
-                        header: { ...createApprovalArtifact().header, serverId: 'server-b' },
+                        header: { ...APPROVAL_ARTIFACT_HEADER, serverId: 'server-b' },
                     } satisfies DecryptedArtifact}
                     onPress={() => {}}
                     audienceScope={{ serverId: 'server-b', accountId: 'account-b' }}

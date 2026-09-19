@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { renderScreen } from '@/dev/testkit';
 import { buildServerScopedSessionKey } from '@/sync/domains/session/navigation/sessionNavigationOrder';
 
+import type { InboxModel } from '@/hooks/inbox/useInboxModel';
+
 const routerPush = vi.hoisted(() => vi.fn());
 const identityState = vi.hoisted(() => ({ display: 'agentLogo' as 'agentLogo' | 'none' }));
 
@@ -71,7 +73,10 @@ function candidate(id: string, attentionState: string, reasons: readonly string[
     } as never;
 }
 
-function createModel(options: Readonly<{ failedHasPrompt?: boolean }> = {}) {
+function createModel(options: Readonly<{
+    failedHasPrompt?: boolean;
+    openApprovals?: ReadonlyArray<Readonly<{ id: string; header: Record<string, unknown> }>>;
+}> = {}): InboxModel {
     const failed = candidate(
         'failed',
         'failed',
@@ -87,7 +92,7 @@ function createModel(options: Readonly<{ failedHasPrompt?: boolean }> = {}) {
     };
     return {
         source: {},
-        openApprovals: [{ id: 'approval-1', header: {} }],
+        openApprovals: options.openApprovals ?? [{ id: 'approval-1', header: {} }],
         friendRequests: [{ id: 'friend-1', username: 'friend' }],
         sessionPresentation: {
             sessionsNeedingAttention: [
@@ -119,7 +124,7 @@ function createModel(options: Readonly<{ failedHasPrompt?: boolean }> = {}) {
         showCaughtUp: false,
         markRead: vi.fn(async () => {}),
         resolveActionOperation: vi.fn(),
-    } as never;
+    } as unknown as InboxModel;
 }
 
 describe('InboxContent visual sections', () => {
@@ -186,11 +191,12 @@ describe('InboxContent visual sections', () => {
     });
 
     it('opens a V2 approval through its portable owning Home rather than the focused Home', async () => {
-        const model = createModel();
-        model.openApprovals = [{
-            id: 'approval-home-b',
-            header: { serverId: 'creator-local-b', serverIdentityId: 'stable-home-b' },
-        }];
+        const model = createModel({
+            openApprovals: [{
+                id: 'approval-home-b',
+                header: { serverId: 'creator-local-b', serverIdentityId: 'stable-home-b' },
+            }],
+        });
         const { tree } = await renderScreen(<InboxContent model={model} />);
 
         tree.root.findByType('ApprovalInboxCard').props.onPress();
@@ -199,8 +205,9 @@ describe('InboxContent visual sections', () => {
     });
 
     it('keeps the V1 local Home route when a portable identity was never stored', async () => {
-        const model = createModel();
-        model.openApprovals = [{ id: 'approval-v1', header: { serverId: 'server-b' } }];
+        const model = createModel({
+            openApprovals: [{ id: 'approval-v1', header: { serverId: 'server-b' } }],
+        });
         const { tree } = await renderScreen(<InboxContent model={model} />);
 
         tree.root.findByType('ApprovalInboxCard').props.onPress();

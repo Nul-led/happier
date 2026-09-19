@@ -184,7 +184,9 @@ describe('preserveSessionListRenderableStaleFields', () => {
         const next = buildRenderable({
             id: 's_layout',
             metadataLayoutVersion: 1,
-            metadata: { v: 1, summary: { text: 'Shared', updatedAt: 2 } } as Session['metadata'],
+            // Layout version 1 carries the shared summary projection instead of the
+            // classic owner metadata shape the `Session['metadata']` type describes.
+            metadata: { v: 1, summary: { text: 'Shared', updatedAt: 2 } } as unknown as Session['metadata'],
             access: {
                 role: 'recipient',
                 level: 'view',
@@ -357,6 +359,37 @@ describe('buildSessionListRenderableFromSession', () => {
         })).toBe(false);
     });
 
+    it('projects the audience collaborator fact onto the Home-qualified list row', () => {
+        // The transcript's authorship owner reads this row for the exact Home
+        // (`useSessionMessageAuthorshipScope`), so a row that never carries the
+        // fact suppresses every Account byline on a Home-scoped transcript.
+        const shared = buildSessionListRenderableFromSession({
+            id: 'audience-shared', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+            metadata: null, metadataVersion: 1, agentState: null, agentStateVersion: 0,
+            thinking: false, thinkingAt: 0, presence: 'online',
+            hasOtherNamedCollaborator: true,
+        } as Session);
+        const solo = buildSessionListRenderableFromSession({
+            id: 'audience-solo', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+            metadata: null, metadataVersion: 1, agentState: null, agentStateVersion: 0,
+            thinking: false, thinkingAt: 0, presence: 'online',
+            hasOtherNamedCollaborator: false,
+        } as Session);
+        const unknown = buildSessionListRenderableFromSession({
+            id: 'audience-unknown', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
+            metadata: null, metadataVersion: 1, agentState: null, agentStateVersion: 0,
+            thinking: false, thinkingAt: 0, presence: 'online',
+        } as Session);
+
+        expect(shared.hasOtherNamedCollaborator).toBe(true);
+        expect(solo.hasOtherNamedCollaborator).toBe(false);
+        // Absent stays absent, like its `responsibleAccount*` siblings, so a
+        // Session acquired without audience facts is not pinned to "solo".
+        expect(Object.prototype.hasOwnProperty.call(unknown, 'hasOtherNamedCollaborator')).toBe(false);
+        // A Session that gains a collaborator must not reuse the solo row.
+        expect(areSessionListRenderablesEqual(solo, { ...solo, hasOtherNamedCollaborator: true })).toBe(false);
+    });
+
     it('keeps the owner-readable Agent headline on the Home-qualified list row', () => {
         const headline = {
             v: 1 as const,
@@ -377,7 +410,7 @@ describe('buildSessionListRenderableFromSession', () => {
             updatedAt: 1,
             active: true,
             activeAt: 1,
-            metadata: { sessionAgentActivityHeadlineV1: headline } as Session['metadata'],
+            metadata: { path: '/repo', host: 'tester.local', sessionAgentActivityHeadlineV1: headline },
             metadataVersion: 1,
             agentState: null,
             agentStateVersion: 0,
@@ -392,15 +425,21 @@ describe('buildSessionListRenderableFromSession', () => {
     it('does not suppress an Agent-headline-only concurrent row update as heartbeat progress', () => {
         const previous = buildSessionListRenderableFromSession({
             id: 'same-id', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
-            metadata: { sessionAgentActivityHeadlineV1: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] } } as Session['metadata'],
+            metadata: {
+                path: '/repo', host: 'tester.local',
+                sessionAgentActivityHeadlineV1: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
+            },
             metadataVersion: 1, agentState: null, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 'online',
         } as Session);
         const next = buildSessionListRenderableFromSession({
             id: 'same-id', seq: 1, createdAt: 1, updatedAt: 1, active: true, activeAt: 1,
-            metadata: { sessionAgentActivityHeadlineV1: {
-                v: 1, backendId: 'claude', updatedAt: 2,
-                activeEntries: [{ entryId: 'workflow_agent:wf_1:toolu_1', kind: 'workflow_agent', title: 'Fresh', status: 'running', updatedAt: 2 }],
-            } } as Session['metadata'],
+            metadata: {
+                path: '/repo', host: 'tester.local',
+                sessionAgentActivityHeadlineV1: {
+                    v: 1, backendId: 'claude', updatedAt: 2,
+                    activeEntries: [{ entryId: 'workflow_agent:wf_1:toolu_1', kind: 'workflow_agent', title: 'Fresh', status: 'running', updatedAt: 2 }],
+                },
+            },
             metadataVersion: 1, agentState: null, agentStateVersion: 0, thinking: false, thinkingAt: 0, presence: 'online',
         } as Session);
 

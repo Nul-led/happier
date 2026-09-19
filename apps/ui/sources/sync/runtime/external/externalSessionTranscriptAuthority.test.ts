@@ -494,23 +494,20 @@ describe('resolveExternalSessionTranscriptAuthority', () => {
         expect(paddedLinkLive).not.toBeNull();
         expect(paddedLinkLive).not.toBe(strippedLinkLive);
 
+        // Hoisted for the same reason as `baseLink` above: a legacy link's source
+        // object carries provider metadata the lease-scope contract does not read.
+        const legacyOpencodeSource = { kind: 'opencodeServer', directory: '/workspace/a' } as const;
         const paddedLease = createExternalSessionTranscriptLeaseScopeKeyFromLink({
             machineId: 'machine-legacy',
             agentId: 'opencode',
             remoteSessionId: ' native-thread-1 ',
-            source: {
-                kind: 'opencodeServer',
-                directory: '/workspace/a',
-            },
+            source: legacyOpencodeSource,
         });
         const strippedLease = createExternalSessionTranscriptLeaseScopeKeyFromLink({
             machineId: 'machine-legacy',
             agentId: 'opencode',
             remoteSessionId: 'native-thread-1',
-            source: {
-                kind: 'opencodeServer',
-                directory: '/workspace/a',
-            },
+            source: legacyOpencodeSource,
         });
         expect(paddedLease).not.toBeNull();
         expect(strippedLease).not.toBeNull();
@@ -526,10 +523,7 @@ describe('resolveExternalSessionTranscriptAuthority', () => {
             machineId: 'machine-legacy',
             agentId: 'opencode',
             remoteSessionId: '\t',
-            source: {
-                kind: 'opencodeServer',
-                directory: '/workspace/a',
-            },
+            source: legacyOpencodeSource,
         })).toBeNull();
     });
 });

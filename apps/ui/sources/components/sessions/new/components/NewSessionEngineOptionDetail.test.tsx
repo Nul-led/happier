@@ -97,6 +97,7 @@ const probePhaseState = vi.hoisted(() => ({
     models: 'idle' as 'idle' | 'loading' | 'refreshing',
     config: 'idle' as 'idle' | 'loading' | 'refreshing',
 }));
+const modelProbeFailedState = vi.hoisted(() => ({ value: false }));
 const providersFeatureEnabledState = vi.hoisted(() => ({ value: true }));
 type ProviderProjectionResult = ReturnType<typeof useProviderModelProjection>;
 const providerProjectionSpy = vi.hoisted(() => vi.fn<(input: unknown) => ProviderProjectionResult>((_input) => ({
@@ -106,6 +107,7 @@ const providerProjectionSpy = vi.hoisted(() => vi.fn<(input: unknown) => Provide
     status: 'pending',
     refresh: vi.fn(async () => {}),
     refreshWithResult: vi.fn(async () => null),
+    refreshFailures: [],
 })));
 let lastOptionPickerOverlayProps: any = null;
 
@@ -164,8 +166,12 @@ vi.mock('@/components/ui/text/Text', () => ({
 }));
 
 vi.mock('@/constants/Typography', () => ({
+    FontWeights: { regular: '400', semiBold: '500', bold: '600' },
     Typography: {
         default: () => ({}),
+        mono: () => ({}),
+        pillLabel: () => ({}),
+        rowMeta: () => ({}),
     },
 }));
 
@@ -221,6 +227,7 @@ vi.mock('@/components/sessions/new/hooks/screenModel/useNewSessionPreflightModel
         preflightModels: preflightModelsState.value,
         probe: {
             phase: probePhaseState.models,
+            failed: modelProbeFailedState.value,
             ...(probeEnabledState.models ? { onRefresh: probeRefreshSpies.models } : {}),
         },
     }),
@@ -279,6 +286,7 @@ describe('NewSessionEngineOptionDetail', () => {
         probeEnabledState.config = true;
         probePhaseState.models = 'idle';
         probePhaseState.config = 'idle';
+        modelProbeFailedState.value = false;
         providersFeatureEnabledState.value = true;
         providerProjectionSpy.mockReset();
         providerProjectionSpy.mockReturnValue({
@@ -288,6 +296,7 @@ describe('NewSessionEngineOptionDetail', () => {
             status: 'pending',
             refresh: vi.fn(async () => {}),
             refreshWithResult: vi.fn(async () => null),
+            refreshFailures: [],
         });
         probeRefreshSpies.cli.mockClear();
         probeRefreshSpies.models.mockClear();
@@ -339,6 +348,7 @@ describe('NewSessionEngineOptionDetail', () => {
             status: 'success',
             refresh: vi.fn(async () => {}),
             refreshWithResult: vi.fn(async () => null),
+            refreshFailures: [],
         });
         const onSelectionChange = vi.fn();
         const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
@@ -383,6 +393,7 @@ describe('NewSessionEngineOptionDetail', () => {
                 status: 'pending',
                 refresh: vi.fn(async () => {}),
                 refreshWithResult: vi.fn(async () => null),
+                refreshFailures: [],
             } satisfies ProviderProjectionResult,
         },
         {
@@ -399,6 +410,7 @@ describe('NewSessionEngineOptionDetail', () => {
                 status: 'error',
                 refresh: vi.fn(async () => {}),
                 refreshWithResult: vi.fn(async () => null),
+                refreshFailures: [],
             } satisfies ProviderProjectionResult,
         },
     ])('keeps an exact Provider selection identity without a false recovery row while projection is $state', async ({ state, projection }) => {
@@ -755,6 +767,29 @@ describe('NewSessionEngineOptionDetail', () => {
         expect(lastOptionPickerOverlayProps).toBeTruthy();
         expect(lastOptionPickerOverlayProps.options).toEqual([]);
         expect(lastOptionPickerOverlayProps.canEnterCustomValue).toBe(false);
+        expect(lastOptionPickerOverlayProps.notes).toContain('agentInput.model.unavailable');
+    });
+
+    it('keeps the trusted default choice selectable with a non-blocking discovery failure note', async () => {
+        const builtInBackendTarget: BackendTargetRefV2 = {
+            kind: 'backend',
+            backendId: 'codex',
+        };
+        preflightModelsState.value = null;
+        modelProbeFailedState.value = true;
+
+        const { NewSessionEngineOptionDetail } = await import('./NewSessionEngineOptionDetail');
+        await renderScreen(<NewSessionEngineOptionDetail
+            backendTarget={builtInBackendTarget}
+            selectedMachineId="machine-1"
+            capabilityServerId="server-1"
+            cwd="/repo"
+            selectedModelId="default"
+            selectedSessionModeId="default"
+            selectedConfigOverrides={{}}
+        />);
+
+        expect(renderedModelPickerOptions().some((option) => option.value === null)).toBe(true);
         expect(lastOptionPickerOverlayProps.notes).toContain('agentInput.model.unavailable');
     });
 

@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { act } from 'react-test-renderer';
 import type { PermissionMode, ModelMode } from '@/sync/domains/permissions/permissionTypes';
 import type { Settings } from '@/sync/domains/settings/settings';
+import type { AIBackendProfile } from '@/sync/domains/profiles/aiBackendProfileSchema';
 import type { UseMachineEnvPresenceResult } from '@/hooks/machine/useMachineEnvPresence';
 import { SessionSpawnNewInputV2Schema, type SessionSpawnNewInputV2, type SessionSpawnNewResultV1 } from '@happier-dev/protocol';
 import { createDeferred, flushHookEffects, renderHook } from '@/dev/testkit';
@@ -203,10 +204,10 @@ async function setupHarness() {
       actionOperationStore.reset();
       await selectNewSessionTestHome();
       modalAlertSpy.mockClear();
-      storageState.upsertPendingMessage.mockClear();
-      storageState.markSessionOptimisticThinking.mockClear();
-      storageState.updateSessionPermissionMode.mockClear();
-      storageState.updateSessionModelMode.mockClear();
+      vi.mocked(storageState.upsertPendingMessage).mockClear();
+      vi.mocked(storageState.markSessionOptimisticThinking).mockClear();
+      vi.mocked(storageState.updateSessionPermissionMode).mockClear();
+      vi.mocked(storageState.updateSessionModelMode).mockClear();
       sessionSpawnNewActionBoundarySpy.mockReset().mockImplementation(defaultSpawnResult);
     },
     useCreateNewSession,

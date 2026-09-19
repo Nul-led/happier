@@ -611,7 +611,7 @@ describe('apiSocket reachability supervision', () => {
 
         it('waits for the verified runtime origin when public HTTPS contains embedded credentials', async () => {
             const startParams: Array<Record<string, unknown>> = [];
-            let originListener: ((snapshot: Record<string, unknown>) => void) | null = null;
+            const originListenerRef: { current: ((snapshot: Record<string, unknown>) => void) | null } = { current: null };
             const invalidPublicHttpsProfile = {
                 ...irohProfile,
                 publicServerUrl: 'https://admin:secret@public.example.test/api?source=descriptor#home',
@@ -636,7 +636,7 @@ describe('apiSocket reachability supervision', () => {
                     ...actual,
                     getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? invalidPublicHttpsProfile : null),
                     subscribeActiveServerRuntimeOrigin: (listener: (snapshot: Record<string, unknown>) => void) => {
-                        originListener = listener;
+                        originListenerRef.current = listener;
                         return () => {};
                     },
                 };
@@ -670,7 +670,7 @@ describe('apiSocket reachability supervision', () => {
                 carrier: 'iroh',
                 runtimeOrigin: 'http://127.0.0.1:43222',
             };
-            originListener?.(currentSnapshot);
+            originListenerRef.current?.(currentSnapshot);
 
             expect(startParams[0]).toMatchObject({
                 serverUrl: 'https://api.example.test',
@@ -688,7 +688,7 @@ describe('apiSocket reachability supervision', () => {
                 publicServerUrl: null,
             };
             const startParams: Array<Record<string, unknown>> = [];
-            let originListener: ((snapshot: Record<string, unknown>) => void) | null = null;
+            const originListenerRef: { current: ((snapshot: Record<string, unknown>) => void) | null } = { current: null };
             vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', async (importOriginal) => {
                 const actual = await importOriginal<typeof import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool')>();
                 return {
@@ -709,7 +709,7 @@ describe('apiSocket reachability supervision', () => {
                     ...actual,
                     getServerProfileById: (id: unknown) => (String(id) === 'srv_home' ? loopbackProfile : null),
                     subscribeActiveServerRuntimeOrigin: (listener: (snapshot: Record<string, unknown>) => void) => {
-                        originListener = listener;
+                        originListenerRef.current = listener;
                         return () => {};
                     },
                 };
@@ -739,7 +739,7 @@ describe('apiSocket reachability supervision', () => {
                 carrier: 'iroh',
                 runtimeOrigin: 'http://127.0.0.1:43333',
             };
-            originListener?.(currentSnapshot);
+            originListenerRef.current?.(currentSnapshot);
             expect(startParams).toHaveLength(1);
             expect(startParams[0]).toMatchObject({
                 serverUrl: 'http://127.0.0.1:3010',

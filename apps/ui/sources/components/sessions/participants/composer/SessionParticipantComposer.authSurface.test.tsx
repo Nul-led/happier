@@ -152,6 +152,7 @@ function createActiveSession(sessionId: string): Session {
         activeAt: now,
         metadata: {
             machineId: 'machine-1',
+            host: 'tester.local',
             flavor: 'codex',
             version: '0.0.0',
             path: '/tmp',

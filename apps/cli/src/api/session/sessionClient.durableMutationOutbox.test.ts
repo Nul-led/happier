@@ -249,12 +249,28 @@ async function drainAsyncWork(cycles = 5): Promise<void> {
   }
 }
 
-async function waitForAsyncCondition(predicate: () => Promise<boolean>, cycles = 100): Promise<void> {
-  for (let index = 0; index < cycles; index += 1) {
+const ASYNC_CONDITION_TIMEOUT_MS = 10_000;
+
+/**
+ * Waits on a real-time deadline rather than a fixed number of `setImmediate`
+ * cycles: the outbox reaches these states through real filesystem persistence,
+ * so a cycle count measures host contention instead of the outbox's progress
+ * and turns a contended run into a false failure. `process.hrtime` is the clock
+ * because cases here install fake `Date`/`setTimeout`. The budget stays well
+ * inside the suite's 30 s test timeout so the failure names the condition.
+ */
+async function waitForAsyncCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = ASYNC_CONDITION_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = process.hrtime.bigint() + BigInt(timeoutMs) * 1_000_000n;
+  for (;;) {
     if (await predicate()) return;
+    if (process.hrtime.bigint() >= deadline) {
+      throw new Error(`Timed out waiting for async condition after ${timeoutMs}ms`);
+    }
     await drainAsyncWork(1);
   }
-  throw new Error('Timed out waiting for async condition');
 }
 
 function createFailTurnMutation(params: Readonly<{
@@ -1853,7 +1869,9 @@ describe('ApiSessionClient durable mutation outbox', () => {
       agentTurnId: 'turn-1',
       observedAt: 100,
     });
-    await drainAsyncWork();
+    // Wait for the first delivery attempt on a deadline, then assert it was the
+    // only one: a fixed drain count races the outbox's real persistence I/O.
+    await waitForAsyncCondition(async () => httpActions.length > 0);
     expect(httpActions).toEqual(['begin']);
 
     await outbox.enqueueSessionTurnMutation({

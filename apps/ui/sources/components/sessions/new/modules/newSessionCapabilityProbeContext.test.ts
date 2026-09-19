@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConnectedServiceBindingsV1Schema } from '@happier-dev/protocol';
+import { ConnectedServiceBindingsV2Schema } from '@happier-dev/protocol';
 
 import { BUNDLED_AGENT_CONTRIBUTION_IDENTITIES } from '@happier-dev/agents/agent-ids';
 
@@ -36,7 +36,7 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
         const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
 
         const settings = {} as any;
-        const backendTarget = { kind: 'builtInAgent', agentId: 'codex' } as any;
+        const backendTarget = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex };
 
         const first = resolveNewSessionCapabilityProbeContext({ backendTarget, settings });
         const second = resolveNewSessionCapabilityProbeContext({ backendTarget, settings });
@@ -60,7 +60,7 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
         const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
 
         const settings = {} as any;
-        const backendTarget = { kind: 'builtInAgent', agentId: 'codex' } as any;
+        const backendTarget = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.codex };
 
         const first = resolveNewSessionCapabilityProbeContext({ backendTarget, settings });
         runtimeKind = 'system';
@@ -142,13 +142,13 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
         const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
 
         const settings = {} as any;
-        const backendTarget = { kind: 'builtInAgent', agentId: 'claude' } as any;
+        const backendTarget = { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude };
         // Canonical bindings are keyed by the qualified service key; the bundled
         // `claude-subscription` observation must translate through the legacy
         // ingress before lookup and cache identity.
         const CLAUDE_SUBSCRIPTION_SERVICE_KEY = 'happier.agent.claude/claude-subscription';
-        const firstConnectedServices = ConnectedServiceBindingsV1Schema.parse({
-            v: 1,
+        const firstConnectedServices = ConnectedServiceBindingsV2Schema.parse({
+            v: 2,
             bindingsByServiceId: {
                 [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: {
                     source: 'connected',
@@ -157,8 +157,8 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
                 },
             },
         });
-        const secondConnectedServices = ConnectedServiceBindingsV1Schema.parse({
-            v: 1,
+        const secondConnectedServices = ConnectedServiceBindingsV2Schema.parse({
+            v: 2,
             bindingsByServiceId: {
                 [CLAUDE_SUBSCRIPTION_SERVICE_KEY]: {
                     source: 'connected',
@@ -206,12 +206,12 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
 
         const { resolveNewSessionModelCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
         const input = {
-            backendTarget: { kind: 'builtInAgent', agentId: 'claude' } as any,
+            backendTarget: { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude },
             settings: {} as any,
             // The released bundled model-config author fact carries the scalar
             // id; the canonical binding payload carries the qualified key.
-            connectedServices: ConnectedServiceBindingsV1Schema.parse({
-                v: 1,
+            connectedServices: ConnectedServiceBindingsV2Schema.parse({
+                v: 2,
                 bindingsByServiceId: {
                     'happier.agent.claude/claude-subscription': {
                         source: 'connected',
@@ -240,10 +240,10 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
 
         const { resolveNewSessionCapabilityProbeContext } = await import('./newSessionCapabilityProbeContext');
         const input = {
-            backendTarget: { kind: 'builtInAgent', agentId: 'claude' } as any,
+            backendTarget: { kind: 'agent' as const, identity: BUNDLED_AGENT_CONTRIBUTION_IDENTITIES.claude },
             settings: {} as any,
-            connectedServices: ConnectedServiceBindingsV1Schema.parse({
-                v: 1,
+            connectedServices: ConnectedServiceBindingsV2Schema.parse({
+                v: 2,
                 bindingsByServiceId: {
                     'happier.agent.claude/claude-subscription': { source: 'connected', selection: 'group', groupId: 'team' },
                 },
@@ -259,8 +259,8 @@ describe('resolveNewSessionCapabilityProbeContext (stability)', () => {
         });
         expect(resolveNewSessionModelCapabilityProbeContext({
             ...input,
-            connectedServices: ConnectedServiceBindingsV1Schema.parse({
-                v: 1,
+            connectedServices: ConnectedServiceBindingsV2Schema.parse({
+                v: 2,
                 bindingsByServiceId: { 'happier.agent.claude/claude-subscription': { source: 'native' } },
             }),
         })).toBeNull();

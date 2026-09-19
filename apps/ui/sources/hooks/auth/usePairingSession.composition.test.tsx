@@ -30,6 +30,7 @@ vi.mock('@/sync/http/client', () => ({
 }));
 
 vi.mock('@/sync/api/capabilities/serverFeaturesClient', () => ({
+    FOREGROUND_FEATURE_PROBE_WAIT_BUDGET_MS: 800,
     getServerFeaturesSnapshot: (...args: unknown[]) => boundary.featureSnapshot(...args),
     observeAuthenticatedServerFeaturesFresh: (...args: unknown[]) => boundary.featureSnapshot(...args),
 }));
@@ -103,46 +104,48 @@ describe('trusted-Home-displayed QR two-client composition', () => {
             },
         });
 
-        let row: {
+        // A `let` assigned only inside a callback narrows to `never` at the outer read, so the
+        // pair row lives in a holder the way the other composition suites keep callback state.
+        const pairRow: { current: {
             pairId: string;
             expiresAtMs: number;
             request: Record<string, unknown> | null;
             authorized: Record<string, unknown> | null;
-        } | null = null;
+        } | null } = { current: null };
         boundary.fetch.mockImplementation(async (path: string, init?: RequestInit, options?: { includeAuth?: boolean }) => {
             const body = init?.body ? JSON.parse(String(init.body)) as Record<string, unknown> : {};
             if (path === '/v1/auth/pairing/start') {
                 expect(options?.includeAuth).toBe(true);
                 expect(body.direction).toBe('trusted_home_displays');
-                row = {
+                pairRow.current = {
                     pairId: 'forward-pair',
                     expiresAtMs: Date.now() + 60_000,
                     request: null,
                     authorized: null,
                 };
                 return json(200, {
-                    pairId: row.pairId,
-                    expiresAt: new Date(row.expiresAtMs).toISOString(),
+                    pairId: pairRow.current.pairId,
+                    expiresAt: new Date(pairRow.current.expiresAtMs).toISOString(),
                 });
             }
             if (path.startsWith('/v1/auth/pairing/status?')) {
                 expect(options?.includeAuth).toBe(true);
-                if (!row) return json(404, { error: 'not_found' });
-                if (!row.request) {
+                if (!pairRow.current) return json(404, { error: 'not_found' });
+                if (!pairRow.current.request) {
                     return json(200, {
                         state: 'pending',
-                        pairId: row.pairId,
-                        expiresAt: new Date(row.expiresAtMs).toISOString(),
+                        pairId: pairRow.current.pairId,
+                        expiresAt: new Date(pairRow.current.expiresAtMs).toISOString(),
                     });
                 }
                 return json(200, {
                     state: 'requested',
-                    pairId: row.pairId,
-                    expiresAt: new Date(row.expiresAtMs).toISOString(),
-                    requestedPublicKey: row.request.publicKey,
+                    pairId: pairRow.current.pairId,
+                    expiresAt: new Date(pairRow.current.expiresAtMs).toISOString(),
+                    requestedPublicKey: pairRow.current.request.publicKey,
                     requestedDeviceLabel: null,
-                    bindingProof: row.request.bindingProof,
-                    homeServerIdentityId: row.request.homeServerIdentityId,
+                    bindingProof: pairRow.current.request.bindingProof,
+                    homeServerIdentityId: pairRow.current.request.homeServerIdentityId,
                 });
             }
             if (path === '/v2/auth/account/request' && !('pairId' in body)) {
@@ -151,21 +154,21 @@ describe('trusted-Home-displayed QR two-client composition', () => {
             }
             if (path === '/v1/auth/pairing/request') {
                 expect(options?.includeAuth).toBe(false);
-                if (!row) return json(404, { error: 'not_found' });
-                row.request = body;
+                if (!pairRow.current) return json(404, { error: 'not_found' });
+                pairRow.current.request = body;
                 return json(200, { state: 'requested' });
             }
             if (path === '/v1/auth/account/response') {
                 expect(options?.includeAuth).toBe(true);
-                if (!row?.request || body.pairId !== row.pairId) return json(404, { error: 'not_found' });
-                row.authorized = {
+                if (!pairRow.current?.request || body.pairId !== pairRow.current.pairId) return json(404, { error: 'not_found' });
+                pairRow.current.authorized = {
                     state: 'authorized',
-                    tokenEncrypted: body.publicKey === row.request.publicKey
+                    tokenEncrypted: body.publicKey === pairRow.current.request.publicKey
                         ? await (async () => {
                             const { encryptBox } = await import('@/encryption/libsodium');
                             return encodeBase64(encryptBox(
                                 new TextEncoder().encode('requester-home-token'),
-                                decodeBase64(String(row!.request!.publicKey)),
+                                decodeBase64(String(pairRow.current!.request!.publicKey)),
                             ));
                         })()
                         : '',
@@ -174,8 +177,8 @@ describe('trusted-Home-displayed QR two-client composition', () => {
                 return json(200, { success: true });
             }
             if (path === '/v2/auth/account/request' && 'pairId' in body) {
-                if (!row) return json(404, { error: 'not_found' });
-                return json(200, row.authorized ?? { state: 'requested' });
+                if (!pairRow.current) return json(404, { error: 'not_found' });
+                return json(200, pairRow.current.authorized ?? { state: 'requested' });
             }
             if (path === '/v1/auth/pairing/consume') return json(200, { success: true });
             throw new Error(`Unexpected QR boundary request: ${path}`);
@@ -248,7 +251,7 @@ describe('trusted-Home-displayed QR two-client composition', () => {
         await expect(TokenStorage.getCredentialsForServerUrl(descriptor.canonicalServerUrl, {
             serverId: descriptor.homeServerIdentityId,
         })).resolves.toEqual({ token: 'trusted-home-token' });
-        expect(row?.authorized).toMatchObject({ state: 'authorized' });
+        expect(pairRow.current?.authorized).toMatchObject({ state: 'authorized' });
 
         await trusted.unmount();
         await requesterTransport.transport.close();

@@ -84,6 +84,15 @@ function noteBodyOf(item: SessionSurfaceItemV1): string | null {
         : null;
 }
 
+/** The note builder returns `null` only for content this file never writes. */
+function requireSessionBoardNoteItem(
+    input: Parameters<typeof buildSessionBoardNoteItem>[0],
+): SessionSurfaceItemV1 {
+    const item = buildSessionBoardNoteItem(input);
+    if (!item) throw new Error('expected the fixture note to be buildable');
+    return item;
+}
+
 function createUnknownCreateRecovery(item: SessionSurfaceItemV1): SessionBoardActionRecoveryEvidenceV1 {
     const mutationRequest = {
         operation: 'upsert_item' as const,
@@ -123,7 +132,7 @@ describe('useSessionBoardNoteEditor', () => {
             source: { kind: 'declarative', document: createSessionSurfaceNoteDocumentV1('old body') },
         });
 
-        const next = buildSessionBoardNoteItem({ title: 'New title', body: 'new body', baseItem: current });
+        const next = requireSessionBoardNoteItem({ title: 'New title', body: 'new body', baseItem: current });
 
         expect(next).toMatchObject({
             v: 1,
@@ -453,7 +462,7 @@ describe('useSessionBoardNoteEditor', () => {
         ['not committed', null, '', '', 'retryable'],
         ['conflict', 'item-2', 'Someone else', 'remote text', 'conflict'],
     ] as const)('reconciles an unknown create after a canonical refresh when it is %s', async (_name, latestRevision, latestTitle, latestBody, expected) => {
-        const submittedItem = buildSessionBoardNoteItem({ title: 'Shipping', body: 'final text' });
+        const submittedItem = requireSessionBoardNoteItem({ title: 'Shipping', body: 'final text' });
         const recovery = createUnknownCreateRecovery(submittedItem);
         const onSaved = vi.fn();
         const requestRecoveryRefresh = vi.fn();
@@ -514,7 +523,7 @@ describe('useSessionBoardNoteEditor', () => {
     });
 
     it('does not mistake the unchanged pre-request record for proof that an unknown update committed', async () => {
-        const existing = buildSessionBoardNoteItem({ title: 'Shipping', body: 'same text' });
+        const existing = requireSessionBoardNoteItem({ title: 'Shipping', body: 'same text' });
         const onSaved = vi.fn();
         let observation: NonNullable<Parameters<typeof useSessionBoardNoteEditor>[0]['recoveryObservation']> = {
             state: 'settled',
@@ -559,7 +568,7 @@ describe('useSessionBoardNoteEditor', () => {
         ['unreviewed conflict', true, { kind: 'conflict', reviewed: false } as const],
         ['unknown outcome', true, { kind: 'outcomeUnknown' } as const],
     ])('does not dispatch another write when Save is re-entered while %s', async (_name, reachable, terminal) => {
-        const submittedItem = buildSessionBoardNoteItem({ title: 'Shipping', body: 'final text' });
+        const submittedItem = requireSessionBoardNoteItem({ title: 'Shipping', body: 'final text' });
         const recovery = createUnknownCreateRecovery(submittedItem);
         const upserts: SessionBoardItemUpsertInput[] = [];
         const port: SessionBoardActionsPort = {

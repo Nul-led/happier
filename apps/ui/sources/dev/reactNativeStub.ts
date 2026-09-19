@@ -77,7 +77,7 @@ export const Keyboard = {
     addListener: () => ({ remove: () => {} }),
 } as const;
 export const BackHandler = {
-    addEventListener: () => ({ remove: () => {} }),
+    addEventListener: (_eventName: 'hardwareBackPress', _handler: () => boolean) => ({ remove: () => {} }),
 } as const;
 export const Linking = {
     canOpenURL: async () => true,

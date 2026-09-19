@@ -16,6 +16,7 @@ type HarnessController = SessionListQueryHomeController & Readonly<{
     serverId: string;
     disposeSpy: ReturnType<typeof vi.fn>;
     publishLate(sessionId: string): void;
+    publishOffline(): void;
 }>;
 
 const controllerHarness = vi.hoisted(() => {
@@ -27,6 +28,10 @@ const featureHarness = vi.hoisted(() => {
     const decisions: Record<string, boolean> = {};
     return { decisions };
 });
+
+const queryRuntimeHarness = vi.hoisted(() => ({
+    retryHome: vi.fn(async (_serverId: string) => undefined),
+}));
 
 type ScopeBindingHarness = Readonly<{
     serverId: string;
@@ -121,6 +126,11 @@ vi.mock('./sessionListQueryController', async (importOriginal) => {
                     };
                     for (const listener of listeners) listener();
                 },
+                publishOffline: () => {
+                    if (disposed) return;
+                    state = { ...state, phase: 'offline', failureReason: null, failureCode: null };
+                    for (const listener of listeners) listener();
+                },
                 getSnapshot: () => state,
                 subscribe: (listener: () => void) => {
                     listeners.add(listener);
@@ -202,6 +212,7 @@ vi.mock('@/hooks/server/useFeatureLocalPolicySettings', () => ({
 vi.mock('./sessionListQueryRuntime', () => ({
     fetchSessionListQueryPageForHome: vi.fn(),
     isSessionListQueryHomeOnline: () => true,
+    retrySessionListQueryHome: queryRuntimeHarness.retryHome,
 }));
 
 vi.mock('./sessionListQueryInvalidation', () => ({
@@ -234,6 +245,7 @@ function homes(...serverIds: string[]): SessionListQueryHomeInput[] {
 describe('useSessionListQuerySourceState committed controller lifecycle', () => {
     afterEach(() => {
         controllerHarness.controllers.length = 0;
+        queryRuntimeHarness.retryHome.mockReset();
         for (const key of Object.keys(featureHarness.decisions)) delete featureHarness.decisions[key];
         for (const binding of scopeHarness.bindings.values()) binding.retire();
         scopeHarness.bindings.clear();
@@ -390,9 +402,7 @@ describe('useSessionListQuerySourceState committed controller lifecycle', () => 
         }
     });
 
-    it('keeps selected Following Homes in coverage while admitting requests per exact Home', async () => {
-        featureHarness.decisions['sessions.following:home-a'] = false;
-        featureHarness.decisions['sessions.following:home-b'] = true;
+    it('retries every offline Home before refreshing the selected query controllers', async () => {
         const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
         const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
         actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
@@ -403,6 +413,56 @@ describe('useSessionListQuerySourceState committed controller lifecycle', () => 
 
         function Harness() {
             sourceState = useSessionListQuerySourceState({
+                enabled: true,
+                homes: homes('home-a', 'home-b'),
+            });
+            return null;
+        }
+
+        try {
+            await act(async () => {
+                root.render(<Harness />);
+            });
+            const homeA = controllerHarness.controllers.find((controller) => controller.serverId === 'home-a');
+            const homeB = controllerHarness.controllers.find((controller) => controller.serverId === 'home-b');
+            expect(homeA).toBeDefined();
+            expect(homeB).toBeDefined();
+            await act(async () => {
+                homeB?.publishOffline();
+            });
+
+            await act(async () => {
+                await sourceState?.refresh();
+            });
+
+            expect(queryRuntimeHarness.retryHome).toHaveBeenCalledWith('home-b');
+            expect(queryRuntimeHarness.retryHome).not.toHaveBeenCalledWith('home-a');
+            expect(homeA?.refresh).toHaveBeenCalledOnce();
+            expect(homeB?.refresh).toHaveBeenCalledOnce();
+            expect(queryRuntimeHarness.retryHome.mock.invocationCallOrder[0])
+                .toBeLessThan((homeA ? vi.mocked(homeA.refresh).mock.invocationCallOrder[0] : undefined) ?? Number.POSITIVE_INFINITY);
+        } finally {
+            await act(async () => {
+                root.unmount();
+            });
+            container.remove();
+            actEnvironment.IS_REACT_ACT_ENVIRONMENT = previousActEnvironment;
+        }
+    });
+
+    it('keeps selected Following Homes in coverage while admitting requests per exact Home', async () => {
+        featureHarness.decisions['sessions.following:home-a'] = false;
+        featureHarness.decisions['sessions.following:home-b'] = true;
+        const actEnvironment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
+        const previousActEnvironment = actEnvironment.IS_REACT_ACT_ENVIRONMENT;
+        actEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
+        const container = document.createElement('div');
+        document.body.appendChild(container);
+        const root: Root = createRoot(container);
+        const sourceStateRef: { current: SessionListQuerySourceState | null } = { current: null };
+
+        function Harness() {
+            sourceStateRef.current = useSessionListQuerySourceState({
                 enabled: true,
                 homes: ['home-a', 'home-b'].map((serverId) => ({ serverId, query: FOLLOWING_QUERY })),
             });
@@ -418,22 +478,22 @@ describe('useSessionListQuerySourceState committed controller lifecycle', () => 
 
             expect(homeA?.update).toHaveBeenLastCalledWith(expect.objectContaining({ supported: false }));
             expect(homeB?.update).toHaveBeenLastCalledWith(expect.objectContaining({ supported: true }));
-            expect(sourceState?.statesByServerId['home-a']).toMatchObject({
+            expect(sourceStateRef.current?.statesByServerId['home-a']).toMatchObject({
                 phase: 'error',
                 failureReason: 'unsupported',
             });
-            expect(sourceState?.statesByServerId['home-b']).toMatchObject({
+            expect(sourceStateRef.current?.statesByServerId['home-b']).toMatchObject({
                 phase: 'ready',
                 addresses: [{ serverId: 'home-b', sessionId: 'home-b-row' }],
             });
-            expect(Object.keys(sourceState?.statesByServerId ?? {})).toEqual(['home-a', 'home-b']);
+            expect(Object.keys(sourceStateRef.current?.statesByServerId ?? {})).toEqual(['home-a', 'home-b']);
 
             featureHarness.decisions['sessions.following:home-a'] = true;
             await act(async () => {
                 root.render(<Harness />);
             });
             expect(homeA?.update).toHaveBeenLastCalledWith(expect.objectContaining({ supported: true }));
-            expect(sourceState?.statesByServerId['home-a']).toMatchObject({
+            expect(sourceStateRef.current?.statesByServerId['home-a']).toMatchObject({
                 phase: 'ready',
                 addresses: [{ serverId: 'home-a', sessionId: 'home-a-row' }],
             });
@@ -453,10 +513,10 @@ describe('useSessionListQuerySourceState committed controller lifecycle', () => 
         const container = document.createElement('div');
         document.body.appendChild(container);
         const root: Root = createRoot(container);
-        let sourceState: SessionListQuerySourceState | null = null;
+        const sourceStateRef: { current: SessionListQuerySourceState | null } = { current: null };
 
         function Harness() {
-            sourceState = useSessionListQuerySourceState({ enabled: true, homes: homes('home-a', 'home-b') });
+            sourceStateRef.current = useSessionListQuerySourceState({ enabled: true, homes: homes('home-a', 'home-b') });
             return null;
         }
 
@@ -493,10 +553,10 @@ describe('useSessionListQuerySourceState committed controller lifecycle', () => 
             expect(accountBController?.getSnapshot().nextCursor).not.toBe(accountACursor);
 
             accountAController.publishLate('account-a-late');
-            expect(sourceState?.statesByServerId['home-a']?.addresses).toEqual([
+            expect(sourceStateRef.current?.statesByServerId['home-a']?.addresses).toEqual([
                 { serverId: 'home-a', sessionId: 'account-b-row' },
             ]);
-            expect(sourceState?.statesByServerId['home-b']?.addresses).toEqual([
+            expect(sourceStateRef.current?.statesByServerId['home-b']?.addresses).toEqual([
                 { serverId: 'home-b', sessionId: 'home-b-row' },
             ]);
         } finally {

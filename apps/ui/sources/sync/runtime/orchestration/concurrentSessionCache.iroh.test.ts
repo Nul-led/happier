@@ -8,6 +8,7 @@ import {
     createTokenStorageModuleMock,
 } from '@/dev/testkit';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
+import type { SessionListFetchResult } from '@/sync/engine/sessions/sessionSnapshot';
 
 type IrohRuntimeOriginAcquire = typeof import('@/sync/runtime/nativeIrohTunnels')['acquireIrohHomeRuntimeOrigin'];
 type IrohRuntimeOriginAcquireInput = Parameters<IrohRuntimeOriginAcquire>[0];
@@ -162,13 +163,6 @@ async function configureHarness(params: Readonly<{
                 if (recoveryRequiredListener === listener) recoveryRequiredListener = null;
             };
         },
-        classifyIrohHomeTunnelSwitchFailure: (error: unknown) => {
-            const message = error instanceof Error ? error.message : '';
-            return {
-                fallbackAllowed: message.includes('health-unavailable'),
-                failureClass: message.includes('identity-mismatch') ? 'identity-auth' : 'carrier-unavailable',
-            };
-        },
     }));
     // The canonical carrier policy imports these owner modules directly. Mock
     // the native boundary at the same module seams rather than bypassing the
@@ -176,17 +170,8 @@ async function configureHarness(params: Readonly<{
     vi.doMock('@/sync/runtime/nativeIrohTunnels/runtime', () => ({
         acquireIrohHomeRuntimeOrigin: (input: IrohRuntimeOriginAcquireInput) => acquireIrohHomeRuntimeOriginSpy(input),
     }));
-    vi.doMock('@/sync/runtime/nativeIrohTunnels/fallback', () => ({
-        classifyIrohHomeTunnelSwitchFailure: (error: unknown) => {
-            const message = error instanceof Error ? error.message : '';
-            return {
-                fallbackAllowed: message.includes('health-unavailable'),
-                failureClass: message.includes('identity-mismatch') ? 'identity-auth' : 'carrier-unavailable',
-            };
-        },
-    }));
-    vi.doMock('@/sync/runtime/nativeSshTunnels/runtime', () => ({
-        startNativeSshTunnelRuntimeAppStateLifecycle: vi.fn(),
+    vi.doMock('@/sync/runtime/nativeLoopbackTunnels/runtime', () => ({
+        startNativeLoopbackTunnelRuntimeAppStateLifecycle: vi.fn(),
     }));
     vi.doMock('@/sync/runtime/connectivity/serverReachabilitySupervisorPool', () => ({
         subscribeServerReachabilityNetworkAllowed: (listener: (allowed: boolean) => void) => {
@@ -216,18 +201,17 @@ async function configureHarness(params: Readonly<{
         io: (endpoint: string, options?: unknown) => ioSpy(endpoint, options),
     }));
     vi.doMock('@/auth/storage/tokenStorage', async (importOriginal) => await createTokenStorageModuleMock({
-        importOriginal: async () => await importOriginal<typeof import('@/auth/storage/tokenStorage')>(),
+        importOriginal: async <T,>() => await importOriginal<T>(),
         tokenStorage: {
             getCredentialsForServerUrl: vi.fn(async () => ({ token: 'token-b', secret: 'secret-b' })),
         },
     }));
     vi.doMock('@/sync/domains/server/serverProfiles', () => createServerProfilesModuleMock({
         // Supply the canonical testkit lookup owner as well as the raw list
-        // override below. Explicit authenticated feature refresh resolves the
+        // projection. Explicit authenticated feature refresh resolves the
         // same secondary profile by stable identity after transport acquisition.
         listServerProfiles: () => profiles,
         overrides: {
-            listServerProfiles: () => profiles as never,
             loadHomeViewState: () => null,
             subscribeHomeViewState: () => () => {},
             subscribeServerProfiles: (listener) => {
@@ -251,7 +235,7 @@ async function configureHarness(params: Readonly<{
         fetchAndApplySessions: async ({ request, applySessions }: {
             request: (path: string, init: RequestInit) => Promise<Response>;
             applySessions: (sessions: unknown[]) => void;
-        }) => {
+        }): Promise<SessionListFetchResult> => {
             try {
                 await request('/v1/sessions', { method: 'GET' });
             } catch (error) {
@@ -259,6 +243,15 @@ async function configureHarness(params: Readonly<{
                 throw error;
             }
             applySessions(sessionsForRefresh);
+            return {
+                sessionIds: sessionsForRefresh.map((session) => session.id),
+                nextCursor: null,
+                hasNext: false,
+                attentionNextCursor: null,
+                attentionHasNext: false,
+                current: true,
+                source: 'v2',
+            };
         },
     }));
     vi.doMock('@/sync/engine/machines/syncMachines', () => ({

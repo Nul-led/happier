@@ -63,7 +63,7 @@ const TARGET_ENDPOINT_ID = 'a'.repeat(64);
 vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
     const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
     return createTokenStorageModuleMock({
-        importOriginal: importOriginal as () => Promise<typeof import('@/auth/storage/tokenStorage')>,
+        importOriginal: importOriginal as <T = typeof import('@/auth/storage/tokenStorage')>() => Promise<T>,
         tokenStorage: {
             getCredentialsForServerUrl: (...args: unknown[]) => boundaries.getCredentials(...args),
         },

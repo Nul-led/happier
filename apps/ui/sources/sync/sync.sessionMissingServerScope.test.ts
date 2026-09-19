@@ -55,6 +55,14 @@ const resolvePreferredServerIdForSessionIdMock = vi.hoisted(() => vi.fn());
 const sessionRpcWithPreferredSessionScopeMock = vi.hoisted(() => vi.fn());
 const emitSessionMetadataUpdateWithServerScopeMock = vi.hoisted(() => vi.fn());
 const notifyActivityReadyMock = vi.hoisted(() => vi.fn());
+const appliedServerSnapshotOverride = vi.hoisted(() => ({
+    current: null as null | Readonly<{
+        serverId: string;
+        serverUrl: string;
+        generation: number;
+    }>,
+}));
+const appliedRuntimeAvailableOverride = vi.hoisted(() => ({ current: true }));
 
 vi.mock('@/sync/ops/machineExternalSessions', () => ({
     machineExternalSessionTranscriptPage: machineExternalSessionTranscriptPageMock,
@@ -110,6 +118,13 @@ vi.mock('@/sync/runtime/orchestration/serverScopedRpc/sessionRpcWithPreferredSes
 vi.mock('@/sync/runtime/orchestration/serverScopedRpc/emitSessionMetadataUpdateWithServerScope', () => ({
     emitSessionMetadataUpdateWithServerScope: (params: unknown) => emitSessionMetadataUpdateWithServerScopeMock(params),
 }));
+vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
+    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+    return {
+        getAppliedActiveServerSnapshot: () => appliedServerSnapshotOverride.current ?? getActiveServerSnapshot(),
+        isAppliedActiveServerRuntimeAvailable: () => appliedRuntimeAvailableOverride.current,
+    };
+});
 vi.mock('@/activity/notifications/runtime/activityLocalNotificationBus', async () => {
     const actual = await vi.importActual<typeof import('@/activity/notifications/runtime/activityLocalNotificationBus')>('@/activity/notifications/runtime/activityLocalNotificationBus');
     return {
@@ -119,6 +134,7 @@ vi.mock('@/activity/notifications/runtime/activityLocalNotificationBus', async (
 });
 
 import { storage } from './domains/state/storage';
+import { actionOperationStore } from './domains/actionOperations/actionOperationStore';
 import type { ApiUpdateContainer } from './api/types/apiTypes';
 import {
     clearTabActiveServerId,
@@ -408,6 +424,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         sessionRpcWithPreferredSessionScopeMock.mockReset();
         emitSessionMetadataUpdateWithServerScopeMock.mockReset();
         notifyActivityReadyMock.mockReset();
+        appliedServerSnapshotOverride.current = null;
+        appliedRuntimeAvailableOverride.current = true;
+        actionOperationStore.reset();
         resolvePreferredServerIdForSessionIdMock.mockReturnValue(undefined);
         resetSessionSurfaceVisibilityForTests();
         resetTranscriptStreamSegmentAssemblyForTests();
@@ -2929,6 +2948,74 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         ]);
     });
 
+    it('routes an applied Home pending request through scoped authority while a different Home is staged', async () => {
+        const sessionId = 'applied-home-pending-during-staged-switch';
+        const appliedServer = await upsertServerProfile({
+            serverUrl: 'https://applied-pending.example',
+            name: 'Applied Home',
+        });
+        const stagedServer = await upsertServerProfile({
+            serverUrl: 'https://staged-pending.example',
+            name: 'Staged Home',
+        });
+        await setActiveServerId(appliedServer.id, { scope: 'device' });
+        const appliedSnapshot = getActiveServerSnapshot();
+        appliedServerSnapshotOverride.current = {
+            serverId: appliedSnapshot.serverId,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        };
+        await setActiveServerId(stagedServer.id, { scope: 'device' });
+        storage.getState().activateProfileScope({
+            serverId: stagedServer.id,
+            accountId: 'staged-account',
+        });
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(appliedServer.id);
+
+        const appliedToken = buildTokenWithSub('applied-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: appliedToken,
+            secret: 'applied-secret',
+        });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue({});
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+            const url = String(input);
+            if (url.endsWith('/v1/features')) return currentPendingInputFeaturesResponse();
+            if (url === `https://applied-pending.example/v2/sessions/${sessionId}/pending`) {
+                return Response.json({ pending: [] });
+            }
+            return new Response(null, { status: 404 });
+        });
+
+        const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', {
+            serverId: appliedServer.id,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        });
+
+        const owner = await (sync as any).resolvePendingQueueOwnerContext(sessionId) as Readonly<{
+            outboxScope: { serverId: string; accountId: string };
+            request: (path: string, init?: RequestInit) => Promise<Response>;
+            release: () => Promise<void>;
+        }>;
+        try {
+            expect(owner.outboxScope).toEqual({
+                serverId: appliedServer.id,
+                accountId: 'applied-account',
+            });
+            await expect(owner.request(`/v2/sessions/${sessionId}/pending`, { method: 'GET' })).resolves.toBeInstanceOf(Response);
+        } finally {
+            await owner.release();
+        }
+
+        expect(requestMock).not.toHaveBeenCalled();
+        const appliedPendingCall = findRuntimeFetchCall(
+            `https://applied-pending.example/v2/sessions/${sessionId}/pending`,
+        );
+        expectHeaderValue(appliedPendingCall?.[1]?.headers, 'Authorization', `Bearer ${appliedToken}`);
+    });
+
     it.each(['before transport', 'after response'] as const)(
         'fences the captured active server-account scope %s for dynamic apiSocket requests',
         async (crossing) => {
@@ -2941,6 +3028,14 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 secret: encodeBase64(new Uint8Array(32).fill(3), 'base64url'),
             });
             await activate('captured-account');
+            const appliedSnapshot = getActiveServerSnapshot();
+            appliedServerSnapshotOverride.current = {
+                serverId: appliedSnapshot.serverId,
+                serverUrl: appliedSnapshot.serverUrl,
+                generation: appliedSnapshot.generation,
+            };
+            Reflect.set(sync, 'appliedServerTarget', appliedServerSnapshotOverride.current);
+            Reflect.set(sync, 'serverID', 'captured-account');
             const owner = await (sync as any).resolvePendingQueueOwnerContext(sessionId) as Readonly<{
                 request: (path: string, init?: RequestInit) => Promise<Response>;
             }>;
@@ -2968,6 +3063,14 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
         storage.getState().activateProfileScope({ serverId: server.id, accountId: 'captured-account' });
         const { sync } = await import('./sync');
+        const appliedSnapshot = getActiveServerSnapshot();
+        appliedServerSnapshotOverride.current = {
+            serverId: appliedSnapshot.serverId,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        };
+        Reflect.set(sync, 'appliedServerTarget', appliedServerSnapshotOverride.current);
+        Reflect.set(sync, 'serverID', 'captured-account');
         requestMock.mockImplementation(async () => {
             storage.getState().activateProfileScope({ serverId: server.id, accountId: 'switched-account' });
             return Response.json({});
@@ -5802,6 +5905,98 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             .filter((message) => message.kind === 'user-text')
             .map((message) => message.text);
         expect(orderedTexts).toEqual(['hello direct', 'reloaded direct']);
+    });
+
+    it('keeps socket ephemerals on the applied available Home until the staged switch applies', async () => {
+        const appliedServer = await upsertServerProfile({
+            serverUrl: 'https://ephemeral-applied.example',
+            name: 'Applied Home',
+        });
+        const stagedServer = await upsertServerProfile({
+            serverUrl: 'https://ephemeral-staged.example',
+            name: 'Staged Home',
+        });
+        await setActiveServerId(appliedServer.id, { scope: 'device' });
+        const appliedSnapshot = getActiveServerSnapshot();
+        appliedServerSnapshotOverride.current = {
+            serverId: appliedSnapshot.serverId,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        };
+        storage.getState().activateProfileScope({ serverId: appliedServer.id, accountId: 'account-a' });
+
+        const snapshot = (accountId: string, operationId: string) => ({
+            version: 1,
+            operationId,
+            revision: 1,
+            actionId: 'session.spawn_new',
+            state: 'accepted',
+            scope: { accountId, machineId: 'machine-1' },
+            title: 'Create session',
+            createdAt: 1,
+            cancellation: 'unsupported',
+        });
+        // Assigned only inside the executor callback, so a `let` narrows to `never` at the call
+        // site below; the resolver lives in a holder instead.
+        const delayedSnapshotResolver: { current: ((value: unknown) => void) | null } = { current: null };
+        const delayedSnapshot = new Promise<unknown>((resolve) => { delayedSnapshotResolver.current = resolve; });
+        const { sync } = await import('./sync');
+        (sync as any).encryption = {
+            getSessionEncryption: () => null,
+            openActionOperationSnapshotRaw: vi.fn((ciphertext: string) => (
+                ciphertext === 'delayed' ? delayedSnapshot : JSON.parse(ciphertext)
+            )),
+        };
+        const dispatch = (serverId: string, ciphertext: string) => {
+            (sync as any).handleEphemeralUpdate({
+                type: 'action-operation-snapshot',
+                machineId: 'machine-1',
+                ciphertext,
+            }, { serverId } as never);
+        };
+
+        await setActiveServerId(stagedServer.id, { scope: 'device' });
+        dispatch(appliedServer.id, JSON.stringify(snapshot('account-a', 'operation-a')));
+        await vi.waitFor(() => {
+            expect([...actionOperationStore.getSnapshot().operationsByKey.values()]).toEqual([
+                expect.objectContaining({ serverId: appliedServer.id }),
+            ]);
+        });
+
+        appliedRuntimeAvailableOverride.current = false;
+        dispatch(appliedServer.id, JSON.stringify(snapshot('account-a', 'operation-unavailable')));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(actionOperationStore.getSnapshot().operationsByKey.size).toBe(1);
+
+        const stagedSnapshot = getActiveServerSnapshot();
+        appliedServerSnapshotOverride.current = {
+            serverId: stagedSnapshot.serverId,
+            serverUrl: stagedSnapshot.serverUrl,
+            generation: stagedSnapshot.generation,
+        };
+        appliedRuntimeAvailableOverride.current = true;
+        storage.getState().activateProfileScope({ serverId: stagedServer.id, accountId: 'account-b' });
+        dispatch(stagedServer.id, JSON.stringify(snapshot('account-b', 'operation-b')));
+        await vi.waitFor(() => {
+            expect([...actionOperationStore.getSnapshot().operationsByKey.values()]).toEqual(expect.arrayContaining([
+                expect.objectContaining({ serverId: appliedServer.id }),
+                expect.objectContaining({ serverId: stagedServer.id }),
+            ]));
+        });
+
+        const capturedGeneration = Reflect.get(sync, 'serverScopeGeneration') as number;
+        try {
+            dispatch(stagedServer.id, 'delayed');
+            await vi.waitFor(() => {
+                expect((sync as any).encryption.openActionOperationSnapshotRaw).toHaveBeenCalledWith('delayed');
+            });
+            Reflect.set(sync, 'serverScopeGeneration', capturedGeneration + 1);
+            delayedSnapshotResolver.current?.(snapshot('account-b', 'operation-stale-generation'));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            expect(actionOperationStore.getSnapshot().operationsByKey.size).toBe(2);
+        } finally {
+            Reflect.set(sync, 'serverScopeGeneration', capturedGeneration);
+        }
     });
 
     it('applies transcript-stream-segment ephemerals without crashing when session encryption is available through sync.handleEphemeralUpdate', async () => {

@@ -64,6 +64,13 @@ vi.mock('@/auth/flows/qrWait', () => ({
 vi.mock('@/sync/domains/server/adoptHomeProfile', () => ({
     adoptHomeProfileWithCredentials: (...args: unknown[]) => state.adopt(...args),
     HomeProfileAdoptionPartialCommitError: class HomeProfileAdoptionPartialCommitError extends Error {},
+    HomeProfileCanonicalUrlMigrationPartialCommitError: class HomeProfileCanonicalUrlMigrationPartialCommitError extends Error {},
+    isHomeProfileAdoptionPartialCommitFailure: (error: unknown) => (
+        error instanceof Error && [
+            'HomeProfileAdoptionPartialCommitError',
+            'HomeProfileCanonicalUrlMigrationPartialCommitError',
+        ].includes(error.constructor.name)
+    ),
 }));
 
 vi.mock('@/auth/pairing/pairingUrl', () => ({
@@ -135,19 +142,19 @@ describe('useReversePairingSession', () => {
     });
 
     it('owns and aborts target verification from the beginning of the generation', async () => {
-        let observedSignal: AbortSignal | null = null;
+        const observedSignalRef: { current: AbortSignal | null } = { current: null };
         state.probe.mockImplementation((_input: { signal: AbortSignal }) => {
-            observedSignal = _input.signal;
+            observedSignalRef.current = _input.signal;
             return new Promise(() => {});
         });
 
         const { useReversePairingSession } = await import('./useReversePairingSession');
         const hook = await renderHook(() => useReversePairingSession({ enabled: true, targetProfileId: 'known-profile' }));
-        await vi.waitFor(() => expect(observedSignal).not.toBeNull());
+        await vi.waitFor(() => expect(observedSignalRef.current).not.toBeNull());
 
         await hook.unmount();
 
-        expect(observedSignal?.aborted).toBe(true);
+        expect(observedSignalRef.current?.aborted).toBe(true);
         expect(target.close).toHaveBeenCalledOnce();
     });
 
@@ -261,9 +268,9 @@ describe('useReversePairingSession', () => {
             credentials: { token: string };
             homeServerIdentityId: string;
         }) => void;
-        let waitSignal: AbortSignal | null = null;
+        const waitSignalRef: { current: AbortSignal | null } = { current: null };
         state.authWait.mockImplementation((_keypair, _target, options: { signal: AbortSignal }) => {
-            waitSignal = options.signal;
+            waitSignalRef.current = options.signal;
             return new Promise((resolve) => {
                 resolveWait = resolve;
             });
@@ -274,7 +281,7 @@ describe('useReversePairingSession', () => {
         await vi.waitFor(() => expect(state.authWait).toHaveBeenCalledOnce());
 
         await hook.unmount();
-        expect(waitSignal?.aborted).toBe(false);
+        expect(waitSignalRef.current?.aborted).toBe(false);
         expect(target.close).not.toHaveBeenCalled();
 
         await act(async () => resolveWait({
@@ -309,9 +316,9 @@ describe('useReversePairingSession', () => {
 
     it('cancels the one pre-claim attempt without allowing it to continue', async () => {
         state.qrAvailable = false;
-        let requestSignal: AbortSignal | null = null;
+        const requestSignalRef: { current: AbortSignal | null } = { current: null };
         state.pairingRequest.mockImplementation((_params, _target, options: { signal: AbortSignal }) => {
-            requestSignal = options.signal;
+            requestSignalRef.current = options.signal;
             return new Promise(() => {});
         });
 
@@ -321,7 +328,7 @@ describe('useReversePairingSession', () => {
 
         await act(async () => hook.getCurrent().cancel());
 
-        expect(requestSignal?.aborted).toBe(true);
+        expect(requestSignalRef.current?.aborted).toBe(true);
         expect(state.pairingStart).not.toHaveBeenCalled();
         expect(state.pairingConsume).not.toHaveBeenCalled();
         expect(target.close).toHaveBeenCalledOnce();
@@ -379,13 +386,12 @@ describe('useReversePairingSession', () => {
 
     it('distinguishes the canonical target-qualified adoption partial commit', async () => {
         const { HomeProfileAdoptionPartialCommitError } = await import('@/sync/domains/server/adoptHomeProfile');
-        const partialCommit = new HomeProfileAdoptionPartialCommitError();
-        Object.assign(partialCommit, {
-            adoptionError: new Error('profile adoption failed'),
-            canonicalServerUrl: descriptor.canonicalServerUrl,
-            serverIdentityId: descriptor.homeServerIdentityId,
-            rollbackOutcome: { kind: 'not_applied', reason: 'ownership_changed' },
-        });
+        const partialCommit = new HomeProfileAdoptionPartialCommitError(
+            new Error('profile adoption failed'),
+            descriptor.canonicalServerUrl,
+            descriptor.homeServerIdentityId,
+            { kind: 'not_applied', reason: 'ownership_changed' },
+        );
         state.adopt.mockRejectedValueOnce(partialCommit);
 
         const { useReversePairingSession } = await import('./useReversePairingSession');

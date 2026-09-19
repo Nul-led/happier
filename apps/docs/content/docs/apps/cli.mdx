@@ -507,6 +507,8 @@ Useful flags:
 - `--provider <id>` (preselect providers to set up)
 - `--yes` (with an explicitly named Home, save deterministic target metadata and stop incomplete before interactive approval)
 - `--non-interactive` (change nothing)
+- `--replace-services` (explicitly allow replacement of conflicting Happier service registrations)
+- `--switch-channel` (explicitly allow the default managed release channel to change)
 
 `--yes` is not an unattended setup mode. With an explicit target it prints the interactive continuation and exits nonzero; without a target it writes nothing. `--non-interactive`, `HAPPIER_NONINTERACTIVE=1`, and a no-TTY invocation also write nothing. Run the printed continuation in a terminal to finish approval, registration, and service setup.
 
@@ -533,6 +535,8 @@ happier home create --ssh user@host
 Both forms use the same managed Happier server runtime and atomic Personal Home bootstrap. The fixed preset creates or verifies the initial account, keeps its credential in the host's secure store, closes anonymous signup, verifies the result, waits for the server-published stable Home identity and descriptor, then adopts that identity. An SSH Home remains loopback-bound and can be reached over Iroh, so public ingress is optional. Personal Home data is plaintext at rest on its host; use a computer or provider you trust.
 
 Creation is interactive unless you explicitly pass `--yes`. That `home create --yes` consent is separate from `setup --yes`: a successful creation can complete deterministically, while setup still needs human enrollment approval.
+
+`--yes` never authorizes replacing an existing service or changing the default managed release channel. If creation reports either conflict, review it first and rerun with the narrow flag that matches your decision: `--replace-services` allows replacement of conflicting Happier services, and `--switch-channel` allows the default managed channel to change. The flags work with local and `--ssh` creation and are accepted only by `happier home create`.
 
 After creation, re-enter the device and discovery flows with:
 

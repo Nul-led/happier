@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createMachineFixture } from '@/dev/testkit/fixtures/machineFixtures';
+
 const appliedState = vi.hoisted(() => ({ serverId: 'home_a' }));
 
 vi.mock('@/sync/runtime/orchestration/connectionManager', () => ({
@@ -14,16 +16,16 @@ const scopedEndpoint = { endpointId: 'scoped-endpoint' };
 describe('readPeerEndpointForServerScope', () => {
     const state = {
         machines: {
-            shared_machine: {
+            shared_machine: createMachineFixture({
                 id: 'shared_machine',
                 daemonState: { peerMediation: { iroh: { endpoint: focusedEndpoint } } },
-            },
+            }),
         },
         machineListByServerId: {
-            home_b: [{
+            home_b: [createMachineFixture({
                 id: 'shared_machine',
                 daemonState: { peerMediation: { iroh: { endpoint: scopedEndpoint } } },
-            }],
+            })],
             home_c: [],
         },
     };

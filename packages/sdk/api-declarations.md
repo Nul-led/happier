@@ -108073,7 +108073,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                     kind: z.ZodLiteral<"limit_reached">;
                     metric: z.ZodEnum<{
                         cost_usd: "cost_usd";
-                        request_count: "request_count";
+                        inference_requests: "inference_requests";
                         total_tokens: "total_tokens";
                     }>;
                     resetsAtUtc: z.ZodString;
@@ -108443,7 +108443,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                     kind: z.ZodLiteral<"limit_reached">;
                     metric: z.ZodEnum<{
                         cost_usd: "cost_usd";
-                        request_count: "request_count";
+                        inference_requests: "inference_requests";
                         total_tokens: "total_tokens";
                     }>;
                     resetsAtUtc: z.ZodString;
@@ -108686,7 +108686,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 kind: z.ZodLiteral<"limit_reached">;
                 metric: z.ZodEnum<{
                     cost_usd: "cost_usd";
-                    request_count: "request_count";
+                    inference_requests: "inference_requests";
                     total_tokens: "total_tokens";
                 }>;
                 resetsAtUtc: z.ZodString;
@@ -108786,7 +108786,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                     kind: z.ZodLiteral<"limit_reached">;
                     metric: z.ZodEnum<{
                         cost_usd: "cost_usd";
-                        request_count: "request_count";
+                        inference_requests: "inference_requests";
                         total_tokens: "total_tokens";
                     }>;
                     resetsAtUtc: z.ZodString;
@@ -109210,7 +109210,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 kind: z.ZodLiteral<"limit_reached">;
                 metric: z.ZodEnum<{
                     cost_usd: "cost_usd";
-                    request_count: "request_count";
+                    inference_requests: "inference_requests";
                     total_tokens: "total_tokens";
                 }>;
                 resetsAtUtc: z.ZodString;
@@ -109322,7 +109322,7 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 kind: z.ZodLiteral<"limit_reached">;
                 metric: z.ZodEnum<{
                     cost_usd: "cost_usd";
-                    request_count: "request_count";
+                    inference_requests: "inference_requests";
                     total_tokens: "total_tokens";
                 }>;
                 resetsAtUtc: z.ZodString;

@@ -84,7 +84,8 @@ describe('UI Session awareness acquisition adapter', () => {
             encryptionMode: 'plain',
             metadata: { path: '/work', host: 'host' },
             active: false,
-            presence: 'offline',
+            // `presence` is 'online' or the last-seen timestamp; any number is offline.
+            presence: 0,
             pendingPermissionRequestCount: 0,
             pendingUserActionRequestCount: 0,
             agentState: {},
@@ -103,7 +104,8 @@ describe('UI Session awareness acquisition adapter', () => {
             encryptionMode: 'plain',
             metadata: { path: '/work', host: 'host' },
             active: false,
-            presence: 'offline',
+            // `presence` is 'online' or the last-seen timestamp; any number is offline.
+            presence: 0,
             pendingPermissionRequestCount: 0,
             pendingUserActionRequestCount: 0,
             agentState: {},

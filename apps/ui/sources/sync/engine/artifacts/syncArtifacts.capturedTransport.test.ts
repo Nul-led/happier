@@ -63,7 +63,9 @@ describe('artifact captured Home transport', () => {
         const fetched = await fetchArtifactWithBodyFromApi({ ...context, artifactId: id });
         expect(fetched).toMatchObject({ title: 'B title', body: 'B body', storageMode: mode });
         // Missing versions force the update's recovery read through the same captured transport.
-        projected = { ...fetched!, headerVersion: undefined, bodyVersion: undefined };
+        // `headerVersion` is required on the projection type, so the version-less cache entry a
+        // released writer can leave behind is constructed deliberately here.
+        projected = { ...fetched!, headerVersion: undefined, bodyVersion: undefined } as unknown as DecryptedArtifact;
         context.artifactDataKeys.clear();
         await updateArtifactViaApi({ ...context, artifactId: id, title: 'B updated', body: 'B updated body', getArtifact: () => projected, updateArtifact: (value) => { projected = value; } });
         expect(projected).toMatchObject({ title: 'B updated', body: 'B updated body', headerVersion: 2, bodyVersion: 2 });

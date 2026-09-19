@@ -141,6 +141,8 @@ export interface SessionListRenderableSession {
     access?: Session['access'];
     responsibleAccountId?: Session['responsibleAccountId'];
     responsibleAccount?: Session['responsibleAccount'];
+    /** Audience fact the transcript authorship owner reads for the exact Home. */
+    hasOtherNamedCollaborator?: Session['hasOtherNamedCollaborator'];
     accessLevel?: 'view' | 'edit' | 'admin';
     canApprovePermissions?: boolean;
     hasPendingPermissionRequests?: boolean;
@@ -606,6 +608,9 @@ export function buildSessionListRenderableFromSession(
         ...(Object.prototype.hasOwnProperty.call(session, 'responsibleAccount')
             ? { responsibleAccount: session.responsibleAccount }
             : {}),
+        ...(Object.prototype.hasOwnProperty.call(session, 'hasOtherNamedCollaborator')
+            ? { hasOtherNamedCollaborator: session.hasOtherNamedCollaborator }
+            : {}),
         accessLevel: session.accessLevel,
         canApprovePermissions: session.canApprovePermissions,
         ...(hasPendingEvidence
@@ -865,6 +870,7 @@ export function areSessionListRenderablesEqual(
         && JSON.stringify(previous.access ?? null) === JSON.stringify(next.access ?? null)
         && previous.responsibleAccountId === next.responsibleAccountId
         && areResponsibleAccountSummariesEqual(previous.responsibleAccount, next.responsibleAccount)
+        && previous.hasOtherNamedCollaborator === next.hasOtherNamedCollaborator
         && (previous.accessLevel ?? null) === (next.accessLevel ?? null)
         && (previous.canApprovePermissions ?? null) === (next.canApprovePermissions ?? null)
         && (previous.hasPendingPermissionRequests ?? null) === (next.hasPendingPermissionRequests ?? null)
@@ -993,6 +999,7 @@ export function didSessionListRenderableWarmCacheFieldsChange(
     if (JSON.stringify(previous.access ?? null) !== JSON.stringify(next.access ?? null)) return true;
     if (previous.responsibleAccountId !== next.responsibleAccountId) return true;
     if (!areResponsibleAccountSummariesEqual(previous.responsibleAccount, next.responsibleAccount)) return true;
+    if (previous.hasOtherNamedCollaborator !== next.hasOtherNamedCollaborator) return true;
     if ((previous.accessLevel ?? null) !== (next.accessLevel ?? null)) return true;
     if ((previous.canApprovePermissions ?? null) !== (next.canApprovePermissions ?? null)) return true;
     if (readSessionMetadataLayoutVersion(previous.metadataLayoutVersion)
@@ -1057,6 +1064,7 @@ export function isSessionListRenderableWarmCacheProgressOnlyChange(
     if (JSON.stringify(previous.access ?? null) !== JSON.stringify(next.access ?? null)) return false;
     if (previous.responsibleAccountId !== next.responsibleAccountId) return false;
     if (!areResponsibleAccountSummariesEqual(previous.responsibleAccount, next.responsibleAccount)) return false;
+    if (previous.hasOtherNamedCollaborator !== next.hasOtherNamedCollaborator) return false;
     if ((previous.accessLevel ?? null) !== (next.accessLevel ?? null)) return false;
     if ((previous.canApprovePermissions ?? null) !== (next.canApprovePermissions ?? null)) return false;
     if ((previous.hasPendingPermissionRequests ?? null) !== (next.hasPendingPermissionRequests ?? null)) return false;

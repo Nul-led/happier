@@ -176,7 +176,7 @@ describe('fetchAndApplyMachines machine data-key unwrapping', () => {
         expect(initializeMachines.mock.calls[1]?.[1]).toEqual(new Set(['runner-1']));
     });
 
-    it('keeps a Runner locked on a device without creator activation custody', async () => {
+    it('keeps a Runner locked on a device without creator activation custody and without a creator-sealed verifier fact', async () => {
         const fetchAndApplyMachines = await loadFetchAndApplyMachines();
         const signing = tweetnacl.sign.keyPair();
         const dataKey = new Uint8Array(32).fill(19);

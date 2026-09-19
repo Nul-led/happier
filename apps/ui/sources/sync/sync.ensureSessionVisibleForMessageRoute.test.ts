@@ -78,6 +78,7 @@ vi.mock('@/sync/api/session/apiSocket', () => ({
         onReconnected: vi.fn(),
         disconnect: vi.fn(),
         initialize: vi.fn(),
+        invalidateRequests: vi.fn(),
     },
 }));
 
@@ -816,7 +817,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         } }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
         const { getSessionActivityForVoiceTool } = await import('@/voice/tools/actionImpl/sessionActivity');
         const before = await getSessionActivityForVoiceTool({ sessionId: 'retained-awareness', serverId: home.id });
-        expect(before.ok).toBe(true);
+        expect(before).toMatchObject({ ok: true });
         const messages: Message[] = [
             { id: 'm1', kind: 'user-text', text: 'Hi', localId: null, createdAt: 1 },
             { id: 'm2', kind: 'agent-text', text: 'Hello', localId: null, createdAt: 2 },
@@ -2215,6 +2216,72 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
             (call) => call?.[0] === `/v2/sessions/${sessionId}`,
         );
         expect(sessionByIdCalls).toHaveLength(1);
+    });
+
+    it('uses its applied Home rather than staged selection for unqualified message-route hydration', async () => {
+        const sessionId = 'unqualified_applied_route';
+        const appliedHome = await upsertServerProfile({
+            serverUrl: 'https://applied-route.example.test',
+            name: 'Applied route',
+        });
+        const stagedHome = await upsertServerProfile({
+            serverUrl: 'https://staged-route.example.test',
+            name: 'Staged route',
+        });
+        await setActiveServerId(stagedHome.id, { scope: 'device' });
+
+        const { sync } = await import('./sync');
+        (sync as any).credentials = { token: tokenForSub('applied-account'), secret: 'applied-secret' };
+        (sync as any).appliedServerTarget = {
+            serverId: appliedHome.id,
+            serverUrl: appliedHome.serverUrl,
+            generation: 1,
+        };
+        (sync as any).activeServerSessionIds = new Set<string>();
+        (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
+        (sync as any).encryption = null;
+        requestMock.mockRejectedValue(new Error('the unavailable singleton must not be used'));
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: tokenForSub('applied-account'),
+            secret: 'applied-secret',
+        });
+        createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
+        runtimeFetchMock.mockImplementation(async (url: string) => {
+            if (new URL(url).pathname === '/v1/auth/ping') {
+                return Response.json({ success: true });
+            }
+            return new Response(JSON.stringify({
+                session: {
+                    id: sessionId,
+                    createdAt: 1,
+                    updatedAt: 2,
+                    seq: 0,
+                    active: false,
+                    activeAt: 2,
+                    encryptionMode: 'plain',
+                    dataEncryptionKey: null,
+                    metadataVersion: 0,
+                    metadata: null,
+                    agentStateVersion: 0,
+                    agentState: null,
+                    share: null,
+                },
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        });
+
+        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, {
+            forceRefresh: true,
+            scopeCurrentness: () => true,
+        })).resolves.toMatchObject({
+            kind: 'available',
+            sessionId,
+            serverId: appliedHome.id,
+        });
+        expect(requestMock).not.toHaveBeenCalled();
+        expectRuntimeFetchWithBearer(
+            `https://applied-route.example.test/v2/sessions/${sessionId}`,
+            tokenForSub('applied-account'),
+        );
     });
 
     it('re-fetches a known encrypted session when the stored record is still partially hydrated', async () => {

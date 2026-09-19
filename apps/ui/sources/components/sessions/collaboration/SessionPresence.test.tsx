@@ -36,7 +36,6 @@ function publishViewerAttention(reasons: readonly ('mentioned' | 'unread_discuss
     const row = createSessionListRenderableSessionFixture({
         id: target.sessionId,
         viewer: {
-            v: 1,
             readState: tracked
                 ? { state: 'tracking', lastViewedSessionSeq: 1, unreadSince: null }
                 : { state: 'not_started' },
@@ -46,6 +45,9 @@ function publishViewerAttention(reasons: readonly ('mentioned' | 'unread_discuss
                 primary: reasons[0] ?? null,
                 presentation: 'full',
             },
+            relevance: { relevant: true, reasons: ['owned_by_me'] },
+            follow: { follows: false, notificationLevel: null },
+            notification: { level: 'important', source: 'owner' },
         },
     });
     storage.setState((state) => ({
@@ -112,6 +114,36 @@ describe('Session presence surfaces', () => {
         expect(open).toHaveBeenCalledOnce();
         await act(async () => home!.setStatus('unavailable'));
         expect(screen.findByTestId('session-viewer-facepile')?.props.accessibilityLabel).toContain('May be out of date');
+    });
+
+    it('says who is typing instead of signalling it with the avatar ring colour alone', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const screen = await renderScreen(<HeaderEntryFromCanonicalState onPress={vi.fn()} />);
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 2,
+            viewers: [{ account: account('Alice'), typing: true }, { account: account('Bob'), typing: false }],
+        }));
+
+        // The ring is a colour difference a screen reader and a colour-blind viewer
+        // cannot perceive, so the same fact has to reach the accessible name.
+        const label = screen.findByTestId('session-viewer-facepile')?.props.accessibilityLabel as string;
+        expect(label).toContain('Alice · Typing…');
+        expect(label).toContain('Bob');
+        expect(label).not.toContain('Bob · Typing…');
+    });
+
+    it('announces presence changes from the Viewing now region the user navigated to', async () => {
+        home = sessionHumanPresenceStore.attachHome(target.serverId, 'self');
+        home.beginDeclaration([target.sessionId]);
+        const screen = await renderScreen(<SessionPresenceSection {...target} />);
+        await act(async () => home!.receiveSnapshot({
+            v: 1, sessionId: target.sessionId, observedAt: 3,
+            viewers: [{ account: account('Alice'), typing: false }],
+        }));
+
+        expect(screen.findByTestId('session-presence-status')?.props.accessibilityLiveRegion).toBe('polite');
+        expect(screen.findByTestId('session-presence-status')?.props.children).toBe('Alice');
     });
 
     it('replaces the solo collaboration action with the compact facepile when another viewer arrives', async () => {

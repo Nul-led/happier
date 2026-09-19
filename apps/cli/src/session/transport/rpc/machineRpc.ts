@@ -2,7 +2,10 @@ import { buildCurrentAccountStoredContentCompatibilityHttpHeaders } from '@/api/
 import { fetchAccountMachineReplacements } from '@/api/machine/fetchAccountMachineReplacements';
 import { createUserScopedSocket } from '@/api/session/sockets';
 import { resolveServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
-import { resolvePublishedMachineContentCodec } from '@/api/machine/machineDataEncryptionKey';
+import {
+  resolvePublishedMachineContentCodec,
+  type ExpectedRunnerMachineContentKeyBindingScope,
+} from '@/api/machine/machineDataEncryptionKey';
 import type { StoredCredentials } from '@/persistence';
 import { waitForSocketConnect } from '@/session/transport/socket/waitForSocketConnect';
 import { createSocketRpcAbortScope, type SocketRpcAbortScope } from '@/session/transport/socket/createSocketRpcAbortScope';
@@ -10,10 +13,7 @@ import { resolveSessionControlSocketConnectTimeoutMs } from '@/session/transport
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import type { SocketRpcAuthorizationContext } from '@happier-dev/protocol/rpc';
 import { createRpcCallError, isRpcMethodNotAvailableError } from '@happier-dev/protocol/rpcErrors';
-import {
-  resolveCanonicalMachineId,
-  type ExpectedRunnerMachineContentKeyBindingV1,
-} from '@happier-dev/protocol';
+import { resolveCanonicalMachineId } from '@happier-dev/protocol';
 import axios from 'axios';
 import { randomUUID } from 'node:crypto';
 import type { ActionExecutorContext } from '@happier-dev/protocol/actions';
@@ -92,10 +92,7 @@ async function resolveMachineRpcContentCodec(params: Readonly<{
   serverUrl?: string;
   timeoutMs: number;
   signal?: AbortSignal;
-  expectedRunnerMachineContentKeyBinding?: Omit<
-    ExpectedRunnerMachineContentKeyBindingV1,
-    'accountSigningPublicKeyBase64Url'
-  >;
+  expectedRunnerMachineContentKeyBinding?: ExpectedRunnerMachineContentKeyBindingScope;
   requireCurrentMachine?: boolean;
   requiredMachineKind?: 'persistent' | 'ephemeral_session_runner';
   externalAction?: Readonly<{
@@ -184,10 +181,7 @@ export async function callExactMachineRpc(params: Readonly<{
   /** Captured from verified Account/Machine context, never inferred from key presence. */
   expectedEncryptionMode?: 'plain' | 'e2ee';
   /** Independently trusted Home/Account/Machine scope required for an encrypted Runner Machine. */
-  expectedRunnerMachineContentKeyBinding?: Omit<
-    ExpectedRunnerMachineContentKeyBindingV1,
-    'accountSigningPublicKeyBase64Url'
-  >;
+  expectedRunnerMachineContentKeyBinding?: ExpectedRunnerMachineContentKeyBindingScope;
   /** Reject a revoked/replaced row before encryption or socket emission. */
   requireCurrentMachine?: boolean;
   /** Reject a different Machine class before encryption or socket emission. */

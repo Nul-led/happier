@@ -20,7 +20,23 @@ import {
     sessionFolderAddressKey,
     SESSION_FOLDER_MAX_NAME_LENGTH,
 } from './index';
-import type { SessionFolderV1, SessionFoldersV1, SessionFolderWorkspaceRefV1 } from './types';
+import type {
+    SessionFolderList,
+    SessionFolderV1,
+    SessionFoldersV1,
+    SessionFolderWorkspaceRefV1,
+} from './types';
+
+/**
+ * The stored setting projected into the Home-qualified list the tree builder reads.
+ * A stored folder always carries its Home inside its workspace ref.
+ */
+function listedFolders(stored: SessionFoldersV1): SessionFolderList {
+    return {
+        v: 1,
+        folders: stored.folders.map((folder) => ({ ...folder, serverId: folder.workspace.serverId ?? '' })),
+    };
+}
 
 const workspaceA: SessionFolderWorkspaceRefV1 = {
     t: 'workspaceScope',
@@ -127,7 +143,7 @@ describe('session folder domain helpers', () => {
             ],
         });
 
-        const tree = buildSessionFolderTree(normalized, workspaceA);
+        const tree = buildSessionFolderTree(listedFolders(normalized), workspaceA);
         const focus = resolveSessionFolderFocusScope(normalized, {
             folderId: 'child',
             workspace: workspaceA,
@@ -232,7 +248,7 @@ describe('session folder domain helpers', () => {
         });
 
         expect(moved.folder).toMatchObject({ id: 'child', parentId: null, updatedAt: 50 });
-        expect(buildSessionFolderTree(moved.next, workspaceA).rootNodes.map((node) => node.id))
+        expect(buildSessionFolderTree(listedFolders(moved.next), workspaceA).rootNodes.map((node) => node.id))
             .toEqual(['parent', 'child', 'alpha', 'zulu']);
     });
 
@@ -261,7 +277,7 @@ describe('session folder domain helpers', () => {
         expect(foldersById.get('zulu')).toMatchObject({ sortKey: 'a2', updatedAt: 13 });
         expect(foldersById.get('child')).toMatchObject({ parentId: null, updatedAt: 50 });
         expect(foldersById.get('child')?.sortKey).not.toBe('a0');
-        expect(buildSessionFolderTree(moved.next, workspaceA).rootNodes.map((node) => node.id))
+        expect(buildSessionFolderTree(listedFolders(moved.next), workspaceA).rootNodes.map((node) => node.id))
             .toEqual(['parent', 'child', 'alpha', 'zulu']);
     });
 

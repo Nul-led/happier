@@ -25,7 +25,7 @@ const CODEX_SERVICE_KEY = 'happier.agent.codex/openai-codex';
 // legacy mapping.
 const NOVEL_SERVICE_KEY = 'acme.review/reviewer-service';
 
-const modalShowMock = vi.hoisted(() => vi.fn());
+const modalShowMock = vi.hoisted(() => vi.fn((..._args: unknown[]) => 'modal-1'));
 const modalConfirmMock = vi.hoisted(() => vi.fn(async () => false));
 const useFeatureEnabledMock = vi.hoisted(() => vi.fn());
 const newSessionConnectedAccountProjection = {
@@ -990,8 +990,8 @@ describe('useNewSessionConnectedServices', () => {
         const setAgentOptionStateForCurrentAgent = vi.fn();
         const selection = {
             source: 'team_resource' as const,
-            teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 4,
-            sourceMemberKey: 'member-key', sourceVersion: 'source-version',
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
             disclosedMember: {
                 service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
                 accountId: 'shared-account',
@@ -1045,8 +1045,8 @@ describe('useNewSessionConnectedServices', () => {
         const setAgentOptionStateForCurrentAgent = vi.fn();
         const selection = {
             source: 'team_resource' as const,
-            teamId: 'team-1', resourceId: 'resource-1', expectedResourceRevision: 4,
-            sourceMemberKey: 'member-key', sourceVersion: 'source-version',
+            resourceId: 'resource-1',
+            deliveryMode: 'direct' as const,
             disclosedMember: {
                 service: { pluginId: 'happier.agent.claude', localId: 'anthropic' },
                 accountId: 'shared-account',

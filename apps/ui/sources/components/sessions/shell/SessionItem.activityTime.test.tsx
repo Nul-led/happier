@@ -1093,7 +1093,11 @@ describe('SessionItem activity time', () => {
         const now = Date.now();
         const sessionId = `sess_accessible_${state}`;
         const session = createSessionFixture({
-            ...createSession(sessionId, { name: `Accessible ${state}`, path: '/workspace/example' }),
+            ...createSession(sessionId, {
+                name: `Accessible ${state}`,
+                path: '/workspace/example',
+                host: 'tester.local',
+            }),
             ...sourceFacts,
             thinkingAt: state === 'thinking' ? now : 0,
             pendingRequestObservedAt: state === 'permission_required' || state === 'action_required' ? now : null,
@@ -1124,7 +1128,8 @@ describe('SessionItem activity time', () => {
         expect(row?.props.accessibilityLabel).toContain(mockSessionStatus.statusText);
         expect(row?.props.accessibilityState).toMatchObject({ selected: false, busy });
         expect(screen.tree.root.findAll((node) => (
-            node.type === 'Pressable'
+            // A host element's node type is its tag string; components never stringify to it.
+            String(node.type) === 'Pressable'
             && node.props?.testID === `session-list-item-${sessionId}`
         ))).toHaveLength(1);
         const indicator = screen.findByTestId(`session-row-attention-indicator-${sessionId}-trailing`)
@@ -1248,6 +1253,7 @@ describe('SessionItem activity time', () => {
                     },
                     externalSessionRuntime: null,
                     externalSessionIdentity: null,
+                    reminder: null,
                     isIdentityLoading: false,
                     nextRuntimeFreshnessAtMs: null,
                     hasUnreadMessages: true,
