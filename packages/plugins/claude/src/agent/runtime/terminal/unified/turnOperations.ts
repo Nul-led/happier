@@ -142,6 +142,7 @@ import {
   applyClaudeUnifiedTerminalLaunchIntent,
   type ClaudeUnifiedTerminalLaunchIntent,
 } from './launchIntent.js';
+import { classifyClaudeStartupRefusal } from './startupRefusal.js';
 import { createClaudeUnifiedTerminalRuntimeState } from './runtimeState.js';
 import {
   ClaudeUnifiedResumeIdentityMismatchError,
@@ -2700,6 +2701,28 @@ export function createClaudeUnifiedTerminalTurnOperations(
       // markers) so a live rendered composer is never false-negatively deferred.
       let screen = parseClaudeScreenState(inputState.currentInput, { cursor: inputState.cursor });
       recordScreenProgress(screen.text);
+      // Claude refuses some launches before any session exists, printing one line and exiting.
+      // Readiness can never arrive, and relaunching with the same arguments reproduces it, so
+      // terminalize now with the fix Claude named instead of deferring until the startup window
+      // expires and reporting a generic timeout.
+      const startupRefusal = classifyClaudeStartupRefusal({ text: screen.text });
+      if (startupRefusal && !startupRefusal.retryable) {
+        lastReadinessKind = 'failed';
+        arbiter.observeReadiness({
+          status: 'failed_terminal',
+          observedAt: Date.now(),
+          reason: `provider_refused_start:${startupRefusal.code}`,
+          hostKind: handle.kind,
+          hostSessionName: handle.sessionName,
+          ...(handle.paneId ? { paneId: handle.paneId } : {}),
+          recoverable: false,
+        });
+        params.ctx.logger.warn('[ClaudeUnifiedTerminal] Claude refused to start', {
+          code: startupRefusal.code,
+          guidance: startupRefusal.guidance,
+        });
+        return;
+      }
       // Resolve a recognized dialog (owner arbitration → publish) BEFORE composer-draft
       // classification so an owned effort/model dialog is answered/published first. A registry-
       // recognized dialog that blocks a queued prompt is tracked so a sustained block escalates once
