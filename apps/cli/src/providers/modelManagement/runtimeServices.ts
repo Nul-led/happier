@@ -167,8 +167,6 @@ export function projectDaemonProviderTeamCredentialRequestPolicySupportV1(input:
       aliases: [...(input.descriptor.aliases ?? [])],
     },
     reasoningEffort,
-    maxOutputTokens: { supported: false },
-    maxThinkingBudgetTokens: { supported: false },
   };
 }
 

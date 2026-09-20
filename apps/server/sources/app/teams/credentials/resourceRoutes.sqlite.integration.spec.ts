@@ -167,8 +167,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 protocolKind: "openai_responses" as const,
                 model: { canonicalId: "gpt-5", aliases: ["gpt-latest"] },
                 reasoningEffort: { supported: false as const },
-                maxOutputTokens: { supported: false as const },
-                maxThinkingBudgetTokens: { supported: false as const },
             }],
         } }));
         app.forwardRpcForUser = rpc;
@@ -193,8 +191,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                     sourceRevision: "request-policy-source-revision",
                     allowedProtocolKinds: ["openai_responses"],
                     reasoningEffort: null,
-                    maxOutputTokens: null,
-                    maxThinkingBudgetTokens: null,
                 }],
             });
             expect(response.body).not.toContain(broker.id);
@@ -226,8 +222,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 allowedProtocolKinds: ["openai_responses" as const],
                 allowedModelIds: ["missing-model"],
                 reasoningEffort: null,
-                maxOutputTokens: null,
-                maxThinkingBudgetTokens: null,
             },
             allMembersDeliveryMode: null,
             groupGrants: [],
@@ -310,8 +304,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                     protocolKind: "openai_responses" as const,
                     model: { canonicalId: "gpt-5", aliases: ["latest"] },
                     reasoningEffort: { supported: false as const },
-                    maxOutputTokens: { supported: false as const },
-                    maxThinkingBudgetTokens: { supported: false as const },
                 },
                 {
                     descriptor: { id: "gpt-6", name: "GPT-6", aliases: ["latest"] },
@@ -320,8 +312,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                     protocolKind: "openai_responses" as const,
                     model: { canonicalId: "gpt-6", aliases: ["latest"] },
                     reasoningEffort: { supported: false as const },
-                    maxOutputTokens: { supported: false as const },
-                    maxThinkingBudgetTokens: { supported: false as const },
                 },
             ],
         } });
@@ -370,8 +360,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 protocolKind: "openai_responses" as const,
                 model: { canonicalId: "gpt-5", aliases: ["gpt-latest"] },
                 reasoningEffort: { supported: false as const },
-                maxOutputTokens: { supported: false as const },
-                maxThinkingBudgetTokens: { supported: false as const },
             }],
         } });
 
@@ -404,8 +392,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                 allowedProtocolKinds: ["openai_responses" as const],
                 allowedModelIds: ["missing-model"],
                 reasoningEffort: null,
-                maxOutputTokens: null,
-                maxThinkingBudgetTokens: null,
             },
             allMembersDeliveryMode: null,
             groupGrants: [],
@@ -478,8 +464,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                     protocolKind: "openai_responses" as const,
                     model: { canonicalId: "gpt-5", aliases: ["gpt-latest"] },
                     reasoningEffort: { supported: false as const },
-                    maxOutputTokens: { supported: false as const },
-                    maxThinkingBudgetTokens: { supported: false as const },
                 }],
             } };
         });
@@ -1028,8 +1012,6 @@ describe("Team credential resource routes (SQLite integration)", () => {
                     allowedProtocolKinds: null,
                     allowedModelIds: null,
                     reasoningEffort: null,
-                    maxOutputTokens: null,
-                    maxThinkingBudgetTokens: null,
                 }),
                 sourceBindingJson: JSON.stringify(source),
             } });

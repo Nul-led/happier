@@ -107,14 +107,6 @@ export function normalizeTeamCredentialRequestPolicyForPersistence(input: Readon
             || !normalizedPolicy.reasoningEffort!.allowedValues.every((value) => support.allowedValues.includes(value))
             || !support.allowedValues.includes(normalizedPolicy.reasoningEffort!.defaultValue);
     })) return null;
-    if (normalizedPolicy.maxOutputTokens !== null && selected.some((model) => (
-        model.maxOutputTokens === null || normalizedPolicy.maxOutputTokens! > model.maxOutputTokens.maximum
-    ))) return null;
-    if (normalizedPolicy.maxThinkingBudgetTokens !== null && selected.some((model) => (
-        model.maxThinkingBudgetTokens === null
-        || normalizedPolicy.maxThinkingBudgetTokens! < model.maxThinkingBudgetTokens.minimum
-        || normalizedPolicy.maxThinkingBudgetTokens! > model.maxThinkingBudgetTokens.maximum
-    ))) return null;
     return normalizedPolicy;
 }
 

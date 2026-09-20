@@ -487,8 +487,6 @@ export function requestPolicySummary(resource: TeamCredentialResourceSummaryV1):
         policy.allowedProtocolKinds,
         policy.allowedModelIds,
         policy.reasoningEffort,
-        policy.maxOutputTokens,
-        policy.maxThinkingBudgetTokens,
     ].filter((field) => field !== null).length;
     return count === 0
         ? t('teams.credentials.requestPolicy.summaryNone')

@@ -52,6 +52,7 @@ export async function listTeamMembers(params: Readonly<{
     scope: ServerAccountScope;
     address: TeamAddress;
     filter: TeamMembersListFilterV1;
+    query?: string;
     cursor?: string | null;
     limit?: number;
 }>): Promise<TeamMemberOutcome<TeamMembersPageV1>> {
@@ -62,6 +63,7 @@ export async function listTeamMembers(params: Readonly<{
             v: 1,
             teamId: params.address.teamId,
             filter: params.filter,
+            ...(params.query ? { query: params.query } : {}),
             ...(params.cursor ? { cursor: params.cursor } : {}),
             ...(params.limit ? { limit: params.limit } : {}),
         },

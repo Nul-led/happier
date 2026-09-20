@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { projectReleasedDirectShareEvent } from "./publishSessionAccessChange";
+import { projectDirectSharePersonalEvent, projectReleasedDirectShareEvent } from "./publishSessionAccessChange";
 import type { SessionAccessGrantEffects } from "./sessionAccessGrantService";
 
 const RECIPIENT = "account-recipient";
@@ -95,5 +95,55 @@ describe("released direct-share event projection", () => {
             directShare: DIRECT_SHARE,
             directShareRemoved: false,
         })).toBeNull();
+    });
+});
+
+describe("direct-share personal event projection", () => {
+    function personalEventFor(
+        input: Parameters<typeof projectReleasedDirectShareEvent>[0],
+    ) {
+        return projectDirectSharePersonalEvent(projectReleasedDirectShareEvent(input));
+    }
+
+    it("produces exactly one targeted share event for a new direct grant", () => {
+        expect(personalEventFor({
+            recipientAccountId: RECIPIENT,
+            effects: effects({ changed: [RECIPIENT], granted: [RECIPIENT] }),
+            directShare: DIRECT_SHARE,
+            directShareRemoved: false,
+        })).toEqual({
+            sessionId: "session-1",
+            event: "directly_shared",
+            targetAccountIds: [RECIPIENT],
+            // The granter performed the action; their own share is never their own event.
+            sourceAccountId: "account-owner",
+        });
+    });
+
+    it("produces nothing for a context-only update, a revoke, or a Team or Group grant", () => {
+        expect(personalEventFor({
+            recipientAccountId: RECIPIENT,
+            effects: effects({ changed: [RECIPIENT] }),
+            directShare: DIRECT_SHARE,
+            directShareRemoved: false,
+        })).toBeNull();
+
+        expect(personalEventFor({
+            recipientAccountId: RECIPIENT,
+            effects: effects({ changed: [RECIPIENT], revoked: [RECIPIENT] }),
+            directShare: DIRECT_SHARE,
+            directShareRemoved: true,
+        })).toBeNull();
+
+        // A Team or Group grant admits the reader without any direct row: item 16
+        // makes collective access a non-event, not a quieter share.
+        expect(personalEventFor({
+            recipientAccountId: RECIPIENT,
+            effects: effects({ changed: [RECIPIENT], granted: [RECIPIENT] }),
+            directShare: null,
+            directShareRemoved: false,
+        })).toBeNull();
+
+        expect(projectDirectSharePersonalEvent(null)).toBeNull();
     });
 });

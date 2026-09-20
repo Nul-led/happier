@@ -2747,6 +2747,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                     }>;
                     expiresAt: z.ZodNumber;
                     recipientEmailMask: z.ZodNullable<z.ZodString>;
+                    inviterLabel: z.ZodDefault<z.ZodOptional<z.ZodNullable<z.ZodString>>>;
                 }, z.core.$strict>;
             }, z.core.$strict>,
             z.ZodObject<{
@@ -10368,6 +10369,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                 }>;
                 expiresAt: z.ZodNumber;
                 recipientEmailMask: z.ZodNullable<z.ZodString>;
+                inviterLabel: z.ZodDefault<z.ZodOptional<z.ZodNullable<z.ZodString>>>;
             }, z.core.$strict>;
         }, z.core.$strict>,
         z.ZodObject<{
@@ -10946,6 +10948,7 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
         }>;
         limit: z.ZodOptional<z.ZodNumber>;
         cursor: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+        query: z.ZodOptional<z.ZodString>;
     }, z.core.$strict>, z.ZodObject<{
         items: z.ZodArray<z.ZodObject<{
             v: z.ZodLiteral<1>;
@@ -38054,7 +38057,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                         }, z.core.$strict>;
                         generation: z.ZodString;
                     }, z.core.$strict>;
-                    contributionGeneration: z.ZodString;
+                    sourceCustody: z.ZodType<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), z.core.$ZodTypeInternals<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {})>>;
                     cursorIdentity: z.ZodString;
                 }, z.core.$strict>;
                 result: z.ZodDiscriminatedUnion<[
@@ -38160,7 +38227,71 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                         }, z.core.$strict>;
                         generation: z.ZodString;
                     }, z.core.$strict>;
-                    contributionGeneration: z.ZodString;
+                    sourceCustody: z.ZodType<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), z.core.$ZodTypeInternals<({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {}), ({
+                        kind: "managed";
+                        immutableGenerationId: string;
+                        installSource: "archive" | "localPath" | "npm";
+                    } & {}) | ({
+                        kind: "bundled_first_party";
+                        packagedRuntime: ({
+                            kind: "cli_version_root";
+                            versionRootId: string;
+                        } & {}) | ({
+                            kind: "pinned_runner_snapshot";
+                            snapshotId: string;
+                        } & {});
+                    } & {}) | ({
+                        kind: "development";
+                        registeredRootId: string;
+                    } & {})>>;
                     cursorIdentity: z.ZodString;
                 }, z.core.$strict>;
                 cursor: z.ZodString;
@@ -43058,8 +43189,6 @@ const PLUGIN_PERMISSION_GRANT_PLUGIN_INPUT_SCHEMAS: Readonly<{
                 accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                 selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                 selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 contribution: z.ZodObject<{
                     localId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                 }, z.core.$strict>;
@@ -43101,8 +43230,6 @@ const PLUGIN_PERMISSION_GRANT_PLUGIN_INPUT_SCHEMAS: Readonly<{
                 accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                 selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                 selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 contribution: z.ZodObject<{
                     localId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                 }, z.core.$strict>;
@@ -43212,6 +43339,7 @@ const PluginDevLoopActionInputSchemas: {
         id: z.ZodString;
         name: z.ZodString;
         ui: z.ZodOptional<z.ZodEnum<{
+            declarative: "declarative";
             hostedWeb: "hostedWeb";
             reactNative: "reactNative";
         }>>;
@@ -43718,7 +43846,8 @@ type ActionPluginCaller = Readonly<{
     kind: 'plugin';
     pluginId: string;
     contributionLocalId?: string;
-    immutableGenerationId?: string;
+    occurrenceId?: string;
+    sourceCustody?: PluginSourceCustodyV1;
     materialization?: PluginMachineMaterializationRefV1;
 }>;
 ```
@@ -99594,8 +99723,6 @@ const PluginPermissionGrantActionInputSchemasV1: Readonly<{
                 accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                 selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                 selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
             }, z.core.$strict>
         ], "kind">>;
         caller: z.ZodOptional<z.ZodObject<{
@@ -99650,8 +99777,6 @@ const PluginPermissionGrantActionInputSchemasV1: Readonly<{
                 accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                 selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                 selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
             }, z.core.$strict>
         ], "kind">;
         requester: z.ZodDiscriminatedUnion<[
@@ -99751,8 +99876,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -99823,8 +99946,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -99914,8 +100035,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -100005,8 +100124,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -100077,8 +100194,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -100168,8 +100283,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -100242,8 +100355,6 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
                     accessDeclarationDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessDeclarationDigest", "out">;
                     selectedAuthorityDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedAuthorityDigest", "out">;
                     selectedRawAccessDigest: z.core.$ZodBranded<z.ZodString, "CredentialAccessSelectedRawAccessDigest", "out">;
-                    installedGenerationId: z.core.$ZodBranded<z.ZodString, "PluginPermissionInstalledGenerationId", "out">;
-                    installReviewPrincipalDigest: z.core.$ZodBranded<z.ZodString, "PluginInstallReviewPrincipalDigest", "out">;
                 }, z.core.$strict>
             ], "kind">;
             authoritySource: z.ZodDefault<z.ZodDiscriminatedUnion<[
@@ -100287,6 +100398,88 @@ const PluginPermissionGrantActionOutputSchemasV1: Readonly<{
         }, z.core.$strict>;
     }, z.core.$strict>;
 }>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/runtime/sourceCustody.d.ts` — `PluginSourceCustodyV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type PluginSourceCustodyV1 = z.infer<typeof PluginSourceCustodyV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/runtime/sourceCustody.d.ts` — `PluginSourceCustodyV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const PluginSourceCustodyV1Schema: z.ZodType<({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), ({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), z.core.$ZodTypeInternals<({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), ({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {})>>;
 ```
 
 
@@ -107527,8 +107720,6 @@ const TEAM_CREDENTIAL_ACTION_INPUT_SCHEMAS_V1: {
                 allowedValues: z.ZodArray<z.ZodString>;
                 defaultValue: z.ZodString;
             }, z.core.$strict>>;
-            maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-            maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
         }, z.core.$strict>>;
         allMembersDeliveryMode: z.ZodNullable<z.ZodEnum<{
             both: "both";
@@ -107608,8 +107799,6 @@ const TEAM_CREDENTIAL_ACTION_INPUT_SCHEMAS_V1: {
                 allowedValues: z.ZodArray<z.ZodString>;
                 defaultValue: z.ZodString;
             }, z.core.$strict>>;
-            maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-            maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
         }, z.core.$strict>>>;
         replacement: z.ZodOptional<z.ZodObject<{
             enabled: z.ZodBoolean;
@@ -107630,8 +107819,6 @@ const TEAM_CREDENTIAL_ACTION_INPUT_SCHEMAS_V1: {
                     allowedValues: z.ZodArray<z.ZodString>;
                     defaultValue: z.ZodString;
                 }, z.core.$strict>>;
-                maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-                maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
             }, z.core.$strict>>;
             allMembersDeliveryMode: z.ZodNullable<z.ZodEnum<{
                 both: "both";
@@ -108042,8 +108229,6 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                     allowedValues: z.ZodArray<z.ZodString>;
                     defaultValue: z.ZodString;
                 }, z.core.$strict>>;
-                maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-                maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
             }, z.core.$strict>>;
             brokerPlacement: z.ZodNullable<z.ZodDiscriminatedUnion<[
                 z.ZodObject<{
@@ -108366,13 +108551,6 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                     allowedValues: z.ZodArray<z.ZodString>;
                     defaultValue: z.ZodString;
                 }, z.core.$strict>>;
-                maxOutputTokens: z.ZodNullable<z.ZodObject<{
-                    maximum: z.ZodNumber;
-                }, z.core.$strict>>;
-                maxThinkingBudgetTokens: z.ZodNullable<z.ZodObject<{
-                    minimum: z.ZodNumber;
-                    maximum: z.ZodNumber;
-                }, z.core.$strict>>;
             }, z.core.$strict>>;
         }, z.core.$strict>,
         z.ZodObject<{
@@ -108655,8 +108833,6 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 allowedValues: z.ZodArray<z.ZodString>;
                 defaultValue: z.ZodString;
             }, z.core.$strict>>;
-            maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-            maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
         }, z.core.$strict>>;
         brokerPlacement: z.ZodNullable<z.ZodDiscriminatedUnion<[
             z.ZodObject<{
@@ -109179,8 +109355,6 @@ const TEAM_CREDENTIAL_ACTION_OUTPUT_SCHEMAS_V1: {
                 allowedValues: z.ZodArray<z.ZodString>;
                 defaultValue: z.ZodString;
             }, z.core.$strict>>;
-            maxOutputTokens: z.ZodNullable<z.ZodNumber>;
-            maxThinkingBudgetTokens: z.ZodNullable<z.ZodNumber>;
         }, z.core.$strict>>;
         brokerPlacement: z.ZodNullable<z.ZodDiscriminatedUnion<[
             z.ZodObject<{
@@ -113425,7 +113599,71 @@ const WorkflowAcceptedAuthorizationV1Schema: z.ZodObject<{
             kind: z.ZodLiteral<"plugin">;
             pluginId: z.ZodString;
             contributionLocalId: z.ZodOptional<z.ZodString>;
-            immutableGenerationId: z.ZodOptional<z.ZodString>;
+            sourceCustody: z.ZodType<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), z.core.$ZodTypeInternals<({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {}), ({
+                kind: "managed";
+                immutableGenerationId: string;
+                installSource: "archive" | "localPath" | "npm";
+            } & {}) | ({
+                kind: "bundled_first_party";
+                packagedRuntime: ({
+                    kind: "cli_version_root";
+                    versionRootId: string;
+                } & {}) | ({
+                    kind: "pinned_runner_snapshot";
+                    snapshotId: string;
+                } & {});
+            } & {}) | ({
+                kind: "development";
+                registeredRootId: string;
+            } & {})>>;
         }, z.core.$strict>,
         z.ZodObject<{
             kind: z.ZodLiteral<"api">;

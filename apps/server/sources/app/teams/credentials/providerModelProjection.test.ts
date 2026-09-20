@@ -74,8 +74,6 @@ function response(fingerprint: typeof source.connectionSecurityFingerprint = sou
                         allowedValues: ["low", "medium"],
                         defaultValue: "medium",
                     },
-                    maxOutputTokens: { supported: false as const },
-                    maxThinkingBudgetTokens: { supported: false as const },
                 },
                 directMaterialization: {
                     endpoint: {
@@ -174,8 +172,6 @@ describe("projectTeamCredentialRequestPolicySupportModels", () => {
             sourceRevision: "source-1",
             allowedProtocolKinds: ["openai_responses"],
             reasoningEffort: { allowedValues: ["low", "medium"], defaultValue: "medium" },
-            maxOutputTokens: null,
-            maxThinkingBudgetTokens: null,
         })]);
     });
 

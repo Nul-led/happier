@@ -14,6 +14,8 @@ import {
     teamMembersQueryKeyV1,
 } from "@happier-dev/protocol/teams";
 
+import { buildAccountTextPrefixFilter } from "@/app/account/accountTextPrefixFilter";
+import { getDbProviderFromEnv } from "@/storage/prisma";
 import type { Tx } from "@/storage/inTx";
 import { withTeamSessionAccessEffectsInTx } from "./sessionAccessEffects";
 import {
@@ -251,6 +253,24 @@ async function projectMemberInTx(
     });
 }
 
+/**
+ * The roster lookup, matched against exactly what a roster row already shows:
+ * the Account id it falls back to, and the name and username the display label
+ * is derived from. It composes the one portable Account text filter the Home's
+ * other person searches use, so a Home never matches a person two ways.
+ */
+function memberSearchPredicate(query: string) {
+    const provider = getDbProviderFromEnv(process.env, "postgres");
+    return {
+        OR: [
+            { accountId: query },
+            { account: { username: buildAccountTextPrefixFilter(query, provider) } },
+            { account: { firstName: buildAccountTextPrefixFilter(query, provider) } },
+            { account: { lastName: buildAccountTextPrefixFilter(query, provider) } },
+        ],
+    };
+}
+
 const MEMBER_FILTER_PREDICATES: Readonly<Record<TeamMembersListFilterV1, object>> = {
     all: {},
     owners_admins: { role: { in: [TeamRole.owner, TeamRole.admin] } },
@@ -273,6 +293,8 @@ export async function listTeamMembersForActorInTx(
         teamId: string;
         actorAccountId: string;
         filter: TeamMembersListFilterV1;
+        /** Bounded roster lookup; an empty or blank value is no lookup at all. */
+        query?: string;
         cursor?: string | null;
         limit?: number;
         authentication?: TeamOperationAuthenticationContext;
@@ -290,7 +312,13 @@ export async function listTeamMembersForActorInTx(
     if (!authorized.ok) return authorized;
     const context = authorized.value;
 
-    const queryKey = teamMembersQueryKeyV1({ v: 1, teamId: input.teamId, filter: input.filter });
+    const query = input.query?.trim() ?? "";
+    const queryKey = teamMembersQueryKeyV1({
+        v: 1,
+        teamId: input.teamId,
+        filter: input.filter,
+        ...(query === "" ? {} : { query }),
+    });
     let after: Readonly<{ createdAt: number; id: string }> | null = null;
     if (input.cursor) {
         const decoded = decodeTeamMembersCursorV1(input.cursor, queryKey);
@@ -303,6 +331,9 @@ export async function listTeamMembersForActorInTx(
         where: {
             teamId: input.teamId,
             ...MEMBER_FILTER_PREDICATES[input.filter],
+            // The lookup is a separate conjunct: the cursor clause below owns
+            // `OR` for the keyset position.
+            ...(query === "" ? {} : { AND: memberSearchPredicate(query) }),
             ...(after
                 ? {
                     OR: [

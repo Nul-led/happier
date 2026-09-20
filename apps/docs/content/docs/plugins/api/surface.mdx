@@ -3,8 +3,8 @@ title: Public API surface
 description: Every symbol the Plugin SDK exports and the entrypoint it comes from — generated from the SDK's own api-surface projection.
 ---
 
-The SDK exports **2,445 symbols** across **49 entrypoints**:
-536 values and 1,909 types. This page is the index — it answers
+The SDK exports **2,425 symbols** across **49 entrypoints**:
+525 values and 1,900 types. This page is the index — it answers
 "does this exist, and where do I import it from", which is the question a type
 definition file cannot answer until you already know the answer.
 
@@ -32,7 +32,7 @@ catch.
 
 | Import from | Visibility | Realm | Values | Types |
 | --- | --- | --- | --- | --- |
-| `@happier-dev/plugin-sdk` | author | any | 34 | 121 |
+| `@happier-dev/plugin-sdk` | author | any | 31 | 120 |
 | `@happier-dev/plugin-sdk/actions` | author | any | 14 | 58 |
 | `@happier-dev/plugin-sdk/agents` | author | any | 6 | 28 |
 | `@happier-dev/plugin-sdk/agents/runtime` | author | daemon | 31 | 386 |
@@ -42,7 +42,7 @@ catch.
 | `@happier-dev/plugin-sdk/browser` | author | any | 3 | 6 |
 | `@happier-dev/plugin-sdk/collections` | author | daemon | 5 | 32 |
 | `@happier-dev/plugin-sdk/connected-accounts` | author | daemon | 14 | 74 |
-| `@happier-dev/plugin-sdk/contributions` | author | any | 3 | 35 |
+| `@happier-dev/plugin-sdk/contributions` | author | any | 3 | 36 |
 | `@happier-dev/plugin-sdk/events` | author | any | 11 | 22 |
 | `@happier-dev/plugin-sdk/exec` | author | any | 0 | 16 |
 | `@happier-dev/plugin-sdk/exec/protocol-clients` | author | any | 0 | 14 |
@@ -50,7 +50,7 @@ catch.
 | `@happier-dev/plugin-sdk/fs` | author | daemon | 14 | 7 |
 | `@happier-dev/plugin-sdk/hooks` | author | daemon | 11 | 22 |
 | `@happier-dev/plugin-sdk/host/fs/json-owner-file-lock` | host | daemon | 2 | 0 |
-| `@happier-dev/plugin-sdk/host/registration` | host | any | 5 | 3 |
+| `@happier-dev/plugin-sdk/host/registration` | host | any | 8 | 3 |
 | `@happier-dev/plugin-sdk/host/ui` | host | any | 4 | 1 |
 | `@happier-dev/plugin-sdk/http` | author | any | 0 | 13 |
 | `@happier-dev/plugin-sdk/interactions` | author | any | 0 | 27 |
@@ -75,7 +75,7 @@ catch.
 | `@happier-dev/plugin-sdk/storage` | author | daemon | 2 | 24 |
 | `@happier-dev/plugin-sdk/testing` | author | daemon | 11 | 51 |
 | `@happier-dev/plugin-sdk/ui` | author | any | 38 | 110 |
-| `@happier-dev/plugin-sdk/ui/build` | author | build | 15 | 12 |
+| `@happier-dev/plugin-sdk/ui/build` | author | any | 4 | 3 |
 | `@happier-dev/plugin-sdk/ui/client` | author | browser | 4 | 1 |
 | `@happier-dev/plugin-sdk/voice` | author | any | 19 | 31 |
 | `@happier-dev/plugin-sdk/voice/client` | author | client | 12 | 38 |
@@ -86,13 +86,13 @@ catch.
 
 <Accordions>
 
-<Accordion title="@happier-dev/plugin-sdk — 155 exports">
+<Accordion title="@happier-dev/plugin-sdk — 151 exports">
 
 Anywhere. Source: `src/index.ts`.
 
-**Values** — `arePluginMachineExecutionOriginsEqual`, `arePluginMachineMaterializationRefsEqual`, `COMPOSER_MEDIA_CONTENT_CAPABILITY_V1`, `ComposerReferenceCandidateIdV1Schema`, `computeCanonicalDomainSeparatedDigest`, `createCanonicalJsonSigningInput`, `defineComposerAttachment`, `defineComposerControl`, `defineComposerReference`, `defineComposerRegion`, `definePlugin`, `defineUiSurfaceDefinition`, `isPluginError`, `isRecord`, `MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_ITEMS_V1`, `MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1`, `MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1`, `normalizePluginAccountCollectionMigrationRuntimeProjection`, `normalizePluginDaemonDatabaseRuntimeProjection`, `parseJsonLine`, `parseTimestampMs`, `PluginError`, `PluginSearchItemV1Schema`, `PluginSearchQueryV1Schema`, `PluginSearchResultV1Schema`, `projectPluginAccountCollectionDeclaration`, `readString`, `readTrimmedString`, `redactBugReportSensitiveText`, `selectCurrentTargetedContribution`, `trimBugReportTextToMaxBytes`
+**Values** — `arePluginMachineExecutionOriginsEqual`, `arePluginMachineMaterializationRefsEqual`, `COMPOSER_MEDIA_CONTENT_CAPABILITY_V1`, `ComposerReferenceCandidateIdV1Schema`, `computeCanonicalDomainSeparatedDigest`, `createCanonicalJsonSigningInput`, `defineComposerAttachment`, `defineComposerControl`, `defineComposerReference`, `defineComposerRegion`, `definePlugin`, `defineUiSurfaceDefinition`, `isPluginError`, `isRecord`, `MAX_PLUGIN_SEARCH_ITEM_COMMAND_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_ITEM_ID_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_ITEMS_V1`, `MAX_PLUGIN_SEARCH_QUERY_UTF8_BYTES_V1`, `MAX_PLUGIN_SEARCH_SUBTITLE_CODE_POINTS_V1`, `MAX_PLUGIN_SEARCH_TITLE_CODE_POINTS_V1`, `parseJsonLine`, `parseTimestampMs`, `PluginError`, `PluginSearchItemV1Schema`, `PluginSearchQueryV1Schema`, `PluginSearchResultV1Schema`, `readString`, `readTrimmedString`, `redactBugReportSensitiveText`, `selectCurrentTargetedContribution`, `trimBugReportTextToMaxBytes`
 
-**Types** — `ActionOperationDeclarationV1`, `ComposerAttachmentAuthorDeclaration`, `ComposerAttachmentAuthorDisplay`, `ComposerAttachmentAuthorPreview`, `ComposerAttachmentMessageAcceptedV1`, `ComposerAttachmentPrepareOutcomeV1`, `ComposerAttachmentPrepareRequestV1`, `ComposerAttachmentPrepareResultV1`, `ComposerAttachmentResolveRequestV1`, `ComposerAttachmentResolveRequestV2`, `ComposerAttachmentResolveResultV1`, `ComposerAttachmentRuntime`, `ComposerAttachmentsRegistrationApi`, `ComposerContentCapabilitiesV1`, `ComposerContentHandleV1`, `ComposerContentInspectRequestV1`, `ComposerContentInspectResultV1`, `ComposerContentMediaKindV1`, `ComposerContentMimeTypeV1`, `ComposerContentPickMediaRequestV1`, `ComposerContentService`, `ComposerContentStageMediaRequestV1`, `ComposerControlAuthorInteraction`, `ComposerMediaContentCapabilityV1`, `ComposerReferenceCandidatePageV1`, `ComposerReferenceResolutionV1`, `ComposerReferenceRuntime`, `ComposerReferencesRegistrationApi`, `ComposerRendererChainAuthorInput`, `ComposerSessionMediaContentV1`, `ComposerStagedMediaContentV1`, `ContributionAdmittedEntry`, `ContributionOperationContracts`, `ContributionSurfaceHandles`, `DefinedContributionPointRef`, `DefinedContributionPoints`, `DefinedPlugin`, `DefinedPluginActionContracts`, `DefinedPluginContributes`, `DefinedPluginManifest`, `DefinePluginInput`, `Disposable`, `JsonValue`, `LoggerService`, `MessageActionAvailableSnapshotV1`, `PluginAccountCollectionMigrationRuntimeProjection`, `PluginActionOperationContextV1`, `PluginActionOperationProgressUpdateV1`, `PluginApi`, `PluginAutomationRunCause`, `PluginCancellationOptions`, `PluginCleanup`, `PluginClientActivationModule`, `PluginClientApi`, `PluginComposerAttachmentDefinition`, `PluginComposerControlDefinition`, `PluginComposerDefinition`, `PluginComposerReferenceDefinition`, `PluginComposerRegionDefinition`, `PluginContributionLocalId`, `PluginContributionRef`, `PluginDaemonDatabaseDeclaration`, `PluginDaemonDatabaseDefinition`, `PluginDaemonDatabaseRuntimeProjection`, `PluginDiagnosticData`, `PluginEphemeralSharedScope`, `PluginEphemeralSharedValueLease`, `PluginErrorData`, `PluginExecutionScopeV1`, `PluginIdentity`, `PluginInvocationCaller`, `PluginInvocationContext`, `PluginInvocationContributionIdentity`, `PluginInvocationOriginSurface`, `PluginJsonValueV2`, `PluginMachineMaterializationRefV1`, `PluginOperationAvailability`, `PluginPath`, `PluginReference`, `PluginRemediationData`, `PluginRequestInterceptorDefinition`, `PluginScopedInvocationContextV1`, `PluginSearchItemV1`, `PluginSearchProviderContributionV1`, `PluginSearchQueryV1`, `PluginSearchResultV1`, `PluginServiceId`, `PluginServices`, `PluginSettingDescriptor`, `PluginSettingDescriptorBase`, `PluginSettingsChange`, `PluginSettingsMutationResult`, `PluginSettingsSnapshot`, `ProtocolActionSchemaInput`, `ProtocolActionSchemaOutput`, `TargetedContributionAdmittedEntry`, `TargetedContributionObservation`, `TargetedContributionPointRef`, `TargetedContributionSelectionResult`, `TargetedContributionSelectionUnavailableReason`, `TargetedContributionSnapshot`, `TargetedContributionsService`, `UiSurface`, `UiSurfaceAppPageDefinition`, `UiSurfaceAppPageDefinitionFor`, `UiSurfaceDeclarativeDefinition`, `UiSurfaceDeclarativeRendererDefinition`, `UiSurfaceDefinition`, `UiSurfaceDetailedDefinition`, `UiSurfaceDetailedDefinitionFor`, `UiSurfaceHostedHtmlRendererDefinition`, `UiSurfaceHostedWebBuild`, `UiSurfaceHostedWebDefinition`, `UiSurfaceHostedWebRendererDefinition`, `UiSurfacePlacement`, `UiSurfaceReactNativeBuild`, `UiSurfaceReactNativeDefinition`, `UiSurfaceReactNativeRendererDefinition`, `UiSurfaceRendererDefinition`, `UiSurfaceRendererOnlyDefinition`, `UiSurfaceSettingsPageDefinition`
+**Types** — `ActionOperationDeclarationV1`, `ComposerAttachmentAuthorDeclaration`, `ComposerAttachmentAuthorDisplay`, `ComposerAttachmentAuthorPreview`, `ComposerAttachmentMessageAcceptedV1`, `ComposerAttachmentPrepareOutcomeV1`, `ComposerAttachmentPrepareRequestV1`, `ComposerAttachmentPrepareResultV1`, `ComposerAttachmentResolveRequestV1`, `ComposerAttachmentResolveRequestV2`, `ComposerAttachmentResolveResultV1`, `ComposerAttachmentRuntime`, `ComposerAttachmentsRegistrationApi`, `ComposerContentCapabilitiesV1`, `ComposerContentHandleV1`, `ComposerContentInspectRequestV1`, `ComposerContentInspectResultV1`, `ComposerContentMediaKindV1`, `ComposerContentMimeTypeV1`, `ComposerContentPickMediaRequestV1`, `ComposerContentService`, `ComposerContentStageMediaRequestV1`, `ComposerControlAuthorInteraction`, `ComposerMediaContentCapabilityV1`, `ComposerReferenceCandidatePageV1`, `ComposerReferenceResolutionV1`, `ComposerReferenceRuntime`, `ComposerReferencesRegistrationApi`, `ComposerRendererChainAuthorInput`, `ComposerSessionMediaContentV1`, `ComposerStagedMediaContentV1`, `ContributionAdmittedEntry`, `ContributionOperationContracts`, `ContributionSurfaceHandles`, `DefinedContributionPointRef`, `DefinedContributionPoints`, `DefinedPlugin`, `DefinedPluginActionContracts`, `DefinedPluginContributes`, `DefinedPluginManifest`, `DefinePluginInput`, `Disposable`, `JsonValue`, `LoggerService`, `MessageActionAvailableSnapshotV1`, `PluginAccountCollectionMigrationRuntimeProjection`, `PluginActionOperationContextV1`, `PluginActionOperationProgressUpdateV1`, `PluginApi`, `PluginAutomationRunCause`, `PluginCancellationOptions`, `PluginCleanup`, `PluginClientActivationModule`, `PluginClientApi`, `PluginComposerAttachmentDefinition`, `PluginComposerControlDefinition`, `PluginComposerDefinition`, `PluginComposerReferenceDefinition`, `PluginComposerRegionDefinition`, `PluginContributionLocalId`, `PluginContributionRef`, `PluginDaemonDatabaseDeclaration`, `PluginDaemonDatabaseDefinition`, `PluginDaemonDatabaseRuntimeProjection`, `PluginDiagnosticData`, `PluginEphemeralSharedScope`, `PluginEphemeralSharedValueLease`, `PluginErrorData`, `PluginExecutionScopeV1`, `PluginIdentity`, `PluginInvocationCaller`, `PluginInvocationContext`, `PluginInvocationContributionIdentity`, `PluginInvocationOriginSurface`, `PluginJsonValueV2`, `PluginMachineMaterializationRefV1`, `PluginOperationAvailability`, `PluginPath`, `PluginReference`, `PluginRemediationData`, `PluginRequestInterceptorDefinition`, `PluginScopedInvocationContextV1`, `PluginSearchItemV1`, `PluginSearchProviderContributionV1`, `PluginSearchQueryV1`, `PluginSearchResultV1`, `PluginServiceId`, `PluginServices`, `PluginSettingDescriptor`, `PluginSettingDescriptorBase`, `PluginSettingsChange`, `PluginSettingsMutationResult`, `PluginSettingsSnapshot`, `PluginSourceCustodyV1`, `ProtocolActionSchemaInput`, `ProtocolActionSchemaOutput`, `TargetedContributionAdmittedEntry`, `TargetedContributionObservation`, `TargetedContributionPointRef`, `TargetedContributionSelectionResult`, `TargetedContributionSelectionUnavailableReason`, `TargetedContributionSnapshot`, `TargetedContributionsService`, `UiSurface`, `UiSurfaceAppPageDefinition`, `UiSurfaceAppPageDefinitionFor`, `UiSurfaceDeclarativeDefinition`, `UiSurfaceDeclarativeRendererDefinition`, `UiSurfaceDefinition`, `UiSurfaceDetailedDefinition`, `UiSurfaceDetailedDefinitionFor`, `UiSurfaceHostedHtmlRendererDefinition`, `UiSurfaceHostedWebDefinition`, `UiSurfaceHostedWebRendererDefinition`, `UiSurfacePlacement`, `UiSurfaceReactNativeDefinition`, `UiSurfaceReactNativeRendererDefinition`, `UiSurfaceRendererDefinition`, `UiSurfaceRendererOnlyDefinition`, `UiSurfaceSettingsPageDefinition`
 
 </Accordion>
 
@@ -184,13 +184,13 @@ Daemon only. Source: `src/connected-accounts/index.ts`.
 
 </Accordion>
 
-<Accordion title="@happier-dev/plugin-sdk/contributions — 38 exports">
+<Accordion title="@happier-dev/plugin-sdk/contributions — 39 exports">
 
 Anywhere. Source: `src/contributions/index.ts`.
 
 **Values** — `defineContributionPoint`, `defineContributionProtocol`, `PluginTargetedContributionSelectionV1Schema`
 
-**Types** — `ContributionActionDangerLevel`, `ContributionActionSurface`, `ContributionAuthorDefinition`, `ContributionAuthorTargets`, `ContributionContributeInput`, `ContributionOperationBindings`, `ContributionOperationDefinition`, `ContributionOperationRole`, `ContributionPointAuthorDefinition`, `ContributionPointOptions`, `ContributionProtocol`, `ContributionProtocolDefinition`, `ContributionProtocolForPoint`, `ContributionProtocolManifest`, `ContributionSurfaceBinding`, `ContributionSurfaceBindings`, `ContributionSurfaceDefinition`, `ContributionSurfaceFallback`, `ContributionSurfaceHandle`, `ContributionSurfaceIcon`, `ContributionSurfaceLocalizedString`, `ContributionSurfaceNode`, `ContributionSurfaceNodeInput`, `ContributionSurfacePresentation`, `ContributionSurfaceRole`, `DefinedContributionPointProtocolMap`, `DescriptorFields`, `IsRequiredSurfaceDefinition`, `PluginTargetedContributionSelectionV1`, `PublicContributionProtocol`, `PublicContributionProtocols`, `RequiredSurfaceRoles`, `SchemaInput`, `SchemaOutput`, `SurfaceFields`
+**Types** — `ContributionActionDangerLevel`, `ContributionActionSurface`, `ContributionAuthorDefinition`, `ContributionAuthorTargets`, `ContributionContributeInput`, `ContributionOperationBindings`, `ContributionOperationDefinition`, `ContributionOperationRole`, `ContributionPointAuthorDefinition`, `ContributionPointOptions`, `ContributionProtocol`, `ContributionProtocolDefinition`, `ContributionProtocolForPoint`, `ContributionProtocolManifest`, `ContributionSurfaceBinding`, `ContributionSurfaceBindings`, `ContributionSurfaceDefinition`, `ContributionSurfaceFallback`, `ContributionSurfaceHandle`, `ContributionSurfaceIcon`, `ContributionSurfaceLocalizedString`, `ContributionSurfaceNode`, `ContributionSurfaceNodeInput`, `ContributionSurfacePresentation`, `ContributionSurfaceRole`, `DefinedContributionPointProtocolMap`, `DescriptorFields`, `IsRequiredSurfaceDefinition`, `PluginTargetedContributionSelectionV1`, `PluginTargetedContributionSourceCustodyV1`, `PublicContributionProtocol`, `PublicContributionProtocols`, `RequiredSurfaceRoles`, `SchemaInput`, `SchemaOutput`, `SurfaceFields`
 
 </Accordion>
 
@@ -258,11 +258,11 @@ Host-only. Daemon only. Source: `src/host/fs/json-owner-file-lock/index.ts`.
 
 </Accordion>
 
-<Accordion title="@happier-dev/plugin-sdk/host/registration — 8 exports">
+<Accordion title="@happier-dev/plugin-sdk/host/registration — 11 exports">
 
 Host-only. Anywhere. Source: `src/host/registration/index.ts`.
 
-**Values** — `createExecutionRunHostBackendFromSessionRuntime`, `createPluginActionHandlerNotStartedError`, `createPluginRegistrationScope`, `readPluginActionInputParser`, `readPluginActionResultParser`
+**Values** — `createExecutionRunHostBackendFromSessionRuntime`, `createPluginActionHandlerNotStartedError`, `createPluginRegistrationScope`, `normalizePluginAccountCollectionMigrationRuntimeProjection`, `normalizePluginDaemonDatabaseRuntimeProjection`, `projectPluginAccountCollectionDeclaration`, `readPluginActionInputParser`, `readPluginActionResultParser`
 
 **Types** — `PluginAgentRuntimeRegistration`, `PluginRegistrationRight`, `PluginRuntimeRegistration`
 
@@ -502,13 +502,13 @@ Anywhere. Source: `src/ui/index.ts`.
 
 </Accordion>
 
-<Accordion title="@happier-dev/plugin-sdk/ui/build — 27 exports">
+<Accordion title="@happier-dev/plugin-sdk/ui/build — 7 exports">
 
-Build time only. Source: `src/ui/build/index.ts`.
+Anywhere. Source: `src/ui/build/index.ts`.
 
-**Values** — `assertSinglePluginUiPackageInstance`, `BUILD_CONFIG_BASENAMES`, `buildUiSurfaceTargets`, `createPluginUiPackageInstanceRepackPlugin`, `createPluginUiPackageInstanceVitePlugin`, `createPublicToolchainCompatibilityV1`, `createPublicToolchainScaffoldBindingsV1`, `createReactNativeRepackResolveOptions`, `createReactNativeRepackSharedModules`, `createReactNativeWebVitePlugins`, `defineBuildConfig`, `defineReactNativeWebViteBuildPreset`, `PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1`, `PublicToolchainCompatibilityV1Schema`, `resolvePluginUiSurfaceOutDir`
+**Values** — `createPublicToolchainCompatibilityV1`, `createPublicToolchainScaffoldBindingsV1`, `PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1`, `PublicToolchainCompatibilityV1Schema`
 
-**Types** — `PluginUiArtifactFileV1`, `PluginUiArtifactPlatform`, `PluginUiBuildConfig`, `PluginUiBuildTarget`, `PluginUiHostNativeRuntimeExternalSpecifierV1`, `PluginUiHostRuntimeExternalSpecifierV1`, `PublicToolchainAuthoringDependencyV1`, `PublicToolchainCompatibilityV1`, `PublicToolchainScaffoldBindingsV1`, `ReactNativeRepackSharedModules`, `ReactNativeWebViteBuildPreset`, `ReactNativeWebViteBuildPresetInput`
+**Types** — `PublicToolchainAuthoringDependencyV1`, `PublicToolchainCompatibilityV1`, `PublicToolchainScaffoldBindingsV1`
 
 </Accordion>
 

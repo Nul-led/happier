@@ -346,6 +346,13 @@
     },
     {
       "specifier": ".",
+      "exportName": "CreateHappierListMultiSelectionStateInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "CreateHappierListMultiSelectionStateInput"
+    },
+    {
+      "specifier": ".",
       "exportName": "DiffViewer",
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
@@ -441,6 +448,937 @@
       "kind": "type",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "FormProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HAPPIER_ICON_NAMES",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HAPPIER_ICON_NAMES"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HAPPIER_LIST_MULTI_SELECTION_INERT_SNAPSHOT",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HAPPIER_LIST_MULTI_SELECTION_INERT_SNAPSHOT"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HAPPIER_TONE_COLOR_TOKEN",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HAPPIER_TONE_COLOR_TOKEN"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierActionFieldPresentation",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierActionFieldPresentation"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierActionPanel",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierActionPanel"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierActionPanelProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierActionPanelProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierActionPanelSection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierActionPanelSection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierActionPanelSectionProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierActionPanelSectionProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierBadge",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierBadge"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierBanner",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierBanner"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierBrandMark",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierBrandMark"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierBrandMarkProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierBrandMarkProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierCodeBlockBehaviorInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierCodeBlockBehaviorInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierDiffViewerRequest",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierDiffViewerRequest"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierDivider",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierDivider"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierField",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierField"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierFieldProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierFieldProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierForm",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierForm"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierFormActions",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierFormActions"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierFormActionsProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierFormActionsProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierFormPendingInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierFormPendingInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierFormProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierFormProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierHeading",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierHeading"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierIconName",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierIconName"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierIconSize",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierIconSize"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierImageSize",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierImageSize"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierInfoState",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierInfoState"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierInfoStateProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierInfoStateProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierInfoTile",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierInfoTile"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierInfoTileProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierInfoTileProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemBehavior",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemBehavior"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemBehaviorInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemBehaviorInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemDensity",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemDensity"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroup",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroup"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupBehavior",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupBehavior"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupBehaviorProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupBehaviorProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupItemBehaviorInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupItemBehaviorInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupRadioFocusable",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupRadioFocusable"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemGroupSelectionContext",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemGroupSelectionContext"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemOverflow",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemOverflow"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemOverflowAction",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemOverflowAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemOverflowProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemOverflowProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemOverflowRenderInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemOverflowRenderInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemSemanticInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemSemanticInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierItemSemanticState",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierItemSemanticState"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierLabel",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierLabel"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierLayoutChangeEvent",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierLayoutChangeEvent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierLayoutGap",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierLayoutGap"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierLayoutSpacing",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierLayoutSpacing"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierLink",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierLink"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierList",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierList"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListItem",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListItem"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListItemProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListItemProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionAction",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionActions",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionActions"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionKey",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionKey"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionKeyboardInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionKeyboardInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionKeyboardIntent",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionKeyboardIntent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionPointerAction",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionPointerAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionPointerInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionPointerInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionRangeInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionRangeInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionRowFlags",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionRowFlags"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionRowsInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionRowsInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionSnapshot",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionSnapshot"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionState",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionState"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListMultiSelectionStore",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListMultiSelectionStore"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListSection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListSection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierListSectionProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierListSectionProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMarkdown",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMarkdown"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMarkdownProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMarkdownProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMarkdownRenderInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMarkdownRenderInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuContent",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuContent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuEntry",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuEntry"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuGroupDescriptor",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuGroupDescriptor"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuInteractionInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuInteractionInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuItemDescriptor",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuItemDescriptor"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuKeyAction",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuKeyAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMenuRadioGroupDescriptor",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMenuRadioGroupDescriptor"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMetadata",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMetadata"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierMetadataEntry",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierMetadataEntry"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPointerModifiers",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPointerModifiers"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPointerPlatform",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPointerPlatform"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPopoverPlacement",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPopoverPlacement"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPressable",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPressable"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPressableProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPressableProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPressableRole",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPressableRole"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPressableState",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPressableState"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierPressableStyleState",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierPressableStyleState"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierProgress",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierProgress"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierResolvedMenuGroup",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierResolvedMenuGroup"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierResolvedPopoverPlacement",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierResolvedPopoverPlacement"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierRovingEntry",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierRovingEntry"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierScreen",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierScreen"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierScreenProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierScreenProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierScrollArea",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierScrollArea"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierScrollAreaProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierScrollAreaProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSelect",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSelect"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSelectOption",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSelectOption"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSelectableRole",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSelectableRole"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSpinner",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSpinner"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSpinnerProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSpinnerProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStack",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStack"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStackProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStackProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStatus",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStatus"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStatusDot",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStatusDot"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStatusDotProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStatusDotProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierStatusProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierStatusProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSurface",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSurface"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierSurfaceProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierSurfaceProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTabDescriptor",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTabDescriptor"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTabPanelActivity",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTabPanelActivity"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTabRetention",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTabRetention"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTabs",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTabs"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierText",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierText"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextField",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextField"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextFieldProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextFieldProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextPresentation",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextPresentation"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextPresentationInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextPresentationInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextSelectabilityScope",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextSelectabilityScope"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextSelectabilityScopeProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextSelectabilityScopeProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextSelection",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextSelection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTextVariant",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTextVariant"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierToggle",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierToggle"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierTone",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierTone"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierValidationMessage",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierValidationMessage"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierValidationMessageProps",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierValidationMessageProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierWebSpinnerPresentation",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierWebSpinnerPresentation"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierWebSpinnerPresentationInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierWebSpinnerPresentationInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "HappierWebSpinnerStyle",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "HappierWebSpinnerStyle"
     },
     {
       "specifier": ".",
@@ -864,6 +1802,62 @@
     },
     {
       "specifier": ".",
+      "exportName": "PluginUiAccountCollectionForDefinition",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiAccountCollectionForDefinition"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiAccountKv",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiAccountKv"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiCollectionQueryFailure",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiCollectionQueryFailure"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiCollectionQueryInput",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiCollectionQueryInput"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiCollectionQueryPager",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiCollectionQueryPager"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiCollectionQueryResult",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiCollectionQueryResult"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiCollectionQuerySnapshot",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiCollectionQuerySnapshot"
+    },
+    {
+      "specifier": ".",
+      "exportName": "PluginUiDataClient",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "PluginUiDataClient"
+    },
+    {
+      "specifier": ".",
       "exportName": "PluginUiEphemeralSharedScope",
       "kind": "type",
       "declarationModule": "dist/index.d.ts",
@@ -1001,6 +1995,20 @@
       "kind": "type",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "RowProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "ScaleTextStyleOptions",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "ScaleTextStyleOptions"
+    },
+    {
+      "specifier": ".",
+      "exportName": "ScaledTextStyleMetrics",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "ScaledTextStyleMetrics"
     },
     {
       "specifier": ".",
@@ -1221,6 +2229,13 @@
     },
     {
       "specifier": ".",
+      "exportName": "TextStyleEntryTransform",
+      "kind": "type",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "TextStyleEntryTransform"
+    },
+    {
+      "specifier": ".",
       "exportName": "TextTone",
       "kind": "type",
       "declarationModule": "dist/index.d.ts",
@@ -1277,6 +2292,27 @@
     },
     {
       "specifier": ".",
+      "exportName": "cloneStyleEntryPreservingOwnProps",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "cloneStyleEntryPreservingOwnProps"
+    },
+    {
+      "specifier": ".",
+      "exportName": "createHappierListMultiSelectionStore",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "createHappierListMultiSelectionStore"
+    },
+    {
+      "specifier": ".",
+      "exportName": "createInitialHappierListMultiSelectionState",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "createInitialHappierListMultiSelectionState"
+    },
+    {
+      "specifier": ".",
       "exportName": "createListMultiSelectionStore",
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
@@ -1288,6 +2324,272 @@
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "defineUiSurface"
+    },
+    {
+      "specifier": ".",
+      "exportName": "iconMatchedSpinnerSize",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "iconMatchedSpinnerSize"
+    },
+    {
+      "specifier": ".",
+      "exportName": "isHappierBannerUrgent",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "isHappierBannerUrgent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "isHappierIconName",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "isHappierIconName"
+    },
+    {
+      "specifier": ".",
+      "exportName": "isHappierTabSelected",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "isHappierTabSelected"
+    },
+    {
+      "specifier": ".",
+      "exportName": "matchesHappierMenuQuery",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "matchesHappierMenuQuery"
+    },
+    {
+      "specifier": ".",
+      "exportName": "normalizeHappierCodeLanguage",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "normalizeHappierCodeLanguage"
+    },
+    {
+      "specifier": ".",
+      "exportName": "parseHappierListMultiSelectionRowSnapshot",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "parseHappierListMultiSelectionRowSnapshot"
+    },
+    {
+      "specifier": ".",
+      "exportName": "patchHappierActionInputPath",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "patchHappierActionInputPath"
+    },
+    {
+      "specifier": ".",
+      "exportName": "readHappierActionInputPath",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "readHappierActionInputPath"
+    },
+    {
+      "specifier": ".",
+      "exportName": "readHappierPointerModifiers",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "readHappierPointerModifiers"
+    },
+    {
+      "specifier": ".",
+      "exportName": "reduceHappierListMultiSelection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "reduceHappierListMultiSelection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierActionFieldPresentation",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierActionFieldPresentation"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierBrandFallback",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierBrandFallback"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierCodeBlockLayout",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierCodeBlockLayout"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierDiffViewerRequest",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierDiffViewerRequest"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierFormPending",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierFormPending"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierIconSize",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierIconSize"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierImagePixels",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierImagePixels"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierItemBehavior",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierItemBehavior"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierItemGroupConstraints",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierItemGroupConstraints"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierItemSemantics",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierItemSemantics"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierLayoutGap",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierLayoutGap"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierListMultiSelectionKeyboardIntent",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierListMultiSelectionKeyboardIntent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierListMultiSelectionPointerAction",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierListMultiSelectionPointerAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierListMultiSelectionRange",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierListMultiSelectionRange"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierMenuContent",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierMenuContent"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierMenuKeyAction",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierMenuKeyAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierMenuRadioGroups",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierMenuRadioGroups"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierMenuSelection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierMenuSelection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierMenuTypeahead",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierMenuTypeahead"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierPointerPlatform",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierPointerPlatform"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierPopoverPlacement",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierPopoverPlacement"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierProgressPercentage",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierProgressPercentage"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierRovingSelection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierRovingSelection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierTabKeySelection",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierTabKeySelection"
+    },
+    {
+      "specifier": ".",
+      "exportName": "resolveHappierWebSpinnerPresentation",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "resolveHappierWebSpinnerPresentation"
+    },
+    {
+      "specifier": ".",
+      "exportName": "scaleTextStyleMetrics",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "scaleTextStyleMetrics"
+    },
+    {
+      "specifier": ".",
+      "exportName": "toHappierListMultiSelectionSnapshot",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "toHappierListMultiSelectionSnapshot"
     },
     {
       "specifier": ".",
@@ -1309,6 +2611,48 @@
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "useExecutePluginAction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierCodeBlockBehavior",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierCodeBlockBehavior"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierFormSubmission",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierFormSubmission"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierItemGroupItemBehavior",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierItemGroupItemBehavior"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierMenuInteraction",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierMenuInteraction"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierTabPanelActivity",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierTabPanelActivity"
+    },
+    {
+      "specifier": ".",
+      "exportName": "useHappierTextPresentation",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "useHappierTextPresentation"
     },
     {
       "specifier": ".",
@@ -1361,6 +2705,13 @@
     },
     {
       "specifier": ".",
+      "exportName": "usePluginAccountKv",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "usePluginAccountKv"
+    },
+    {
+      "specifier": ".",
       "exportName": "usePluginBrandDisplayName",
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
@@ -1372,6 +2723,13 @@
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "usePluginBrandDisplayNameResolver"
+    },
+    {
+      "specifier": ".",
+      "exportName": "usePluginCollectionQuery",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "usePluginCollectionQuery"
     },
     {
       "specifier": ".",
@@ -1410,6 +2768,20 @@
     },
     {
       "specifier": ".",
+      "exportName": "usePluginUiDataClient",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "usePluginUiDataClient"
+    },
+    {
+      "specifier": ".",
+      "exportName": "usePluginUiDataClientOrNull",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "usePluginUiDataClientOrNull"
+    },
+    {
+      "specifier": ".",
       "exportName": "usePluginUiEphemeralSharedScope",
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
@@ -1442,6 +2814,13 @@
       "kind": "value",
       "declarationModule": "dist/index.d.ts",
       "declarationExport": "useTabPanelActivity"
+    },
+    {
+      "specifier": ".",
+      "exportName": "writeHappierActionInputPath",
+      "kind": "value",
+      "declarationModule": "dist/index.d.ts",
+      "declarationExport": "writeHappierActionInputPath"
     },
     {
       "specifier": "./advanced",

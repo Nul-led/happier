@@ -255,7 +255,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
             && requestPolicyEditorProjection?.storedPolicyUnsupported === false);
     const usageLimitDelta = teamCredentialUsageLimitDeltaFromDraft(limitDrafts, resourceDraft.baseline.limits);
     const managerFieldsValid = !resource.capabilities.managePolicy
-        || (nameValid && requestPolicy !== 'invalid' && requestPolicyChangeSupported);
+        || (nameValid && requestPolicyChangeSupported);
     const limitsValid = !resource.capabilities.manageLimits || usageLimitDelta !== 'invalid';
     const changed = draftChanged
         && managerFieldsValid
@@ -477,7 +477,7 @@ const CredentialEditor = React.memo(function CredentialEditor(props: Readonly<{
                                     enabled: resource.enabled,
                                     displayName: resource.capabilities.managePolicy ? trimmed : resource.displayName,
                                     sessionUsePolicy: resource.capabilities.managePolicy ? usePolicy : resource.sessionUsePolicy,
-                                    requestPolicy: resource.capabilities.managePolicy && requestPolicy !== 'invalid'
+                                    requestPolicy: resource.capabilities.managePolicy
                                         ? requestPolicy
                                         : resource.requestPolicy,
                                     allMembersDeliveryMode: resource.capabilities.manageAudience

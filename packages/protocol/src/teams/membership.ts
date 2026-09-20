@@ -198,8 +198,9 @@ export type TeamMembershipV1 = z.infer<typeof TeamMembershipV1Schema>;
 
 /**
  * The compact, current-purpose roster filters from the Members screen. This is
- * deliberately a closed enum rather than a query language: there is no Team
- * member search index, and a filter DSL is explicitly out of scope.
+ * deliberately a closed enum rather than a query language: a filter DSL is
+ * explicitly out of scope. Looking one person up is the separate bounded
+ * `query` below, not another filter value.
  */
 export const TeamMembersListFilterV1Schema = z.enum([
   'all',
@@ -219,6 +220,13 @@ export const TeamMembersListInputV1Schema = z.object({
   filter: TeamMembersListFilterV1Schema,
   limit: z.number().int().min(1).max(TEAM_MEMBERS_PAGE_LIMIT_MAX_V1).optional(),
   cursor: z.string().min(1).nullable().optional(),
+  /**
+   * One bounded lookup over the whole roster, in the same shape the Team
+   * directory contract already ships. Narrowing only the pages a reader holds
+   * reports a member on a later page as absent, so the Home answers the
+   * question instead. Paging is unchanged: a query names its own sequence.
+   */
+  query: z.string().max(256).optional(),
 }).strict();
 export type TeamMembersListInputV1 = z.infer<typeof TeamMembersListInputV1Schema>;
 
@@ -293,11 +301,16 @@ export type TeamMemberRemoveResultV1 = z.infer<typeof TeamMemberRemoveResultV1Sc
  * cannot shuffle beneath a scrolling reader.
  *
  * `limit` is excluded from the binding: changing page size mid-sequence is
- * legitimate. The Team and filter are not, because either would change which
- * rows the position refers to.
+ * legitimate. The Team, filter and lookup are not, because each would change
+ * which rows the position refers to.
  */
 export function teamMembersQueryKeyV1(input: TeamMembersListInputV1): string {
-  return `v1:members:${input.teamId}:${input.filter}`;
+  // A query selects different rows, so it belongs to the sequence identity. An
+  // unqueried roster keeps the key it already had, so positions minted before
+  // the field existed stay valid.
+  const query = input.query?.trim() ?? '';
+  const base = `v1:members:${input.teamId}:${input.filter}`;
+  return query === '' ? base : `${base}:${query}`;
 }
 
 export type TeamMembersCursorV1 = Readonly<{ createdAt: number; id: string }>;

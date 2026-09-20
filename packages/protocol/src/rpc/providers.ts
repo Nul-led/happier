@@ -734,10 +734,6 @@ export const DaemonProviderTeamCredentialRequestPolicySupportV1Schema = z.object
     }
   }),
   reasoningEffort: DaemonProviderReasoningEffortSupportV1Schema,
-  /** The current Provider catalog carries no enforceable output-token limit. */
-  maxOutputTokens: z.object({ supported: z.literal(false) }).strict(),
-  /** The current Provider catalog carries no enforceable thinking-budget limit. */
-  maxThinkingBudgetTokens: z.object({ supported: z.literal(false) }).strict(),
 }).strict().superRefine((value, ctx) => {
   const expectedProtocolKind = value.application.protocol === 'openai-responses'
     ? 'openai_responses'

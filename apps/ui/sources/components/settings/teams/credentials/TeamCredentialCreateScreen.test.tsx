@@ -143,11 +143,7 @@ function emptyBrokerPresentation() {
     return { selectedTarget: null, eligibleTargets: [], selectedPool: null, eligiblePools: [] } as const;
 }
 
-function answerRequestPolicySupport(
-    serverId: string,
-    modelId: string,
-    options?: Readonly<{ maxOutputTokens?: number }>,
-): void {
+function answerRequestPolicySupport(serverId: string, modelId: string): void {
     harness.answer(serverId, REQUEST_POLICY_SUPPORT_PATH, {
         body: {
             status: 'available',
@@ -162,10 +158,6 @@ function answerRequestPolicySupport(
                 sourceRevision: `source-revision:${modelId}`,
                 allowedProtocolKinds: ['openai_responses'],
                 reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'low' },
-                maxOutputTokens: options?.maxOutputTokens === undefined
-                    ? null
-                    : { maximum: options.maxOutputTokens },
-                maxThinkingBudgetTokens: null,
             }],
         },
     });
@@ -370,8 +362,6 @@ describe('TeamCredentialCreateScreen', () => {
                 sourceRevision: 'provider-source-revision-1',
                 allowedProtocolKinds: ['openai_responses'],
                 reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'low' },
-                maxOutputTokens: null,
-                maxThinkingBudgetTokens: null,
             }],
         } });
 
@@ -795,7 +785,7 @@ describe('TeamCredentialCreateScreen', () => {
                 eligiblePools: [],
             },
         } });
-        answerRequestPolicySupport(serverId, 'pool-model', { maxOutputTokens: 32_000 });
+        answerRequestPolicySupport(serverId, 'pool-model');
 
         const screen = await renderCreate(serverId);
         await waitForTestId(screen, 'team-credential-create-source');
@@ -814,7 +804,6 @@ describe('TeamCredentialCreateScreen', () => {
         await screen.pressByTestIdAsync('team-credential-audience-mode:everyone:brokered');
         await screen.pressByTestIdAsync('team-credential-create-use-policy:team_context_required');
         await screen.pressByTestIdAsync('team-credential-create-policy-protocol:openai_responses');
-        act(() => screen.changeTextByTestId('team-credential-create-policy-max-output', '4096'));
         act(() => screen.changeTextByTestId('team-credential-create-limit-maximum', '100'));
         await vi.waitFor(() => expect(screen.findByTestId('team-credential-create-submit')?.props.disabled).toBe(false));
         await screen.pressByTestIdAsync('team-credential-create-submit');
@@ -835,8 +824,6 @@ describe('TeamCredentialCreateScreen', () => {
                 allowedProtocolKinds: ['openai_responses'],
                 allowedModelIds: null,
                 reasoningEffort: null,
-                maxOutputTokens: 4096,
-                maxThinkingBudgetTokens: null,
             },
             allMembersDeliveryMode: 'brokered',
             groupGrants: [],

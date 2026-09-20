@@ -122,6 +122,7 @@ export function registerTeamMemberRoutes(app: Fastify) {
             actorAccountId: request.userId,
             authentication: readTeamOperationAuthenticationFromRequest(request),
             filter: request.body.filter,
+            ...(request.body.query === undefined ? {} : { query: request.body.query }),
             ...(request.body.cursor === undefined ? {} : { cursor: request.body.cursor }),
             ...(request.body.limit === undefined ? {} : { limit: request.body.limit }),
         }));

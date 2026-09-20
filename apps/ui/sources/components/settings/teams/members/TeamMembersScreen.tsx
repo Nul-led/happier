@@ -68,10 +68,12 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
     // per row below: an ordinary member reads the roster and is offered nothing.
     const canRead = context.team.capabilities.viewTeam;
     const canAdd = context.team.capabilities.manageMembers && context.canMutate;
+    const searchTerm = query.trim();
     const roster = useTeamMembersRoster({
         scope: context.scope,
         address: context.address,
         filter,
+        query: searchTerm,
         enabled: canRead,
     });
     const hasFocused = React.useRef(false);
@@ -99,26 +101,11 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
         && !ownerCandidateAvailable
         // A narrowed filter hides rows rather than proving they do not exist.
         && filter === 'all'
+        // A lookup hides rows exactly as a narrowed filter does.
+        && searchTerm === ''
         && !roster.hasMore
         && roster.status === 'ready'
         && roster.error === null;
-
-    // Looking a person up in a long roster is a presentation narrowing over the
-    // pages this screen already holds, not a second roster reader: the member
-    // list contract is a closed filter enum with no query field
-    // (`TeamMembersListInputV1Schema`), so "Load more" stays offered while a
-    // search is active rather than implying the sequence is exhausted.
-    const searchTerm = query.trim().toLocaleLowerCase();
-    const visibleRows = React.useMemo(() => (
-        searchTerm === ''
-            ? roster.rows
-            : roster.rows.filter((membership) => (
-                (formatAccountDisplayName(membership.account) ?? membership.accountId)
-                    .toLocaleLowerCase()
-                    .includes(searchTerm)
-                || membership.accountId.toLocaleLowerCase().includes(searchTerm)
-            ))
-    ), [roster.rows, searchTerm]);
 
     const rows = React.useMemo<readonly MemberVirtualizedRow[]>(() => {
         const result: MemberVirtualizedRow[] = [];
@@ -181,7 +168,7 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ));
         }
 
-        if (visibleRows.length === 0 && roster.status === 'ready') {
+        if (roster.rows.length === 0 && roster.status === 'ready') {
             add('empty', () => (
                 <ItemGroup footer={t('teams.members.emptyBody')}>
                     <Item testID="team-members-empty" title={t('teams.members.emptyTitle')} showChevron={false} />
@@ -189,10 +176,10 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
             ));
         }
 
-        for (let start = 0; start < visibleRows.length; start += MEMBER_CHUNK_SIZE) {
-            const chunk = visibleRows.slice(start, start + MEMBER_CHUNK_SIZE);
+        for (let start = 0; start < roster.rows.length; start += MEMBER_CHUNK_SIZE) {
+            const chunk = roster.rows.slice(start, start + MEMBER_CHUNK_SIZE);
             const first = start === 0;
-            const last = start + MEMBER_CHUNK_SIZE >= visibleRows.length;
+            const last = start + MEMBER_CHUNK_SIZE >= roster.rows.length;
             add(`members:${chunk[0]!.id}`, () => (
                 <ItemGroup
                     title={first ? t('teams.tabs.members') : undefined}
@@ -294,7 +281,6 @@ const MemberRoster = React.memo(function MemberRoster(props: Readonly<{
         roster,
         router,
         theme.colors.text.secondary,
-        visibleRows,
     ]);
 
     const renderRow = React.useCallback(

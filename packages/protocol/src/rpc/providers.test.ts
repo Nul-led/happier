@@ -943,8 +943,6 @@ describe('provider machine RPC contracts', () => {
         allowedValues: ['low', 'high'],
         defaultValue: 'high',
       },
-      maxOutputTokens: { supported: false },
-      maxThinkingBudgetTokens: { supported: false },
     } as const;
     const supportedResponse = {
       ...response,
@@ -1045,11 +1043,17 @@ describe('provider machine RPC contracts', () => {
         descriptor: { id: 'model-1', name: 'Model 1', aliases: ['model-latest'] },
         model: { canonicalId: 'model-1', aliases: ['model-latest'] },
         reasoningEffort: { supported: false as const },
-        maxOutputTokens: { supported: false as const },
-        maxThinkingBudgetTokens: { supported: false as const },
       }],
     };
     expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.parse(response)).toEqual(response);
+    expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.safeParse({
+      ...response,
+      models: [{ ...response.models[0], maxOutputTokens: { supported: false } }],
+    }).success).toBe(false);
+    expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.safeParse({
+      ...response,
+      models: [{ ...response.models[0], maxThinkingBudgetTokens: { supported: true, maximum: 8_192 } }],
+    }).success).toBe(false);
     expect(DaemonProviderTeamCredentialRequestPolicySupportResponseV1Schema.safeParse({
       status: 'success', models: [], endpointUrl: 'https://private.example',
     }).success).toBe(false);

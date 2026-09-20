@@ -41,8 +41,6 @@ function requestPolicySupportCandidateKey(model: TeamCredentialRequestPolicyMode
         model.sourceRevision,
         model.allowedProtocolKinds,
         model.reasoningEffort,
-        model.maxOutputTokens,
-        model.maxThinkingBudgetTokens,
     ]);
 }
 
@@ -109,8 +107,6 @@ function projectRequestPolicySupportModel(
                 defaultValue: support.reasoningEffort.defaultValue,
             }
             : null,
-        maxOutputTokens: null,
-        maxThinkingBudgetTokens: null,
     });
     return candidate.success ? candidate.data : null;
 }

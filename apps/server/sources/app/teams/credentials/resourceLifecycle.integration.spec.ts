@@ -332,7 +332,6 @@ describe("Team credential resource lifecycle", () => {
             sessionUsePolicy: "team_context_required" as const,
             brokerPlacement: { kind: "machine" as const, machineId: broker.id }, requestPolicy: {
                 allowedProtocolKinds: ["openai_responses" as const], allowedModelIds: ["gpt-5"], reasoningEffort: null,
-                maxOutputTokens: 4096, maxThinkingBudgetTokens: null,
             }, allMembersDeliveryMode: null, groupGrants: [], memberGrants: [],
             usageLimits: [{ subjectKind: "resource" as const, subjectId: "", period: "month" as const, metric: "inference_requests" as const, maximum: "100", enabled: true }],
         };
@@ -613,7 +612,7 @@ describe("Team credential resource lifecycle", () => {
         } });
         const requestPolicy = {
             allowedProtocolKinds: ["openai_responses" as const], allowedModelIds: ["gpt-5"],
-            reasoningEffort: null, maxOutputTokens: null, maxThinkingBudgetTokens: null,
+            reasoningEffort: null,
         };
         const requestPolicySupportModels = [{
             descriptor: { id: "gpt-5", name: "GPT-5" },
@@ -626,8 +625,6 @@ describe("Team credential resource lifecycle", () => {
             sourceRevision: "source-1",
             allowedProtocolKinds: ["openai_responses" as const],
             reasoningEffort: null,
-            maxOutputTokens: null,
-            maxThinkingBudgetTokens: null,
         }];
         const requestPolicySupport = {
             source,
@@ -748,8 +745,6 @@ describe("Team credential resource lifecycle", () => {
                 allowedProtocolKinds: ["openai_responses" as const],
                 allowedModelIds: ["gpt-5"],
                 reasoningEffort: null,
-                maxOutputTokens: null,
-                maxThinkingBudgetTokens: null,
             },
             allMembersDeliveryMode: "brokered" as const,
             groupGrants: [],
@@ -775,8 +770,6 @@ describe("Team credential resource lifecycle", () => {
             sourceRevision: "source-1",
             allowedProtocolKinds: ["openai_responses" as const],
             reasoningEffort: null,
-            maxOutputTokens: null,
-            maxThinkingBudgetTokens: null,
         }];
         const requestPolicySupport = {
             source,

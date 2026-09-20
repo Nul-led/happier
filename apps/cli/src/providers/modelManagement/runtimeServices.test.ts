@@ -396,8 +396,6 @@ describe('runtime provider model-management composition', () => {
               allowedValues: ['low', 'high'],
               defaultValue: 'high',
             },
-            maxOutputTokens: { supported: false },
-            maxThinkingBudgetTokens: { supported: false },
           },
         }],
       }],
@@ -500,8 +498,6 @@ describe('runtime provider model-management composition', () => {
         descriptor: { id: 'same-id', name: 'Provider Same', aliases: ['same-alias'] },
         model: { canonicalId: 'same-id', aliases: ['same-alias'] },
         protocolKind: 'openai_chat_completions',
-        maxOutputTokens: { supported: false },
-        maxThinkingBudgetTokens: { supported: false },
       }],
     });
     await expect(services.resolveTeamCredentialRequestPolicySupport({
@@ -538,8 +534,6 @@ describe('runtime provider model-management composition', () => {
         descriptor: { name: 'Reasoning 200k thinking generation' },
         requestPolicySupport: {
           reasoningEffort: { supported: false },
-          maxOutputTokens: { supported: false },
-          maxThinkingBudgetTokens: { supported: false },
         },
       }] }],
     });

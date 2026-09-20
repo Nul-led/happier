@@ -166,12 +166,12 @@ function configuredEffort(
     return { ok: true, value: effort };
 }
 
-function applyOutputCeiling(body: JsonObject, field: string, ceiling: number | null, required: boolean): boolean {
+/** The policy owns no token bound, so the caller's own output field passes
+ * through unchanged; only its shape and protocol-required presence are checked. */
+function hasUsableOutputTokens(body: JsonObject, field: string, required: boolean): boolean {
     const supplied = body[field];
     if (supplied !== undefined && readPositiveInteger(supplied) === null) return false;
-    if (required && supplied === undefined) return false;
-    if (ceiling !== null) body[field] = supplied === undefined ? ceiling : Math.min(supplied as number, ceiling);
-    return true;
+    return !(required && supplied === undefined);
 }
 
 /**
@@ -227,7 +227,7 @@ export function evaluateTeamCredentialRequestPolicyV1(input: Readonly<{
         effort = configuredEffort(parsedPolicy.data, reasoning?.effort);
         if (!effort.ok) return effort;
         if (effort.value !== null) body.reasoning = { ...(reasoning ?? {}), effort: effort.value };
-        if (!applyOutputCeiling(body, 'max_output_tokens', parsedPolicy.data.maxOutputTokens, false)) {
+        if (!hasUsableOutputTokens(body, 'max_output_tokens', false)) {
             return { ok: false, reasonCode: 'request_malformed' };
         }
     } else if (route.kind === 'openai_chat_completions') {
@@ -238,7 +238,7 @@ export function evaluateTeamCredentialRequestPolicyV1(input: Readonly<{
         if (!effort.ok) return effort;
         if (effort.value !== null) body.reasoning_effort = effort.value;
         const outputField = body.max_tokens === undefined ? 'max_completion_tokens' : 'max_tokens';
-        if (!applyOutputCeiling(body, outputField, parsedPolicy.data.maxOutputTokens, false)) {
+        if (!hasUsableOutputTokens(body, outputField, false)) {
             return { ok: false, reasonCode: 'request_malformed' };
         }
     } else {
@@ -247,7 +247,7 @@ export function evaluateTeamCredentialRequestPolicyV1(input: Readonly<{
         effort = configuredEffort(parsedPolicy.data, outputConfig?.effort);
         if (!effort.ok) return effort;
         if (effort.value !== null) body.output_config = { ...(outputConfig ?? {}), effort: effort.value };
-        if (!applyOutputCeiling(body, 'max_tokens', parsedPolicy.data.maxOutputTokens, route.generation)) {
+        if (!hasUsableOutputTokens(body, 'max_tokens', route.generation)) {
             return { ok: false, reasonCode: 'request_malformed' };
         }
         if (body.thinking !== undefined && !isObject(body.thinking)) return { ok: false, reasonCode: 'request_malformed' };
@@ -262,16 +262,11 @@ export function evaluateTeamCredentialRequestPolicyV1(input: Readonly<{
             if (thinking.type === 'enabled') {
                 const budget = readPositiveInteger(thinking.budget_tokens);
                 if (budget === null || budget < 1_024) return { ok: false, reasonCode: 'request_malformed' };
-                const effectiveBudget = parsedPolicy.data.maxThinkingBudgetTokens === null
-                    ? budget
-                    : Math.min(budget, parsedPolicy.data.maxThinkingBudgetTokens);
+                // Anthropic requires the budget to stay below the output bound.
                 const output = readPositiveInteger(body.max_tokens);
-                if (effectiveBudget < 1_024 || output === null || effectiveBudget >= output) {
+                if (output === null || budget >= output) {
                     return { ok: false, reasonCode: 'request_constraint_unsupported' };
                 }
-                body.thinking = { ...thinking, budget_tokens: effectiveBudget };
-            } else if (thinking.type === 'adaptive' && parsedPolicy.data.maxThinkingBudgetTokens !== null) {
-                return { ok: false, reasonCode: 'request_constraint_unsupported' };
             }
         }
     }

@@ -252,7 +252,6 @@ export type PluginActionContributionV2 = {
         target: 'client';
         client: {
             artifactId: string;
-            modulePath: string;
             exportName: string;
         };
         platforms: ('android' | 'ios' | 'web')[];
@@ -8304,7 +8303,7 @@ export type PluginActionInputById = {
         targetDir: string;
         id: string;
         name: string;
-        ui?: 'hostedWeb' | 'reactNative' | undefined;
+        ui?: 'declarative' | 'hostedWeb' | 'reactNative' | undefined;
         template?: 'session-agent' | undefined;
     };
     readonly "plugins.install": {
@@ -8556,8 +8555,6 @@ export type PluginActionInputById = {
             accessDeclarationDigest: string;
             selectedAuthorityDigest: string;
             selectedRawAccessDigest: string;
-            installedGenerationId: string;
-            installReviewPrincipalDigest: string;
         } | {
             kind: 'general';
         };
@@ -8593,8 +8590,6 @@ export type PluginActionInputById = {
             accessDeclarationDigest: string;
             selectedAuthorityDigest: string;
             selectedRawAccessDigest: string;
-            installedGenerationId: string;
-            installReviewPrincipalDigest: string;
         } | {
             kind: 'general';
         };
@@ -9482,6 +9477,7 @@ export type PluginActionInputById = {
         filter: 'all' | 'guests' | 'members' | 'owners_admins' | 'suspended';
         limit?: number | undefined;
         cursor?: null | string | undefined;
+        query?: string | undefined;
     };
     readonly "teams.members.get": {
         v: 1;
@@ -10021,8 +10017,6 @@ export type PluginActionInputById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         allMembersDeliveryMode: 'both' | 'brokered' | 'direct' | null;
         groupGrants: {
@@ -10063,8 +10057,6 @@ export type PluginActionInputById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         replacement?: undefined | {
             enabled: boolean;
@@ -10077,8 +10069,6 @@ export type PluginActionInputById = {
                     allowedValues: string[];
                     defaultValue: string;
                 };
-                maxOutputTokens: null | number;
-                maxThinkingBudgetTokens: null | number;
             };
             allMembersDeliveryMode: 'both' | 'brokered' | 'direct' | null;
             groupGrants: {
@@ -35073,8 +35063,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35120,8 +35108,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35181,8 +35167,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35242,8 +35226,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35289,8 +35271,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35350,8 +35330,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -35399,8 +35377,6 @@ export type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -39980,6 +39956,7 @@ export type PluginActionResultById = {
             state: 'accepted' | 'active' | 'expired' | 'revoked';
             expiresAt: number;
             recipientEmailMask: null | string;
+            inviterLabel: null | string;
         };
     } | {
         outcome: 'unavailable';
@@ -41355,8 +41332,6 @@ export type PluginActionResultById = {
                     allowedValues: string[];
                     defaultValue: string;
                 };
-                maxOutputTokens: null | number;
-                maxThinkingBudgetTokens: null | number;
             };
             brokerPlacement: null | {
                 kind: 'machine';
@@ -41558,13 +41533,6 @@ export type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | {
-                maximum: number;
-            };
-            maxThinkingBudgetTokens: null | {
-                minimum: number;
-                maximum: number;
-            };
         }[];
     } | {
         status: 'unavailable';
@@ -41713,8 +41681,6 @@ export type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         brokerPlacement: null | {
             kind: 'machine';
@@ -41996,8 +41962,6 @@ export type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         brokerPlacement: null | {
             kind: 'machine';

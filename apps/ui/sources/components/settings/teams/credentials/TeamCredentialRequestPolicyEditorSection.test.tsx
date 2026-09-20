@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { act } from 'react-test-renderer';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { TeamCredentialRequestPolicySupportOutputV1 } from '@happier-dev/protocol/teams';
 
@@ -27,8 +26,6 @@ const AVAILABLE_SUPPORT: TeamCredentialRequestPolicySupportOutputV1 = {
         sourceRevision: 'source-1',
         allowedProtocolKinds: ['openai_responses'],
         reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'low' },
-        maxOutputTokens: { maximum: 32_000 },
-        maxThinkingBudgetTokens: null,
     }],
 };
 
@@ -51,7 +48,8 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
         expect(screen.findByTestId('team-credential-request-policy-protocol:openai_responses')).not.toBeNull();
         expect(screen.findByTestId('team-credential-request-policy-protocol:anthropic_messages')).toBeNull();
         expect(screen.findByTestId('team-credential-request-policy-effort:low')).not.toBeNull();
-        expect(screen.findByTestId('team-credential-request-policy-max-output')).not.toBeNull();
+        // A request policy has no caller-authored token ceiling to offer.
+        expect(screen.findByTestId('team-credential-request-policy-max-output')).toBeNull();
         expect(screen.findByTestId('team-credential-request-policy-max-thinking')).toBeNull();
     });
 
@@ -65,14 +63,12 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
                     ...base,
                     allowedProtocolKinds: ['openai_responses', 'anthropic_messages'],
                     reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'low' },
-                    maxOutputTokens: { maximum: 32_000 },
                 },
                 {
                     ...base,
                     application: { ...base.application, endpointTemplateId: 'chat', protocol: 'openai-chat' },
                     allowedProtocolKinds: ['openai_responses'],
                     reasoningEffort: { allowedValues: ['high'], defaultValue: 'high' },
-                    maxOutputTokens: { maximum: 16_000 },
                 },
                 {
                     ...base,
@@ -82,7 +78,6 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
                     // enforce it.
                     allowedProtocolKinds: ['openai_responses', 'anthropic_messages'],
                     reasoningEffort: { allowedValues: ['high'], defaultValue: 'high' },
-                    maxOutputTokens: null,
                 },
             ],
         };
@@ -99,16 +94,6 @@ describe('TeamCredentialRequestPolicyEditorSection', () => {
         expect(screen.findByTestId('team-credential-request-policy-protocol:anthropic_messages')).toBeNull();
         expect(screen.findByTestId('team-credential-request-policy-effort:high')).not.toBeNull();
         expect(screen.findByTestId('team-credential-request-policy-effort:low')).toBeNull();
-        expect(screen.findByTestId('team-credential-request-policy-max-output')).toBeNull();
-    });
-
-    it('preserves an invalid numeric string in the controlled draft', async () => {
-        const { screen, draft } = await mount(AVAILABLE_SUPPORT);
-
-        act(() => screen.changeTextByTestId('team-credential-request-policy-max-output', '12oops'));
-
-        expect(draft().maxOutputTokens).toBe('12oops');
-        expect(screen.findByTestId('team-credential-request-policy-max-output')?.props.value).toBe('12oops');
     });
 
     it('renders an explicit unavailable state without inferring controls', async () => {

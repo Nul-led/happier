@@ -36,8 +36,6 @@ export type TeamCredentialPolicyDraft = Readonly<{
     protocols: readonly TeamCredentialRequestProtocolKindV1[] | null;
     allowedModelIds: readonly string[] | null;
     reasoningEffort: TeamCredentialRequestPolicyV1['reasoningEffort'];
-    maxOutputTokens: string;
-    maxThinkingBudgetTokens: string;
 }>;
 
 export type TeamCredentialLimitDraft = Readonly<{
@@ -71,8 +69,6 @@ export const EMPTY_TEAM_CREDENTIAL_POLICY_DRAFT: TeamCredentialPolicyDraft = Obj
     protocols: null,
     allowedModelIds: null,
     reasoningEffort: null,
-    maxOutputTokens: '',
-    maxThinkingBudgetTokens: '',
 });
 
 export const EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT: TeamCredentialResourceDraft = Object.freeze({
@@ -174,8 +170,6 @@ function policyKey(policy: TeamCredentialPolicyDraft): unknown {
             orderedStrings(policy.reasoningEffort.allowedValues),
             policy.reasoningEffort.defaultValue,
         ],
-        policy.maxOutputTokens,
-        policy.maxThinkingBudgetTokens,
     ];
 }
 
@@ -626,9 +620,8 @@ export function teamCredentialRequestProtocolKindFromProviderProtocol(
         default: return null;
     }
 }
-export function teamCredentialPolicyDraftFromPolicy(policy: TeamCredentialRequestPolicyV1 | null): TeamCredentialPolicyDraft { return policy === null ? EMPTY_TEAM_CREDENTIAL_POLICY_DRAFT : { protocols: policy.allowedProtocolKinds, allowedModelIds: policy.allowedModelIds, reasoningEffort: policy.reasoningEffort, maxOutputTokens: policy.maxOutputTokens === null ? '' : String(policy.maxOutputTokens), maxThinkingBudgetTokens: policy.maxThinkingBudgetTokens === null ? '' : String(policy.maxThinkingBudgetTokens) }; }
-export function readTeamCredentialTokenCeiling(text: string): Readonly<{ ok: true; value: number | null }> | Readonly<{ ok: false }> { const value = text.trim(); if (value === '') return { ok: true, value: null }; if (!/^\d+$/u.test(value)) return { ok: false }; const parsed = Number(value); return Number.isSafeInteger(parsed) && parsed > 0 ? { ok: true, value: parsed } : { ok: false }; }
-export function teamCredentialPolicyFromDraft(draft: TeamCredentialPolicyDraft): TeamCredentialRequestPolicyV1 | null | 'invalid' { const output = readTeamCredentialTokenCeiling(draft.maxOutputTokens); const thinking = readTeamCredentialTokenCeiling(draft.maxThinkingBudgetTokens); if (!output.ok || !thinking.ok) return 'invalid'; const protocols = draft.protocols?.length ? [...draft.protocols] : null; const models = draft.allowedModelIds?.length ? [...draft.allowedModelIds] : null; if (protocols === null && models === null && draft.reasoningEffort === null && output.value === null && thinking.value === null) return null; return { allowedProtocolKinds: protocols, allowedModelIds: models, reasoningEffort: draft.reasoningEffort, maxOutputTokens: output.value, maxThinkingBudgetTokens: thinking.value }; }
+export function teamCredentialPolicyDraftFromPolicy(policy: TeamCredentialRequestPolicyV1 | null): TeamCredentialPolicyDraft { return policy === null ? EMPTY_TEAM_CREDENTIAL_POLICY_DRAFT : { protocols: policy.allowedProtocolKinds, allowedModelIds: policy.allowedModelIds, reasoningEffort: policy.reasoningEffort }; }
+export function teamCredentialPolicyFromDraft(draft: TeamCredentialPolicyDraft): TeamCredentialRequestPolicyV1 | null { const protocols = draft.protocols?.length ? [...draft.protocols] : null; const models = draft.allowedModelIds?.length ? [...draft.allowedModelIds] : null; if (protocols === null && models === null && draft.reasoningEffort === null) return null; return { allowedProtocolKinds: protocols, allowedModelIds: models, reasoningEffort: draft.reasoningEffort }; }
 
 /**
  * Reconcile only against a positively loaded canonical model catalog.

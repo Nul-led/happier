@@ -23,7 +23,6 @@ const COINCIDENTAL_TRANSLATIONS: Readonly<Record<string, readonly string[]>> = {
     'teams.tabs.sessions': ['de', 'ca'],
     // "Token" is the loanword these locales actually use for the AI unit.
     'teams.credentials.limits.metric.tokens': ['es', 'de', 'pt', 'ca'],
-    'teams.credentials.requestPolicy.tokensPlaceholder': ['es', 'de', 'pt', 'ca'],
     // Catalan spells cost, model and person exactly as English does.
     'teams.credentials.limits.metric.cost': ['ca'],
     'teams.credentials.requestPolicy.modelsLabel': ['ca'],

@@ -32,8 +32,6 @@ describe('reconcileTeamCredentialPolicyDraftForModelCatalog', () => {
             protocols: ['openai_responses'] as const,
             allowedModelIds: ['shared', 'old'],
             reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'high' },
-            maxOutputTokens: '4096',
-            maxThinkingBudgetTokens: '2048',
         };
 
         expect(reconcileTeamCredentialPolicyDraftForModelCatalog(draft, null)).toEqual({
@@ -93,8 +91,6 @@ describe('useTeamCredentialResourceDraft', () => {
                             protocols: null,
                             allowedModelIds: null,
                             reasoningEffort: null,
-                            maxOutputTokens: '',
-                            maxThinkingBudgetTokens: '',
                         },
                         limits: [],
                         pendingLimit: {
@@ -123,8 +119,6 @@ describe('useTeamCredentialResourceDraft', () => {
                     protocols: null,
                     allowedModelIds: null,
                     reasoningEffort: null,
-                    maxOutputTokens: '',
-                    maxThinkingBudgetTokens: '',
                 },
                 limits: [],
                 pendingLimit: {
@@ -148,8 +142,6 @@ describe('useTeamCredentialResourceDraft', () => {
                     protocols: null,
                     allowedModelIds: null,
                     reasoningEffort: null,
-                    maxOutputTokens: '',
-                    maxThinkingBudgetTokens: '',
                 },
                 limits: [],
                 pendingLimit: {
@@ -195,7 +187,7 @@ describe('useTeamCredentialResourceDraft', () => {
             ...current,
             brokerPlacement: { kind: 'machine', machineId: 'machine-b' },
             name: 'Renamed',
-            requestPolicy: { ...current.requestPolicy, maxOutputTokens: '4096' },
+            requestPolicy: { ...current.requestPolicy, allowedModelIds: ['model-a'] },
         })));
         expect(hook.getCurrent().directDisclosureAccepted).toBe(true);
 
@@ -233,7 +225,7 @@ describe('useTeamCredentialResourceDraft', () => {
         expect(hook.getCurrent().directDisclosureAccepted).toBe(false);
     });
 
-    it('fingerprints the complete draft deterministically, including invalid raw policy and limit input', async () => {
+    it('fingerprints the complete draft deterministically, including unordered audience and invalid raw limit input', async () => {
         const {
             EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT,
             teamCredentialResourceDraftFingerprint,
@@ -248,7 +240,6 @@ describe('useTeamCredentialResourceDraft', () => {
             requestPolicy: {
                 ...EMPTY_TEAM_CREDENTIAL_RESOURCE_DRAFT.requestPolicy,
                 allowedModelIds: ['model-b', 'model-a'],
-                maxOutputTokens: 'not-valid-yet',
             },
             limits: [{
                 id: 'limit-a',

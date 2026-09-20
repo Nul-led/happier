@@ -21,6 +21,11 @@ describe("personal event recipients", () => {
             .toEqual([owner.id, follower.id].sort());
         expect((await listSessionPersonalEventRecipients({ sessionId: session.id, event: "discussion_mention", targetAccountIds: [reader.id] })).map(row => row.accountId))
             .toEqual([reader.id]);
+        // A direct share is one targeted relevance fact: the granted recipient only,
+        // never the granting owner and never the unrelated follower.
+        expect(await listSessionPersonalEventRecipients({ sessionId: session.id, event: "directly_shared", targetAccountIds: [reader.id] }))
+            .toEqual([{ accountId: reader.id, reason: "direct_share_target" }]);
+        expect(await listSessionPersonalEventRecipients({ sessionId: session.id, event: "directly_shared" })).toEqual([]);
         const contentFreeCandidates = await listSessionPersonalEventRecipients({
             sessionId: session.id,
             event: "ready",

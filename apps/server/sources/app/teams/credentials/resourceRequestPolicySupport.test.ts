@@ -16,8 +16,6 @@ const supported: TeamCredentialRequestPolicyModelSupportV1 = {
     sourceRevision: "source-1",
     allowedProtocolKinds: ["openai_responses"],
     reasoningEffort: { allowedValues: ["low", "medium"], defaultValue: "medium" },
-    maxOutputTokens: { maximum: 16_384 },
-    maxThinkingBudgetTokens: { minimum: 1, maximum: 8_192 },
 };
 
 describe("normalizeTeamCredentialRequestPolicyForPersistence", () => {
@@ -26,8 +24,6 @@ describe("normalizeTeamCredentialRequestPolicyForPersistence", () => {
             allowedProtocolKinds: ["openai_responses" as const],
             allowedModelIds: ["gpt-5"],
             reasoningEffort: { allowedValues: ["low"], defaultValue: "low" },
-            maxOutputTokens: 8_192,
-            maxThinkingBudgetTokens: 4_096,
         };
         expect(normalizeTeamCredentialRequestPolicyForPersistence({ policy, models: [supported] }))
             .toEqual(policy);
@@ -54,8 +50,6 @@ describe("normalizeTeamCredentialRequestPolicyForPersistence", () => {
                 allowedProtocolKinds: ["openai_responses"],
                 allowedModelIds: ["gpt-latest"],
                 reasoningEffort: null,
-                maxOutputTokens: null,
-                maxThinkingBudgetTokens: null,
             },
             models: [supported],
         })).toBeNull();
@@ -63,8 +57,6 @@ describe("normalizeTeamCredentialRequestPolicyForPersistence", () => {
             allowedProtocolKinds: ["openai_responses" as const],
             allowedModelIds: ["latest"],
             reasoningEffort: null,
-            maxOutputTokens: null,
-            maxThinkingBudgetTokens: null,
         };
         expect(normalizeTeamCredentialRequestPolicyForPersistence({
             policy,

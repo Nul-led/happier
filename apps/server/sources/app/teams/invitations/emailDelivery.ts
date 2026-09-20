@@ -5,7 +5,9 @@ import type {
 } from "@happier-dev/protocol/teams";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import type { SessionHistoryAccess } from "@/storage/enums.generated";
+import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import { resolveAccountDisplayLabelV1 } from "@/app/account/profile/accountDisplayProfile";
 import { recordTeamInvitationEmailDeliveryResultInTx } from "./invitationLifecycle";
 
 /**
@@ -25,6 +27,8 @@ export type TeamInvitationEmailDeps = Readonly<{ delivery: AuthEmailDelivery }>;
 
 export type DeliverTeamInvitationEmailInput = Readonly<{
     invitationId: string;
+    /** The manager whose request minted this bearer; the mail names them. */
+    inviterAccountId: string;
     recipient: NormalizedVerifiedEmail;
     /** Rendered once by the invitation transport; the renderer derives its QR from these exact bytes. */
     joinUrl: string;
@@ -51,15 +55,22 @@ export async function deliverTeamInvitationEmail(
     deps: TeamInvitationEmailDeps,
     input: DeliverTeamInvitationEmailInput,
 ): Promise<TeamInvitationEmailDeliveryV1> {
+    // The mail is delivered only to the invited mailbox, so naming the manager
+    // who invited them discloses nothing to a stranger and is the message's
+    // strongest phishing-resistance signal. The join preview states the same
+    // label from the same owner, so the two never name the person differently.
+    const inviter = await db.account.findUnique({
+        where: { id: input.inviterAccountId },
+        select: { firstName: true, lastName: true, username: true },
+    });
+
     const result = await deps.delivery.deliver({
         kind: "invitation",
         to: input.recipient,
         joinUrl: input.joinUrl,
         homeName: input.homeName,
         teamName: input.teamName,
-        // The inviter is not the Home owner and this Home publishes no
-        // authoritative relationship, so the invitation names no person.
-        inviterLabel: null,
+        inviterLabel: inviter ? resolveAccountDisplayLabelV1(inviter) : null,
         requestedRole: input.role,
         sharesSessionHistory: input.historyAccess === "all_existing",
         emailBound: true,

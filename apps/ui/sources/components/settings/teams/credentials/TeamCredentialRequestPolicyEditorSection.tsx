@@ -8,14 +8,12 @@ import type {
 import { OptionPickerOverlay, type OptionPickerOption } from '@/components/sessions/pickers/OptionPickerOverlay';
 import { Item } from '@/components/ui/lists/Item';
 import { ItemGroup } from '@/components/ui/lists/ItemGroup';
-import { TextInput } from '@/components/ui/text/Text';
 import { presentProviderModelRow } from '@/providers/models/presentProviderModelRow';
 import { t } from '@/text';
 
 import { requestProtocolKindLabel } from './teamCredentialPresentation';
 import {
     EMPTY_TEAM_CREDENTIAL_POLICY_DRAFT,
-    readTeamCredentialTokenCeiling,
     teamCredentialPolicyFromDraft,
     type TeamCredentialPolicyDraft,
 } from './teamCredentialEditorDraft';
@@ -42,8 +40,6 @@ export type TeamCredentialRequestPolicyEditorSupportProjection = Readonly<{
     models: readonly TeamCredentialRequestPolicyModelSupportV1[];
     protocolKinds: readonly TeamCredentialRequestProtocolKindV1[];
     reasoningEffortValues: readonly string[];
-    maxOutputTokens: Readonly<{ maximum: number }> | null;
-    maxThinkingBudgetTokens: Readonly<{ minimum: number; maximum: number }> | null;
     storedPolicyUnsupported: boolean;
 }>;
 
@@ -85,47 +81,16 @@ export function projectTeamCredentialRequestPolicyEditorSupport(input: Readonly<
         && relevantRows.every((row) => row.reasoningEffort !== null)
         ? intersect(relevantRows.map((row) => row.reasoningEffort!.allowedValues))
         : [];
-    const maxOutputTokens = constraintsComplete
-        && relevantRows.every((row) => row.maxOutputTokens !== null)
-        ? { maximum: Math.min(...relevantRows.map((row) => row.maxOutputTokens!.maximum)) }
-        : null;
-    const thinkingRanges = constraintsComplete
-        && relevantRows.every((row) => row.maxThinkingBudgetTokens !== null)
-        ? relevantRows.map((row) => row.maxThinkingBudgetTokens!)
-        : [];
-    const maxThinkingBudgetTokens = thinkingRanges.length === relevantRows.length && thinkingRanges.length > 0
-        ? {
-            minimum: Math.max(...thinkingRanges.map((range) => range.minimum)),
-            maximum: Math.min(...thinkingRanges.map((range) => range.maximum)),
-        }
-        : null;
-    const validThinkingRange = maxThinkingBudgetTokens !== null
-        && maxThinkingBudgetTokens.minimum <= maxThinkingBudgetTokens.maximum;
-    const parsedOutput = readTeamCredentialTokenCeiling(input.draft.maxOutputTokens);
-    const parsedThinking = readTeamCredentialTokenCeiling(input.draft.maxThinkingBudgetTokens);
     const storedPolicyUnsupported = missingModel
         || missingProtocol
         || (input.draft.reasoningEffort !== null && (
             reasoningEffortValues.length === 0
             || input.draft.reasoningEffort.allowedValues.some((value) => !reasoningEffortValues.includes(value))
-        ))
-        || (input.draft.maxOutputTokens.trim() !== '' && (
-            maxOutputTokens === null
-            || (parsedOutput.ok && parsedOutput.value !== null && parsedOutput.value > maxOutputTokens.maximum)
-        ))
-        || (input.draft.maxThinkingBudgetTokens.trim() !== '' && (
-            !validThinkingRange
-            || (parsedThinking.ok && parsedThinking.value !== null && (
-                parsedThinking.value < maxThinkingBudgetTokens!.minimum
-                || parsedThinking.value > maxThinkingBudgetTokens!.maximum
-            ))
         ));
     return {
         models,
         protocolKinds,
         reasoningEffortValues,
-        maxOutputTokens,
-        maxThinkingBudgetTokens: validThinkingRange ? maxThinkingBudgetTokens : null,
         storedPolicyUnsupported,
     };
 }
@@ -162,9 +127,7 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
                     {hasStoredPolicy ? <Item
                         testID={`${testIDPrefix}-stored-unsupported`}
                         title={t('teams.credentials.requestPolicy.title')}
-                        detail={parsedDraft === 'invalid'
-                            ? t('teams.credentials.requestPolicy.numberInvalid')
-                            : t('teams.credentials.requestPolicy.activeNote')}
+                        detail={t('teams.credentials.requestPolicy.activeNote')}
                         showChevron={false}
                     /> : null}
                     {hasStoredPolicy ? <Item
@@ -200,10 +163,6 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
             .map((modelId) => ({ value: modelId, label: modelId, disabled: true }));
         const protocolKinds = projection.protocolKinds;
         const effortOptions = projection.reasoningEffortValues.map((value) => ({ value, label: value }));
-        const supportsMaxOutput = projection.maxOutputTokens !== null;
-        const supportsThinkingBudget = projection.maxThinkingBudgetTokens !== null;
-        const outputInvalid = !readTeamCredentialTokenCeiling(draft.maxOutputTokens).ok;
-        const thinkingInvalid = !readTeamCredentialTokenCeiling(draft.maxThinkingBudgetTokens).ok;
 
         const toggleProtocol = (kind: TeamCredentialRequestProtocolKindV1) => {
             if (busy) return;
@@ -345,50 +304,6 @@ export const TeamCredentialRequestPolicyEditorSection = React.memo(
                             </ItemGroup>
                         ) : null}
                     </>
-                ) : null}
-
-                {supportsMaxOutput ? (
-                    <ItemGroup
-                        title={t('teams.credentials.requestPolicy.maxOutputLabel')}
-                        footer={outputInvalid
-                            ? t('teams.credentials.requestPolicy.numberInvalid')
-                            : draft.maxOutputTokens.trim() === ''
-                                ? t('teams.credentials.requestPolicy.ceilingNone')
-                                : undefined}
-                    >
-                        <TextInput
-                            testID={`${testIDPrefix}-max-output`}
-                            value={draft.maxOutputTokens}
-                            onChangeText={(value) => setDraft((current) => ({ ...current, maxOutputTokens: value }))}
-                            placeholder={t('teams.credentials.requestPolicy.tokensPlaceholder')}
-                            accessibilityLabel={t('teams.credentials.requestPolicy.maxOutputLabel')}
-                            keyboardType="numeric"
-                            editable={!busy}
-                            maxLength={16}
-                        />
-                    </ItemGroup>
-                ) : null}
-
-                {supportsThinkingBudget ? (
-                    <ItemGroup
-                        title={t('teams.credentials.requestPolicy.thinkingLabel')}
-                        footer={thinkingInvalid
-                            ? t('teams.credentials.requestPolicy.numberInvalid')
-                            : draft.maxThinkingBudgetTokens.trim() === ''
-                                ? t('teams.credentials.requestPolicy.ceilingNone')
-                                : undefined}
-                    >
-                        <TextInput
-                            testID={`${testIDPrefix}-max-thinking`}
-                            value={draft.maxThinkingBudgetTokens}
-                            onChangeText={(value) => setDraft((current) => ({ ...current, maxThinkingBudgetTokens: value }))}
-                            placeholder={t('teams.credentials.requestPolicy.tokensPlaceholder')}
-                            accessibilityLabel={t('teams.credentials.requestPolicy.thinkingLabel')}
-                            keyboardType="numeric"
-                            editable={!busy}
-                            maxLength={16}
-                        />
-                    </ItemGroup>
                 ) : null}
             </>
         );

@@ -745,6 +745,67 @@ describe("Team member administration (SQLite integration)", () => {
         expect(crossed).toEqual({ ok: false, error: "invalid_team_cursor" });
     });
 
+    it("finds a member the reader has not paged to yet, and binds the cursor to the query", async () => {
+        const owner = await account();
+        const acme = await team("Roster search");
+        await member(acme.id, owner.id, "owner");
+        // Created last, so an unqueried page of two never reaches this row.
+        const early = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain", status: "active", homeRole: "member", firstName: "Ana" },
+        });
+        const middle = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain", status: "active", homeRole: "member", firstName: "Bo" },
+        });
+        const late = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: "plain", status: "active", homeRole: "member", username: "zoe-far-away", lastName: "Farrow" },
+        });
+        await member(acme.id, early.id, "member");
+        await member(acme.id, middle.id, "member");
+        const lateMembership = await member(acme.id, late.id, "member");
+
+        const unqueried = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, filter: "members", limit: 2,
+        }));
+        expect(unqueried.ok).toBe(true);
+        if (!unqueried.ok) return;
+        expect(unqueried.value.items.map((item) => item.id)).not.toContain(lateMembership.teamMembershipId);
+
+        // The Home answers the question the reader asked, not the pages they
+        // happen to hold: the match is on the first page of its own sequence.
+        const byUsername = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, filter: "members", limit: 2, query: "zoe",
+        }));
+        expect(byUsername.ok).toBe(true);
+        if (!byUsername.ok) return;
+        expect(byUsername.value.items.map((item) => item.id)).toEqual([lateMembership.teamMembershipId]);
+
+        const byLastName = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, filter: "members", query: "Farrow",
+        }));
+        expect(byLastName.ok).toBe(true);
+        if (!byLastName.ok) return;
+        expect(byLastName.value.items.map((item) => item.id)).toEqual([lateMembership.teamMembershipId]);
+
+        const firstPage = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id, actorAccountId: owner.id, filter: "members", limit: 1, query: "",
+        }));
+        expect(firstPage.ok).toBe(true);
+        if (!firstPage.ok) return;
+        expect(firstPage.value.nextCursor).not.toBeNull();
+
+        // A position minted without a query names different rows under one, so
+        // it is refused exactly as a crossed filter is.
+        const crossed = await inTx((tx) => listTeamMembersForActorInTx(tx, {
+            teamId: acme.id,
+            actorAccountId: owner.id,
+            filter: "members",
+            limit: 1,
+            query: "zoe",
+            cursor: firstPage.value.nextCursor,
+        }));
+        expect(crossed).toEqual({ ok: false, error: "invalid_team_cursor" });
+    });
+
     it("admits a direct add through the one minting owner and refuses an archived Team", async () => {
         const owner = await account();
         const target = await account();

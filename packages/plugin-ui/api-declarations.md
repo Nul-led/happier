@@ -482,6 +482,19 @@ function ContextMenu(props: MenuProps): ReactElement;
 ```
 
 
+### `.` — `CreateHappierListMultiSelectionStateInput` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `CreateHappierListMultiSelectionStateInput`.
+
+```ts
+type CreateHappierListMultiSelectionStateInput = Readonly<{
+    scopeKey: string;
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    eligibleKeys?: readonly HappierListMultiSelectionKey[] | ReadonlySet<HappierListMultiSelectionKey> | null;
+}>;
+```
+
+
 ### `.` — `DiffViewer` (value)
 
 Declared by `dist/components/Content.d.ts` as `DiffViewer`.
@@ -641,6 +654,1926 @@ type FormProps = Readonly<{
     disabled?: boolean;
     busy?: boolean;
     testID?: string;
+}>;
+```
+
+
+### `.` — `HAPPIER_ICON_NAMES` (value)
+
+Declared by `dist/presentation/content/Icon.d.ts` as `HAPPIER_ICON_NAMES`.
+
+```ts
+const HAPPIER_ICON_NAMES: readonly PluginUiIconTokenV1[];
+```
+
+
+### `.` — `HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT`.
+
+```ts
+const HAPPIER_LIST_MULTI_SELECTION_INERT_ROW_SNAPSHOT: "0:0:0";
+```
+
+
+### `.` — `HAPPIER_LIST_MULTI_SELECTION_INERT_SNAPSHOT` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HAPPIER_LIST_MULTI_SELECTION_INERT_SNAPSHOT`.
+
+```ts
+const HAPPIER_LIST_MULTI_SELECTION_INERT_SNAPSHOT: HappierListMultiSelectionSnapshot;
+```
+
+
+### `.` — `HAPPIER_TONE_COLOR_TOKEN` (value)
+
+Declared by `dist/presentation/semantics.d.ts` as `HAPPIER_TONE_COLOR_TOKEN`.
+
+```ts
+const HAPPIER_TONE_COLOR_TOKEN: {
+    readonly neutral: 'text';
+    readonly secondary: 'secondaryText';
+    readonly muted: 'mutedText';
+    readonly info: 'info';
+    readonly success: 'success';
+    readonly warning: 'warning';
+    readonly danger: 'danger';
+    readonly accent: 'accent';
+};
+```
+
+
+### `.` — `HappierActionFieldPresentation` (type)
+
+Declared by `dist/presentation/form/actionInputFields.d.ts` as `HappierActionFieldPresentation`.
+
+```ts
+type HappierActionFieldPresentation<OptionValue = unknown> = Readonly<{
+    kind: 'toggle';
+    value: boolean;
+}> | Readonly<{
+    kind: 'select';
+    value: OptionValue | readonly OptionValue[] | undefined;
+    multiple: boolean;
+}> | Readonly<{
+    kind: 'text';
+    value: string;
+    secure: boolean;
+    multiline: boolean;
+    keyboardType: 'default' | 'url' | 'numeric';
+    parseText(text: string): unknown;
+}>;
+```
+
+
+### `.` — `HappierActionPanel` (value)
+
+Declared by `dist/presentation/interaction/ActionPanel.d.ts` as `HappierActionPanel`.
+
+```ts
+function HappierActionPanel({ title, children, testID, style }: HappierActionPanelProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierActionPanelProps` (type)
+
+Declared by `dist/presentation/interaction/ActionPanel.d.ts` as `HappierActionPanelProps`.
+
+```ts
+type HappierActionPanelProps = Readonly<{
+    title?: string;
+    children?: ReactNode;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierActionPanelSection` (value)
+
+Declared by `dist/presentation/interaction/ActionPanel.d.ts` as `HappierActionPanelSection`.
+
+```ts
+function HappierActionPanelSection({ title, children, testID, style }: HappierActionPanelSectionProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierActionPanelSectionProps` (type)
+
+Declared by `dist/presentation/interaction/ActionPanel.d.ts` as `HappierActionPanelSectionProps`.
+
+```ts
+type HappierActionPanelSectionProps = Readonly<{
+    title?: string;
+    children?: ReactNode;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierBadge` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierBadge`.
+
+```ts
+function HappierBadge(props: Readonly<{
+    children?: ReactNode;
+    color: string;
+    backgroundColor: string;
+    borderColor: string;
+    radius: number;
+    horizontalPadding: number;
+    verticalPadding: number;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierBanner` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierBanner`.
+
+```ts
+function HappierBanner(props: Readonly<{
+    title: string;
+    description?: string;
+    tone: HappierTone;
+    action?: ReactNode;
+    theme: HappierUiTheme;
+    testID?: string;
+    style?: HappierStyleProp;
+    onLayout?: (event: HappierLayoutChangeEvent) => void;
+    renderContent?: (input: Readonly<{
+        color: string;
+        urgent: boolean;
+    }>) => ReactNode;
+    unstyled?: boolean;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierBrandMark` (value)
+
+Declared by `dist/presentation/content/Image.d.ts` as `HappierBrandMark`.
+
+```ts
+function HappierBrandMark(props: HappierBrandMarkProps): ReactElement;
+```
+
+
+### `.` — `HappierBrandMarkProps` (type)
+
+Declared by `dist/presentation/content/Image.d.ts` as `HappierBrandMarkProps`.
+
+```ts
+type HappierBrandMarkProps = Readonly<{
+    displayName: string;
+    bytes?: Uint8Array;
+    size?: HappierImageSize;
+    showName?: boolean;
+    theme: HappierUiTheme;
+    colorScheme: HappierUiPlatformFacts['colorScheme'];
+    testID?: string;
+    externallyLabelled?: boolean;
+    onDecodeError?: () => void;
+}>;
+```
+
+
+### `.` — `HappierCodeBlockBehaviorInput` (type)
+
+Declared by `dist/presentation/content/CodeBlock.d.ts` as `HappierCodeBlockBehaviorInput`.
+
+```ts
+type HappierCodeBlockBehaviorInput = Readonly<{
+    language?: string | null;
+    showHeaderRow: boolean;
+    showCopyButton: boolean;
+    hasHeaderLeft: boolean;
+    hasHeaderRight: boolean;
+    onCopy: () => unknown;
+    copiedDurationMs?: number;
+}>;
+```
+
+
+### `.` — `HappierDiffViewerRequest` (type)
+
+Declared by `dist/presentation/content/DiffViewer.d.ts` as `HappierDiffViewerRequest`.
+
+```ts
+type HappierDiffViewerRequest = Readonly<{
+    unifiedDiff: string;
+    filePath?: string;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierDivider` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierDivider`.
+
+```ts
+function HappierDivider(props: Readonly<{
+    color: string;
+    accessibilityLabel?: string;
+    testID?: string;
+    style?: HappierStyleProp;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierField` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierField`.
+
+```ts
+function HappierField(props: HappierFieldProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierFieldProps` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierFieldProps`.
+
+```ts
+type HappierFieldProps = Readonly<{
+    label: string;
+    description?: string;
+    required?: boolean;
+    disabled?: boolean;
+    issue?: string;
+    children?: ReactNode;
+    theme: HappierUiTheme;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierForm` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierForm`.
+
+```ts
+function HappierForm({ children, accessibilityLabel, busy, testID, style }: HappierFormProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierFormActions` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierFormActions`.
+
+```ts
+function HappierFormActions({ children, testID, style }: HappierFormActionsProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierFormActionsProps` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierFormActionsProps`.
+
+```ts
+type HappierFormActionsProps = Readonly<{
+    children?: ReactNode;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierFormPendingInput` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierFormPendingInput`.
+
+```ts
+type HappierFormPendingInput = Readonly<{
+    busy?: boolean;
+    implicitPending?: boolean;
+}>;
+```
+
+
+### `.` — `HappierFormProps` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierFormProps`.
+
+```ts
+type HappierFormProps = Readonly<{
+    children?: ReactNode;
+    accessibilityLabel?: string;
+    busy?: boolean;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierHeading` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierHeading`.
+
+```ts
+function HappierHeading(props: Readonly<{
+    children?: ReactNode;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    level: 1 | 2 | 3 | 4 | 5 | 6;
+    theme?: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierIconName` (type)
+
+Declared by `dist/presentation/content/Icon.d.ts` as `HappierIconName`.
+
+```ts
+type HappierIconName = PluginUiIconTokenV1;
+```
+
+
+### `.` — `HappierIconSize` (type)
+
+Declared by `dist/presentation/content/Icon.d.ts` as `HappierIconSize`.
+
+```ts
+type HappierIconSize = 'small' | 'medium' | 'large';
+```
+
+
+### `.` — `HappierImageSize` (type)
+
+Declared by `dist/presentation/content/Image.d.ts` as `HappierImageSize`.
+
+```ts
+type HappierImageSize = 'small' | 'medium' | 'large';
+```
+
+
+### `.` — `HappierInfoState` (value)
+
+Declared by `dist/presentation/state/InfoState.d.ts` as `HappierInfoState`.
+
+```ts
+function HappierInfoState({ children, action, testID, actionTestID, accessibilityRole, accessibilityLiveRegion, busy, }: HappierInfoStateProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierInfoStateProps` (type)
+
+Declared by `dist/presentation/state/InfoState.d.ts` as `HappierInfoStateProps`.
+
+```ts
+type HappierInfoStateProps = Readonly<{
+    children?: ReactNode;
+    action?: ReactNode;
+    testID?: string;
+    actionTestID?: string;
+    accessibilityRole?: 'alert';
+    accessibilityLiveRegion?: 'none' | 'polite' | 'assertive';
+    busy?: boolean;
+}>;
+```
+
+
+### `.` — `HappierInfoTile` (value)
+
+Declared by `dist/presentation/state/InfoState.d.ts` as `HappierInfoTile`.
+
+```ts
+function HappierInfoTile({ icon, title, description, tone, paddingHorizontal, }: HappierInfoTileProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierInfoTileProps` (type)
+
+Declared by `dist/presentation/state/InfoState.d.ts` as `HappierInfoTileProps`.
+
+```ts
+type HappierInfoTileProps = Readonly<{
+    icon?: ReactNode;
+    title?: ReactNode;
+    description?: ReactNode;
+    tone?: HappierTone;
+    paddingHorizontal?: number;
+}>;
+```
+
+
+### `.` — `HappierItemBehavior` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierItemBehavior`.
+
+```ts
+type HappierItemBehavior = Readonly<{
+    accessibilityState?: HappierItemSemanticState;
+    tabIndex: -1 | 0;
+    interactive: boolean;
+    secondaryActionsEnabled: boolean;
+    density: HappierItemDensity;
+    dividerVisible: boolean;
+    selectionVisible: boolean;
+    accessoryPlacement: 'inside' | 'outside';
+    navigationAccessoryVisible: boolean;
+}>;
+```
+
+
+### `.` — `HappierItemBehaviorInput` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierItemBehaviorInput`.
+
+```ts
+type HappierItemBehaviorInput = HappierItemSemanticInput & Readonly<{
+    focused?: boolean;
+    selectableItemCount?: number;
+    density?: HappierItemDensity;
+    hasPrimaryAction: boolean;
+    hasSecondaryActions?: boolean;
+    hasAccessory?: boolean;
+    accessoryOutsidePressable?: boolean;
+    showNavigationAccessory?: boolean;
+    keepNavigationAccessoryWithAccessory?: boolean;
+    showDivider?: boolean;
+}>;
+```
+
+
+### `.` — `HappierItemDensity` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierItemDensity`.
+
+```ts
+type HappierItemDensity = 'comfortable' | 'cozy' | 'compact' | 'tight';
+```
+
+
+### `.` — `HappierItemGroup` (value)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroup`.
+
+```ts
+function HappierItemGroup(props: HappierItemGroupProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierItemGroupBehavior` (value)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupBehavior`.
+
+```ts
+function HappierItemGroupBehavior(props: HappierItemGroupBehaviorProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierItemGroupBehaviorProps` (type)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupBehaviorProps`.
+
+```ts
+type HappierItemGroupBehaviorProps = Readonly<{
+    children?: React.ReactNode;
+    accessibilityRole?: 'radiogroup';
+    accessibilityLabel?: string;
+    selectableItemCount: number;
+    renderContent(projectedChildren: React.ReactNode): React.ReactNode;
+}>;
+```
+
+
+### `.` — `HappierItemGroupItemBehaviorInput` (type)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupItemBehaviorInput`.
+
+```ts
+type HappierItemGroupItemBehaviorInput = Readonly<{
+    role?: 'radio' | 'option' | 'button';
+    itemGroupRadioIndex?: number;
+    disabled?: boolean;
+    busy?: boolean;
+}>;
+```
+
+
+### `.` — `HappierItemGroupProps` (type)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupProps`.
+
+```ts
+type HappierItemGroupProps = Readonly<{
+    children?: React.ReactNode;
+    accessibilityRole?: 'radiogroup';
+    accessibilityLabel?: string;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierItemGroupRadioFocusable` (type)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupRadioFocusable`.
+
+```ts
+type HappierItemGroupRadioFocusable = HappierFocusable;
+```
+
+
+### `.` — `HappierItemGroupSelectionContext` (value)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `HappierItemGroupSelectionContext`.
+
+```ts
+const HappierItemGroupSelectionContext: React.Context<Readonly<{
+    selectableItemCount: number;
+    radioGroup?: HappierItemGroupRadioContext | null;
+}> | null>;
+```
+
+
+### `.` — `HappierItemOverflow` (value)
+
+Declared by `dist/presentation/collection/ItemOverflow.d.ts` as `HappierItemOverflow`.
+
+```ts
+function HappierItemOverflow(props: HappierItemOverflowProps): ReactElement | null;
+```
+
+
+### `.` — `HappierItemOverflowAction` (type)
+
+Declared by `dist/presentation/collection/ItemOverflow.d.ts` as `HappierItemOverflowAction`.
+
+```ts
+type HappierItemOverflowAction = Readonly<{
+    id: string;
+    label: string;
+    disabled?: boolean;
+    icon?: ReactNode;
+}>;
+```
+
+
+### `.` — `HappierItemOverflowProps` (type)
+
+Declared by `dist/presentation/collection/ItemOverflow.d.ts` as `HappierItemOverflowProps`.
+
+```ts
+type HappierItemOverflowProps = Readonly<{
+    actions: readonly HappierItemOverflowAction[];
+    secondaryActionsEnabled?: boolean;
+    accessibilityLabel: string;
+    onSelect(id: string): void;
+    open?: boolean;
+    onOpenChange?(open: boolean): void;
+    focusReturnRef?: RefObject<unknown>;
+    renderMenu(input: HappierItemOverflowRenderInput): ReactElement;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierItemOverflowRenderInput` (type)
+
+Declared by `dist/presentation/collection/ItemOverflow.d.ts` as `HappierItemOverflowRenderInput`.
+
+```ts
+type HappierItemOverflowRenderInput = Readonly<{
+    open: boolean;
+    onOpenChange(open: boolean): void;
+    trigger: string;
+    triggerAccessibilityLabel: string;
+    testID?: string;
+    disabled: boolean;
+    triggerTabIndex?: -1 | 0;
+    focusReturnRef?: RefObject<unknown>;
+    actions: readonly HappierItemOverflowAction[];
+    onSelect(id: string): void;
+}>;
+```
+
+
+### `.` — `HappierItemSemanticInput` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierItemSemanticInput`.
+
+```ts
+type HappierItemSemanticInput = Readonly<{
+    role?: HappierSelectableRole;
+    selected?: boolean;
+    disabled?: boolean;
+    busy?: boolean;
+    expanded?: boolean;
+    groupedIndex?: number;
+    tabStopIndex?: number | null;
+    isTabStop?: boolean;
+}>;
+```
+
+
+### `.` — `HappierItemSemanticState` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierItemSemanticState`.
+
+```ts
+type HappierItemSemanticState = Readonly<{
+    checked?: boolean;
+    selected?: boolean;
+    disabled?: boolean;
+    busy?: boolean;
+    expanded?: boolean;
+}>;
+```
+
+
+### `.` — `HappierLabel` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierLabel`.
+
+```ts
+function HappierLabel(props: Readonly<{
+    children?: ReactNode;
+    theme?: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierLayoutChangeEvent` (type)
+
+Declared by `dist/presentation/portableTypes.d.ts` as `HappierLayoutChangeEvent`.
+
+```ts
+type HappierLayoutChangeEvent = Readonly<{
+    nativeEvent: Readonly<{
+        layout: Readonly<{
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+        }>;
+    }>;
+}>;
+```
+
+
+### `.` — `HappierLayoutGap` (type)
+
+Declared by `dist/presentation/layout/layoutSemantics.d.ts` as `HappierLayoutGap`.
+
+```ts
+type HappierLayoutGap = 'none' | 'xsmall' | 'small' | 'medium' | 'large' | 'xlarge';
+```
+
+
+### `.` — `HappierLayoutSpacing` (type)
+
+Declared by `dist/presentation/layout/layoutSemantics.d.ts` as `HappierLayoutSpacing`.
+
+```ts
+type HappierLayoutSpacing = Readonly<Record<Exclude<HappierLayoutGap, 'none'>, number>>;
+```
+
+
+### `.` — `HappierLink` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierLink`.
+
+```ts
+function HappierLink(props: Readonly<{
+    children?: ReactNode;
+    label: string;
+    disabled?: boolean;
+    onPress: () => unknown;
+    theme: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierList` (value)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierList`.
+
+```ts
+function HappierList({ children, accessibilityLabel, testID, style, }: HappierListProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierListItem` (value)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierListItem`.
+
+```ts
+function HappierListItem({ children, title, subtitle, detail, titleNumberOfLines, subtitleNumberOfLines, detailNumberOfLines, icon, accessory, accessoryWraps, accessoryOutsidePressable, tone, onPress, onContextMenu, disabled, busy, selected, accessibilityRole, accessibilityExpanded, accessibilityPositionInSet, accessibilitySetSize, theme, minimumTouchTarget, density, showDivider, hasSecondaryActions, accessibilityLabel, accessibilityHint, testID, style, itemGroupRadioIndex, rovingCollectionItem, suppressListItemRole, accessibilityRowIndex, accessibilityRowCount, }: HappierListItemProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierListItemProps` (type)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierListItemProps`.
+
+```ts
+type HappierListItemProps = Readonly<{
+    children?: ReactNode;
+    title?: string;
+    subtitle?: string;
+    detail?: string;
+    titleNumberOfLines?: number;
+    subtitleNumberOfLines?: number;
+    detailNumberOfLines?: number;
+    icon?: ReactNode;
+    accessory?: ReactNode;
+    accessoryWraps?: boolean;
+    accessoryOutsidePressable?: boolean;
+    tone?: HappierTone;
+    onPress?: (event?: HappierGestureResponderEvent) => unknown;
+    onContextMenu?: (event: unknown) => void;
+    disabled?: boolean;
+    busy?: boolean;
+    selected?: boolean;
+    accessibilityRole?: 'radio' | 'option' | 'button';
+    accessibilityExpanded?: boolean;
+    accessibilityPositionInSet?: number;
+    accessibilitySetSize?: number;
+    theme?: HappierUiTheme;
+    minimumTouchTarget?: number;
+    density?: HappierItemDensity;
+    showDivider?: boolean;
+    hasSecondaryActions?: boolean;
+    accessibilityLabel?: string;
+    accessibilityHint?: string;
+    testID?: string;
+    style?: HappierStyleProp;
+    itemGroupRadioIndex?: number;
+    rovingCollectionItem?: HappierRovingCollectionItem;
+    suppressListItemRole?: boolean;
+    accessibilityRowIndex?: number;
+    accessibilityRowCount?: number;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionAction` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionAction`.
+
+```ts
+type HappierListMultiSelectionAction = Readonly<{
+    type: 'enter';
+    key?: HappierListMultiSelectionKey | null;
+}> | Readonly<{
+    type: 'exit';
+}> | Readonly<{
+    type: 'clear';
+}> | Readonly<{
+    type: 'replace';
+    key: HappierListMultiSelectionKey;
+}> | Readonly<{
+    type: 'toggle';
+    key: HappierListMultiSelectionKey;
+}> | Readonly<{
+    type: 'selectRange';
+    targetKey: HappierListMultiSelectionKey;
+    add?: boolean;
+}> | Readonly<{
+    type: 'selectAllVisible';
+}> | Readonly<{
+    type: 'setSelectedKeys';
+    keys: readonly HappierListMultiSelectionKey[];
+}> | Readonly<{
+    type: 'setFocusedKey';
+    key: HappierListMultiSelectionKey | null;
+}> | Readonly<{
+    type: 'setVisibleOrder';
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    eligibleKeys?: readonly HappierListMultiSelectionKey[] | ReadonlySet<HappierListMultiSelectionKey> | null;
+}> | Readonly<{
+    type: 'resetScope';
+    scopeKey: string;
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    eligibleKeys?: readonly HappierListMultiSelectionKey[] | ReadonlySet<HappierListMultiSelectionKey> | null;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionActions` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionActions`.
+
+```ts
+type HappierListMultiSelectionActions = Readonly<{
+    enter: (preselectKey?: HappierListMultiSelectionKey | null) => void;
+    exit: () => void;
+    clear: () => void;
+    replaceWith: (key: HappierListMultiSelectionKey) => void;
+    toggle: (key: HappierListMultiSelectionKey) => void;
+    selectRange: (targetKey: HappierListMultiSelectionKey) => void;
+    addRange: (targetKey: HappierListMultiSelectionKey) => void;
+    selectAllVisible: () => void;
+    setSelectedKeys: (keys: readonly HappierListMultiSelectionKey[]) => void;
+    setFocusedKey: (key: HappierListMultiSelectionKey | null) => void;
+    isSelected: (key: HappierListMultiSelectionKey) => boolean;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionKey` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionKey`.
+
+```ts
+type HappierListMultiSelectionKey = string;
+```
+
+
+### `.` — `HappierListMultiSelectionKeyboardInput` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionKeyboardInput`.
+
+```ts
+type HappierListMultiSelectionKeyboardInput = Readonly<{
+    key: string;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    platform: HappierPointerPlatform;
+    entries: readonly HappierRovingEntry[];
+    currentIndex: number;
+    rtl: boolean;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionKeyboardIntent` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionKeyboardIntent`.
+
+```ts
+type HappierListMultiSelectionKeyboardIntent = Readonly<{
+    kind: 'toggleFocused';
+}> | Readonly<{
+    kind: 'selectAllVisible';
+}> | Readonly<{
+    kind: 'exit';
+}> | Readonly<{
+    kind: 'extendRange';
+    toIndex: number;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionPointerAction` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionPointerAction`.
+
+```ts
+type HappierListMultiSelectionPointerAction = 'open' | 'toggle' | 'selectRange' | 'addRange';
+```
+
+
+### `.` — `HappierListMultiSelectionPointerInput` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionPointerInput`.
+
+```ts
+type HappierListMultiSelectionPointerInput = Readonly<{
+    isSelectionMode: boolean;
+    platform: HappierPointerPlatform;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionRangeInput` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionRangeInput`.
+
+```ts
+type HappierListMultiSelectionRangeInput = Readonly<{
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    anchorKey: HappierListMultiSelectionKey | null;
+    targetKey: HappierListMultiSelectionKey;
+    eligibleKeys?: ReadonlySet<HappierListMultiSelectionKey> | null;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionRowFlags` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionRowFlags`.
+
+```ts
+type HappierListMultiSelectionRowFlags = Readonly<{
+    isSelectionMode: boolean;
+    isSelected: boolean;
+    isFocused: boolean;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionRowsInput` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionRowsInput`.
+
+```ts
+type HappierListMultiSelectionRowsInput = Readonly<{
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    eligibleKeys?: readonly HappierListMultiSelectionKey[] | ReadonlySet<HappierListMultiSelectionKey> | null;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionSnapshot` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionSnapshot`.
+
+```ts
+type HappierListMultiSelectionSnapshot = HappierListMultiSelectionState & Readonly<{
+    count: number;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionState` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionState`.
+
+```ts
+type HappierListMultiSelectionState = Readonly<{
+    isSelectionMode: boolean;
+    selectedKeys: ReadonlySet<HappierListMultiSelectionKey>;
+    anchorKey: HappierListMultiSelectionKey | null;
+    focusedKey: HappierListMultiSelectionKey | null;
+    visibleOrderedKeys: readonly HappierListMultiSelectionKey[];
+    eligibleKeys: ReadonlySet<HappierListMultiSelectionKey>;
+    scopeKey: string;
+    version: number;
+}>;
+```
+
+
+### `.` — `HappierListMultiSelectionStore` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierListMultiSelectionStore`.
+
+```ts
+type HappierListMultiSelectionStore = HappierListMultiSelectionActions & Readonly<{
+    getSnapshot: () => HappierListMultiSelectionSnapshot;
+    getRowSnapshot: (key: HappierListMultiSelectionKey) => string;
+    subscribe: (listener: () => void) => () => void;
+    setVisibleRows: (params: HappierListMultiSelectionRowsInput) => void;
+    updateScope: (params: HappierListMultiSelectionRowsInput & Readonly<{
+        scopeKey: string;
+    }>) => void;
+}>;
+```
+
+
+### `.` — `HappierListProps` (type)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierListProps`.
+
+```ts
+type HappierListProps = Readonly<{
+    children?: ReactNode;
+    accessibilityLabel?: string;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierListSection` (value)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierListSection`.
+
+```ts
+function HappierListSection({ children, title, virtualizedCollectionRole, accessibilityRowIndex, accessibilityRowCount, testID, style, }: HappierListSectionProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierListSectionProps` (type)
+
+Declared by `dist/presentation/collection/List.d.ts` as `HappierListSectionProps`.
+
+```ts
+type HappierListSectionProps = Readonly<{
+    children?: ReactNode;
+    title: string;
+    virtualizedCollectionRole?: 'list' | 'listbox' | 'grid';
+    accessibilityRowIndex?: number;
+    accessibilityRowCount?: number;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierMarkdown` (value)
+
+Declared by `dist/presentation/content/Markdown.d.ts` as `HappierMarkdown`.
+
+```ts
+function HappierMarkdown(input: HappierMarkdownProps): ReactElement;
+```
+
+
+### `.` — `HappierMarkdownProps` (type)
+
+Declared by `dist/presentation/content/Markdown.d.ts` as `HappierMarkdownProps`.
+
+```ts
+type HappierMarkdownProps = HappierMarkdownRenderInput & Readonly<{
+    renderContent?: (input: HappierMarkdownRenderInput) => ReactElement;
+}>;
+```
+
+
+### `.` — `HappierMarkdownRenderInput` (type)
+
+Declared by `dist/presentation/content/Markdown.d.ts` as `HappierMarkdownRenderInput`.
+
+```ts
+type HappierMarkdownRenderInput = Readonly<{
+    value: string;
+    selectable: boolean;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierMenuContent` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuContent`.
+
+```ts
+type HappierMenuContent<Item extends HappierMenuItemDescriptor = HappierMenuItemDescriptor> = Readonly<{
+    items: readonly Item[];
+    ungroupedEntries: readonly HappierMenuEntry<Item>[];
+    groups: readonly HappierResolvedMenuGroup<Item>[];
+}>;
+```
+
+
+### `.` — `HappierMenuEntry` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuEntry`.
+
+```ts
+type HappierMenuEntry<Item extends HappierMenuItemDescriptor = HappierMenuItemDescriptor> = Readonly<{
+    item: Item;
+    index: number;
+}>;
+```
+
+
+### `.` — `HappierMenuGroupDescriptor` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuGroupDescriptor`.
+
+```ts
+type HappierMenuGroupDescriptor<Item extends HappierMenuItemDescriptor = HappierMenuItemDescriptor> = Readonly<{
+    id: string;
+    accessibilityLabel: string;
+    items: readonly Item[];
+}>;
+```
+
+
+### `.` — `HappierMenuInteractionInput` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuInteractionInput`.
+
+```ts
+type HappierMenuInteractionInput<Item extends HappierMenuInteractionItem> = Readonly<{
+    items: readonly Item[];
+    open?: boolean;
+    initialSelectedId?: string | null;
+    allowEmptySelection?: boolean;
+    enableTypeahead?: boolean;
+    resetKey?: unknown;
+    onRequestClose(): void;
+    getItemLabel(item: Item): string | undefined;
+    onKeyboardSelectionChange?(index: number): void;
+}>;
+```
+
+
+### `.` — `HappierMenuItemDescriptor` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuItemDescriptor`.
+
+```ts
+type HappierMenuItemDescriptor = Readonly<{
+    id: string;
+    label?: string;
+    disabled?: boolean;
+    kind?: 'action' | 'checkbox' | 'radio';
+    checked?: boolean;
+    radioGroupId?: string;
+}>;
+```
+
+
+### `.` — `HappierMenuKeyAction` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuKeyAction`.
+
+```ts
+type HappierMenuKeyAction = Readonly<{
+    kind: 'move';
+    direction: -1 | 1;
+}> | Readonly<{
+    kind: 'edge';
+    edge: 'start' | 'end';
+}> | Readonly<{
+    kind: 'activate';
+}> | Readonly<{
+    kind: 'close';
+}> | Readonly<{
+    kind: 'typeahead';
+    value: string;
+}> | Readonly<{
+    kind: 'none';
+}>;
+```
+
+
+### `.` — `HappierMenuRadioGroupDescriptor` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierMenuRadioGroupDescriptor`.
+
+```ts
+type HappierMenuRadioGroupDescriptor = Readonly<{
+    id: string;
+    accessibilityLabel: string;
+    selectedId: string | null;
+}>;
+```
+
+
+### `.` — `HappierMetadata` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierMetadata`.
+
+```ts
+function HappierMetadata(props: Readonly<{
+    title?: string;
+    entries: readonly HappierMetadataEntry[];
+    theme: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierMetadataEntry` (type)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierMetadataEntry`.
+
+```ts
+type HappierMetadataEntry = Readonly<{
+    label: string;
+    value: string;
+    tone?: HappierTone;
+    accessibilityLabel?: string;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierPointerModifiers` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierPointerModifiers`.
+
+```ts
+type HappierPointerModifiers = Readonly<{
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+}>;
+```
+
+
+### `.` — `HappierPointerPlatform` (type)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `HappierPointerPlatform`.
+
+```ts
+type HappierPointerPlatform = 'macos' | 'ios' | 'windows' | 'linux' | 'android' | 'web';
+```
+
+
+### `.` — `HappierPopoverPlacement` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierPopoverPlacement`.
+
+```ts
+type HappierPopoverPlacement = HappierResolvedPopoverPlacement | 'auto' | 'auto-vertical' | 'auto-horizontal';
+```
+
+
+### `.` — `HappierPressable` (value)
+
+Declared by `dist/presentation/interaction/Pressable.d.ts` as `HappierPressable`.
+
+```ts
+function HappierPressable({ onPress, onPressIn, onLongPress, onContextMenu, onKeyDown, onFocusChange, disabled, busy, invalid, errorMessageId, describedById, highlighted, selected, expanded, accessibilityPositionInSet, accessibilitySetSize, hasPopup, checked, accessibilityRole, webRole, accessibilityLabel, accessibilityHint, hitSlop, testID, controlRef, tabIndex, nativeID, controls, style, overlay, children, }: HappierPressableProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierPressableProps` (type)
+
+Declared by `dist/presentation/interaction/Pressable.d.ts` as `HappierPressableProps`.
+
+```ts
+type HappierPressableProps = Readonly<{
+    onPress: (event?: HappierGestureResponderEvent) => unknown;
+    onPressIn?: (event?: HappierGestureResponderEvent) => void;
+    onLongPress?: (event?: HappierGestureResponderEvent) => void;
+    onContextMenu?: (event: unknown) => void;
+    onKeyDown?: (key: string, event: unknown) => boolean;
+    onFocusChange?: (focused: boolean) => void;
+    disabled?: boolean;
+    busy?: boolean;
+    invalid?: boolean;
+    errorMessageId?: string;
+    describedById?: string;
+    highlighted?: boolean;
+    selected?: boolean;
+    expanded?: boolean;
+    accessibilityPositionInSet?: number;
+    accessibilitySetSize?: number;
+    hasPopup?: 'dialog' | 'menu';
+    checked?: boolean;
+    accessibilityRole?: HappierPressableRole;
+    webRole?: 'menuitemcheckbox' | 'menuitemradio';
+    accessibilityLabel?: string;
+    accessibilityHint?: string;
+    hitSlop?: number;
+    testID?: string;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    tabIndex?: -1 | 0;
+    nativeID?: string;
+    controls?: string;
+    style?: HappierStyleProp | ((state: HappierPressableStyleState) => HappierStyleProp);
+    overlay?: (state: HappierPressableState) => ReactNode;
+    children?: ReactNode | ((state: HappierPressableState) => ReactNode);
+}>;
+```
+
+
+### `.` — `HappierPressableRole` (type)
+
+Declared by `dist/presentation/interaction/Pressable.d.ts` as `HappierPressableRole`.
+
+```ts
+type HappierPressableRole = 'button' | 'checkbox' | 'link' | 'radio' | 'tab' | 'switch' | 'menuitem' | 'menuitemcheckbox' | 'menuitemradio' | 'option';
+```
+
+
+### `.` — `HappierPressableState` (type)
+
+Declared by `dist/presentation/interaction/Pressable.d.ts` as `HappierPressableState`.
+
+```ts
+type HappierPressableState = Readonly<{
+    hovered: boolean;
+    focused: boolean;
+    highlighted: boolean;
+    selected: boolean;
+    busy: boolean;
+    disabled: boolean;
+}>;
+```
+
+
+### `.` — `HappierPressableStyleState` (type)
+
+Declared by `dist/presentation/interaction/Pressable.d.ts` as `HappierPressableStyleState`.
+
+```ts
+type HappierPressableStyleState = HappierPressableState & Readonly<{
+    pressed: boolean;
+}>;
+```
+
+
+### `.` — `HappierProgress` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `HappierProgress`.
+
+```ts
+function HappierProgress(props: Readonly<{
+    value?: number;
+    label: string;
+    theme: HappierUiTheme;
+    testID?: string;
+    style?: HappierStyleProp;
+    pointerEvents?: 'auto' | 'box-none' | 'box-only' | 'none';
+    renderFill?: (percentage: number) => ReactNode;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierResolvedMenuGroup` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierResolvedMenuGroup`.
+
+```ts
+type HappierResolvedMenuGroup<Item extends HappierMenuItemDescriptor = HappierMenuItemDescriptor> = Readonly<{
+    id: string;
+    accessibilityLabel: string;
+    entries: readonly HappierMenuEntry<Item>[];
+}>;
+```
+
+
+### `.` — `HappierResolvedPopoverPlacement` (type)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `HappierResolvedPopoverPlacement`.
+
+```ts
+type HappierResolvedPopoverPlacement = 'top' | 'bottom' | 'left' | 'right';
+```
+
+
+### `.` — `HappierRovingEntry` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierRovingEntry`.
+
+```ts
+type HappierRovingEntry = Readonly<{
+    disabled: boolean;
+}>;
+```
+
+
+### `.` — `HappierScreen` (value)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierScreen`.
+
+```ts
+function HappierScreen({ children, controlRef, onLayout, testID, style, safeAreaInsets }: HappierScreenProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierScreenProps` (type)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierScreenProps`.
+
+```ts
+type HappierScreenProps = Readonly<{
+    children?: ReactNode;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    onLayout?: (event: HappierLayoutChangeEvent) => void;
+    testID?: string;
+    style?: HappierStyleProp;
+    safeAreaInsets?: Readonly<{
+        top: number;
+        right: number;
+        bottom: number;
+        left: number;
+    }>;
+}>;
+```
+
+
+### `.` — `HappierScrollArea` (value)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierScrollArea`.
+
+```ts
+function HappierScrollArea({ children, accessibilityLabel, testID, style, contentContainerStyle, safeAreaInsets, keyboardShouldPersistTaps, ...scrollProps }: HappierScrollAreaProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierScrollAreaProps` (type)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierScrollAreaProps`.
+
+```ts
+type HappierScrollAreaProps = Readonly<{
+    children?: ReactNode;
+    horizontal?: boolean;
+    keyboardShouldPersistTaps?: HappierKeyboardShouldPersistTaps;
+    onScroll?: (event: HappierScrollEvent) => void;
+    scrollEventThrottle?: number;
+    onLayout?: (event: HappierLayoutChangeEvent) => void;
+    accessibilityLabel?: string;
+    testID?: string;
+    style?: HappierStyleProp;
+    contentContainerStyle?: HappierStyleProp;
+    safeAreaInsets?: Readonly<{
+        top: number;
+        right: number;
+        bottom: number;
+        left: number;
+    }>;
+}>;
+```
+
+
+### `.` — `HappierSelect` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierSelect`.
+
+```ts
+function HappierSelect<Value = string>(props: Readonly<{
+    label: string;
+    options: readonly HappierSelectOption<Value>[];
+    value: Value | readonly Value[] | undefined;
+    multiple?: boolean;
+    maxSelections?: number;
+    minimumSelections?: number;
+    required?: boolean;
+    onChange: (value: Value | readonly Value[]) => void;
+    isEqual?: (left: Value, right: Value) => boolean;
+    keyForOption?: (option: HappierSelectOption<Value>, index: number) => string;
+    minimumTouchTarget?: number;
+    disabled?: boolean;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    theme: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierSelectOption` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierSelectOption`.
+
+```ts
+type HappierSelectOption<Value = string> = Readonly<{
+    value: Value;
+    label: string;
+    description?: string;
+    disabled?: boolean;
+    accessibilityLabel?: string;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierSelectableRole` (type)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `HappierSelectableRole`.
+
+```ts
+type HappierSelectableRole = 'radio' | 'option' | 'button' | undefined;
+```
+
+
+### `.` — `HappierSpinner` (value)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `HappierSpinner`.
+
+```ts
+function HappierSpinner(props: HappierSpinnerProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierSpinnerProps` (type)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `HappierSpinnerProps`.
+
+```ts
+type HappierSpinnerProps = HappierActivityIndicatorHostProps & Readonly<{
+    size?: HappierActivityIndicatorHostProps['size'];
+    animationEnabled?: boolean;
+    reducedMotion?: boolean;
+}>;
+```
+
+
+### `.` — `HappierStack` (value)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierStack`.
+
+```ts
+function HappierStack({ children, direction, gap, wrap, align, justify, controlRef, onLayout, testID, style, }: HappierStackProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierStackProps` (type)
+
+Declared by `dist/presentation/layout/Layout.d.ts` as `HappierStackProps`.
+
+```ts
+type HappierStackProps = Readonly<{
+    children?: ReactNode;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    direction?: 'vertical' | 'horizontal';
+    gap?: number;
+    wrap?: boolean;
+    align?: HappierAlignment;
+    justify?: HappierJustification;
+    onLayout?: (event: HappierLayoutChangeEvent) => void;
+    testID?: string;
+    style?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierStatus` (value)
+
+Declared by `dist/presentation/status/Status.d.ts` as `HappierStatus`.
+
+```ts
+function HappierStatus(props: HappierStatusProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierStatusDot` (value)
+
+Declared by `dist/presentation/status/StatusDot.d.ts` as `HappierStatusDot`.
+
+```ts
+function HappierStatusDot(props: HappierStatusDotProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierStatusDotProps` (type)
+
+Declared by `dist/presentation/status/StatusDot.d.ts` as `HappierStatusDotProps`.
+
+```ts
+type HappierStatusDotProps = Readonly<{
+    color: string;
+    isPulsing?: boolean;
+    size?: number;
+    style?: HappierStyleProp;
+    testID?: string;
+    accessibilityLabel?: string;
+    animationEnabled?: boolean;
+    reducedMotion?: boolean;
+}>;
+```
+
+
+### `.` — `HappierStatusProps` (type)
+
+Declared by `dist/presentation/status/Status.d.ts` as `HappierStatusProps`.
+
+```ts
+type HappierStatusProps = Readonly<{
+    label: ReactNode;
+    value?: ReactNode;
+    tone: HappierTone;
+    theme: HappierUiTheme;
+    contrast?: HappierUiAccessibility['contrast'];
+    isPulsing?: boolean;
+    animationEnabled?: boolean;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    testID?: string;
+    accessibilityLiveRegion?: HappierAccessibilityLiveRegion;
+    accessibilityLabel?: string;
+}>;
+```
+
+
+### `.` — `HappierSurface` (value)
+
+Declared by `dist/presentation/layout/Surface.d.ts` as `HappierSurface`.
+
+```ts
+function HappierSurface({ children, testID, onPress, disabled, accessibilityLabel, style, pressableStyle, pressedStyle, }: HappierSurfaceProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierSurfaceProps` (type)
+
+Declared by `dist/presentation/layout/Surface.d.ts` as `HappierSurfaceProps`.
+
+```ts
+type HappierSurfaceProps = Readonly<{
+    children?: ReactNode;
+    testID?: string;
+    onPress?: () => unknown;
+    disabled?: boolean;
+    accessibilityLabel?: string;
+    style?: HappierStyleProp;
+    pressableStyle?: HappierStyleProp;
+    pressedStyle?: HappierStyleProp;
+}>;
+```
+
+
+### `.` — `HappierTabDescriptor` (type)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `HappierTabDescriptor`.
+
+```ts
+type HappierTabDescriptor = Readonly<{
+    value: string;
+    title: string;
+    icon?: ReactNode;
+    badge?: string;
+    disabled?: boolean;
+    retention?: HappierTabRetention;
+    children?: ReactNode;
+}>;
+```
+
+
+### `.` — `HappierTabPanelActivity` (type)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `HappierTabPanelActivity`.
+
+```ts
+type HappierTabPanelActivity = Readonly<{
+    active: boolean;
+    activeSignal: AbortSignal;
+}>;
+```
+
+
+### `.` — `HappierTabRetention` (type)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `HappierTabRetention`.
+
+```ts
+type HappierTabRetention = 'retain' | 'discard';
+```
+
+
+### `.` — `HappierTabs` (value)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `HappierTabs`.
+
+```ts
+function HappierTabs(props: Readonly<{
+    value: string;
+    onValueChange: (value: string) => void;
+    ariaLabel: string;
+    children?: ReactNode;
+    theme: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierText` (value)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierText`.
+
+```ts
+const HappierText: import("react").NamedExoticComponent<Readonly<{
+    children?: ReactNode;
+    style?: HappierStyleProp;
+    accessible?: boolean;
+    accessibilityLabel?: string;
+    accessibilityHint?: string;
+    accessibilityLiveRegion?: import("../portableTypes.js").HappierAccessibilityLiveRegion;
+    accessibilityRole?: 'alert' | 'header' | 'link' | 'none' | 'text';
+    allowFontScaling?: boolean;
+    ellipsizeMode?: 'clip' | 'head' | 'middle' | 'tail';
+    maxFontSizeMultiplier?: number | null;
+    nativeID?: string;
+    numberOfLines?: number;
+    onLayout?: (event: import("../portableTypes.js").HappierLayoutChangeEvent) => void;
+    onLongPress?: (event?: import("../portableTypes.js").HappierGestureResponderEvent) => void;
+    onPress?: (event?: import("../portableTypes.js").HappierGestureResponderEvent) => void;
+    selectable?: boolean;
+    suppressHighlighting?: boolean;
+    testID?: string;
+}> & Readonly<{
+    variant?: HappierTextVariant;
+    tone?: HappierTone;
+    selectable?: boolean;
+    textScale?: number;
+    scaleStyleEntry?: TextStyleEntryTransform;
+    baseStyle?: HappierStyleProp;
+    tabIndex?: 0 | -1;
+}> & import("react").RefAttributes<unknown>>;
+```
+
+
+### `.` — `HappierTextField` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierTextField`.
+
+```ts
+function HappierTextField(props: HappierTextFieldProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierTextFieldProps` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierTextFieldProps`.
+
+```ts
+type HappierTextFieldProps = Readonly<{
+    label: string;
+    value: string;
+    onChangeText: (value: string) => void;
+    placeholder?: string;
+    disabled?: boolean;
+    required?: boolean;
+    secure?: boolean;
+    multiline?: boolean;
+    keyboardType?: 'default' | 'url' | 'numeric';
+    autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
+    autoCorrect?: boolean;
+    selection?: HappierTextSelection;
+    onSelectionChange?: (selection: HappierTextSelection) => void;
+    onSubmitEditing?: () => void;
+    onCompositionChange?: (isComposing: boolean) => void;
+    onEscape?: () => boolean;
+    minimumTouchTarget?: number;
+    controlRef?: (instance: HappierFocusable | null) => void;
+    theme: HappierUiTheme;
+    testID?: string;
+}>;
+```
+
+
+### `.` — `HappierTextPresentation` (type)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierTextPresentation`.
+
+```ts
+type HappierTextPresentation = Readonly<{
+    selectable: boolean;
+    metricScale: number;
+    allowHostFontScaling: boolean;
+}>;
+```
+
+
+### `.` — `HappierTextPresentationInput` (type)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierTextPresentationInput`.
+
+```ts
+type HappierTextPresentationInput = Readonly<{
+    selectable?: boolean;
+    textScale?: number;
+}>;
+```
+
+
+### `.` — `HappierTextProps` (type)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierTextProps`.
+
+```ts
+type HappierTextProps = HappierTextHostProps & Readonly<{
+    variant?: HappierTextVariant;
+    tone?: HappierTone;
+    selectable?: boolean;
+    textScale?: number;
+    scaleStyleEntry?: TextStyleEntryTransform;
+    baseStyle?: HappierStyleProp;
+    tabIndex?: 0 | -1;
+}>;
+```
+
+
+### `.` — `HappierTextSelectabilityScope` (value)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierTextSelectabilityScope`.
+
+```ts
+function HappierTextSelectabilityScope({ selectable, children, }: HappierTextSelectabilityScopeProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierTextSelectabilityScopeProps` (type)
+
+Declared by `dist/presentation/text/Text.d.ts` as `HappierTextSelectabilityScopeProps`.
+
+```ts
+type HappierTextSelectabilityScopeProps = Readonly<{
+    selectable: boolean;
+    children: ReactNode;
+}>;
+```
+
+
+### `.` — `HappierTextSelection` (type)
+
+Declared by `dist/presentation/portableTypes.d.ts` as `HappierTextSelection`.
+
+```ts
+type HappierTextSelection = Readonly<{
+    start: number;
+    end: number;
+}>;
+```
+
+
+### `.` — `HappierTextVariant` (type)
+
+Declared by `dist/presentation/semantics.d.ts` as `HappierTextVariant`.
+
+```ts
+type HappierTextVariant = 'body' | 'label' | 'title' | 'caption' | 'code';
+```
+
+
+### `.` — `HappierToggle` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierToggle`.
+
+```ts
+function HappierToggle(props: Readonly<{
+    label: string;
+    value: boolean;
+    onChange: (value: boolean) => void;
+    disabled?: boolean;
+    minimumTouchTarget?: number;
+    theme: HappierUiTheme;
+    testID?: string;
+}>): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierTone` (type)
+
+Declared by `dist/presentation/semantics.d.ts` as `HappierTone`.
+
+```ts
+type HappierTone = 'neutral' | 'secondary' | 'muted' | 'info' | 'success' | 'warning' | 'danger' | 'accent';
+```
+
+
+### `.` — `HappierValidationMessage` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierValidationMessage`.
+
+```ts
+function HappierValidationMessage({ message, theme, testID, nativeID, accessibilityLiveRegion, }: HappierValidationMessageProps): import("react/jsx-runtime").JSX.Element;
+```
+
+
+### `.` — `HappierValidationMessageProps` (type)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `HappierValidationMessageProps`.
+
+```ts
+type HappierValidationMessageProps = Readonly<{
+    message: string;
+    theme: HappierUiTheme;
+    testID?: string;
+    nativeID?: string;
+    accessibilityLiveRegion?: HappierAccessibilityLiveRegion;
+}>;
+```
+
+
+### `.` — `HappierWebSpinnerPresentation` (type)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `HappierWebSpinnerPresentation`.
+
+```ts
+type HappierWebSpinnerPresentation = Readonly<{
+    accessibilityRole: 'progressbar';
+    style: HappierWebSpinnerStyle;
+}>;
+```
+
+
+### `.` — `HappierWebSpinnerPresentationInput` (type)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `HappierWebSpinnerPresentationInput`.
+
+```ts
+type HappierWebSpinnerPresentationInput = Readonly<{
+    animating?: boolean;
+    animationEnabled?: boolean;
+    color?: unknown;
+    hidesWhenStopped?: boolean;
+    reducedMotion?: boolean;
+    size?: HappierActivityIndicatorHostProps['size'];
+}>;
+```
+
+
+### `.` — `HappierWebSpinnerStyle` (type)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `HappierWebSpinnerStyle`.
+
+```ts
+type HappierWebSpinnerStyle = Readonly<{
+    alignSelf: 'center';
+    animationDuration?: string;
+    animationIterationCount?: 'infinite';
+    animationName?: string;
+    animationTimingFunction?: string;
+    borderColor: string;
+    borderRadius: number;
+    borderTopColor: 'transparent';
+    borderWidth: number;
+    height: number;
+    opacity: number;
+    width: number;
+    willChange?: string;
 }>;
 ```
 
@@ -1381,6 +3314,105 @@ type PluginTranslationValues = Readonly<Record<string, string | number>>;
 ```
 
 
+### `.` — `PluginUiAccountCollectionForDefinition` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiAccountCollectionForDefinition`.
+
+```ts
+type PluginUiAccountCollectionForDefinition<TDefinition extends PluginAccountCollectionDefinition> = Pick<PluginAccountCollectionForDefinition<TDefinition>, 'identityTag' | 'get' | 'put' | 'delete' | 'forget' | 'query' | 'batch' | 'limits' | 'measureBatch'>;
+```
+
+
+### `.` — `PluginUiAccountKv` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiAccountKv`.
+
+```ts
+type PluginUiAccountKv = AccountKvService;
+```
+
+
+### `.` — `PluginUiCollectionQueryFailure` (type)
+
+Declared by `dist/data/index.public.d.ts` as `PluginUiCollectionQueryFailure`.
+
+```ts
+type PluginUiCollectionQueryFailure = PluginCollectionUiQueryErrorV1 | Error;
+```
+
+
+### `.` — `PluginUiCollectionQueryInput` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiCollectionQueryInput`.
+
+```ts
+type PluginUiCollectionQueryInput = Readonly<{
+    collectionId: PluginCollectionUiQueryRequestV1['collectionId'];
+    uiQueryId: PluginCollectionUiQueryRequestV1['uiQueryId'];
+    parameters: PluginCollectionUiQueryRequestV1['parameters'];
+    signal?: AbortSignal;
+}>;
+```
+
+
+### `.` — `PluginUiCollectionQueryPager` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiCollectionQueryPager`.
+
+```ts
+type PluginUiCollectionQueryPager = Readonly<{
+    getSnapshot(): PluginUiCollectionQuerySnapshot;
+    subscribe(listener: () => void): () => void;
+    refresh(): Promise<void>;
+    loadMore(): Promise<void>;
+    dispose(): void;
+}>;
+```
+
+
+### `.` — `PluginUiCollectionQueryResult` (type)
+
+Declared by `dist/data/index.public.d.ts` as `PluginUiCollectionQueryResult`.
+
+```ts
+type PluginUiCollectionQueryResult = Readonly<{
+    rows: PluginUiCollectionQuerySnapshot['rows'];
+    hasMore: boolean;
+    status: PluginUiCollectionQuerySnapshot['status'];
+    error?: PluginUiCollectionQueryFailure;
+    refresh(): Promise<void>;
+    loadMore(): Promise<void>;
+}>;
+```
+
+
+### `.` — `PluginUiCollectionQuerySnapshot` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiCollectionQuerySnapshot`.
+
+```ts
+type PluginUiCollectionQuerySnapshot = Readonly<{
+    rows: readonly PluginCollectionUiQueryResultV1['rows'][number][];
+    hasMore: boolean;
+    status: 'idle' | 'loading' | 'ready' | 'unavailable' | 'error';
+    error?: PluginCollectionUiQueryErrorV1;
+}>;
+```
+
+
+### `.` — `PluginUiDataClient` (type)
+
+Declared by `dist/data/types.d.ts` as `PluginUiDataClient`.
+
+```ts
+type PluginUiDataClient = Readonly<{
+    collection<TDefinition extends PluginAccountCollectionDefinition>(definition: TDefinition): PluginUiAccountCollectionForDefinition<TDefinition>;
+    openCollectionQuery(input: PluginUiCollectionQueryInput): Promise<PluginUiCollectionQueryPager>;
+    readonly accountKv: PluginUiAccountKv;
+}>;
+```
+
+
 ### `.` — `PluginUiEphemeralSharedScope` (type)
 
 Declared by `dist/hostApi/ephemeralSharedScope.public.d.ts` as `PluginUiEphemeralSharedScope`.
@@ -1627,6 +3659,28 @@ Declared by `dist/components/Layout.d.ts` as `RowProps`.
 
 ```ts
 type RowProps = StackProps;
+```
+
+
+### `.` — `ScaleTextStyleOptions` (type)
+
+Declared by `dist/presentation/text/textStyleScale.d.ts` as `ScaleTextStyleOptions`.
+
+```ts
+type ScaleTextStyleOptions = Readonly<{
+    transformEntry?: TextStyleEntryTransform;
+}>;
+```
+
+
+### `.` — `ScaledTextStyleMetrics` (type)
+
+Declared by `dist/presentation/text/textStyleScale.d.ts` as `ScaledTextStyleMetrics`.
+
+```ts
+type ScaledTextStyleMetrics<T> = IsExactly<T, HappierStyleProp> extends true ? HappierStyleProp : T extends readonly unknown[] ? ScaledTextStyleArray<T> : T extends object ? {
+    [Key in keyof T]: Key extends ScaledTextMetricKey ? ScaleTextMetricValue<T[Key]> : T[Key];
+} : T;
 ```
 
 
@@ -2032,6 +4086,15 @@ type TextSelection = HappierTextSelection;
 ```
 
 
+### `.` — `TextStyleEntryTransform` (type)
+
+Declared by `dist/presentation/text/textStyleScale.d.ts` as `TextStyleEntryTransform`.
+
+```ts
+type TextStyleEntryTransform = <T extends object>(entry: T, textScale: number) => T;
+```
+
+
 ### `.` — `TextTone` (type)
 
 Declared by `dist/components/Text.d.ts` as `TextTone`.
@@ -2125,6 +4188,33 @@ type ValidationMessageProps = Readonly<{
 ```
 
 
+### `.` — `cloneStyleEntryPreservingOwnProps` (value)
+
+Declared by `dist/presentation/text/textStyleScale.d.ts` as `cloneStyleEntryPreservingOwnProps`.
+
+```ts
+function cloneStyleEntryPreservingOwnProps<T extends object>(entry: T): T;
+```
+
+
+### `.` — `createHappierListMultiSelectionStore` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `createHappierListMultiSelectionStore`.
+
+```ts
+function createHappierListMultiSelectionStore(input: CreateHappierListMultiSelectionStateInput): HappierListMultiSelectionStore;
+```
+
+
+### `.` — `createInitialHappierListMultiSelectionState` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `createInitialHappierListMultiSelectionState`.
+
+```ts
+function createInitialHappierListMultiSelectionState(input: CreateHappierListMultiSelectionStateInput): HappierListMultiSelectionState;
+```
+
+
 ### `.` — `createListMultiSelectionStore` (value)
 
 Declared by `dist/components/ListMultiSelection.d.ts` as `createListMultiSelectionStore`.
@@ -2140,6 +4230,397 @@ Declared by `dist/surfaceEntry.d.ts` as `defineUiSurface`.
 
 ```ts
 function defineUiSurface(Surface: UiSurfaceComponent): RenderSurface;
+```
+
+
+### `.` — `iconMatchedSpinnerSize` (value)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `iconMatchedSpinnerSize`.
+
+```ts
+function iconMatchedSpinnerSize(iconSize: number): number;
+```
+
+
+### `.` — `isHappierBannerUrgent` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `isHappierBannerUrgent`.
+
+```ts
+function isHappierBannerUrgent(tone: HappierTone): boolean;
+```
+
+
+### `.` — `isHappierIconName` (value)
+
+Declared by `dist/presentation/content/Icon.d.ts` as `isHappierIconName`.
+
+```ts
+function isHappierIconName(value: unknown): value is HappierIconName;
+```
+
+
+### `.` — `isHappierTabSelected` (value)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `isHappierTabSelected`.
+
+```ts
+function isHappierTabSelected(value: string, candidate: string): boolean;
+```
+
+
+### `.` — `matchesHappierMenuQuery` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `matchesHappierMenuQuery`.
+
+```ts
+function matchesHappierMenuQuery(input: Readonly<{
+    label: string;
+    description?: string;
+    query: string;
+}>): boolean;
+```
+
+
+### `.` — `normalizeHappierCodeLanguage` (value)
+
+Declared by `dist/presentation/content/CodeBlock.d.ts` as `normalizeHappierCodeLanguage`.
+
+```ts
+function normalizeHappierCodeLanguage(language: string | null | undefined): string | undefined;
+```
+
+
+### `.` — `parseHappierListMultiSelectionRowSnapshot` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `parseHappierListMultiSelectionRowSnapshot`.
+
+```ts
+function parseHappierListMultiSelectionRowSnapshot(rowSnapshot: string): HappierListMultiSelectionRowFlags;
+```
+
+
+### `.` — `patchHappierActionInputPath` (value)
+
+Declared by `dist/presentation/form/actionInputFields.d.ts` as `patchHappierActionInputPath`.
+
+```ts
+function patchHappierActionInputPath(input: InputRecord, path: string, value: unknown): Record<string, unknown>;
+```
+
+
+### `.` — `readHappierActionInputPath` (value)
+
+Declared by `dist/presentation/form/actionInputFields.d.ts` as `readHappierActionInputPath`.
+
+```ts
+function readHappierActionInputPath(input: InputRecord, path: string): unknown;
+```
+
+
+### `.` — `readHappierPointerModifiers` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `readHappierPointerModifiers`.
+
+```ts
+function readHappierPointerModifiers(event: unknown): HappierPointerModifiers;
+```
+
+
+### `.` — `reduceHappierListMultiSelection` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `reduceHappierListMultiSelection`.
+
+```ts
+function reduceHappierListMultiSelection(state: HappierListMultiSelectionState, action: HappierListMultiSelectionAction): HappierListMultiSelectionState;
+```
+
+
+### `.` — `resolveHappierActionFieldPresentation` (value)
+
+Declared by `dist/presentation/form/actionInputFields.d.ts` as `resolveHappierActionFieldPresentation`.
+
+```ts
+function resolveHappierActionFieldPresentation<OptionValue = unknown>(field: HappierActionInputField, value: unknown, selection?: OptionValue | readonly OptionValue[]): HappierActionFieldPresentation<OptionValue>;
+```
+
+
+### `.` — `resolveHappierBrandFallback` (value)
+
+Declared by `dist/presentation/content/Image.d.ts` as `resolveHappierBrandFallback`.
+
+```ts
+function resolveHappierBrandFallback(displayName: string): string;
+```
+
+
+### `.` — `resolveHappierCodeBlockLayout` (value)
+
+Declared by `dist/presentation/content/CodeBlock.d.ts` as `resolveHappierCodeBlockLayout`.
+
+```ts
+function resolveHappierCodeBlockLayout(input: Pick<HappierCodeBlockBehaviorInput, 'language' | 'showHeaderRow' | 'showCopyButton' | 'hasHeaderLeft' | 'hasHeaderRight'>): {
+    readonly language: string | undefined;
+    readonly shouldRenderHeaderRow: boolean;
+    readonly shouldOverlayCopyButton: boolean;
+};
+```
+
+
+### `.` — `resolveHappierDiffViewerRequest` (value)
+
+Declared by `dist/presentation/content/DiffViewer.d.ts` as `resolveHappierDiffViewerRequest`.
+
+```ts
+function resolveHappierDiffViewerRequest(input: HappierDiffViewerRequest): HappierDiffViewerRequest;
+```
+
+
+### `.` — `resolveHappierFormPending` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `resolveHappierFormPending`.
+
+```ts
+function resolveHappierFormPending({ busy, implicitPending, }: HappierFormPendingInput): boolean;
+```
+
+
+### `.` — `resolveHappierIconSize` (value)
+
+Declared by `dist/presentation/content/Icon.d.ts` as `resolveHappierIconSize`.
+
+```ts
+function resolveHappierIconSize(size?: HappierIconSize): number;
+```
+
+
+### `.` — `resolveHappierImagePixels` (value)
+
+Declared by `dist/presentation/content/Image.d.ts` as `resolveHappierImagePixels`.
+
+```ts
+function resolveHappierImagePixels(size: HappierImageSize | undefined): number;
+```
+
+
+### `.` — `resolveHappierItemBehavior` (value)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `resolveHappierItemBehavior`.
+
+```ts
+function resolveHappierItemBehavior(input: HappierItemBehaviorInput): HappierItemBehavior;
+```
+
+
+### `.` — `resolveHappierItemGroupConstraints` (value)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `resolveHappierItemGroupConstraints`.
+
+```ts
+function resolveHappierItemGroupConstraints(input: Readonly<{
+    role?: 'radiogroup';
+    accessibilityLabel?: string;
+    columns: number;
+    virtualized: boolean;
+}>): void;
+```
+
+
+### `.` — `resolveHappierItemSemantics` (value)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `resolveHappierItemSemantics`.
+
+```ts
+function resolveHappierItemSemantics(input: HappierItemSemanticInput): Readonly<{
+    accessibilityState?: HappierItemSemanticState;
+    tabIndex: -1 | 0;
+}>;
+```
+
+
+### `.` — `resolveHappierLayoutGap` (value)
+
+Declared by `dist/presentation/layout/layoutSemantics.d.ts` as `resolveHappierLayoutGap`.
+
+```ts
+function resolveHappierLayoutGap(gap: HappierLayoutGap | undefined, spacing: HappierLayoutSpacing): number;
+```
+
+
+### `.` — `resolveHappierListMultiSelectionKeyboardIntent` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `resolveHappierListMultiSelectionKeyboardIntent`.
+
+```ts
+function resolveHappierListMultiSelectionKeyboardIntent(input: HappierListMultiSelectionKeyboardInput): HappierListMultiSelectionKeyboardIntent | null;
+```
+
+
+### `.` — `resolveHappierListMultiSelectionPointerAction` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `resolveHappierListMultiSelectionPointerAction`.
+
+```ts
+function resolveHappierListMultiSelectionPointerAction(input: HappierListMultiSelectionPointerInput): HappierListMultiSelectionPointerAction;
+```
+
+
+### `.` — `resolveHappierListMultiSelectionRange` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `resolveHappierListMultiSelectionRange`.
+
+```ts
+function resolveHappierListMultiSelectionRange(input: HappierListMultiSelectionRangeInput): HappierListMultiSelectionKey[];
+```
+
+
+### `.` — `resolveHappierMenuContent` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierMenuContent`.
+
+```ts
+function resolveHappierMenuContent<Item extends HappierMenuItemDescriptor>(input: Readonly<{
+    items?: readonly Item[];
+    groups?: readonly HappierMenuGroupDescriptor<Item>[];
+}>): HappierMenuContent<Item>;
+```
+
+
+### `.` — `resolveHappierMenuKeyAction` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierMenuKeyAction`.
+
+```ts
+function resolveHappierMenuKeyAction(key: string): HappierMenuKeyAction;
+```
+
+
+### `.` — `resolveHappierMenuRadioGroups` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierMenuRadioGroups`.
+
+```ts
+function resolveHappierMenuRadioGroups(input: Readonly<{
+    items: readonly HappierMenuItemDescriptor[];
+    radioGroups: readonly HappierMenuRadioGroupDescriptor[];
+}>): ReadonlyMap<string, HappierMenuRadioGroupDescriptor>;
+```
+
+
+### `.` — `resolveHappierMenuSelection` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierMenuSelection`.
+
+```ts
+function resolveHappierMenuSelection(input: Readonly<{
+    items: readonly HappierMenuItemDescriptor[];
+    selectedIndex: number;
+    direction: -1 | 1;
+    wrap: boolean;
+}>): number;
+```
+
+
+### `.` — `resolveHappierMenuTypeahead` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierMenuTypeahead`.
+
+```ts
+function resolveHappierMenuTypeahead(input: Readonly<{
+    items: readonly HappierMenuItemDescriptor[];
+    selectedIndex: number;
+    query: string;
+}>): number;
+```
+
+
+### `.` — `resolveHappierPointerPlatform` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `resolveHappierPointerPlatform`.
+
+```ts
+function resolveHappierPointerPlatform(platformOs: string): HappierPointerPlatform;
+```
+
+
+### `.` — `resolveHappierPopoverPlacement` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `resolveHappierPopoverPlacement`.
+
+```ts
+function resolveHappierPopoverPlacement(input: Readonly<{
+    placement: HappierPopoverPlacement;
+    available: Readonly<Record<HappierResolvedPopoverPlacement, number>>;
+    preferredMinAvailable?: number;
+}>): HappierResolvedPopoverPlacement;
+```
+
+
+### `.` — `resolveHappierProgressPercentage` (value)
+
+Declared by `dist/presentation/content/Foundation.d.ts` as `resolveHappierProgressPercentage`.
+
+```ts
+function resolveHappierProgressPercentage(value: number | undefined, options?: Readonly<{
+    indeterminate?: number;
+    minimumVisible?: number;
+}>): number;
+```
+
+
+### `.` — `resolveHappierRovingSelection` (value)
+
+Declared by `dist/presentation/collection/semantics.d.ts` as `resolveHappierRovingSelection`.
+
+```ts
+function resolveHappierRovingSelection(input: Readonly<{
+    entries: readonly HappierRovingEntry[];
+    currentIndex: number;
+    key: string;
+    rtl: boolean;
+    listNavigationKeys?: boolean;
+}>): number | null;
+```
+
+
+### `.` — `resolveHappierTabKeySelection` (value)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `resolveHappierTabKeySelection`.
+
+```ts
+function resolveHappierTabKeySelection<T extends object>(input: Readonly<{
+    tabs: readonly T[];
+    currentIndex: number;
+    key: string;
+    rtl: boolean;
+}>): number | null;
+```
+
+
+### `.` — `resolveHappierWebSpinnerPresentation` (value)
+
+Declared by `dist/presentation/feedback/Spinner.d.ts` as `resolveHappierWebSpinnerPresentation`.
+
+```ts
+function resolveHappierWebSpinnerPresentation(input: HappierWebSpinnerPresentationInput): HappierWebSpinnerPresentation | null;
+```
+
+
+### `.` — `scaleTextStyleMetrics` (value)
+
+Declared by `dist/presentation/text/textStyleScale.d.ts` as `scaleTextStyleMetrics`.
+
+```ts
+function scaleTextStyleMetrics<T>(style: T, textScale: number, options?: ScaleTextStyleOptions): ScaledTextStyleMetrics<T>;
+```
+
+
+### `.` — `toHappierListMultiSelectionSnapshot` (value)
+
+Declared by `dist/presentation/collection/multiSelection.d.ts` as `toHappierListMultiSelectionSnapshot`.
+
+```ts
+function toHappierListMultiSelectionSnapshot(state: HappierListMultiSelectionState): HappierListMultiSelectionSnapshot;
 ```
 
 
@@ -2167,6 +4648,79 @@ Declared by `dist/hostApi/executeAction.d.ts` as `useExecutePluginAction`.
 
 ```ts
 function useExecutePluginAction<TAction extends PluginUiActionReference>(action: TAction, input?: NoInfer<PluginUiActionInputFor<NoInfer<TAction>>>): PluginActionExecutionController<PluginUiActionResultFor<NoInfer<TAction>>, PluginUiActionInputFor<NoInfer<TAction>>>;
+```
+
+
+### `.` — `useHappierCodeBlockBehavior` (value)
+
+Declared by `dist/presentation/content/CodeBlock.d.ts` as `useHappierCodeBlockBehavior`.
+
+```ts
+function useHappierCodeBlockBehavior(input: HappierCodeBlockBehaviorInput): {
+    readonly language: string | undefined;
+    readonly shouldRenderHeaderRow: boolean;
+    readonly shouldOverlayCopyButton: boolean;
+    readonly copied: boolean;
+    readonly copy: () => Promise<boolean>;
+};
+```
+
+
+### `.` — `useHappierFormSubmission` (value)
+
+Declared by `dist/presentation/form/Fields.d.ts` as `useHappierFormSubmission`.
+
+```ts
+function useHappierFormSubmission(busy?: boolean): Readonly<{
+    pending: boolean;
+    submit: (operation: () => unknown) => void;
+}>;
+```
+
+
+### `.` — `useHappierItemGroupItemBehavior` (value)
+
+Declared by `dist/presentation/collection/ItemGroup.d.ts` as `useHappierItemGroupItemBehavior`.
+
+```ts
+function useHappierItemGroupItemBehavior(input: HappierItemGroupItemBehaviorInput): {
+    readonly grouped: boolean;
+    readonly onKeyDown: (key: string) => boolean;
+    readonly selectableItemCount: number | undefined;
+    readonly tabStopIndex: number | null | undefined;
+    readonly targetRef: (target: HappierItemGroupRadioFocusable | null) => void;
+};
+```
+
+
+### `.` — `useHappierMenuInteraction` (value)
+
+Declared by `dist/presentation/interaction/Menu.d.ts` as `useHappierMenuInteraction`.
+
+```ts
+function useHappierMenuInteraction<Item extends HappierMenuInteractionItem>(input: HappierMenuInteractionInput<Item>): {
+    readonly selectedIndex: number;
+    readonly setSelectedIndex: (index: number) => void;
+    readonly handleKeyPress: (key: string, onActivate: (item: Item) => void, activeIndex?: number) => boolean;
+};
+```
+
+
+### `.` — `useHappierTabPanelActivity` (value)
+
+Declared by `dist/presentation/navigation/Tabs.d.ts` as `useHappierTabPanelActivity`.
+
+```ts
+function useHappierTabPanelActivity(): HappierTabPanelActivity;
+```
+
+
+### `.` — `useHappierTextPresentation` (value)
+
+Declared by `dist/presentation/text/Text.d.ts` as `useHappierTextPresentation`.
+
+```ts
+function useHappierTextPresentation({ selectable, textScale, }: HappierTextPresentationInput): HappierTextPresentation;
 ```
 
 
@@ -2233,6 +4787,15 @@ function usePluginAccessibility(): PluginAccessibilityFacts;
 ```
 
 
+### `.` — `usePluginAccountKv` (value)
+
+Declared by `dist/data/index.public.d.ts` as `usePluginAccountKv`.
+
+```ts
+function usePluginAccountKv(): PluginUiAccountKv;
+```
+
+
 ### `.` — `usePluginBrandDisplayName` (value)
 
 Declared by `dist/components/Image.d.ts` as `usePluginBrandDisplayName`.
@@ -2248,6 +4811,15 @@ Declared by `dist/components/Image.d.ts` as `usePluginBrandDisplayNameResolver`.
 
 ```ts
 function usePluginBrandDisplayNameResolver(): (pluginId?: string) => string | undefined;
+```
+
+
+### `.` — `usePluginCollectionQuery` (value)
+
+Declared by `dist/data/index.public.d.ts` as `usePluginCollectionQuery`.
+
+```ts
+function usePluginCollectionQuery(collectionId: PluginCollectionUiQueryRequestV1['collectionId'], uiQueryId: PluginCollectionUiQueryRequestV1['uiQueryId'], parameters?: PluginCollectionUiQueryRequestV1['parameters']): PluginUiCollectionQueryResult;
 ```
 
 
@@ -2298,6 +4870,24 @@ function usePluginTranslation(): PluginTranslate;
 ```
 
 
+### `.` — `usePluginUiDataClient` (value)
+
+Declared by `dist/data/context.d.ts` as `usePluginUiDataClient`.
+
+```ts
+function usePluginUiDataClient(): PluginUiDataClient;
+```
+
+
+### `.` — `usePluginUiDataClientOrNull` (value)
+
+Declared by `dist/data/context.d.ts` as `usePluginUiDataClientOrNull`.
+
+```ts
+function usePluginUiDataClientOrNull(): PluginUiDataClient | null;
+```
+
+
 ### `.` — `usePluginUiEphemeralSharedScope` (value)
 
 Declared by `dist/hostApi/context.d.ts` as `usePluginUiEphemeralSharedScope`.
@@ -2340,6 +4930,15 @@ Declared by `dist/components/Tabs.d.ts` as `useTabPanelActivity`.
 
 ```ts
 function useTabPanelActivity(): TabPanelActivity;
+```
+
+
+### `.` — `writeHappierActionInputPath` (value)
+
+Declared by `dist/presentation/form/actionInputFields.d.ts` as `writeHappierActionInputPath`.
+
+```ts
+function writeHappierActionInputPath(input: InputRecord, path: string, value: unknown): Record<string, unknown>;
 ```
 
 

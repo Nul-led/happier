@@ -129,8 +129,13 @@ describe('Team member admission inputs', () => {
       .toBe('suspended');
     expect(TeamMembersListInputV1Schema.safeParse({ v: 1, teamId: 't', filter: 'role:owner' }).success)
       .toBe(false);
-    expect(TeamMembersListInputV1Schema.safeParse({ v: 1, teamId: 't', filter: 'all', query: 'ali' }).success)
-      .toBe(false);
+    // One bounded lookup, in the shape the Team directory contract ships; it is
+    // a person's name, never a filter expression, and it is capped.
+    expect(TeamMembersListInputV1Schema.parse({ v: 1, teamId: 't', filter: 'all', query: 'ali' }).query)
+      .toBe('ali');
+    expect(TeamMembersListInputV1Schema.safeParse({
+      v: 1, teamId: 't', filter: 'all', query: 'x'.repeat(257),
+    }).success).toBe(false);
   });
 });
 
@@ -222,6 +227,11 @@ describe('Team page cursors', () => {
     expect(decodeTeamMembersCursorV1(cursor, otherKey)).toEqual({ status: 'invalid' });
     const otherTeam = teamMembersQueryKeyV1({ v: 1, teamId: 'other', filter: 'all' });
     expect(decodeTeamMembersCursorV1(cursor, otherTeam)).toEqual({ status: 'invalid' });
+    // A lookup selects different rows, so it names its own sequence; a blank
+    // one is no lookup and keeps the roster's existing positions valid.
+    const queried = teamMembersQueryKeyV1({ v: 1, teamId: 't', filter: 'all', query: 'ada' });
+    expect(decodeTeamMembersCursorV1(cursor, queried)).toEqual({ status: 'invalid' });
+    expect(teamMembersQueryKeyV1({ v: 1, teamId: 't', filter: 'all', query: '   ' })).toBe(key);
   });
 
   it('orders Group members by immutable creation order plus the membership lifetime', () => {

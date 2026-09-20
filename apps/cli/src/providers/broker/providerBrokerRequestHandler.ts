@@ -339,7 +339,6 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
                 const evaluated = evaluateTeamCredentialRequestPolicyV1({
                     policy: snapshot.policy ?? {
                         allowedProtocolKinds: null, allowedModelIds: null, reasoningEffort: null,
-                        maxOutputTokens: null, maxThinkingBudgetTokens: null,
                     },
                     request,
                     resolveCanonicalModelId: snapshot.modelCatalog.resolveCanonicalModelId,
@@ -398,7 +397,6 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
             const evaluated = evaluateTeamCredentialRequestPolicyV1({
                 policy: snapshot.policy ?? {
                     allowedProtocolKinds: null, allowedModelIds: null, reasoningEffort: null,
-                    maxOutputTokens: null, maxThinkingBudgetTokens: null,
                 },
                 request,
                 resolveCanonicalModelId: snapshot.modelCatalog.resolveCanonicalModelId,
@@ -497,8 +495,6 @@ export function createProviderBrokerRequestHandler(input: Readonly<{
             allowedProtocolKinds: null,
             allowedModelIds: null,
             reasoningEffort: null,
-            maxOutputTokens: null,
-            maxThinkingBudgetTokens: null,
         };
         const evaluated = evaluateTeamCredentialRequestPolicyV1({
             policy,

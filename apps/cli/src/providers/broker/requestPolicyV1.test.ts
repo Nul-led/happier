@@ -9,8 +9,6 @@ const policy: TeamCredentialRequestPolicyV1 = {
   allowedProtocolKinds: ['openai_responses', 'openai_chat_completions', 'anthropic_messages'],
   allowedModelIds: ['gpt-5', 'claude'],
   reasoningEffort: { allowedValues: ['low', 'high'], defaultValue: 'low' },
-  maxOutputTokens: 4096,
-  maxThinkingBudgetTokens: 2048,
 };
 
 function request(pathAndQuery: string, body: unknown) {
@@ -27,13 +25,15 @@ describe('evaluateTeamCredentialRequestPolicyV1', () => {
     const responses = evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/responses', { model: 'gpt-5', max_output_tokens: 2048 }) });
     expect(bodyOf(responses)).toMatchObject({ model: 'gpt-5', max_output_tokens: 2048, reasoning: { effort: 'low' } });
 
+    // A request policy carries no token ceiling, so the owner never injects or
+    // rewrites an output bound: the caller's own request passes through.
     const chat = evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/chat/completions', { model: 'gpt-5' }) });
-    expect(bodyOf(chat)).toMatchObject({ max_completion_tokens: 4096, reasoning_effort: 'low' });
+    expect(bodyOf(chat)).toEqual({ model: 'gpt-5', reasoning_effort: 'low' });
 
     const messages = evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/messages', {
       model: 'claude', max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 3000 },
     }) });
-    expect(bodyOf(messages)).toMatchObject({ max_tokens: 4096, output_config: { effort: 'low' }, thinking: { budget_tokens: 2048 } });
+    expect(bodyOf(messages)).toMatchObject({ max_tokens: 4096, output_config: { effort: 'low' }, thinking: { budget_tokens: 3000 } });
   });
 
   it('rejects malformed, disallowed, conflicting, and unenforceable requests before admission', () => {
@@ -41,8 +41,13 @@ describe('evaluateTeamCredentialRequestPolicyV1', () => {
     expect(evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/chat/completions', {
       model: 'gpt-5', max_tokens: 1, max_completion_tokens: 1,
     }) })).toMatchObject({ ok: false, reasonCode: 'request_malformed' });
+    // Adaptive thinking was refused only because a policy could cap the budget;
+    // with no such field it is an ordinary Provider-owned request.
     expect(evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/messages', {
       model: 'claude', max_tokens: 10, thinking: { type: 'adaptive' },
+    }) })).toMatchObject({ ok: true });
+    expect(evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/messages', {
+      model: 'claude', max_tokens: 4096, thinking: { type: 'enabled', budget_tokens: 8192 },
     }) })).toMatchObject({ ok: false, reasonCode: 'request_constraint_unsupported' });
   });
 
@@ -78,7 +83,7 @@ describe('evaluateTeamCredentialRequestPolicyV1', () => {
     })).toEqual({ ok: false, reasonCode: 'model_not_allowed' });
   });
 
-  it('accepts no-thinking Messages under a numeric thinking ceiling and preserves unrelated request fields', () => {
+  it('accepts no-thinking Messages without rewriting the caller-authored token budget', () => {
     const result = evaluateTeamCredentialRequestPolicyV1({ policy, request: request('/v1/messages', {
       model: 'claude',
       max_tokens: 8192,
@@ -87,7 +92,7 @@ describe('evaluateTeamCredentialRequestPolicyV1', () => {
     }) });
     expect(bodyOf(result)).toMatchObject({
       model: 'claude',
-      max_tokens: 4096,
+      max_tokens: 8192,
       output_config: { effort: 'low' },
       messages: [{ role: 'user', content: 'hello' }],
       tools: [{ name: 'lookup' }],

@@ -278,7 +278,7 @@ All paths are POST, behind the `teams` feature gate, registered in
 
 | Path | Intent |
 |---|---|
-| `/v1/teams/members/list` | Roster page, filtered by `all \| owners_admins \| members \| guests \| suspended` |
+| `/v1/teams/members/list` | Roster page, filtered by `all \| owners_admins \| members \| guests \| suspended`, optionally narrowed by a bounded `query` |
 | `/v1/teams/members/get` | One member's detail |
 | `/v1/teams/members/add` | Direct add of an exactly identified Account |
 | `/v1/teams/members/role/set` | Role change, including owner promotion and recovery |
@@ -294,8 +294,13 @@ role comparison, owner rule, management branch, or history decision.
 
 Pages use bounded opaque keyset cursors bound to the exact query that produced them: the
 roster orders by `(createdAt, id)`, Groups by `(nameKey, id)`, and the Group roster by
-`(createdAt, teamMembershipId)`. A cursor minted for another filter, Group, or archive scope
-is rejected rather than silently restarting at page one.
+`(createdAt, teamMembershipId)`. A cursor minted for another filter, roster query, Group, or
+archive scope is rejected rather than silently restarting at page one.
+
+The roster's optional `query` is a bounded lookup, not a filter language: it matches the
+Account id exactly and the same name and username fields the Home's own Account search
+matches, through the one `buildAccountTextPrefixFilter` owner. It exists because narrowing
+only the pages a reader already holds reports a member on a later page as absent.
 
 Direct add carries an Account id, never a search term. Account discovery is the Home
 governance picker's authorized projection; managing one Team never confers a Home-wide

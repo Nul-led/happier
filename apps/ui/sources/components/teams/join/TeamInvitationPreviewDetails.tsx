@@ -17,8 +17,9 @@ import type { TeamInvitationPreviewState } from '@/hooks/teams/useTeamInvitation
  * Every line is a projection of the bounded preview the Home returned. Nothing
  * here is inferred from the focused Home, the application origin, the inviter or
  * a default: a consequence this Home did not publish is simply not shown, which
- * is why the storage disclosure and the masked recipient are conditional rather
- * than defaulted. The Guest sentence is the one consequence a role carries that
+ * is why the inviter, the storage disclosure and the masked recipient are
+ * conditional rather than defaulted. The inviter is the Home's own display label
+ * for them — the same one its invitation email sends — and never an identifier. The Guest sentence is the one consequence a role carries that
  * the role label alone does not say, so it is stated in full.
  */
 const PreviewLine = React.memo(function PreviewLine(props: Readonly<{
@@ -119,6 +120,12 @@ export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPr
 
     return (
         <View testID="team-join-preview" style={styles.block}>
+            {preview.inviterLabel !== null ? (
+                <PreviewLine
+                    testID="team-join-preview-inviter"
+                    text={t('teams.join.invitedBy', { name: preview.inviterLabel })}
+                />
+            ) : null}
             <PreviewLine
                 testID="team-join-preview-role"
                 text={t('teams.join.roleOffered', { role: teamRoleLabel(preview.role) })}

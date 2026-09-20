@@ -2189,8 +2189,6 @@ export async function startDaemon(
                       allowedProtocolKinds: null,
                       allowedModelIds: null,
                       reasoningEffort: null,
-                      maxOutputTokens: null,
-                      maxThinkingBudgetTokens: null,
                     };
                     const evaluatedCatalogs: TeamCredentialModelCatalogResolver[] = [];
                     let firstFailure: Extract<

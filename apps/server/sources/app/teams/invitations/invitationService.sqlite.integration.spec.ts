@@ -420,6 +420,48 @@ describe("Team invitation service authority (SQLite integration)", () => {
         expect(unchanged.revokedAt).toBeNull();
     });
 
+    it("names the inviter with the one display label, never an actor identity", async () => {
+        const f = await teamWith("owner");
+        await db.account.update({
+            where: { id: f.actor.id },
+            data: { firstName: "Ada", lastName: "Lovelace", username: `ada-${crypto.randomUUID()}` },
+        });
+        const created = await create(f.team.id, f.actor.id);
+        if (!created.ok) throw new Error("expected success");
+
+        const preview = await inTx(async (tx) => previewTeamInvitationByTokenInTx(tx, {
+            token: created.value.token, home: HOME,
+        }));
+        expect(preview.outcome).toBe("ok");
+        if (preview.outcome !== "ok") return;
+        // Exactly the label the invitation email already shows this person.
+        expect(preview.preview.inviterLabel).toBe("Ada Lovelace");
+        // The label is the whole disclosure: no id and no address crosses the
+        // unauthenticated boundary with it.
+        expect(JSON.stringify(preview)).not.toContain(f.actor.id);
+
+        // An Account with no name and no username has no label of its own, so the
+        // preview says nothing rather than rendering an empty line.
+        const anonymous = await teamWith("owner");
+        const fromAnonymous = await create(anonymous.team.id, anonymous.actor.id);
+        if (!fromAnonymous.ok) throw new Error("expected success");
+        const anonymousPreview = await inTx(async (tx) => previewTeamInvitationByTokenInTx(tx, {
+            token: fromAnonymous.value.token, home: HOME,
+        }));
+        expect(anonymousPreview.outcome === "ok" && anonymousPreview.preview.inviterLabel).toBeNull();
+
+        // An inviter whose Account no longer resolves reads the same way; nothing
+        // is substituted for it.
+        await db.teamInvitation.update({
+            where: { id: created.value.invitation.id },
+            data: { createdByAccountId: null },
+        });
+        const orphaned = await inTx(async (tx) => previewTeamInvitationByTokenInTx(tx, {
+            token: created.value.token, home: HOME,
+        }));
+        expect(orphaned.outcome === "ok" && orphaned.preview.inviterLabel).toBeNull();
+    });
+
     it("previews a committed Team logo through the canonical Team-logo reader", async () => {
         const f = await teamWith("owner");
         const path = `public/teams/${f.team.id}/logo/committed.jpg`;

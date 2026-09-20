@@ -95,8 +95,6 @@ export const TeamCredentialRequestPolicyV1Schema = z.object({
     allowedValues: z.array(z.string().trim().min(1).max(64)).min(1),
     defaultValue: z.string().trim().min(1).max(64),
   }).strict().nullable(),
-  maxOutputTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
-  maxThinkingBudgetTokens: z.number().int().positive().max(Number.MAX_SAFE_INTEGER).nullable(),
 }).strict().superRefine((value, ctx) => {
   if (value.reasoningEffort && !value.reasoningEffort.allowedValues.includes(value.reasoningEffort.defaultValue)) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reasoningEffort', 'defaultValue'], message: 'defaultValue must be allowed' });
@@ -127,8 +125,8 @@ export type TeamCredentialRequestPolicyV1 = z.infer<typeof TeamCredentialRequest
 /**
  * Source-owned, value-free facts an editor may use to build a request policy.
  * The projection deliberately carries neither broker topology nor credential
- * material. Numeric constraint support remains absent until the canonical
- * Provider registry can supply an exact bound for the selected model.
+ * material, and no numeric bound: a request policy constrains only facts a
+ * Provider catalog publishes, never a caller-authored token ceiling.
  */
 export const TeamCredentialRequestPolicyModelSupportV1Schema = z.object({
   descriptor: ProviderModelDescriptorV1Schema,
@@ -138,13 +136,6 @@ export const TeamCredentialRequestPolicyModelSupportV1Schema = z.object({
   reasoningEffort: z.object({
     allowedValues: z.array(z.string().trim().min(1).max(64)).min(1).max(64),
     defaultValue: z.string().trim().min(1).max(64),
-  }).strict().nullable(),
-  maxOutputTokens: z.object({
-    maximum: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-  }).strict().nullable(),
-  maxThinkingBudgetTokens: z.object({
-    minimum: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-    maximum: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   }).strict().nullable(),
 }).strict().superRefine((value, ctx) => {
   if (new Set(value.allowedProtocolKinds).size !== value.allowedProtocolKinds.length) {
@@ -157,10 +148,6 @@ export const TeamCredentialRequestPolicyModelSupportV1Schema = z.object({
     if (!value.reasoningEffort.allowedValues.includes(value.reasoningEffort.defaultValue)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reasoningEffort', 'defaultValue'], message: 'defaultValue must be allowed' });
     }
-  }
-  if (value.maxThinkingBudgetTokens
-      && value.maxThinkingBudgetTokens.minimum > value.maxThinkingBudgetTokens.maximum) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['maxThinkingBudgetTokens'], message: 'minimum must not exceed maximum' });
   }
 });
 export type TeamCredentialRequestPolicyModelSupportV1 = z.infer<

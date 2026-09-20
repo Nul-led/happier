@@ -12,6 +12,7 @@ import type { Tx } from "@/storage/inTx";
 import type { SessionHistoryAccess } from "@/storage/enums.generated";
 import { defaultRepeatKeyExpiresAt, fetchRepeatKey, saveRepeatKey } from "@/storage/queue/repeatKey";
 import { readTransactionDatabaseTime } from "@/storage/transactionDatabaseTime";
+import { resolveAccountDisplayLabelV1 } from "@/app/account/profile/accountDisplayProfile";
 import { projectTeamLogoRefV1 } from "../projections";
 import { publishTeamChangedInTx } from "../teamChanges";
 import {
@@ -614,9 +615,10 @@ export async function resolveTeamInvitationAuthEntryReferenceContextInTx(
  * The bounded, read-only preview.
  *
  * It never consumes, never mutates, and never widens: no roster, no provider bindings,
- * no inviter identity, no digest. Unknown and terminal invitations collapse to one
- * `unavailable` outcome so an unauthenticated caller cannot enumerate which bearers
- * exist or learn why a specific one failed.
+ * no actor identifier, no digest. The inviter appears only as the short display label
+ * the invitation email already shows the same person. Unknown and terminal invitations
+ * collapse to one `unavailable` outcome so an unauthenticated caller cannot enumerate
+ * which bearers exist or learn why a specific one failed.
  */
 export async function previewTeamInvitationByTokenInTx(
     tx: Tx,
@@ -641,6 +643,7 @@ export async function resolveTeamInvitationApprovalPreparationInTx(
     if (context === null) return null;
     const { record, now, team } = context;
     const projected = projectTeamInvitationRowV1(record, now);
+    const inviterLabel = await readTeamInvitationInviterLabelInTx(tx, record.createdByAccountId);
     return {
         invitationId: record.id,
         teamId: team.id,
@@ -661,6 +664,26 @@ export async function resolveTeamInvitationApprovalPreparationInTx(
             state: "active",
             expiresAt: projected.expiresAt,
             recipientEmailMask: maskTeamInvitationRecipientEmail(record.recipientEmailNormalized),
+            inviterLabel,
         },
     };
+}
+
+/**
+ * The inviter as the join screen may state them: one short display label from the
+ * canonical Account label owner, exactly what the invitation email already sends the
+ * same person. The Account id stays inside this transaction, and an inviter whose
+ * Account was removed — or who carries no name of their own — resolves to `null`
+ * rather than to a placeholder the Home cannot substantiate.
+ */
+async function readTeamInvitationInviterLabelInTx(
+    tx: Tx,
+    inviterAccountId: string | null,
+): Promise<string | null> {
+    if (inviterAccountId === null) return null;
+    const inviter = await tx.account.findUnique({
+        where: { id: inviterAccountId },
+        select: { firstName: true, lastName: true, username: true },
+    });
+    return inviter ? resolveAccountDisplayLabelV1(inviter) : null;
 }

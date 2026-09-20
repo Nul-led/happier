@@ -443,7 +443,7 @@
       "specifier": "./ui/build",
       "sourceModule": "src/ui/build/index.ts",
       "visibility": "author",
-      "realm": "build",
+      "realm": "any",
       "conditions": {
         "types": "./dist/ui/build/index.d.ts",
         "default": "./dist/ui/build/index.js"
@@ -1346,6 +1346,14 @@
     },
     {
       "specifier": ".",
+      "exportName": "PluginSourceCustodyV1",
+      "kind": "type",
+      "sourceModule": "src/invocation.ts",
+      "sourceExport": "PluginSourceCustodyV1",
+      "realm": "daemon"
+    },
+    {
+      "specifier": ".",
       "exportName": "ProtocolActionSchemaInput",
       "kind": "type",
       "sourceModule": "src/definePlugin.ts",
@@ -1490,14 +1498,6 @@
     },
     {
       "specifier": ".",
-      "exportName": "UiSurfaceHostedWebBuild",
-      "kind": "type",
-      "sourceModule": "src/ui/surface.ts",
-      "sourceExport": "UiSurfaceHostedWebBuild",
-      "realm": "any"
-    },
-    {
-      "specifier": ".",
       "exportName": "UiSurfaceHostedWebDefinition",
       "kind": "type",
       "sourceModule": "src/ui/surface.ts",
@@ -1518,14 +1518,6 @@
       "kind": "type",
       "sourceModule": "src/ui/surface.ts",
       "sourceExport": "UiSurfacePlacement",
-      "realm": "any"
-    },
-    {
-      "specifier": ".",
-      "exportName": "UiSurfaceReactNativeBuild",
-      "kind": "type",
-      "sourceModule": "src/ui/surface.ts",
-      "sourceExport": "UiSurfaceReactNativeBuild",
       "realm": "any"
     },
     {
@@ -1666,22 +1658,6 @@
     },
     {
       "specifier": ".",
-      "exportName": "normalizePluginAccountCollectionMigrationRuntimeProjection",
-      "kind": "value",
-      "sourceModule": "src/definePlugin.ts",
-      "sourceExport": "normalizePluginAccountCollectionMigrationRuntimeProjection",
-      "realm": "any"
-    },
-    {
-      "specifier": ".",
-      "exportName": "normalizePluginDaemonDatabaseRuntimeProjection",
-      "kind": "value",
-      "sourceModule": "src/definePlugin.ts",
-      "sourceExport": "normalizePluginDaemonDatabaseRuntimeProjection",
-      "realm": "any"
-    },
-    {
-      "specifier": ".",
       "exportName": "parseJsonLine",
       "kind": "value",
       "sourceModule": "src/sessions/fileStores/records.ts",
@@ -1694,14 +1670,6 @@
       "kind": "value",
       "sourceModule": "src/sessions/fileStores/records.ts",
       "sourceExport": "parseTimestampMs",
-      "realm": "any"
-    },
-    {
-      "specifier": ".",
-      "exportName": "projectPluginAccountCollectionDeclaration",
-      "kind": "value",
-      "sourceModule": "src/definePlugin.ts",
-      "sourceExport": "projectPluginAccountCollectionDeclaration",
       "realm": "any"
     },
     {
@@ -2062,6 +2030,14 @@
       "kind": "type",
       "sourceModule": "src/actions/actionTypeMap.generated.ts",
       "sourceExport": "PluginActionWorkflowFailurePolicyV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./actions",
+      "exportName": "PluginActionWorkflowIngressBlockV1",
+      "kind": "type",
+      "sourceModule": "src/actions/actionTypeMap.generated.ts",
+      "sourceExport": "PluginActionWorkflowIngressBlockV1",
       "realm": "any"
     },
     {
@@ -7490,6 +7466,14 @@
     },
     {
       "specifier": "./contributions",
+      "exportName": "PluginTargetedContributionSourceCustodyV1",
+      "kind": "type",
+      "sourceModule": "src/targetedContributionAuthoring.ts",
+      "sourceExport": "PluginTargetedContributionSourceCustodyV1",
+      "realm": "any"
+    },
+    {
+      "specifier": "./contributions",
       "exportName": "PublicContributionProtocol",
       "kind": "type",
       "sourceModule": "src/targetedContributionAuthoring.ts",
@@ -8654,6 +8638,30 @@
       "kind": "value",
       "sourceModule": "src/host/registration/scope.ts",
       "sourceExport": "createPluginRegistrationScope",
+      "realm": "any"
+    },
+    {
+      "specifier": "./host/registration",
+      "exportName": "normalizePluginAccountCollectionMigrationRuntimeProjection",
+      "kind": "value",
+      "sourceModule": "src/definePlugin.ts",
+      "sourceExport": "normalizePluginAccountCollectionMigrationRuntimeProjection",
+      "realm": "any"
+    },
+    {
+      "specifier": "./host/registration",
+      "exportName": "normalizePluginDaemonDatabaseRuntimeProjection",
+      "kind": "value",
+      "sourceModule": "src/definePlugin.ts",
+      "sourceExport": "normalizePluginDaemonDatabaseRuntimeProjection",
+      "realm": "any"
+    },
+    {
+      "specifier": "./host/registration",
+      "exportName": "projectPluginAccountCollectionDeclaration",
+      "kind": "value",
+      "sourceModule": "src/definePlugin.ts",
+      "sourceExport": "projectPluginAccountCollectionDeclaration",
       "realm": "any"
     },
     {
@@ -18802,67 +18810,11 @@
     },
     {
       "specifier": "./ui/build",
-      "exportName": "BUILD_CONFIG_BASENAMES",
-      "kind": "value",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "BUILD_CONFIG_BASENAMES",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
       "exportName": "PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1",
       "kind": "value",
       "sourceModule": "src/ui/build/publicToolchainCompatibility.ts",
       "sourceExport": "PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1",
       "realm": "any"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiArtifactFileV1",
-      "kind": "type",
-      "sourceModule": "src/ui/publicContract.ts",
-      "sourceExport": "PluginUiArtifactFileV1",
-      "realm": "any"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiArtifactPlatform",
-      "kind": "type",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "PluginUiArtifactPlatform",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiBuildConfig",
-      "kind": "type",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "PluginUiBuildConfig",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiBuildTarget",
-      "kind": "type",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "PluginUiBuildTarget",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiHostNativeRuntimeExternalSpecifierV1",
-      "kind": "type",
-      "sourceModule": "src/ui/reactNativeBuild.ts",
-      "sourceExport": "PluginUiHostNativeRuntimeExternalSpecifierV1",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "PluginUiHostRuntimeExternalSpecifierV1",
-      "kind": "type",
-      "sourceModule": "src/ui/reactNativeWebBuild.ts",
-      "sourceExport": "PluginUiHostRuntimeExternalSpecifierV1",
-      "realm": "build"
     },
     {
       "specifier": "./ui/build",
@@ -18898,62 +18850,6 @@
     },
     {
       "specifier": "./ui/build",
-      "exportName": "ReactNativeRepackSharedModules",
-      "kind": "type",
-      "sourceModule": "src/ui/reactNativeBuild.ts",
-      "sourceExport": "ReactNativeRepackSharedModules",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "ReactNativeWebViteBuildPreset",
-      "kind": "type",
-      "sourceModule": "src/ui/reactNativeWebBuild.ts",
-      "sourceExport": "ReactNativeWebViteBuildPreset",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "ReactNativeWebViteBuildPresetInput",
-      "kind": "type",
-      "sourceModule": "src/ui/reactNativeWebBuild.ts",
-      "sourceExport": "ReactNativeWebViteBuildPresetInput",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "assertSinglePluginUiPackageInstance",
-      "kind": "value",
-      "sourceModule": "src/ui/build/pluginUiPackageIdentity.ts",
-      "sourceExport": "assertSinglePluginUiPackageInstance",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "buildUiSurfaceTargets",
-      "kind": "value",
-      "sourceModule": "src/ui/surface.ts",
-      "sourceExport": "buildUiSurfaceTargets",
-      "realm": "any"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "createPluginUiPackageInstanceRepackPlugin",
-      "kind": "value",
-      "sourceModule": "src/ui/build/pluginUiPackageIdentity.ts",
-      "sourceExport": "createPluginUiPackageInstanceRepackPlugin",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "createPluginUiPackageInstanceVitePlugin",
-      "kind": "value",
-      "sourceModule": "src/ui/build/pluginUiPackageIdentity.ts",
-      "sourceExport": "createPluginUiPackageInstanceVitePlugin",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
       "exportName": "createPublicToolchainCompatibilityV1",
       "kind": "value",
       "sourceModule": "src/ui/build/toolchainCompatibility.ts",
@@ -18967,54 +18863,6 @@
       "sourceModule": "src/ui/build/toolchainCompatibility.ts",
       "sourceExport": "createPublicToolchainScaffoldBindingsV1",
       "realm": "any"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "createReactNativeRepackResolveOptions",
-      "kind": "value",
-      "sourceModule": "src/ui/reactNativeBuild.ts",
-      "sourceExport": "createReactNativeRepackResolveOptions",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "createReactNativeRepackSharedModules",
-      "kind": "value",
-      "sourceModule": "src/ui/reactNativeBuild.ts",
-      "sourceExport": "createReactNativeRepackSharedModules",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "createReactNativeWebVitePlugins",
-      "kind": "value",
-      "sourceModule": "src/ui/reactNativeWebBuild.ts",
-      "sourceExport": "createReactNativeWebVitePlugins",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "defineBuildConfig",
-      "kind": "value",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "defineBuildConfig",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "defineReactNativeWebViteBuildPreset",
-      "kind": "value",
-      "sourceModule": "src/ui/reactNativeWebBuild.ts",
-      "sourceExport": "defineReactNativeWebViteBuildPreset",
-      "realm": "build"
-    },
-    {
-      "specifier": "./ui/build",
-      "exportName": "resolvePluginUiSurfaceOutDir",
-      "kind": "value",
-      "sourceModule": "src/ui/build/config.ts",
-      "sourceExport": "resolvePluginUiSurfaceOutDir",
-      "realm": "build"
     },
     {
       "specifier": "./ui/client",

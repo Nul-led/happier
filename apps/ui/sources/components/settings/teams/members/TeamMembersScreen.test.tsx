@@ -187,43 +187,48 @@ describe('TeamMembersScreen', () => {
         );
     });
 
-    it('narrows the loaded roster to the searched person and keeps paging available', async () => {
+    it('asks the Home for the searched person instead of filtering the pages it holds', async () => {
         const serverId = await addHome(teamSummaryFixture({
             viewerRole: 'member',
             capabilities: teamCapabilitiesFixture({}),
         }));
         harness.answer(serverId, MEMBERS_LIST_PATH, {
-            body: {
-                items: [
-                    teamMembershipFixture(),
-                    teamMembershipFixture({
-                        id: 'membership-grace',
-                        accountId: 'account-grace',
-                        account: accountDisplayProfileFixture('Grace'),
-                    }),
-                ],
-                nextCursor: 'cursor-2',
-            },
+            body: { items: [teamMembershipFixture()], nextCursor: 'cursor-2' },
         });
 
         const screen = await renderMembers(serverId);
-        await waitForTestId(screen, 'team-members-row:membership-grace');
+        await waitForTestId(screen, 'team-members-row:membership-1');
 
+        // Grace is on a page this roster has not read, so no narrowing of the
+        // rows it holds could ever find her. The Home answers the search.
+        harness.answer(serverId, MEMBERS_LIST_PATH, {
+            body: {
+                items: [teamMembershipFixture({
+                    id: 'membership-grace',
+                    accountId: 'account-grace',
+                    account: accountDisplayProfileFixture('Grace'),
+                })],
+                nextCursor: null,
+            },
+        });
         screen.changeTextByTestId('team-members-search', 'gra');
 
-        await vi.waitFor(() => {
-            const ids = collectRenderedTestIds(screen.tree.toJSON());
-            expect(ids).toContain('team-members-row:membership-grace');
-            expect(ids).not.toContain('team-members-row:membership-1');
-            // A narrowed view must not claim the roster is exhausted: the
-            // unread pages may still hold the person being looked for.
-            expect(ids).toContain('team-members-load-more');
+        await waitForTestId(screen, 'team-members-row:membership-grace');
+        const ids = collectRenderedTestIds(screen.tree.toJSON());
+        expect(ids).not.toContain('team-members-row:membership-1');
+        // The Home answered the whole searched sequence, so nothing implies
+        // another page of matches.
+        expect(ids).not.toContain('team-members-load-more');
+        expect(harness.requestsFor(MEMBERS_LIST_PATH).at(-1)?.input).toMatchObject({
+            teamId: 'team-1',
+            filter: 'all',
+            query: 'gra',
         });
 
+        harness.answer(serverId, MEMBERS_LIST_PATH, { body: { items: [], nextCursor: null } });
         screen.changeTextByTestId('team-members-search', 'nobody-here');
-        await vi.waitFor(() => {
-            expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('team-members-empty');
-        });
+        await waitForTestId(screen, 'team-members-empty');
+        expect(harness.requestsFor(MEMBERS_LIST_PATH).at(-1)?.input).toMatchObject({ query: 'nobody-here' });
     });
 
     it('exposes the roster filters as one keyboard-operable radio group', async () => {

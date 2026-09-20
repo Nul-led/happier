@@ -498,7 +498,8 @@ type ContributionAdmittedEntry<TOperations extends Readonly<Record<string, Contr
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;
@@ -1375,7 +1376,8 @@ type PluginInvocationCaller = Readonly<{
     kind: 'plugin';
     pluginId: string;
     contribution: PluginInvocationContributionIdentity;
-    immutableGenerationId: string;
+    occurrenceId: string;
+    sourceCustody: PluginSourceCustodyV1;
     materialization: PluginMachineMaterializationRefV1;
     originSurface?: PluginInvocationOriginSurface;
 }> | Readonly<{
@@ -1753,6 +1755,15 @@ type PluginSettingsSnapshot = Readonly<{
 ```
 
 
+### `.` — `PluginSourceCustodyV1` (type)
+
+Declared by `dist/invocation.d.ts` as `PluginSourceCustodyV1`.
+
+```ts
+type PluginSourceCustodyV1 = ProtocolPluginSourceCustodyV1;
+```
+
+
 ### `.` — `ProtocolActionSchemaInput` (type)
 
 Declared by `dist/definePlugin.d.ts` as `ProtocolActionSchemaInput`.
@@ -1780,7 +1791,8 @@ type TargetedContributionAdmittedEntry = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;
@@ -1825,7 +1837,7 @@ Declared by `dist/services/targetedContributions.d.ts` as `TargetedContributionS
 ```ts
 type TargetedContributionSelectionResult<TContribution> = Readonly<{
     kind: 'selected';
-    targetGeneration: string;
+    targetOccurrenceId: string;
     contribution: TContribution;
 }> | Readonly<{
     kind: 'unavailable';
@@ -1839,7 +1851,7 @@ type TargetedContributionSelectionResult<TContribution> = Readonly<{
 Declared by `dist/services/targetedContributions.d.ts` as `TargetedContributionSelectionUnavailableReason`.
 
 ```ts
-type TargetedContributionSelectionUnavailableReason = 'selection_invalid' | 'target_generation_stale' | 'contributor_unavailable';
+type TargetedContributionSelectionUnavailableReason = 'selection_invalid' | 'target_source_stale' | 'contributor_unavailable';
 ```
 
 
@@ -1849,7 +1861,8 @@ Declared by `dist/services/targetedContributions.d.ts` as `TargetedContributionS
 
 ```ts
 interface TargetedContributionSnapshot<TContribution> {
-    readonly generation: string;
+    readonly occurrenceId: string;
+    readonly sourceCustody: PluginTargetedContributionSourceCustodyV1;
     readonly contributions: readonly TContribution[];
 }
 ```
@@ -1970,25 +1983,12 @@ type UiSurfaceHostedHtmlRendererDefinition = DistributiveOmit<Extract<UiRenderer
 ```
 
 
-### `.` — `UiSurfaceHostedWebBuild` (type)
-
-Declared by `dist/ui/surface.d.ts` as `UiSurfaceHostedWebBuild`.
-
-```ts
-type UiSurfaceHostedWebBuild = Omit<Extract<PluginUiBuildTarget, Readonly<{
-    kind: 'hostedWeb';
-}>>, 'kind' | 'rendererId'>;
-```
-
-
 ### `.` — `UiSurfaceHostedWebDefinition` (type)
 
 Declared by `dist/ui/surface.d.ts` as `UiSurfaceHostedWebDefinition`.
 
 ```ts
-type UiSurfaceHostedWebDefinition = (UiSurfacePlacement<UiSurfaceHostedWebRendererDefinition> | UiSurfaceRendererOnlyDefinition<UiSurfaceHostedWebRendererDefinition>) & Readonly<{
-    build: UiSurfaceHostedWebBuild;
-}>;
+type UiSurfaceHostedWebDefinition = (UiSurfacePlacement<UiSurfaceHostedWebRendererDefinition> | UiSurfaceRendererOnlyDefinition<UiSurfaceHostedWebRendererDefinition>);
 ```
 
 
@@ -2012,25 +2012,12 @@ type UiSurfacePlacement<TRenderer extends UiSurfaceRendererDefinition> = UiSurfa
 ```
 
 
-### `.` — `UiSurfaceReactNativeBuild` (type)
-
-Declared by `dist/ui/surface.d.ts` as `UiSurfaceReactNativeBuild`.
-
-```ts
-type UiSurfaceReactNativeBuild = Omit<Extract<PluginUiBuildTarget, Readonly<{
-    kind: 'reactNative';
-}>>, 'kind' | 'rendererId'>;
-```
-
-
 ### `.` — `UiSurfaceReactNativeDefinition` (type)
 
 Declared by `dist/ui/surface.d.ts` as `UiSurfaceReactNativeDefinition`.
 
 ```ts
-type UiSurfaceReactNativeDefinition = (UiSurfacePlacement<UiSurfaceReactNativeRendererDefinition> | UiSurfaceRendererOnlyDefinition<UiSurfaceReactNativeRendererDefinition>) & Readonly<{
-    build: UiSurfaceReactNativeBuild;
-}>;
+type UiSurfaceReactNativeDefinition = (UiSurfacePlacement<UiSurfaceReactNativeRendererDefinition> | UiSurfaceRendererOnlyDefinition<UiSurfaceReactNativeRendererDefinition>);
 ```
 
 
@@ -2308,7 +2295,6 @@ type PluginActionContributionV2 = {
         target: 'client';
         client: {
             artifactId: string;
-            modulePath: string;
             exportName: string;
         };
         platforms: ('android' | 'ios' | 'web')[];
@@ -2788,7 +2774,7 @@ type AdmittedTargetedOperationIdentity<TRole extends string = string> = Readonly
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     role: TRole;
 }>;
@@ -2998,7 +2984,6 @@ type PluginActionExecutionV2 = Readonly<{
     target: 'client';
     client: Readonly<{
         artifactId: string;
-        modulePath: `./${string}`;
         exportName: string;
     }>;
     platforms: readonly ('web' | 'ios' | 'android')[];
@@ -9471,7 +9456,7 @@ type PluginActionInputById = {
         targetDir: string;
         id: string;
         name: string;
-        ui?: 'hostedWeb' | 'reactNative' | undefined;
+        ui?: 'declarative' | 'hostedWeb' | 'reactNative' | undefined;
         template?: 'session-agent' | undefined;
     };
     readonly "plugins.install": {
@@ -9723,8 +9708,6 @@ type PluginActionInputById = {
             accessDeclarationDigest: string;
             selectedAuthorityDigest: string;
             selectedRawAccessDigest: string;
-            installedGenerationId: string;
-            installReviewPrincipalDigest: string;
         } | {
             kind: 'general';
         };
@@ -9760,8 +9743,6 @@ type PluginActionInputById = {
             accessDeclarationDigest: string;
             selectedAuthorityDigest: string;
             selectedRawAccessDigest: string;
-            installedGenerationId: string;
-            installReviewPrincipalDigest: string;
         } | {
             kind: 'general';
         };
@@ -10649,6 +10630,7 @@ type PluginActionInputById = {
         filter: 'all' | 'guests' | 'members' | 'owners_admins' | 'suspended';
         limit?: number | undefined;
         cursor?: null | string | undefined;
+        query?: string | undefined;
     };
     readonly "teams.members.get": {
         v: 1;
@@ -11188,8 +11170,6 @@ type PluginActionInputById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         allMembersDeliveryMode: 'both' | 'brokered' | 'direct' | null;
         groupGrants: {
@@ -11230,8 +11210,6 @@ type PluginActionInputById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         replacement?: undefined | {
             enabled: boolean;
@@ -11244,8 +11222,6 @@ type PluginActionInputById = {
                     allowedValues: string[];
                     defaultValue: string;
                 };
-                maxOutputTokens: null | number;
-                maxThinkingBudgetTokens: null | number;
             };
             allMembersDeliveryMode: 'both' | 'brokered' | 'direct' | null;
             groupGrants: {
@@ -36266,8 +36242,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36313,8 +36287,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36374,8 +36346,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36435,8 +36405,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36482,8 +36450,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36543,8 +36509,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -36592,8 +36556,6 @@ type PluginActionResultById = {
                 accessDeclarationDigest: string;
                 selectedAuthorityDigest: string;
                 selectedRawAccessDigest: string;
-                installedGenerationId: string;
-                installReviewPrincipalDigest: string;
             } | {
                 kind: 'general';
             };
@@ -41173,6 +41135,7 @@ type PluginActionResultById = {
             state: 'accepted' | 'active' | 'expired' | 'revoked';
             expiresAt: number;
             recipientEmailMask: null | string;
+            inviterLabel: null | string;
         };
     } | {
         outcome: 'unavailable';
@@ -42548,8 +42511,6 @@ type PluginActionResultById = {
                     allowedValues: string[];
                     defaultValue: string;
                 };
-                maxOutputTokens: null | number;
-                maxThinkingBudgetTokens: null | number;
             };
             brokerPlacement: null | {
                 kind: 'machine';
@@ -42751,13 +42712,6 @@ type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | {
-                maximum: number;
-            };
-            maxThinkingBudgetTokens: null | {
-                minimum: number;
-                maximum: number;
-            };
         }[];
     } | {
         status: 'unavailable';
@@ -42906,8 +42860,6 @@ type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         brokerPlacement: null | {
             kind: 'machine';
@@ -43189,8 +43141,6 @@ type PluginActionResultById = {
                 allowedValues: string[];
                 defaultValue: string;
             };
-            maxOutputTokens: null | number;
-            maxThinkingBudgetTokens: null | number;
         };
         brokerPlacement: null | {
             kind: 'machine';
@@ -54787,7 +54737,7 @@ abstract class ContributionSurfaceHandle<TInput extends JsonValue = JsonValue, T
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     role: string;
     presentation: TPresentation;
@@ -54932,7 +54882,7 @@ Declared by `dist/targetedContributionAuthoring.d.ts` as `PluginTargetedContribu
 type PluginTargetedContributionSelectionV1 = Readonly<{
     target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     point: Readonly<{
         pointId: string;
@@ -54944,7 +54894,7 @@ type PluginTargetedContributionSelectionV1 = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
 }>;
 ```
@@ -54956,6 +54906,31 @@ Declared by `dist/targetedContributionAuthoring.d.ts` as `PluginTargetedContribu
 
 ```ts
 const PluginTargetedContributionSelectionV1Schema: ProtocolComposableSchema<PluginTargetedContributionSelectionV1>;
+```
+
+
+### `./contributions` — `PluginTargetedContributionSourceCustodyV1` (type)
+
+Declared by `dist/targetedContributionAuthoring.d.ts` as `PluginTargetedContributionSourceCustodyV1`.
+
+```ts
+type PluginTargetedContributionSourceCustodyV1 = Readonly<{
+    kind: 'managed';
+    immutableGenerationId: string;
+    installSource: 'npm' | 'archive' | 'localPath';
+}> | Readonly<{
+    kind: 'bundled_first_party';
+    packagedRuntime: Readonly<{
+        kind: 'cli_version_root';
+        versionRootId: string;
+    } | {
+        kind: 'pinned_runner_snapshot';
+        snapshotId: string;
+    }>;
+}> | Readonly<{
+    kind: 'development';
+    registeredRootId: string;
+}>;
 ```
 
 
@@ -56884,7 +56859,6 @@ type PluginRegistrationRight = Readonly<{
     }> | Readonly<{
         realm: 'client';
         artifactId: string;
-        modulePath: string;
         exportName: string;
         platforms: readonly ('web' | 'ios' | 'android')[];
     }>;
@@ -79660,7 +79634,8 @@ type PluginTestkitTargetedContributionFixtureEntry = Readonly<{
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
+        sourceCustody: PluginTargetedContributionSourceCustodyV1;
     }>;
     protocol: Readonly<{
         id: string;
@@ -80274,12 +80249,12 @@ type PluginUiTestkitTargetedSurfaceAdmission = Readonly<{
     key: string;
     target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     contributor: Readonly<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     point: Readonly<{
         pointId: string;
@@ -80367,7 +80342,7 @@ function readPluginUiTestkitTargetedSurfaceAdmission(input: Readonly<{
     mounts: unknown;
     target: Readonly<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     }>;
     surface: unknown;
     launchInput: unknown;
@@ -82075,109 +82050,12 @@ const selectTargetedContributionSurface: (targetedContributions: PluginUiTargete
 ```
 
 
-### `./ui/build` — `BUILD_CONFIG_BASENAMES` (value)
-
-Declared by `dist/ui/build/config.d.ts` as `BUILD_CONFIG_BASENAMES`.
-
-```ts
-const BUILD_CONFIG_BASENAMES: readonly [
-    "pluginUiBuild.mjs",
-    "pluginUiBuild.js",
-    "pluginUiBuild.ts",
-    "happier-plugin-ui.config.mjs",
-    "happier-plugin-ui.config.js",
-    "happier-plugin-ui.config.ts"
-];
-```
-
-
 ### `./ui/build` — `PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1` (value)
 
 Declared by `dist/ui/build/publicToolchainCompatibility.d.ts` as `PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1`.
 
 ```ts
 const PUBLIC_TOOLCHAIN_SCAFFOLD_BINDINGS_V1: PublicToolchainScaffoldBindingsV1;
-```
-
-
-### `./ui/build` — `PluginUiArtifactFileV1` (type)
-
-Declared by `dist/ui/publicContract.d.ts` as `PluginUiArtifactFileV1`.
-
-```ts
-type PluginUiArtifactFileV1 = {
-    relativePath: string;
-    digest: `sha256:${string}`;
-    byteSize: number;
-};
-```
-
-
-### `./ui/build` — `PluginUiArtifactPlatform` (type)
-
-Declared by `dist/ui/build/config.d.ts` as `PluginUiArtifactPlatform`.
-
-```ts
-type PluginUiArtifactPlatform = 'web' | 'ios' | 'android' | 'desktop';
-```
-
-
-### `./ui/build` — `PluginUiBuildConfig` (type)
-
-Declared by `dist/ui/build/config.d.ts` as `PluginUiBuildConfig`.
-
-```ts
-type PluginUiBuildConfig = Readonly<{
-    projectRoot?: string;
-    outDir?: string;
-    targets: readonly PluginUiBuildTarget[];
-}>;
-```
-
-
-### `./ui/build` — `PluginUiBuildTarget` (type)
-
-Declared by `dist/ui/build/config.d.ts` as `PluginUiBuildTarget`.
-
-```ts
-type PluginUiBuildTarget = Readonly<{
-    rendererId: string;
-    entry: string;
-    bundlerConfig?: string;
-    kind: 'hostedWeb';
-}> | Readonly<{
-    rendererId: string;
-    entry: string;
-    bundlerConfig?: string;
-    kind: 'reactNative';
-    platforms: readonly PluginUiArtifactPlatform[];
-    module?: Readonly<{
-        containerName: string;
-        modulePath: string;
-        exportName: string;
-    }>;
-    collectionMigrations?: Readonly<{
-        exportName: string;
-    }>;
-}>;
-```
-
-
-### `./ui/build` — `PluginUiHostNativeRuntimeExternalSpecifierV1` (type)
-
-Declared by `dist/ui/publicContract.d.ts` as `PluginUiHostNativeRuntimeExternalSpecifierV1`.
-
-```ts
-type PluginUiHostNativeRuntimeExternalSpecifierV1 = 'react' | 'react/jsx-runtime' | 'react/jsx-dev-runtime' | 'react-native' | 'react-native-reanimated' | '@react-navigation/native' | '@react-navigation/native-stack';
-```
-
-
-### `./ui/build` — `PluginUiHostRuntimeExternalSpecifierV1` (type)
-
-Declared by `dist/ui/publicContract.d.ts` as `PluginUiHostRuntimeExternalSpecifierV1`.
-
-```ts
-type PluginUiHostRuntimeExternalSpecifierV1 = 'react' | 'react/jsx-runtime' | 'react/jsx-dev-runtime' | 'react-native-web' | '@happier-dev/plugin-sdk/ui/client';
 ```
 
 
@@ -82216,8 +82094,6 @@ type PublicToolchainCompatibilityV1 = {
         react: string;
         reactNative: string;
         reactNativeWeb: string;
-        vite: string;
-        repack: string;
         expo: string;
         runtime: string;
     };
@@ -82229,19 +82105,10 @@ type PublicToolchainCompatibilityV1 = {
         nodeTypes: PublicToolchainAuthoringDependencyV1;
         reactDom: PublicToolchainAuthoringDependencyV1;
         reactTypes: PublicToolchainAuthoringDependencyV1;
-        reactNativeCommunityCli: PublicToolchainAuthoringDependencyV1;
-        rspack: PublicToolchainAuthoringDependencyV1;
         swcHelpers: PublicToolchainAuthoringDependencyV1;
         typescript: PublicToolchainAuthoringDependencyV1;
         typescriptNative: PublicToolchainAuthoringDependencyV1;
-        viteReactPlugin: PublicToolchainAuthoringDependencyV1;
     };
-    buildTools: Array<{
-        packageName: string;
-        packageVersion: string;
-        executable: string;
-        executableVersion: string;
-    }>;
 };
 ```
 
@@ -82262,157 +82129,11 @@ Declared by `dist/ui/build/toolchainCompatibility.d.ts` as `PublicToolchainScaff
 ```ts
 type PublicToolchainScaffoldBindingsV1 = Readonly<{
     dependencies: Readonly<Record<'@happier-dev/plugin-sdk' | '@happier-dev/plugin-ui' | 'react' | 'react-dom' | 'react-native' | 'react-native-web', string>>;
-    devDependencies: Readonly<Record<'@callstack/repack' | '@react-native-community/cli' | '@rspack/core' | '@swc/helpers' | '@types/node' | '@types/react' | 'typescript' | '@typescript/native' | '@vitejs/plugin-react' | 'vite', string>>;
-    reactNativeCompatibility: Readonly<{
-        hostUiApiVersion: string;
-        reactVersion: string;
-        reactNativeVersion: string;
-        viteVersion: string;
-    }>;
+    devDependencies: Readonly<Record<'@swc/helpers' | '@types/node' | '@types/react' | 'typescript' | '@typescript/native', string>>;
     toolchain: Readonly<{
         expo: string;
-        repack: string;
         runtime: string;
     }>;
-}>;
-```
-
-
-### `./ui/build` — `ReactNativeRepackSharedModules` (type)
-
-Declared by `dist/ui/reactNativeBuild.d.ts` as `ReactNativeRepackSharedModules`.
-
-```ts
-type ReactNativeRepackSharedModules = Readonly<Record<PluginUiHostNativeRuntimeExternalSpecifierV1, Readonly<{
-    singleton: true;
-    eager: false;
-    import: false;
-}>>>;
-```
-
-
-### `./ui/build` — `ReactNativeWebViteBuildPreset` (type)
-
-Declared by `dist/ui/reactNativeWebBuild.d.ts` as `ReactNativeWebViteBuildPreset`.
-
-```ts
-type ReactNativeWebViteBuildPreset = Readonly<{
-    tier: 'reactNative';
-    bundler: 'vite';
-    contributionId: string;
-    platform: 'web';
-    sourceEntry: string;
-    collectionMigrations?: Readonly<{
-        exportName: string;
-    }>;
-    output: Readonly<{
-        root: string;
-        entry: string;
-    }>;
-    vite: Readonly<{
-        version: string;
-        mode: 'library';
-        format: 'es';
-        base: './';
-        resolve: Readonly<{
-            alias: readonly [
-                Readonly<{
-                    find: 'react-native';
-                    replacement: 'react-native-web';
-                }>
-            ];
-        }>;
-        hostRuntimeExternalSpecifiers: readonly PluginUiHostRuntimeExternalSpecifierV1[];
-        external: readonly [
-        ];
-        sourcemap: false;
-    }>;
-    compatibility: Readonly<{
-        hostUiApiVersion: string;
-        reactVersion: string;
-        reactNativeVersion: string;
-    }>;
-    requiredFeatureIds: readonly [
-        'plugins.ui.reactNativeBundles'
-    ];
-    runtime: Readonly<{
-        kind: 'hostGated';
-        requiredFeatureId: 'plugins.ui.reactNativeBundles';
-    }>;
-}>;
-```
-
-
-### `./ui/build` — `ReactNativeWebViteBuildPresetInput` (type)
-
-Declared by `dist/ui/reactNativeWebBuild.d.ts` as `ReactNativeWebViteBuildPresetInput`.
-
-```ts
-type ReactNativeWebViteBuildPresetInput = Readonly<{
-    contributionId: string;
-    sourceEntry: string;
-    viteVersion: string;
-    hostUiApiVersion: string;
-    collectionMigrations?: Readonly<{
-        exportName: string;
-    }>;
-    compatibility: Readonly<{
-        reactVersion: string;
-        reactNativeVersion: string;
-    }>;
-}>;
-```
-
-
-### `./ui/build` — `assertSinglePluginUiPackageInstance` (value)
-
-Declared by `dist/ui/build/pluginUiPackageIdentity.d.ts` as `assertSinglePluginUiPackageInstance`.
-
-```ts
-function assertSinglePluginUiPackageInstance(modules: Iterable<unknown>): readonly string[];
-```
-
-
-### `./ui/build` — `buildUiSurfaceTargets` (value)
-
-Declared by `dist/ui/surface.d.ts` as `buildUiSurfaceTargets`.
-
-```ts
-function buildUiSurfaceTargets(surface: UiSurfaceDefinition): readonly PluginUiBuildTarget[];
-```
-
-
-### `./ui/build` — `createPluginUiPackageInstanceRepackPlugin` (value)
-
-Declared by `dist/ui/build/pluginUiPackageIdentity.d.ts` as `createPluginUiPackageInstanceRepackPlugin`.
-
-```ts
-function createPluginUiPackageInstanceRepackPlugin(): Readonly<{
-    apply(compiler: Readonly<{
-        hooks: Readonly<{
-            afterCompile: Readonly<{
-                tap(name: string, callback: (compilation: Readonly<{
-                    modules?: Iterable<unknown>;
-                    errors: Error[];
-                }>) => void): void;
-            }>;
-        }>;
-    }>): void;
-}>;
-```
-
-
-### `./ui/build` — `createPluginUiPackageInstanceVitePlugin` (value)
-
-Declared by `dist/ui/build/pluginUiPackageIdentity.d.ts` as `createPluginUiPackageInstanceVitePlugin`.
-
-```ts
-function createPluginUiPackageInstanceVitePlugin(): Readonly<{
-    name: 'happier-plugin-ui-package-instance';
-    enforce: 'post';
-    generateBundle(this: Readonly<{
-        getModuleIds(): Iterable<string>;
-    }>): void;
 }>;
 ```
 
@@ -82432,89 +82153,6 @@ Declared by `dist/ui/build/toolchainCompatibility.d.ts` as `createPublicToolchai
 
 ```ts
 function createPublicToolchainScaffoldBindingsV1(candidate: unknown): PublicToolchainScaffoldBindingsV1;
-```
-
-
-### `./ui/build` — `createReactNativeRepackResolveOptions` (value)
-
-Declared by `dist/ui/reactNativeBuild.d.ts` as `createReactNativeRepackResolveOptions`.
-
-```ts
-function createReactNativeRepackResolveOptions<TOptions extends Readonly<Record<string, unknown>>>(options: TOptions): Omit<TOptions, 'exportsFields' | 'symlinks'> & Readonly<{
-    exportsFields: typeof REPACK_PACKAGE_EXPORTS_FIELDS;
-    symlinks: false;
-}>;
-```
-
-
-### `./ui/build` — `createReactNativeRepackSharedModules` (value)
-
-Declared by `dist/ui/reactNativeBuild.d.ts` as `createReactNativeRepackSharedModules`.
-
-```ts
-function createReactNativeRepackSharedModules(): ReactNativeRepackSharedModules;
-```
-
-
-### `./ui/build` — `createReactNativeWebVitePlugins` (value)
-
-Declared by `dist/ui/reactNativeWebBuild.d.ts` as `createReactNativeWebVitePlugins`.
-
-```ts
-function createReactNativeWebVitePlugins(): readonly [
-    ReturnType<typeof createPluginUiHostRuntimeExternalsVitePlugin>,
-    ReturnType<typeof createPluginUiPackageInstanceVitePlugin>
-];
-```
-
-
-### `./ui/build` — `defineBuildConfig` (value)
-
-Declared by `dist/ui/build/config.d.ts` as `defineBuildConfig`.
-
-```ts
-function defineBuildConfig<const TConfig extends PluginUiBuildConfig>(config: TConfig & Readonly<Record<Exclude<keyof TConfig, 'projectRoot' | 'outDir' | 'targets'>, never>> & Readonly<{
-    targets: TConfig['targets'] extends readonly (infer TTarget)[] ? readonly (TTarget extends Readonly<{
-        kind: 'hostedWeb';
-    }> ? TTarget & Readonly<Record<Exclude<keyof TTarget, 'rendererId' | 'entry' | 'kind' | 'bundlerConfig'>, never>> : TTarget extends Readonly<{
-        kind: 'reactNative';
-    }> ? TTarget & Readonly<Record<Exclude<keyof TTarget, 'rendererId' | 'entry' | 'kind' | 'platforms' | 'bundlerConfig' | 'module' | 'collectionMigrations'>, never>> & (TTarget extends Readonly<{
-        module?: infer TModule;
-    }> ? Readonly<{
-        module?: TModule extends object ? TModule & Readonly<Record<Exclude<keyof TModule, 'containerName' | 'modulePath' | 'exportName'>, never>> : TModule;
-    }> : unknown) & (TTarget extends Readonly<{
-        collectionMigrations?: infer TCollectionMigrations;
-    }> ? Readonly<{
-        collectionMigrations?: TCollectionMigrations extends object ? TCollectionMigrations & Readonly<Record<Exclude<keyof TCollectionMigrations, 'exportName'>, never>> : TCollectionMigrations;
-    }> : unknown) : never)[] : never;
-}>): TConfig;
-```
-
-
-### `./ui/build` — `defineReactNativeWebViteBuildPreset` (value)
-
-Declared by `dist/ui/reactNativeWebBuild.d.ts` as `defineReactNativeWebViteBuildPreset`.
-
-```ts
-function defineReactNativeWebViteBuildPreset(input: ReactNativeWebViteBuildPresetInput): ReactNativeWebViteBuildPreset;
-```
-
-
-### `./ui/build` — `resolvePluginUiSurfaceOutDir` (value)
-
-Declared by `dist/ui/build/config.d.ts` as `resolvePluginUiSurfaceOutDir`.
-
-```ts
-function resolvePluginUiSurfaceOutDir(input: Readonly<{
-    kind: 'hostedWeb';
-    rendererId: string;
-    outDir?: string;
-}> | Readonly<{
-    kind: 'reactNative';
-    rendererId: string;
-    platform: 'web' | 'ios' | 'android' | 'desktop';
-    outDir?: string;
-}>): string;
 ```
 
 
@@ -84411,7 +84049,6 @@ type PluginRegistrationScopeTarget = Readonly<{
 }> | Readonly<{
     realm: 'client';
     artifactId: string;
-    modulePath: string;
     exportName: string;
     platform: 'web' | 'ios' | 'android';
 }>;
@@ -84740,35 +84377,6 @@ Reached from a published signature; not itself a published export.
 ```ts
 type CreatePluginUiHostApiClientOptions = Readonly<{
     signal?: AbortSignal;
-}>;
-```
-
-
-### `dist/ui/hostRuntimeExternalsBuildPlugin.d.ts` — `PluginUiHostRuntimeExternalsRealModuleLoader`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginUiHostRuntimeExternalsRealModuleLoader = (specifier: PluginUiHostRuntimeExternalSpecifierV1) => Promise<Readonly<Record<string, unknown>>>;
-```
-
-
-### `dist/ui/hostRuntimeExternalsBuildPlugin.d.ts` — `createPluginUiHostRuntimeExternalsVitePlugin`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-function createPluginUiHostRuntimeExternalsVitePlugin(options?: Readonly<{
-    specifiers?: readonly PluginUiHostRuntimeExternalSpecifierV1[];
-    importRealModule?: PluginUiHostRuntimeExternalsRealModuleLoader;
-}>): Readonly<{
-    name: "happier-plugin-ui-host-runtime-externals";
-    enforce: "pre";
-    configResolved: (config: Readonly<{
-        root: string;
-    }>) => void;
-    resolveId: (source: string) => string | null;
-    load: (id: string) => Promise<string | null>;
 }>;
 ```
 
@@ -85122,17 +84730,6 @@ Reached from a published signature; not itself a published export.
 
 ```ts
 type PluginUiSessionServerStartDraftV1 = SessionServerStartSpawnDraftV1;
-```
-
-
-### `dist/ui/reactNativeBuild.d.ts` — `REPACK_PACKAGE_EXPORTS_FIELDS`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const REPACK_PACKAGE_EXPORTS_FIELDS: readonly [
-    'exports'
-];
 ```
 
 
@@ -110173,7 +109770,6 @@ const VoiceProviderContributionSchema: z.ZodDiscriminatedUnion<[
         }, z.core.$strict>>;
         client: z.ZodObject<{
             artifactId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
-            modulePath: z.ZodString;
             exportName: z.ZodLiteral<"activate">;
         }, z.core.$strict>;
     }, z.core.$strict>,
@@ -115202,6 +114798,88 @@ const InteractionTransientResultV1Schema: z.ZodUnion<readonly [
 ```
 
 
+### `node_modules/@happier-dev/protocol/dist/plugins/runtime/sourceCustody.d.ts` — `PluginSourceCustodyV1`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+type PluginSourceCustodyV1 = z.infer<typeof PluginSourceCustodyV1Schema>;
+```
+
+
+### `node_modules/@happier-dev/protocol/dist/plugins/runtime/sourceCustody.d.ts` — `PluginSourceCustodyV1Schema`
+
+Reached from a published signature; not itself a published export.
+
+```ts
+const PluginSourceCustodyV1Schema: z.ZodType<({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), ({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), z.core.$ZodTypeInternals<({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {}), ({
+    kind: "managed";
+    immutableGenerationId: string;
+    installSource: "archive" | "localPath" | "npm";
+} & {}) | ({
+    kind: "bundled_first_party";
+    packagedRuntime: ({
+        kind: "cli_version_root";
+        versionRootId: string;
+    } & {}) | ({
+        kind: "pinned_runner_snapshot";
+        snapshotId: string;
+    } & {});
+} & {}) | ({
+    kind: "development";
+    registeredRootId: string;
+} & {})>>;
+```
+
+
 ### `node_modules/@happier-dev/protocol/dist/plugins/ui/composer.d.ts` — `ComposerControlStateContentTypeV1`
 
 Reached from a published signature; not itself a published export.
@@ -117449,30 +117127,6 @@ const PluginUiPreparedReviewWorkspaceResultV1Schema: z.ZodObject<{
 ```
 
 
-### `node_modules/@happier-dev/protocol/dist/plugins/ui/hostRuntimeExternals.d.ts` — `PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-const PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS: readonly [
-    "react",
-    "react/jsx-runtime",
-    "react/jsx-dev-runtime",
-    "react-native-web",
-    "@happier-dev/plugin-sdk/ui/client"
-];
-```
-
-
-### `node_modules/@happier-dev/protocol/dist/plugins/ui/hostRuntimeExternals.d.ts` — `PluginUiHostRuntimeExternalSpecifierV1`
-
-Reached from a published signature; not itself a published export.
-
-```ts
-type PluginUiHostRuntimeExternalSpecifierV1 = typeof PLUGIN_UI_HOST_RUNTIME_EXTERNAL_SPECIFIERS[number];
-```
-
-
 ### `node_modules/@happier-dev/protocol/dist/plugins/ui/targetedContributions.d.ts` — `PluginTargetedContributionSelectionV1`
 
 Reached from a published signature; not itself a published export.
@@ -117525,19 +117179,19 @@ const PluginUiTargetedContributionOperationV1Schema: z.ZodObject<{
     contributor: z.ZodType<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}>>;
     role: z.ZodString;
     action: z.ZodType<{
@@ -117600,19 +117254,19 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
             contributor: z.ZodType<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}>>;
             protocol: z.ZodType<{
                 id: string;
@@ -117657,19 +117311,19 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
                 contributor: z.ZodType<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}>>;
                 role: z.ZodString;
                 action: z.ZodType<{
@@ -117715,19 +117369,19 @@ const PluginUiTargetedContributionPointSnapshotV1Schema: z.ZodObject<{
                 contributor: z.ZodType<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}>>;
                 role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                 presentation: z.ZodEnum<{
@@ -117773,19 +117427,19 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
         contributor: z.ZodType<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}>>;
         protocol: z.ZodType<{
             id: string;
@@ -117830,19 +117484,19 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
             contributor: z.ZodType<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}>>;
             role: z.ZodString;
             action: z.ZodType<{
@@ -117888,19 +117542,19 @@ const PluginUiTargetedContributionProtocolSnapshotV1Schema: z.ZodObject<{
             contributor: z.ZodType<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, z.core.$ZodTypeInternals<{
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}, {
                 pluginId: string;
                 contributionId: string;
-                immutableGenerationId: string;
+                occurrenceId: string;
             } & {}>>;
             role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
             presentation: z.ZodEnum<{
@@ -117984,19 +117638,19 @@ const PluginUiTargetedContributionSurfaceV1Schema: z.ZodObject<{
     contributor: z.ZodType<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}>>;
     role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
     presentation: z.ZodEnum<{
@@ -118025,19 +117679,19 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
     contributor: z.ZodType<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
         contributionId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}>>;
     protocol: z.ZodType<{
         id: string;
@@ -118082,19 +117736,19 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
         contributor: z.ZodType<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}>>;
         role: z.ZodString;
         action: z.ZodType<{
@@ -118140,19 +117794,19 @@ const PluginUiTargetedContributionV1Schema: z.ZodObject<{
         contributor: z.ZodType<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, z.core.$ZodTypeInternals<{
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}, {
             pluginId: string;
             contributionId: string;
-            immutableGenerationId: string;
+            occurrenceId: string;
         } & {}>>;
         role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
         presentation: z.ZodEnum<{
@@ -118181,16 +117835,16 @@ Reached from a published signature; not itself a published export.
 const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
     target: z.ZodType<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, z.core.$ZodTypeInternals<{
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}, {
         pluginId: string;
-        immutableGenerationId: string;
+        occurrenceId: string;
     } & {}>>;
     points: z.ZodArray<z.ZodObject<{
         pointId: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
@@ -118212,19 +117866,19 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                 contributor: z.ZodType<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, z.core.$ZodTypeInternals<{
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}, {
                     pluginId: string;
                     contributionId: string;
-                    immutableGenerationId: string;
+                    occurrenceId: string;
                 } & {}>>;
                 protocol: z.ZodType<{
                     id: string;
@@ -118269,19 +117923,19 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                     contributor: z.ZodType<{
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, z.core.$ZodTypeInternals<{
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}>>;
                     role: z.ZodString;
                     action: z.ZodType<{
@@ -118327,19 +117981,19 @@ const PluginUiTargetedContributionsV1Schema: z.ZodObject<{
                     contributor: z.ZodType<{
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, z.core.$ZodTypeInternals<{
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}, {
                         pluginId: string;
                         contributionId: string;
-                        immutableGenerationId: string;
+                        occurrenceId: string;
                     } & {}>>;
                     role: z.ZodType<string, string, z.core.$ZodTypeInternals<string, string>>;
                     presentation: z.ZodEnum<{
@@ -125547,12 +125201,6 @@ const DaemonProviderModelProjectionResponseV1Schema: z.ZodDiscriminatedUnion<[
                             defaultValue: z.ZodString;
                         }, z.core.$strict>
                     ]>;
-                    maxOutputTokens: z.ZodObject<{
-                        supported: z.ZodLiteral<false>;
-                    }, z.core.$strict>;
-                    maxThinkingBudgetTokens: z.ZodObject<{
-                        supported: z.ZodLiteral<false>;
-                    }, z.core.$strict>;
                 }, z.core.$strict>>;
                 directMaterialization: z.ZodOptional<z.ZodObject<{
                     endpoint: z.ZodObject<{

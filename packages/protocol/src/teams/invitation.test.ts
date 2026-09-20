@@ -211,6 +211,42 @@ describe('bearer confinement in projections', () => {
     expect(TeamInvitationPreviewV1Schema.safeParse({ ...preview, memberCount: 12 }).success).toBe(false);
   });
 
+  it('discloses the inviter as one display label and never as an actor identity', () => {
+    const preview = {
+      home: { serverId: 'home-1', displayName: 'Acme Home', storageMode: 'plain' as const },
+      team: { teamId: 'team-1', name: 'Acme', logo: null, accentSeed: 'team-1' },
+      role: 'member' as const,
+      historyAccess: 'from_membership' as const,
+      state: 'active' as const,
+      expiresAt: 2_000,
+      recipientEmailMask: null,
+      // The same label the invitation email already shows the invited person.
+      inviterLabel: 'Ada Lovelace',
+    };
+    expect(TeamInvitationPreviewV1Schema.safeParse(preview).success).toBe(true);
+    // An inviter whose Account no longer resolves reads as "not said", never as a
+    // placeholder, and an older Home that omits the field reads the same way.
+    expect(TeamInvitationPreviewV1Schema.safeParse({ ...preview, inviterLabel: null }).success).toBe(true);
+    const { inviterLabel: _omitted, ...withoutLabel } = preview;
+    expect(TeamInvitationPreviewV1Schema.parse(withoutLabel).inviterLabel).toBeNull();
+    // An Account with neither a name nor a username has no label; it must not
+    // reach the wire as an empty string the join screen would render as a gap.
+    expect(TeamInvitationPreviewV1Schema.safeParse({ ...preview, inviterLabel: '' }).success).toBe(false);
+    // The label is the whole disclosure: no id, no address, no actor object.
+    expect(TeamInvitationPreviewV1Schema.safeParse({
+      ...preview,
+      inviterAccountId: 'account-1',
+    }).success).toBe(false);
+    expect(TeamInvitationPreviewV1Schema.safeParse({
+      ...preview,
+      inviterEmail: 'ada@example.test',
+    }).success).toBe(false);
+    expect(TeamInvitationPreviewV1Schema.safeParse({
+      ...preview,
+      inviter: { label: 'Ada Lovelace' },
+    }).success).toBe(false);
+  });
+
   it('returns the raw bearer exactly once on create and permits its omission', () => {
     const invitation = {
       id: 'inv-1',

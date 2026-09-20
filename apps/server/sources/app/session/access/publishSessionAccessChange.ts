@@ -1,4 +1,8 @@
 import { afterTx, type Tx } from "@/storage/inTx";
+import {
+    scheduleSessionActivityRemoteAlerts,
+    type SubmitSessionActivityRemoteAlertsParams,
+} from "@/app/activity/remoteAlerts/submitSessionActivityRemoteAlerts";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import {
     buildSessionSharedUpdate,
@@ -58,6 +62,35 @@ export function projectReleasedDirectShareEvent(
     return null;
 }
 
+/**
+ * The one personal fact a direct share produces (Lane 09 brief item 16).
+ *
+ * Access never creates tracking, unread or notifications by itself. A **new**
+ * direct grant is the single exception: it is a relevance entry carrying exactly
+ * one targeted `directly_shared` event for the granted recipient, at effective
+ * notification level `none`. Level changes on a surviving row, revocations, and
+ * Team or Group grants carry no direct-share fact at all — collective access is
+ * a non-event, not a quieter share.
+ *
+ * The event is derived from the same projected before/after result as the
+ * released socket events, so the "is this a genuinely new direct grant" decision
+ * stays with the one owner that already makes it. Recipient eligibility remains
+ * `listSessionPersonalEventRecipients`, and the deliberate absence of any OS
+ * alert for this kind remains the personal-event/alert owners' decision.
+ */
+export function projectDirectSharePersonalEvent(
+    event: ReleasedDirectShareEvent | null,
+): SubmitSessionActivityRemoteAlertsParams | null {
+    if (event?.kind !== "shared") return null;
+    return {
+        sessionId: event.share.sessionId,
+        event: "directly_shared",
+        targetAccountIds: [event.share.sharedWithUserId],
+        // The granter performed the action; it is never their own event.
+        sourceAccountId: event.share.sharedByUserId,
+    };
+}
+
 export type ReleasedDirectShareSenderProfile = Readonly<{
     id: string;
     firstName: string | null;
@@ -67,7 +100,8 @@ export type ReleasedDirectShareSenderProfile = Readonly<{
 }>;
 
 /**
- * Schedule the projected released event after commit.
+ * Schedule the projected released event, and a new grant's one personal
+ * `directly_shared` event, after commit.
  *
  * Nothing is emitted from inside the transaction: an event that escaped a rolled
  * back transaction would tell a client about access it does not have.
@@ -83,6 +117,11 @@ export function scheduleReleasedDirectShareEvent(
 ): void {
     const { event } = params;
     if (!event) return;
+
+    const personalEvent = projectDirectSharePersonalEvent(event);
+    if (personalEvent) {
+        afterTx(tx, () => scheduleSessionActivityRemoteAlerts(personalEvent));
+    }
 
     afterTx(tx, () => {
         const payload = event.kind === "revoked"

@@ -113,12 +113,25 @@ describe('TeamCredentialResourceCreateInputV1Schema', () => {
       ...narrow,
       sessionUsePolicy: 'team_context_required',
       brokerPlacement: { kind: 'machine', machineId: 'machine-1' },
-      requestPolicy: { allowedProtocolKinds: ['openai_responses'], allowedModelIds: ['gpt-5'], reasoningEffort: null, maxOutputTokens: 4096, maxThinkingBudgetTokens: null },
+      requestPolicy: { allowedProtocolKinds: ['openai_responses'], allowedModelIds: ['gpt-5'], reasoningEffort: null },
       allMembersDeliveryMode: 'brokered',
       groupGrants: [{ teamGroupId: 'group-1', deliveryMode: 'brokered' }],
       memberGrants: [{ teamMembershipId: 'membership-1', deliveryMode: 'brokered' }],
       usageLimits: [{ subjectKind: 'resource', subjectId: '', period: 'month', metric: 'inference_requests', maximum: '100', enabled: true }],
     })).toMatchObject({ sessionUsePolicy: 'team_context_required', allMembersDeliveryMode: 'brokered' });
+  });
+});
+
+describe('TeamCredentialRequestPolicyV1Schema', () => {
+  it('carries no caller-authored output or thinking token bound', () => {
+    const policy = {
+      allowedProtocolKinds: ['openai_responses'] as const,
+      allowedModelIds: ['gpt-5'],
+      reasoningEffort: null,
+    };
+    expect(TeamCredentialRequestPolicyV1Schema.parse(policy)).toEqual(policy);
+    expect(TeamCredentialRequestPolicyV1Schema.safeParse({ ...policy, maxOutputTokens: 4096 }).success).toBe(false);
+    expect(TeamCredentialRequestPolicyV1Schema.safeParse({ ...policy, maxThinkingBudgetTokens: 4096 }).success).toBe(false);
   });
 });
 
@@ -164,11 +177,17 @@ describe('Team credential request-policy support projection', () => {
         sourceRevision: 'source-revision-1',
         allowedProtocolKinds: ['openai_responses'],
         reasoningEffort: { allowedValues: ['low', 'medium'], defaultValue: 'medium' },
-        maxOutputTokens: null,
-        maxThinkingBudgetTokens: null,
       }],
     });
     expect(output.status).toBe('available');
+    expect(TeamCredentialRequestPolicySupportOutputV1Schema.safeParse({
+      ...output,
+      models: [{ ...output.models[0], maxOutputTokens: { maximum: 4096 } }],
+    }).success).toBe(false);
+    expect(TeamCredentialRequestPolicySupportOutputV1Schema.safeParse({
+      ...output,
+      models: [{ ...output.models[0], maxThinkingBudgetTokens: { minimum: 1024, maximum: 4096 } }],
+    }).success).toBe(false);
     expect(TeamCredentialRequestPolicySupportOutputV1Schema.safeParse({
       ...output,
       models: [{ ...output.models[0], machineId: 'private-machine' }],

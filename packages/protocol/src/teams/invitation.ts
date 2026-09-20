@@ -118,9 +118,10 @@ export const TeamInvitationRowV1Schema = z.object({
 export type TeamInvitationRowV1 = z.infer<typeof TeamInvitationRowV1Schema>;
 
 /**
- * The bounded pre-authentication preview. It identifies the Home and Team and states
- * the offered consequences; it omits the roster, provider bindings, the raw or
- * digested token, and internal actor identity. Preview never consumes anything.
+ * The bounded pre-authentication preview. It identifies the Home, the Team and the
+ * person who invited you, and states the offered consequences; it omits the roster,
+ * provider bindings, the raw or digested token, and every actor identifier. Preview
+ * never consumes anything.
  */
 export const TeamInvitationPreviewV1Schema = z.object({
   home: z.object({
@@ -162,6 +163,18 @@ export const TeamInvitationPreviewV1Schema = z.object({
   state: TeamInvitationStateV1Schema,
   expiresAt: z.number().int(),
   recipientEmailMask: z.string().nullable(),
+  /**
+   * The inviter's short display label, the same one the invitation email already
+   * shows this person. It is the whole disclosure: never an Account id, an
+   * address, or any other actor field, so the preview still identifies nobody it
+   * can be used to look up. `null` when the inviter's Account no longer resolves
+   * or carries no name of its own, and the join screen then says nothing rather
+   * than substituting the Team, the Home or a placeholder.
+   *
+   * Additive: a Home that predates this field simply omits it and reads as the
+   * same "says nothing" answer.
+   */
+  inviterLabel: z.string().min(1).nullable().optional().default(null),
 }).strict();
 export type TeamInvitationPreviewV1 = z.infer<typeof TeamInvitationPreviewV1Schema>;
 
