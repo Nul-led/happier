@@ -1,10 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createFakeSocket, getSocketHandler } from "../testkit/socketHarness";
+// Imported at module scope so the owner's module graph — which now includes the
+// credential verifier it re-runs before the secret read — is transformed during
+// collection instead of inside the first case's own timeout budget.
+import { accessKeyHandler } from "./accessKeyHandler";
 
-const sessionFindFirst = vi.fn();
-const machineFindFirst = vi.fn();
-const accessKeyFindUnique = vi.fn();
+const { sessionFindFirst, machineFindFirst, accessKeyFindUnique } = vi.hoisted(() => ({
+    sessionFindFirst: vi.fn(),
+    machineFindFirst: vi.fn(),
+    accessKeyFindUnique: vi.fn(),
+}));
 
 vi.mock("@/storage/db", () => ({
     db: {
@@ -28,7 +34,6 @@ describe("accessKeyHandler", () => {
     });
 
     it("rejects machine-bound session-scoped access-key reads for a sibling machine in the same session", async () => {
-        const { accessKeyHandler } = await import("./accessKeyHandler");
         const socket = createFakeSocket({
             data: {
                 clientType: "session-scoped",
@@ -57,7 +62,6 @@ describe("accessKeyHandler", () => {
     });
 
     it("rejects session-scoped access-key reads whose target session does not match the socket binding", async () => {
-        const { accessKeyHandler } = await import("./accessKeyHandler");
         const socket = createFakeSocket({
             data: {
                 clientType: "session-scoped",
