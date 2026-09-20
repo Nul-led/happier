@@ -315,8 +315,11 @@ composition supplies its exact Session transport without that provisioning path.
 Session HTTP operations retain the injected Home even if the process changes its
 active Home. These dependencies are development architecture. The restricted
 Runner now has a pre-Session, content-free credential-selection/readiness producer,
-but the feature remains default-off and is not an availability claim while the
-composed Runner, broker, native-host, and release gates remain open.
+but the feature is default-on with
+`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED` as the operator opt-out —
+the ordinary shipped-bit shape in [feature-gating.md](./feature-gating.md). It is
+unreleased, not off: the composed Runner, broker and native-host journeys are
+release checks, so this is not an availability claim.
 
 The metadata authorities are:
 

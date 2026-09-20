@@ -753,10 +753,12 @@ describe("Team credential resource routes (SQLite integration)", () => {
         const currentExternal = await createResource({ id: "Current external", mode: "brokered" });
         const expiredExternal = await createResource({ id: "Expired external", mode: "brokered" });
         const disabledExternal = await createResource({ id: "Disabled external", mode: "brokered", enabled: false });
-        const withdrawnExternalRows = await Promise.all([
-            createResource({ id: "A withdrawn external" }),
-            createResource({ id: "B withdrawn external" }),
-        ]);
+        // Six withdrawn rows sort ahead of the one current row, so a page of
+        // one only fills after advancing through more candidate windows than
+        // any fixed local budget would allow.
+        const withdrawnExternalRows = await Promise.all(
+            [1, 2, 3, 4, 5, 6].map((index) => createResource({ id: `A withdrawn external ${index}` })),
+        );
         await db.teamCredentialMemberGrant.createMany({ data: withdrawnExternalRows.map((resource) => ({
             resourceId: resource.id,
             teamMembershipId: recipientMembership.id,

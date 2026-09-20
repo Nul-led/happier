@@ -21,7 +21,7 @@ const en = {
 type SessionResponsibilityTranslations = typeof en;
 
 export const sessionResponsibilityTranslations: Record<
-    'en' | 'ca' | 'de' | 'es' | 'fr' | 'it' | 'ja' | 'pl' | 'pt' | 'ru',
+    'en' | 'ca' | 'de' | 'es' | 'fr' | 'it' | 'ja' | 'pl' | 'pt' | 'ru' | 'zh-Hans' | 'zh-Hant',
     SessionResponsibilityTranslations
 > = {
     en,
@@ -194,5 +194,43 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Ответственный, ${name}.`,
         responsibilityA11yEmpty: 'Ответственный, никто. Изменить ответственного.',
         responsibilityAssignedToYou: 'Назначено вам',
+    },
+    'zh-Hans': {
+        responsibilitySectionTitle: '负责人',
+        responsibilityRowTitle: '负责人',
+        responsibilityNoOne: '无人',
+        responsibilityUnnamedPerson: '未命名用户',
+        responsibilityPickerTitle: '选择负责人',
+        responsibilitySearchPlaceholder: '搜索有访问权限的人',
+        responsibilityAssignToMe: '指派给我',
+        responsibilityPeopleWithAccess: '有访问权限的人',
+        responsibilityAccessHintOwner: '所有者',
+        responsibilityNoCandidates: '目前还没有其他人可以访问此会话。',
+        responsibilityAccessChanged: '访问权限已更改。此人不能再被设为负责人。',
+        responsibilityUpdateFailed: 'Happier 无法更新负责人。请重试。',
+        responsibilityA11yEditable: ({ name }: { name: string }) =>
+            `负责人：${name}。更改负责人。`,
+        responsibilityA11yReadOnly: ({ name }: { name: string }) => `负责人：${name}。`,
+        responsibilityA11yEmpty: '负责人：无人。更改负责人。',
+        responsibilityAssignedToYou: '已指派给你',
+    },
+    'zh-Hant': {
+        responsibilitySectionTitle: '負責人',
+        responsibilityRowTitle: '負責人',
+        responsibilityNoOne: '無人',
+        responsibilityUnnamedPerson: '未命名使用者',
+        responsibilityPickerTitle: '選擇負責人',
+        responsibilitySearchPlaceholder: '搜尋有存取權的人',
+        responsibilityAssignToMe: '指派給我',
+        responsibilityPeopleWithAccess: '有存取權的人',
+        responsibilityAccessHintOwner: '擁有者',
+        responsibilityNoCandidates: '目前還沒有其他人可以存取此工作階段。',
+        responsibilityAccessChanged: '存取權已變更。此人不能再被設為負責人。',
+        responsibilityUpdateFailed: 'Happier 無法更新負責人。請重試。',
+        responsibilityA11yEditable: ({ name }: { name: string }) =>
+            `負責人：${name}。變更負責人。`,
+        responsibilityA11yReadOnly: ({ name }: { name: string }) => `負責人：${name}。`,
+        responsibilityA11yEmpty: '負責人：無人。變更負責人。',
+        responsibilityAssignedToYou: '已指派給你',
     },
 };

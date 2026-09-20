@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Создайте сервер, импортируйте JSON хоста или установите рекомендуемый пресет.',
@@ -676,8 +678,9 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const ru = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.ru,
     actionConfirmations: actionConfirmationTranslations.ru,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ru, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ru.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ru.resolve } },
+    workspaceSync: workspaceSyncTranslations.ru,
     sessionDrafts: sessionDraftTranslations.ru,
     transferRecovery: {
         title: 'Завершить подготовленную загрузку',
@@ -6429,6 +6432,7 @@ export const ru = {
     awaitingUpdates: "Ожидание обновлений",
     queuedInput: "Ввод в очереди",
     unread: "Непрочитано",
+    mentioned: "Вас упомянули",
     connected: "подключено",
     connecting: "подключение",
     disconnected: "отключено",
@@ -6945,6 +6949,7 @@ export const ru = {
           },
                     panel: {
             title: "Агенты",
+            tabWithRunningCount: ({ count }: { count: number }) => `Агенты, выполняется: ${count}`,
             active: "Активные",
             recent: "Недавние",
             emptyActive: "Нет активных агентов.",
@@ -13134,6 +13139,11 @@ settingsSession: {
       actions: {
         manageAccess: "Управление доступом",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `Поделился ${owner}`,
+          via: ({ source }: { source: string }) => `через ${source}`,
+          direct: 'Передано вам напрямую',
+      },
       relationship: {
         owner: "Ваши",
         recipient: "Доступны вам",
@@ -13938,11 +13948,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.ru.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.ru,
+        auth: {
+            signupClosed: 'Ваш Личный дом принимает только существующие аккаунты. Войдите в аккаунт, который уже подключён к этому Дому.',
+        },
         bootstrap: {
             title: 'Подготовка вашего Личного дома',
+            checkingStatus: 'Проверка вашего Личного дома…',
             ensuringHomeStatus: 'Подготовка локального Дома.',
             preparingComputerStatus: 'Ваш Дом готов. Этот компьютер подготавливается в фоновом режиме.',
-            blockedStatus: 'Для продолжения настройки требуется ваше внимание.',
+            blockedStatus: 'Не удалось завершить настройку вашего Личного дома.',
             readyStatus: 'Ваш Дом готов.',
             failureBody: 'Не удалось завершить этот шаг. Уже выполненная настройка сохранена; повторите попытку или откройте подробности.',
             profileRecoveryBody: 'Ваш Личный дом готов. Happier ещё должен завершить подключение к нему.',
@@ -13952,15 +13966,7 @@ settingsSession: {
             useExistingDetail: 'Проверьте доступ и защитите регистрацию, не меняя выбранный Дом.',
             useAnother: 'Использовать другой Дом',
             useAnotherDetail: 'Оставьте этот локальный Дом без изменений и выберите один из своих Домов.',
-            blocked: {
-                runtime_unhealthy: 'Вашему локальному Home требуется внимание, прежде чем он сможет запуститься.',
-                home_auth_invalid: 'Аутентификация Home требует внимания.',
-                existing_runtime: 'Существующий локальный Home требует выбора, прежде чем настройка продолжится.',
-                personal_home_erased: 'Ваш Personal Home удалён. Повторите попытку, чтобы создать новый.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Данные вашего Home удалены. Восстанавливать здесь нечего — создайте новый Personal Home или используйте другой Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.ru,
         },
     },
     settingsSearch: {

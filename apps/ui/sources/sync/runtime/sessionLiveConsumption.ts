@@ -74,6 +74,7 @@ export function resolveSessionLiveConsumption(
     const targetState = useVoiceTargetStore.getState();
     const isFullContentConsumer = isSessionFullContentConsumerActive({
         sessionId,
+        serverId: source?.serverId ?? null,
         isVisible: visible,
         explicitTranscriptConsumerSessionIds: readMountedSessionRealtimeTranscriptConsumerSessionIds(sourceServerId),
         voicePrimaryActionSessionId: readMatchingSessionId(targetState.primaryActionSessionAddress, source),
@@ -99,14 +100,16 @@ export function resolveSessionLiveConsumption(
  * session project-scope inference runs only here — once per skipped durable message, never on the
  * per-tick ephemeral path.
  */
-export function resolveSessionScmMutationSignal(sessionId: string): boolean {
+export function resolveSessionScmMutationSignal(sessionId: string, sourceServerId?: string | null): boolean {
     const scmMountedScopes = readMountedSessionRealtimeScmConsumerScopes();
     if (scmMountedScopes.length === 0) {
         return false;
     }
+    const address = { serverId: resolveSourceSessionAddress(sessionId, sourceServerId)?.serverId ?? null, sessionId };
     return sessionScmMutationSignalWanted({
         sessionId,
-        sessionScmScope: resolveSessionRealtimeScmScopeForMountedConsumers(storage.getState(), sessionId, scmMountedScopes),
+        serverId: address.serverId,
+        sessionScmScope: resolveSessionRealtimeScmScopeForMountedConsumers(storage.getState(), address, scmMountedScopes),
         scmMountedScopes,
     });
 }

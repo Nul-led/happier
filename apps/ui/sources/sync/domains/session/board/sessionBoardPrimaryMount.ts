@@ -84,20 +84,3 @@ export function resolveSessionBoardMountMode(input: Readonly<{
     if (!sessionBoardSourceRequiresExclusiveMount(input.state.item.source.kind)) return 'executable';
     return input.host === input.primaryHost ? 'executable' : 'preview';
 }
-
-/**
- * An item-originated `session.message.send` requires the person to have activated
- * the primary mount: a background frame, a height report, an auto-refresh or an
- * Agent presentation command can never manufacture that activation.
- */
-export function canSessionBoardMountPostToChat(input: Readonly<{
-    mode: SessionBoardMountMode;
-    hostVisible: boolean;
-    hostFocused: boolean;
-    userActivation: boolean;
-}>): boolean {
-    return input.mode === 'executable'
-        && input.hostVisible
-        && input.hostFocused
-        && input.userActivation;
-}

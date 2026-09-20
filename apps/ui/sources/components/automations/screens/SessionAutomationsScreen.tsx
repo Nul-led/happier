@@ -8,6 +8,7 @@ import { ItemGroup } from '@/components/ui/lists/ItemGroup';
 import { Item } from '@/components/ui/lists/Item';
 import { layout } from '@/components/ui/layout/layout';
 import { getExistingSessionAutomationUnavailableReason } from '@/components/automations/shared/existingSessionAutomationAvailabilityUi';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useHydrateSessionForRoute } from '@/hooks/session/useHydrateSessionForRoute';
 import {
     useActiveServerAccountScope,
@@ -186,7 +187,7 @@ export function SessionAutomationsScreen(props: {
                     title={t('automations.session.addAutomation')}
                     subtitle={addAutomationUnavailableReason ?? undefined}
                     icon={<Icon name="plus" size={29} color={theme.colors.accent.blue} />}
-                    onPress={() => navigateWithBlurOnWeb(() => router.push(`/session/${props.sessionId}/automations/new` as any))}
+                    onPress={() => navigateWithBlurOnWeb(() => router.push(buildScopedSessionRouteHref({ sessionId: props.sessionId, serverId: props.hydrationOptions?.serverId ?? null, suffix: '/automations/new' }) as any))}
                     disabled={availability.kind !== 'ready'}
                 />
             </ItemGroup>

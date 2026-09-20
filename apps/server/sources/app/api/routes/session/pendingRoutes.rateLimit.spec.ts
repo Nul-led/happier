@@ -46,7 +46,7 @@ describe("sessionPendingRoutes rate limits", () => {
             ["POST", "/v2/sessions/:sessionId/pending/:localId/delivery/handled"],
         ] as const) {
             const entry = getRouteEntry(app, method, path);
-            expect(entry.opts.config).toMatchObject({ ephemeralSessionRunnerOperation: "session_runtime" });
+            expect(entry.opts.config).toMatchObject({ ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } });
             expect(entry.opts.preHandler).toBe(app.authenticate);
         }
 
@@ -57,7 +57,7 @@ describe("sessionPendingRoutes rate limits", () => {
             ["POST", "/v2/sessions/:sessionId/pending/:localId/discard"],
             ["POST", "/v2/sessions/:sessionId/pending/reorder"],
         ] as const) {
-            expect(getRouteEntry(app, method, path).opts.config?.ephemeralSessionRunnerOperation).toBeUndefined();
+            expect(getRouteEntry(app, method, path).opts.config?.ephemeralSessionRunnerBinding).toBeUndefined();
         }
     }, 60_000);
 });

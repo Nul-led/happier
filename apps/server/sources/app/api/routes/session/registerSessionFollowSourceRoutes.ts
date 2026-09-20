@@ -64,7 +64,9 @@ export function registerSessionFollowSourceRoutes(app: Fastify) {
 
     app.post("/v2/sessions/:destinationSessionId/follows/source-projection", {
         preHandler: [app.authenticate, requireFeature],
-        config: { ephemeralSessionRunnerOperation: "session_follow_destination_runtime" },
+        config: {
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.destinationSessionId" },
+        },
         schema: {
             params: destinationParamsSchema,
             body: SessionFollowSourceProjectionRequestV1Schema,

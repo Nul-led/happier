@@ -589,6 +589,7 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
                 <React.Suspense fallback={<SessionCockpitLoadingFallback color={theme.colors.text.secondary} />}>
                     <SessionGitSurface
                         sessionId={props.sessionId}
+                        serverId={servicesServerId ?? undefined}
                         scopeId={props.scopeId}
                         onOpenFile={openFileInDetails}
                         onOpenFilePinned={openFileInDetailsPinned}
@@ -641,11 +642,11 @@ const SessionCockpitSurfaceScreenContent = React.memo((props: SessionCockpitSurf
         );
     }
 
-    // Like Collaboration above, a retained or deep-linked Companion destination
-    // can outlive its Home's Board decision. Companion has no feature of its
-    // own, so it retires with Board and falls through to the same Session
-    // surface host every other unsupported surface uses.
-    if (props.surface === 'companion' && boardFeatureEnabled) {
+    // Companion is not a Board placement gate: its first-party Session Summary
+    // is composed from Session facts alone, so it is admitted by the exact
+    // qualified Session address below. Only the Board content it can present
+    // follows the Home's `sessions.board` decision at the Board owner.
+    if (props.surface === 'companion') {
         return renderSessionChrome(
             <SessionCockpitFullscreenSurface screenTestID="session-companion-screen" safeAreaPadding={false}>
                 {sessionAddress ? (

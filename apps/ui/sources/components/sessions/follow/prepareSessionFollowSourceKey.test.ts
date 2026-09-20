@@ -1,3 +1,4 @@
+import { buildSessionFollowSourceKeyPrepareRequestV1 } from '@happier-dev/protocol';
 import { describe, expect, it, vi } from 'vitest';
 
 import { prepareSessionFollowSourceKey } from './prepareSessionFollowSourceKey';
@@ -35,17 +36,16 @@ describe('prepareSessionFollowSourceKey', () => {
         expect(deps.resolveDestination).toHaveBeenCalledWith({
             serverId: 'home-a', accountId: 'account-a', sessionId: 'destination-a',
         });
-        expect(deps.callMachine).toHaveBeenCalledWith(expect.objectContaining({
+        // The call is built by the one Protocol owner both DEK-sending hosts use;
+        // a locally assembled literal here is how the two hosts drift apart.
+        expect(deps.callMachine).toHaveBeenCalledWith({
             serverId: 'home-a', accountId: 'account-a', machineId: 'runner-a',
-            authorization: {
-                kind: 'session.follow.sourceKey.prepare',
-                sourceSessionId: 'source-a', destinationSessionId: 'destination-a',
-            },
-            request: expect.objectContaining({
-                v: 1, sourceSessionId: 'source-a', destinationSessionId: 'destination-a',
+            ...buildSessionFollowSourceKeyPrepareRequestV1({
+                sourceSessionId: 'source-a',
+                destinationSessionId: 'destination-a',
                 sourceDataEncryptionKeyBase64: 'BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=',
             }),
-        }));
+        });
     });
 
     it('does not send keys for a plain source or persistent destination', async () => {

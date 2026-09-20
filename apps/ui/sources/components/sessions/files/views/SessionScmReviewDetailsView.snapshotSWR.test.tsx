@@ -276,9 +276,12 @@ describe('SessionScmReviewDetailsView (snapshot SWR)', () => {
             },
         };
 
-        await renderScreen(React.createElement(SessionScmReviewDetailsView, { sessionId: 's1', scopeId: 'session:s1' }));
+        await renderScreen(React.createElement(SessionScmReviewDetailsView, { sessionId: 's1', scopeId: 'session:s1', serverId: 'home-a' }));
 
-        expect(useSessionRealtimeScmTranscriptConsumerMock).toHaveBeenCalledWith('s1', mockSnapshot);
+        // The exact Home travels with the registration: another Home hosting the same Session
+        // id must not receive this surface's realtime SCM routing.
+        expect(useSessionRealtimeScmTranscriptConsumerMock)
+            .toHaveBeenCalledWith({ serverId: 'home-a', sessionId: 's1' }, mockSnapshot);
     }, 120_000);
 
     it('keeps last-known review content visible while snapshot is revalidating', async () => {

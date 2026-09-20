@@ -113,8 +113,10 @@ function readAttentionReasonPriority(reason: SessionListAttentionPlacementReason
         case 'action_required':
         case 'ready':
             return readSessionAwarenessOperationalPrimaryRankV1(reason);
-        case 'unread':
+        case 'mentioned':
             return readSessionAwarenessOperationalPrimaryRankV1('ready') - 1;
+        case 'unread':
+            return readSessionAwarenessOperationalPrimaryRankV1('ready') - 2;
         case 'standing':
             // Standing is the floor of the band: it only reaches sessions whose own
             // signals place them nowhere, so it always sorts behind every earned reason.
@@ -350,7 +352,10 @@ function resolveAttentionTimestamp(
             ?? normalizePositiveTimestamp(session.latestTurnStatusObservedAt)
             ?? 0;
     }
-    if (reason === 'unread') {
+    // A mention is an unread edge like any other, so it orders by the same
+    // stable "became unread" instant. The wire carries no separate mention time
+    // and the client has no clock that could invent one.
+    if (reason === 'unread' || reason === 'mentioned') {
         return resolveUnreadAttentionTimestamp(session) ?? 0;
     }
     // Standing has no moment of its own — the session did nothing to earn the

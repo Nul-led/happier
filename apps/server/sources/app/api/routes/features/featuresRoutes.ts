@@ -25,6 +25,8 @@ import { resolveEffectiveHomeAuthMethods } from '@/app/auth/methods/effectiveHom
 import { toOldClientSafeAuthMethods } from '@/app/auth/methods/effectiveAuthMethods';
 import { deriveLegacySignupMethodsFromAuthMethods } from '@/app/features/authFeature';
 import { isAuthEmailDeliveryReady } from '@/app/auth/email/resolveAuthEmailDelivery';
+import { isRestrictedAuthTokenKind } from '@/app/api/utils/apiTokenRouteAdmission';
+import { captureFastifyExceptionForSentry } from '@/app/monitoring/sentry';
 
 export function featuresRoutes(app: Fastify, params: Readonly<{
     resolveHomeSearchCapability?: () => HomeSearchCapabilities | undefined;
@@ -43,6 +45,10 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
         const effectiveHomeMethods = await resolveEffectiveHomeAuthMethods({
             env: process.env,
             emailDeliveryReady: isAuthEmailDeliveryReady(process.env),
+        }).catch((error: unknown) => {
+            app.log.error({ err: error }, 'Failed to resolve the Home authentication policy for public features');
+            captureFastifyExceptionForSentry(error, request);
+            return { status: 'unavailable' as const };
         });
         const effectiveDecisions = effectiveHomeMethods.status === 'ready'
             ? effectiveHomeMethods.decisions
@@ -55,15 +61,20 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             ? effectiveHomeMethods.signInService ?? undefined
             : undefined;
         const payload = (() => {
-                const methods = toOldClientSafeAuthMethods(effectiveDecisions);
+                const methods = effectiveHomeMethods.status === 'ready'
+                    ? toOldClientSafeAuthMethods(effectiveDecisions)
+                    : undefined;
                 const isEnabled = (methodId: string, actionId: 'login' | 'provision'): boolean =>
                     effectiveDecisions.some((decision) =>
                         decision.id === methodId && decision.actions.some((action) =>
                             action.id === actionId && action.enabled));
                 const priorAuth = environmentPayload.capabilities.auth;
+                const priorAuthWithoutStructuredMethods = { ...priorAuth };
+                delete priorAuthWithoutStructuredMethods.methods;
                 const autoRedirect = priorAuth.ui?.autoRedirect;
                 const autoRedirectMethodId = String(autoRedirect?.providerId ?? '').trim().toLowerCase();
                 const autoRedirectStillEnabled = autoRedirect?.enabled === true
+                    && methods !== undefined
                     && methods.some((method) => method.id === autoRedirectMethodId
                         && method.actions.some((action) => action.enabled
                             && (action.id === 'login' || action.id === 'provision')));
@@ -84,15 +95,17 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
                     capabilities: {
                         ...environmentPayload.capabilities,
                         auth: {
-                            ...priorAuth,
-                            methods,
-                            signup: {
-                                ...priorAuth.signup,
-                                methods: deriveLegacySignupMethodsFromAuthMethods(
-                                    methods,
-                                    priorAuth.signup?.methods?.map(({ id }) => id),
-                                ),
-                            },
+                            ...priorAuthWithoutStructuredMethods,
+                            ...(methods !== undefined ? { methods } : {}),
+                            signup: methods === undefined
+                                ? priorAuth.signup
+                                : {
+                                    ...priorAuth.signup,
+                                    methods: deriveLegacySignupMethodsFromAuthMethods(
+                                        methods,
+                                        priorAuth.signup?.methods?.map(({ id }) => id),
+                                    ),
+                                },
                             login: {
                                 ...priorAuth.login,
                                 methods: priorAuth.login?.methods?.map(({ id }) => ({
@@ -116,11 +129,15 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             })();
         const serverIdentityId = readCachedServerIdentityIdForHotPath(process.env);
         const homeSearch = params.resolveHomeSearchCapability?.();
+        const effectiveDescriptorVisibility = descriptorVisibility === 'authenticated'
+            && !isRestrictedAuthTokenKind(request.authTokenKind)
+            ? 'authenticated'
+            : 'public';
         // Request-time read: the descriptor always reflects the current
         // endpoint lifecycle and is never cached beyond this response.
         const resolvedHomeConnectionDescriptor: HomeConnectionDescriptorV1 | undefined =
             params.homeConnectionDescriptorContinuityStore
-                ? descriptorVisibility === 'public'
+                ? effectiveDescriptorVisibility === 'public'
                     ? await readCommittedHomeConnectionDescriptor({
                         env: process.env,
                         continuityStore: params.homeConnectionDescriptorContinuityStore,
@@ -131,7 +148,7 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
                     : await readHomeConnectionDescriptor({
                         env: process.env,
                         continuityStore: params.homeConnectionDescriptorContinuityStore,
-                        visibility: descriptorVisibility,
+                        visibility: effectiveDescriptorVisibility,
                         ...(params.resolveHomeIrohEndpointState
                             ? { resolveIrohEndpointState: params.resolveHomeIrohEndpointState }
                             : {}),
@@ -196,7 +213,7 @@ export function featuresRoutes(app: Fastify, params: Readonly<{
             },
             config: {
                 allowApiToken: true,
-                ephemeralSessionRunnerOperation: "runtime_features",
+                ephemeralSessionRunnerBinding: { scope: "account" },
                 rateLimit: featuresRateLimit,
             },
         },

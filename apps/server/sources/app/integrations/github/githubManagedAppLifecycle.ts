@@ -22,8 +22,11 @@ import {
     decryptGitHubAppRegistrationSecretsV1,
     encryptGitHubAppRegistrationSecretsV1,
     parseGitHubAppRegistrationConfigV1,
+    parseGitHubPermissionsV1,
+    projectGitHubAppInstallationRequirementsV1,
     projectGitHubAppSecretHealthV1,
     validateGitHubAppInstallationEvidenceV1,
+    type GitHubAppConsumerPurposeV1,
     type GitHubAppRegistrationSecretReplacementV1,
     type GitHubAppRegistrationSecretsV1,
     type GitHubAppSecretHealthV1,
@@ -375,6 +378,7 @@ export async function listGitHubAppRegistrations(params: Readonly<{
                     teamConsumers: params.owner.kind === "home"
                         ? projectGitHubAppTeamConsumers(installation)
                         : [],
+                    requirements: projectGitHubAppInstallationRequirements(installation),
                 };
             }),
         };
@@ -515,6 +519,37 @@ export interface GitHubAppInstallationView {
 
 export interface GitHubAppInstallationAdministrationView extends GitHubAppInstallationView {
     teamConsumers: readonly ManagedGitHubAppTeamConsumerV1[];
+    requirements: ReturnType<typeof projectGitHubAppInstallationRequirementsV1>;
+}
+
+/**
+ * The consumers an installation actually carries decide what it must be granted:
+ * an identity connection always presents organization evidence, and a directory
+ * source always reads members. Both answers come from the readiness owner's
+ * requirement table, never from a copy kept here.
+ */
+function projectGitHubAppInstallationRequirements(input: Readonly<{
+    verifiedPermissions: unknown;
+    verifiedEvents: unknown;
+    identityProviderInstances: readonly Readonly<{ connections: readonly unknown[] }>[];
+    directorySources: readonly unknown[];
+}>): ReturnType<typeof projectGitHubAppInstallationRequirementsV1> {
+    const purposes: GitHubAppConsumerPurposeV1[] = [
+        ...input.identityProviderInstances.flatMap((provider) => provider.connections.map(() => (
+            { kind: "identity" as const, requiresOrganizationEvidence: true }
+        ))),
+        ...input.directorySources.map(() => ({ kind: "directorySync" as const })),
+    ];
+    let permissions: Readonly<Record<string, "read" | "write">>;
+    try {
+        permissions = parseGitHubPermissionsV1(input.verifiedPermissions);
+    } catch {
+        permissions = {};
+    }
+    const events = Array.isArray(input.verifiedEvents)
+        ? input.verifiedEvents.filter((event): event is string => typeof event === "string")
+        : [];
+    return projectGitHubAppInstallationRequirementsV1({ purposes, permissions, events });
 }
 
 function projectGitHubAppTeamConsumers(input: Readonly<{

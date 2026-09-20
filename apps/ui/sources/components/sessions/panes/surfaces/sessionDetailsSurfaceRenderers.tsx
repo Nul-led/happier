@@ -428,6 +428,20 @@ export function createSessionDetailsSurfaceRenderers(
                                 { intent: input.tab.isPreview ? 'preview' : 'pinned' },
                             );
                         }}
+                        onOpened={(discussion) => {
+                            // Same tab key, same builder: an opened discussion replaces the
+                            // generic label with its decrypted title without moving the tab.
+                            input.callbacks.replaceTab?.(
+                                input.tab.key,
+                                createSessionDiscussionDetailsTab({
+                                    kind: 'discussion',
+                                    address: target.address,
+                                    discussionId: discussion.id,
+                                    title: discussion.title,
+                                }),
+                                { intent: input.tab.isPreview ? 'preview' : 'pinned' },
+                            );
+                        }}
                     />
                 );
             },

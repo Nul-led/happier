@@ -653,21 +653,39 @@ export function registerLocalServicePublicRoutes(
 
     app.post(PUBLIC_CONTROL_ROUTE_PATH, {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
+        config: {
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
+        },
     }, async (request, reply) => {
         await handleCreateExposure(request as RouteRequest, reply as RouteReply, options);
     });
 
     app.post(PUBLIC_STATUS_ROUTE_PATH, {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
+        config: {
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
+        },
     }, async (request, reply) => {
         await handleGetStatus(request as RouteRequest, reply as RouteReply, options);
     });
 
     app.delete(PUBLIC_RESOURCE_ROUTE_PATH, {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerOperation: "session_machine_runtime" },
+        config: {
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
+        },
     }, async (request, reply) => {
         await handleRevokeExposure(request as RouteRequest, reply as RouteReply, options);
     });

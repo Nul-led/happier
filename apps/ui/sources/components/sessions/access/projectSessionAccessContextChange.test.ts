@@ -21,6 +21,26 @@ describe('projectSessionAccessContextChange', () => {
         expect(consequences[0]).toMatch(/external sharing/i);
     });
 
+    it('names the context-required credential selections the outgoing Team keeps', () => {
+        const credentialBindings = [
+            { resourceId: 'r1', teamId: 'team-one', displayName: 'Prod registry', policy: 'team_context_required' as const },
+            { resourceId: 'r2', teamId: 'team-one', displayName: 'Prod deploy key', policy: 'team_visibility_required' as const },
+            { resourceId: 'r3', teamId: 'team-two', displayName: 'Design registry', policy: 'team_context_required' as const },
+        ];
+        const allowed = (teamId: string) => ({ ...restricted(teamId), externalSharingPolicy: 'allowed' as const });
+
+        const leaving = projectSessionAccessContextChange({
+            current: allowed('team-one'), target: allowed('team-two'), grants: [], credentialBindings,
+        });
+        expect(leaving).toEqual([expect.stringContaining('Prod registry')]);
+        expect(JSON.stringify(leaving)).not.toContain('Prod deploy key');
+        expect(JSON.stringify(leaving)).not.toContain('Design registry');
+
+        expect(projectSessionAccessContextChange({
+            current: allowed('team-one'), target: allowed('team-one'), grants: [], credentialBindings,
+        })).toEqual([]);
+    });
+
     it('names the required floor only when the target grant needs adding or promotion', () => {
         const target = {
             ...restricted('team-two'),

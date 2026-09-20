@@ -56,18 +56,19 @@ describe('sessionCockpitMobileCatalog', () => {
         }).map((entry) => entry.id)).toContain('board');
     });
 
-    it('publishes the Companion destination only through the same exact-Home Board decision', () => {
-        // One Lane 08 decision owns both destinations: a missing or refused
-        // `sessions.board` answer hides Companion exactly like it hides Board,
-        // and a stale retained Companion route never reaches the navigator.
+    it('publishes the Companion destination on every Home while Board stays behind its decision', () => {
+        // Companion is host-owned like Chat and Tabs: its first-party Session
+        // Summary needs no Board record, so a missing or refused `sessions.board`
+        // answer hides only the Board destination.
         for (const input of [
             { terminalTabAvailable: false },
             { terminalTabAvailable: false, boardFeatureEnabled: false },
         ] as const) {
             const catalog = resolveSessionCockpitMobileCatalog(input);
-            expect(catalog.map((entry) => entry.id)).not.toContain('companion');
+            expect(catalog.map((entry) => entry.id)).toContain('companion');
+            expect(catalog.map((entry) => entry.id)).not.toContain('board');
             expect(resolveSessionCockpitMobileNavigatorSurfaces({ catalog }))
-                .not.toContain('companion');
+                .toContain('companion');
         }
 
         const enabledCatalog = resolveSessionCockpitMobileCatalog({
@@ -75,6 +76,7 @@ describe('sessionCockpitMobileCatalog', () => {
             boardFeatureEnabled: true,
         });
         expect(enabledCatalog.map((entry) => entry.id)).toContain('companion');
+        expect(enabledCatalog.map((entry) => entry.id)).toContain('board');
         expect(resolveSessionCockpitMobileNavigatorSurfaces({ catalog: enabledCatalog }))
             .toContain('companion');
     });

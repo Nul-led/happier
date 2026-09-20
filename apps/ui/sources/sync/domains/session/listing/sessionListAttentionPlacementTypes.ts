@@ -13,6 +13,8 @@ export type SessionListAttentionPlacementReason =
     | 'permission_required'
     | 'failed'
     | 'ready'
+    /** Somebody addressed this viewer by name. Unread content, said louder. */
+    | 'mentioned'
     | 'unread'
     /**
      * The user asked for this session to stay in Needs attention. It is a

@@ -1,10 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * Imported from their own testkit modules rather than the `@/dev/testkit`
+ * barrel. The barrel re-exports `fixtures/agentCatalogFixtures`, whose
+ * production projection reaches `@/sync/runtime/orchestration/connectionManager`
+ * and, through it, `@/sync/http/client` and the reachability fetch. Evaluating
+ * that graph on this file's first import binds the real transports and freezes
+ * the applied active Home to the built-in default *before*
+ * `installHomeGovernanceBoundaries` can install either boundary, so every Home
+ * request leaves the harness and the screen never settles. This is the same
+ * rule the harness states for its own late imports.
+ */
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
-    standardCleanup,
-} from '@/dev/testkit';
+} from '@/dev/testkit/harness/homeGovernanceHarness';
 
 vi.mock('@/sync/api/capabilities/accountStoredContentCompatibility', async (importOriginal) => ({
     ...await importOriginal<typeof import('@/sync/api/capabilities/accountStoredContentCompatibility')>(),

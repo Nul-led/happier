@@ -865,9 +865,12 @@ rules.
 ### Native email/password authentication (0.3 development)
 
 The following is the implemented development compatibility contract, not an
-activation claim. The required loaded old/new-client directions, real SMTP, and
-web/native journeys have not yet been certified from the current source, so the
-method remains default-off and unreleased.
+activation claim. The method is default-on, with
+`HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED` and its provisioning key as the
+operator opt-out — the ordinary shipped-bit shape described in
+[feature-gating.md](feature-gating.md). What it is not is released: the loaded
+old/new-client directions, real SMTP, and web/native journeys are release checks
+that have not been run against the current source.
 
 The latest immutable stable server frontier was resolved on 2026-09-11 as
 `server-v0.2.12` at `a357c65536ba89669422977d6f7daf9aa0d17e73`.

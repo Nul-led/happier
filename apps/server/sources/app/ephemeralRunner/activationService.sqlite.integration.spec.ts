@@ -447,6 +447,9 @@ async function materializationFixture(
         activationId: activationRequest.activationId,
         request: selectionRequest,
         authentication: presentUserAuthentication,
+        signal: new AbortController().signal,
+        readCurrentPresence: async () => ({ state: 'known', machineIds: new Set<string>() }),
+        readPoolSourceEligibility: async () => { throw new Error('An exact broker placement selects no Pool member'); },
         readProviderProjection: async () => runnerOpenAiProviderProjection(
             review.credentialSelectionBinding.application,
             review.credentialSelectionBinding.sourceRevision,
@@ -789,6 +792,9 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                 activationId: fixture.request.activationId,
                 request: selectionRequest,
                 authentication: presentUserAuthentication,
+                signal: new AbortController().signal,
+                readCurrentPresence: async () => ({ state: 'known', machineIds: new Set<string>() }),
+                readPoolSourceEligibility: async () => { throw new Error('An exact broker placement selects no Pool member'); },
                 readProviderProjection,
             });
 
@@ -829,7 +835,9 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
         expect(await db.session.count({ where: { accountId: fixture.account.id } })).toBe(0);
     });
 
-    it('rejects a Pool-backed Runner selection without fanout or frozen membership authority', async () => {
+    // A Pool placement is a real broker location for a Runner: the server
+    // selects one present, source-eligible member before review and freezes it.
+    it('selects and freezes one present, source-eligible Pool member for a Runner selection', async () => {
         const fixture = await activationFixture();
         const created = await createEphemeralRunnerActivation({
             creatorAccountId: fixture.account.id,
@@ -909,14 +917,58 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
             sourceRevision: 'source-revision-1',
             plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
         };
+        // Only the tier-1 member is online and able to run this source, so the
+        // tier-0 member must not be selected merely for ranking ahead of it.
+        const projectedFor: string[] = [];
         const resolved = await resolveRunnerCredentialSelection({
             creatorAccountId: fixture.account.id,
             activationId: fixture.request.activationId,
             request,
             authentication: presentUserAuthentication,
-            readProviderProjection: async () => { throw new Error('Pool-backed Runner resources must be rejected before projection'); },
+            signal: new AbortController().signal,
+            readCurrentPresence: async () => ({ state: 'known', machineIds: new Set([fallback.id]) }),
+            readPoolSourceEligibility: async eligibility => ({
+                eligibleMachineIds: new Set(eligibility.machineIds.filter(id => id === fallback.id)),
+                reasons: new Map(),
+            }),
+            readProviderProjection: async projection => {
+                projectedFor.push(projection.brokerMachineId);
+                return runnerOpenAiProviderProjection(application, 'source-revision-1');
+            },
         });
-        expect(resolved).toEqual({ v: 1, status: 'unavailable', reason: 'broker_unavailable' });
+        expect(resolved).toMatchObject({
+            v: 1,
+            status: 'resolved',
+            credentialSelectionBinding: {
+                v: 1,
+                resourceId: credential.resource.id,
+                brokerMachineId: fallback.id,
+                revision: credential.resource.revision,
+            },
+        });
+        expect(projectedFor).toEqual([fallback.id]);
+
+        // The frozen member stays this activation's broker: a later membership
+        // edit is revalidated, never reranked onto the other member.
+        await db.machinePoolMember.updateMany({
+            where: { poolId: pool.id, machineId: fallback.id },
+            data: { priorityTier: 2 },
+        });
+        const reread = await resolveRunnerCredentialSelection({
+            creatorAccountId: fixture.account.id,
+            activationId: fixture.request.activationId,
+            request,
+            authentication: presentUserAuthentication,
+            signal: new AbortController().signal,
+            readCurrentPresence: async () => ({ state: 'known', machineIds: new Set([fallback.id]) }),
+            readPoolSourceEligibility: async () => { throw new Error('A frozen Runner selection must not re-rank its Pool'); },
+            readProviderProjection: async () => { throw new Error('A frozen Runner selection must not re-project'); },
+        });
+        expect(reread).toMatchObject({
+            v: 1,
+            status: 'resolved',
+            credentialSelectionBinding: { brokerMachineId: fallback.id },
+        });
     });
 
     it('rejects dual-signed broker readiness facts that differ from the creator-reviewed application or model', async () => {
@@ -1736,6 +1788,9 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
                 activationId: request.activationId,
                 request: selectionRequest,
                 authentication: presentUserAuthentication,
+                signal: new AbortController().signal,
+                readCurrentPresence: async () => ({ state: 'known', machineIds: new Set<string>() }),
+                readPoolSourceEligibility: async () => { throw new Error('An exact broker placement selects no Pool member'); },
                 readProviderProjection: async () => runnerOpenAiProviderProjection(
                     review.credentialSelectionBinding.application,
                     review.credentialSelectionBinding.sourceRevision,

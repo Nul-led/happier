@@ -222,6 +222,88 @@ function permissionSatisfies(
     return actual === "write" || actual === required;
 }
 
+/** What one consumer purpose needs from the registration and the installation. */
+export type GitHubAppConsumerRequirementsV1 = Readonly<{
+    needsClientSecret: boolean;
+    needsPrivateKey: boolean;
+    needsWebhookSecret: boolean;
+    permissions: Readonly<Record<string, "read" | "write">>;
+    events: readonly string[];
+}>;
+
+/**
+ * The single requirement table for every GitHub App consumer purpose. Readiness
+ * enforces it and the administration projection displays it, so an operator
+ * repairing least privilege reads exactly the rule the Home applies.
+ */
+export function resolveGitHubAppConsumerRequirementsV1(
+    purpose: GitHubAppConsumerPurposeV1,
+): GitHubAppConsumerRequirementsV1 {
+    if (purpose.kind === "identity") {
+        return {
+            needsClientSecret: true,
+            needsPrivateKey: purpose.requiresOrganizationEvidence,
+            needsWebhookSecret: false,
+            permissions: purpose.requiresOrganizationEvidence ? { members: "read" } : {},
+            events: [],
+        };
+    }
+    if (purpose.kind === "directorySync") {
+        return {
+            needsClientSecret: false,
+            needsPrivateKey: true,
+            needsWebhookSecret: false,
+            permissions: { members: "read" },
+            events: [],
+        };
+    }
+    return {
+        needsClientSecret: false,
+        needsPrivateKey: true,
+        needsWebhookSecret: purpose.requiresWebhookSecret,
+        permissions: purpose.requiredPermissions,
+        events: purpose.requiredEvents,
+    };
+}
+
+/**
+ * The union of what this installation's current consumers require, paired with
+ * what the last verification observed. `missing*` is the repair list an
+ * administrator acts on; an installation with no consumer requires nothing.
+ */
+export function projectGitHubAppInstallationRequirementsV1(input: Readonly<{
+    purposes: readonly GitHubAppConsumerPurposeV1[];
+    permissions: Readonly<Record<string, "read" | "write">>;
+    events: readonly string[];
+}>): Readonly<{
+    permissions: Readonly<Record<string, "read" | "write">>;
+    events: readonly string[];
+    missingPermissions: readonly Readonly<{ permission: string; required: "read" | "write" }>[];
+    missingEvents: readonly string[];
+}> {
+    const permissions = new Map<string, "read" | "write">();
+    const events = new Set<string>();
+    for (const purpose of input.purposes) {
+        const requirements = resolveGitHubAppConsumerRequirementsV1(purpose);
+        for (const [permission, required] of Object.entries(requirements.permissions)) {
+            // "write" subsumes "read", so the union keeps the strongest ask.
+            if (required === "write" || !permissions.has(permission)) permissions.set(permission, required);
+        }
+        for (const event of requirements.events) events.add(event);
+    }
+    const observedEvents = new Set(input.events);
+    return {
+        permissions: Object.fromEntries([...permissions].sort(([left], [right]) => left.localeCompare(right))),
+        events: [...events].sort((left, right) => left.localeCompare(right)),
+        missingPermissions: [...permissions]
+            .filter(([permission, required]) => !permissionSatisfies(input.permissions[permission], required))
+            .sort(([left], [right]) => left.localeCompare(right))
+            .map(([permission, required]) => ({ permission, required })),
+        missingEvents: [...events].filter((event) => !observedEvents.has(event))
+            .sort((left, right) => left.localeCompare(right)),
+    };
+}
+
 export function resolveGitHubAppConsumerReadinessV1(input: Readonly<{
     purpose: GitHubAppConsumerPurposeV1;
     registration: Readonly<{
@@ -245,29 +327,7 @@ export function resolveGitHubAppConsumerReadinessV1(input: Readonly<{
         return { ok: false, code: "github_installation_suspended" };
     }
 
-    const requirements = input.purpose.kind === "identity"
-        ? {
-            needsClientSecret: true,
-            needsPrivateKey: input.purpose.requiresOrganizationEvidence,
-            needsWebhookSecret: false,
-            permissions: input.purpose.requiresOrganizationEvidence ? { members: "read" as const } : {},
-            events: [] as readonly string[],
-        }
-        : input.purpose.kind === "directorySync"
-            ? {
-                needsClientSecret: false,
-                needsPrivateKey: true,
-                needsWebhookSecret: false,
-                permissions: { members: "read" as const },
-                events: [] as readonly string[],
-            }
-            : {
-                needsClientSecret: false,
-                needsPrivateKey: true,
-                needsWebhookSecret: input.purpose.requiresWebhookSecret,
-                permissions: input.purpose.requiredPermissions,
-                events: input.purpose.requiredEvents,
-            };
+    const requirements = resolveGitHubAppConsumerRequirementsV1(input.purpose);
 
     if (requirements.needsClientSecret && !input.registration.secretHealth.clientSecretConfigured) {
         return { ok: false, code: "github_app_not_configured" };

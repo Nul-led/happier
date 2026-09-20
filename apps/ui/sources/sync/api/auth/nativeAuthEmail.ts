@@ -23,40 +23,52 @@ import { z } from 'zod';
 import type { ServerFetch } from '@/sync/http/client';
 import { HappyError } from '@/utils/errors/errors';
 
-export type NativeInvitationEmailVerificationContinuation = Readonly<{
+/**
+ * What this client still knows about a mailbox-proof it just requested.
+ *
+ * `admission` is present only for a transferable invitation; ordinary self-service creation
+ * proves the same mailbox and keeps the same normalized address, so the landing screen can
+ * bring the verified email back to the panel instead of asking for it again.
+ */
+export type NativeEmailVerificationContinuation = Readonly<{
     homeServerIdentityId: string;
     normalizedEmail: string;
-    admission: TeamInvitationAccountAdmissionV1;
+    admission?: TeamInvitationAccountAdmissionV1;
 }>;
 
 // A mail link can navigate away from the Join screen within the same running
 // client. Retain only that process-local continuation here, beside the request
 // and landing owners; a restarted/lost client safely falls back to the server-
 // bound verification operation and never guesses or persists an invitation bearer.
-let invitationVerificationContinuation: NativeInvitationEmailVerificationContinuation | null = null;
+let emailVerificationContinuation: NativeEmailVerificationContinuation | null = null;
 
-export function rememberNativeInvitationEmailVerificationContinuation(
-    continuation: NativeInvitationEmailVerificationContinuation,
+export function rememberNativeEmailVerificationContinuation(
+    continuation: NativeEmailVerificationContinuation,
 ): void {
-    invitationVerificationContinuation = continuation;
+    emailVerificationContinuation = continuation;
 }
 
-export function readNativeInvitationEmailVerificationContinuation(input: Readonly<{
+export function readNativeEmailVerificationContinuation(input: Readonly<{
     homeServerIdentityId: string;
     maskedDestination: string | null;
-}>): NativeInvitationEmailVerificationContinuation | null {
-    if (!invitationVerificationContinuation
-        || invitationVerificationContinuation.homeServerIdentityId !== input.homeServerIdentityId
+}>): NativeEmailVerificationContinuation | null {
+    if (!emailVerificationContinuation
+        || emailVerificationContinuation.homeServerIdentityId !== input.homeServerIdentityId
         || input.maskedDestination === null) return null;
-    return maskEmailForNativeAuthPreview(invitationVerificationContinuation.normalizedEmail) === input.maskedDestination
-        ? invitationVerificationContinuation
+    return maskEmailForNativeAuthPreview(emailVerificationContinuation.normalizedEmail) === input.maskedDestination
+        ? emailVerificationContinuation
         : null;
 }
 
-export function clearNativeInvitationEmailVerificationContinuation(admission: TeamInvitationAccountAdmissionV1): void {
-    if (invitationVerificationContinuation?.admission.token === admission.token) {
-        invitationVerificationContinuation = null;
-    }
+export function clearNativeEmailVerificationContinuation(
+    continuation: NativeEmailVerificationContinuation,
+): void {
+    const current = emailVerificationContinuation;
+    if (!current) return;
+    if (current.homeServerIdentityId !== continuation.homeServerIdentityId) return;
+    if (current.normalizedEmail !== continuation.normalizedEmail) return;
+    if (current.admission?.token !== continuation.admission?.token) return;
+    emailVerificationContinuation = null;
 }
 
 async function post(request: ServerFetch, path: string, body: unknown): Promise<unknown> {

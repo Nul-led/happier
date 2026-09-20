@@ -41,6 +41,8 @@ export function HomeAuthenticationFlow(props: Readonly<{
     nativeAdmission?: NativeAccountAdmissionV1;
     /** Server-previewed transferable invitation; native creation must prove its submitted mailbox separately. */
     invitationEmailVerificationRequired?: boolean;
+    /** Mailbox this journey already proved, so the panel never asks for it a second time. */
+    initialEmail?: string;
     signal?: AbortSignal;
     onAuthenticated: (authenticatedHome: Readonly<{
         homeServerIdentityId: string;
@@ -125,6 +127,7 @@ export function HomeAuthenticationFlow(props: Readonly<{
                 mode={execution.mode}
                 {...(props.homeLabel ? { homeLabel: props.homeLabel } : {})}
                 {...(props.nativeAdmission ? { admission: props.nativeAdmission } : {})}
+                {...(props.initialEmail ? { initialEmail: props.initialEmail } : {})}
                 invitationEmailVerificationRequired={props.invitationEmailVerificationRequired === true}
                 signal={cancellation.signal}
                 onAuthenticated={async (outcome) => {

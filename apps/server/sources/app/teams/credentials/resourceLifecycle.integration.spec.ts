@@ -815,6 +815,25 @@ describe("Team credential resource lifecycle", () => {
             patch: { resourceId: resource.id, expectedRevision: 0, replacement: managerReplacement },
         }))).resolves.toEqual({ ok: false, error: "resource_changed" });
 
+        // A manager never carries the source custodian's consent, so a custodian
+        // block from one is refused before any disclosure rule is consulted.
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: manager.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: resource.id, expectedRevision: 1, replacement: {
+                ...managerReplacement,
+                custodian: {
+                    source,
+                    disclosureCeiling: "direct_allowed",
+                    brokerPlacement: { kind: "machine", machineId: broker.id },
+                },
+            } },
+        }))).resolves.toEqual({ ok: false, error: "resource_forbidden" });
+
+        // A02: the active source custodian MAY widen brokered_only -> direct_allowed.
+        // The widening arrives only inside the custodian block, which is that
+        // custodian's own explicit disclosure consent; the source must still be
+        // current and able to export direct material.
         await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
             actorAccountId: custodian.id,
             authentication: TEST_AUTHENTICATION,
@@ -826,10 +845,10 @@ describe("Team credential resource lifecycle", () => {
                     brokerPlacement: { kind: "machine", machineId: broker.id },
                 },
             } },
-        }))).resolves.toEqual({ ok: false, error: "disclosure_not_allowed" });
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 2 });
         await expect(db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).resolves.toMatchObject({
-            revision: 1,
-            disclosureCeiling: "brokered_only",
+            revision: 2,
+            disclosureCeiling: "direct_allowed",
             sourceBindingJson: JSON.stringify(source),
         });
     });

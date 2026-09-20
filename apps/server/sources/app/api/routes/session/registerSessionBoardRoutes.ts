@@ -60,6 +60,7 @@ export function registerSessionBoardRoutes(app: Fastify) {
         preHandler: [app.authenticate, createServerFeatureGatePreHandler("sessions.board")],
         config: {
             rateLimit,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionBoardRouteErrorHandler,
         schema: {

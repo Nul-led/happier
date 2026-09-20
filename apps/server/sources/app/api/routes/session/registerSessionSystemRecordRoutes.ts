@@ -160,7 +160,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     // plugin namespace.
     app.get("/v2/sessions/:sessionId/permission-mediation-records", {
         preHandler: app.authenticate,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_LIST_ROUTE_PARAMS_SCHEMA,
             querystring: SessionPermissionMediationRecordListQuerySchema,
@@ -189,7 +192,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
 
     app.get("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             response: {
@@ -214,7 +220,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
 
     app.put("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             body: SessionPermissionMediationRecordWriteRequestSchema,
@@ -245,7 +254,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     // exact revision; this endpoint never exposes generic host CRUD.
     app.delete("/v2/sessions/:sessionId/permission-mediation-records/:turnId/:requestId", {
         preHandler: app.authenticate,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: PERMISSION_MEDIATION_RECORD_ROUTE_PARAMS_SCHEMA,
             body: SessionPermissionMediationRecordPruneRequestSchema,
@@ -274,7 +286,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     app.get("/v2/sessions/:sessionId/system-records", {
         preHandler: app.authenticate,
         errorHandler: handleSystemRecordRouteError,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.union([
@@ -347,7 +362,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     app.get("/v2/sessions/:sessionId/system-records/record", {
         preHandler: app.authenticate,
         errorHandler: handleSystemRecordRouteError,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: z.union([SessionSystemRecordAddressSchema, LegacyHostSessionSystemRecordLookupQuerySchema]),
@@ -408,7 +426,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     app.get("/v2/sessions/:sessionId/system-records/latest", {
         preHandler: app.authenticate,
         errorHandler: handleLegacySystemRecordRouteError,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             querystring: LegacyHostSessionSystemRecordLatestQuerySchema,
@@ -446,7 +467,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     app.put("/v2/sessions/:sessionId/system-records", {
         preHandler: app.authenticate,
         errorHandler: handleSystemRecordRouteError,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: z.union([SessionSystemRecordStoredUpsertRequestSchema, LegacyHostSessionSystemRecordUpsertRequestSchema]),
@@ -514,7 +538,10 @@ export function registerSessionSystemRecordRoutes(app: Fastify) {
     app.delete("/v2/sessions/:sessionId/system-records/record", {
         preHandler: app.authenticate,
         errorHandler: handleSystemRecordRouteError,
-        config: { allowApiToken: true },
+        config: {
+            allowApiToken: true,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: SessionSystemRecordDeleteRequestSchema,

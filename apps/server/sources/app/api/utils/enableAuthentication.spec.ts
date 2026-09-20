@@ -282,7 +282,7 @@ describe("enableAuthentication (defensive error handling)", () => {
         app.get(
             "/runner/:sessionId",
             {
-                config: { ephemeralSessionRunnerOperation: "session_detail" },
+                config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
                 preHandler: app.authenticate,
             },
             async (request: any) => ({
@@ -351,7 +351,7 @@ describe("enableAuthentication (defensive error handling)", () => {
         app.get(
             "/runner/:sessionId",
             {
-                config: { ephemeralSessionRunnerOperation: "session_detail" },
+                config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
                 preHandler: app.authenticate,
             },
             handler,

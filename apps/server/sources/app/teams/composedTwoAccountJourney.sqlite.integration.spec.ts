@@ -24,7 +24,10 @@ import { registerTeamRoutes } from "./registerTeamRoutes";
 
 /**
  * The one composed two-Account journey the Teams program promises, driven
- * end to end through the real HTTP transports on one Home.
+ * across the real server route handlers of one Home. Requests are dispatched
+ * with `app.inject`, so this exercises routing, admission, transactions and
+ * projections but not a listener, socket, client transport or delivery leg;
+ * the loaded-app journey remains a release check.
  *
  * Every step asserts the canonical projection a client would read; nothing
  * asserts a row shape or an internal helper. The steps are ordered `it`
@@ -140,6 +143,7 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
                 // it is the Home's at-rest fact, not the Account encryption
                 // mode, whose values are `plain` | `e2ee`.
                 storageMode: "encrypted",
+                hosting: null,
             }),
             email: {
                 delivery: {

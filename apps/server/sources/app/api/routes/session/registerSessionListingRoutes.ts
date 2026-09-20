@@ -272,7 +272,7 @@ export function registerSessionListingRoutes(app: Fastify) {
     app.get('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerOperation: "session_detail",
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.detail"),
         },
         schema: {

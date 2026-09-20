@@ -179,7 +179,11 @@ export const SessionFollowDestinationPickerModal = React.memo(function SessionFo
             props.onClose();
             return;
         }
-        await props.onChanged?.({ ...relation, preparation: 'waiting' });
+        await props.onChanged?.({
+            ...relation,
+            preparation: 'waiting',
+            ...(result.kind === 'waiting' ? { reason: result.reason } : {}),
+        });
     }, [fixedAddress.serverId, props]);
 
     React.useEffect(() => {

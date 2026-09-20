@@ -368,6 +368,7 @@ export function useTranscriptItemRenderer(deps: TranscriptItemRendererDeps) {
                         parentSessionId={item.parentSessionId}
                         childSessionId={item.childSessionId}
                         parentCutoffSeqInclusive={item.parentCutoffSeqInclusive}
+                        serverId={sessionServerId ?? null}
                     />
                 </TranscriptEnterWrapper>
             ));

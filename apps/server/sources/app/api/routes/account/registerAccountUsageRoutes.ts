@@ -180,7 +180,14 @@ export function registerAccountUsageRoutes(app: Fastify): void {
     });
 
     app.post(accountUsageRoutePaths.analyticsEventsIngest, {
-        config: { ephemeralSessionRunnerOperation: "session_usage_event" },
+        config: {
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+                machineOptional: true,
+            },
+        },
         schema: {
             body: UsageEventIngestRequestSchema,
             response: {

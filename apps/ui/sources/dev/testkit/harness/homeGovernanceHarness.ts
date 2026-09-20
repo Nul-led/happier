@@ -2,7 +2,6 @@ import { tryWriteServerEnabledBitInPlace } from '@happier-dev/protocol';
 import { vi } from 'vitest';
 
 import { TokenStorage } from '@/auth/storage/tokenStorage';
-import { primeServerFeaturesSnapshot } from '@/sync/api/capabilities/serverFeaturesClient';
 import { updateEffectiveHomeViewState } from '@/sync/domains/server/selection/homeViewSelectionState';
 import {
     adoptHomeProfile,
@@ -247,6 +246,13 @@ export function createHomeGovernanceHarness(): HomeGovernanceHarness {
                         },
                     });
                 }
+                // Imported here for the same reason as the storage graph below:
+                // this module binds the real `@/sync/http/client` leaves at
+                // evaluation, and the boundaries are installed with `vi.doMock`,
+                // which only affects later imports. Pulling it in at testkit
+                // evaluation resolves the real transport first and every Home
+                // request then leaves the harness.
+                const { primeServerFeaturesSnapshot } = await import('@/sync/api/capabilities/serverFeaturesClient');
                 primeServerFeaturesSnapshot({ serverId, snapshot: { status: 'ready', features } });
             }
             // The Action front door may force-refresh capabilities for approval and
@@ -423,6 +429,18 @@ async function answerForEndpoint(
  * capture the Account context before it dispatches. Leaving that one real sent
  * every Action-backed surface to the network, so a Team read rendered while
  * every Team *mutation* silently stalled.
+ *
+ * Both are installed with `vi.doMock`, which only reaches modules imported
+ * afterwards. A suite must therefore import this harness — and everything else
+ * it needs from the testkit — from the owning testkit modules, never from the
+ * `@/dev/testkit` barrel: the barrel re-exports `fixtures/agentCatalogFixtures`,
+ * whose production projection pulls in
+ * `@/sync/runtime/orchestration/connectionManager` and, under it,
+ * `@/sync/http/client` and the reachability fetch. Evaluating that graph first
+ * binds the real transports into the scoped request owner and freezes the
+ * applied active Home to the built-in default, so every Home request leaves
+ * this harness, nothing is recorded in `requests`, and the surface never leaves
+ * its loading state.
  */
 export function installHomeGovernanceBoundaries(harness: HomeGovernanceHarness): void {
     installed.current = harness;

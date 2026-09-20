@@ -20,7 +20,7 @@ import { FieldItem } from '@/components/ui/forms/FieldItem';
 import { Text, TextInput } from '@/components/ui/text/Text';
 import { createServerFetchAtEndpoint } from '@/sync/http/client';
 import {
-    rememberNativeInvitationEmailVerificationContinuation,
+    rememberNativeEmailVerificationContinuation,
     requestNativeEmailVerification,
     requestNativePasswordReset,
 } from '@/sync/api/auth/nativeAuthEmail';
@@ -246,13 +246,13 @@ export const EmailPasswordAuthPanel = React.memo(function EmailPasswordAuthPanel
             });
             if (!isCurrent()) return;
             setResent(view.kind === 'verification_sent');
-            if (transferableInvitation) {
-                rememberNativeInvitationEmailVerificationContinuation({
-                    homeServerIdentityId: props.target.serverIdentityId,
-                    normalizedEmail: validated.normalizedEmail,
-                    admission: transferableInvitation,
-                });
-            }
+            // Self-service creation proves the same mailbox as an invitation does, so the
+            // verified address is retained either way; only the invitation bearer is optional.
+            rememberNativeEmailVerificationContinuation({
+                homeServerIdentityId: props.target.serverIdentityId,
+                normalizedEmail: validated.normalizedEmail,
+                ...(transferableInvitation ? { admission: transferableInvitation } : {}),
+            });
             setView({ kind: 'verification_sent', email: validated.email });
             return;
         }

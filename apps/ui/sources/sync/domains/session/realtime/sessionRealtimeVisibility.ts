@@ -7,7 +7,16 @@ export type SessionLiveTranscriptReason =
     | 'voiceBoundTarget'
     | 'scmSameSession';
 
+/**
+ * A mounted SCM consumer's Session address plus the project facts its scope matching needs.
+ *
+ * `serverId` is the exact Home the surface was opened for. Two Homes can host the same Session id
+ * and the same machine/root tuple, so a scope that carries a Home only matches a subject that
+ * carries the same one; an unqualified side still matches by id alone, exactly as
+ * `isSessionSurfaceVisible` resolves an unscoped visible surface.
+ */
 export type SessionRealtimeScmScope = Readonly<{
+    serverId?: string | null;
     sessionId?: string | null;
     canonicalProjectKey?: string | null;
     machineScopeId?: string | null;
@@ -17,6 +26,8 @@ export type SessionRealtimeScmScope = Readonly<{
 
 export type SessionNeedsLiveTranscriptInput = Readonly<{
     sessionId: string;
+    /** Exact Home of the subject Session, when the caller holds one. */
+    serverId?: string | null;
     isVisible?: boolean;
     explicitTranscriptConsumerSessionIds?: ReadonlyArray<string>;
     voicePrimaryActionSessionId?: string | null;
@@ -44,13 +55,22 @@ function pushReason(reasons: SessionLiveTranscriptReason[], reason: SessionLiveT
     if (!reasons.includes(reason)) reasons.push(reason);
 }
 
+/** Same Home, or one side that never learned its Home. */
+function isSameRealtimeScmHome(left: string | null | undefined, right: string | null | undefined): boolean {
+    const normalizedLeft = normalizeText(left);
+    const normalizedRight = normalizeText(right);
+    if (!normalizedLeft || !normalizedRight) return true;
+    return normalizedLeft === normalizedRight;
+}
+
 function isSameCanonicalProjectScope(
     sessionScope: SessionRealtimeScmScope | null | undefined,
     mountedScope: SessionRealtimeScmScope,
 ): boolean {
     const sessionProjectKey = normalizeText(sessionScope?.canonicalProjectKey);
     const mountedProjectKey = normalizeText(mountedScope.canonicalProjectKey);
-    return Boolean(sessionProjectKey && mountedProjectKey && sessionProjectKey === mountedProjectKey);
+    if (!sessionProjectKey || !mountedProjectKey || sessionProjectKey !== mountedProjectKey) return false;
+    return isSameRealtimeScmHome(sessionScope?.serverId, mountedScope.serverId);
 }
 
 export function sessionNeedsLiveTranscript(input: SessionNeedsLiveTranscriptInput): SessionNeedsLiveTranscriptDecision {
@@ -80,9 +100,9 @@ export function sessionNeedsLiveTranscript(input: SessionNeedsLiveTranscriptInpu
     // path (see sessionScmMutationSignalWanted) so their transcripts stay projection-only.
     for (const scope of input.scmMountedScopes ?? []) {
         if (scope.needsMutationTranscript !== true) continue;
-        if (normalizeText(scope.sessionId) === sessionId) {
-            pushReason(reasons, 'scmSameSession');
-        }
+        if (normalizeText(scope.sessionId) !== sessionId) continue;
+        if (!isSameRealtimeScmHome(scope.serverId, input.serverId)) continue;
+        pushReason(reasons, 'scmSameSession');
     }
 
     return { active: reasons.length > 0, reasons };
@@ -94,6 +114,8 @@ export function isSessionFullContentConsumerActive(input: SessionNeedsLiveTransc
 
 export type SessionScmMutationSignalInput = Readonly<{
     sessionId: string;
+    /** Exact Home of the subject Session, when the caller holds one. */
+    serverId?: string | null;
     sessionScmScope?: SessionRealtimeScmScope | null;
     scmMountedScopes?: ReadonlyArray<SessionRealtimeScmScope>;
 }>;
@@ -112,7 +134,8 @@ export function sessionScmMutationSignalWanted(input: SessionScmMutationSignalIn
 
     for (const scope of input.scmMountedScopes ?? []) {
         if (scope.needsMutationTranscript !== true) continue;
-        if (normalizeText(scope.sessionId) === sessionId) return true;
+        if (normalizeText(scope.sessionId) === sessionId
+            && isSameRealtimeScmHome(scope.serverId, input.serverId)) return true;
         if (isSameCanonicalProjectScope(input.sessionScmScope, scope)) return true;
     }
     return false;

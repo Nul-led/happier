@@ -165,7 +165,9 @@ describe("Session discussion HTTP transport (SQLite)", () => {
         const discussion = await seedDiscussion({
             ownerId: owner.id, sessionId: session.id, creationLocalId: "gate-c", localId: "gate-m",
         });
-        delete process.env.HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED;
+        // The family is on by default, so an operator turns it off explicitly;
+        // removing the key would leave it enabled and never exercise the gate.
+        process.env.HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED = "0";
         const { app } = createApp(owner.id);
         try {
             const listed = await app.inject({ method: "GET", url: collectionUrl(session.id) });

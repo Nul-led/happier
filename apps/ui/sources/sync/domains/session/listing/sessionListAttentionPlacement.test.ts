@@ -496,6 +496,31 @@ describe('unread attention placement', () => {
         ]);
     });
 
+    it('places a mention above plain unread in the attention lane instead of flattening it', () => {
+        const source = createSource(['mentions-me', 'merely-unread']);
+        const result = buildSessionListAttentionPlacement({
+            source,
+            options: { mode: 'global' },
+            nowMs,
+            resolveSessionRow: (_serverId, sessionId) => createRow({
+                id: sessionId,
+                viewer: {
+                    readState: { state: 'tracking', lastViewedSessionSeq: 0, unreadSince: 100 },
+                    relevance: { relevant: true, reasons: ['followed_by_me'] },
+                    follow: { follows: true, notificationLevel: 'none' },
+                    notification: { level: 'none', source: 'preference' },
+                    attention: sessionId === 'mentions-me'
+                        ? { needsAttention: true, reasons: ['mentioned'], primary: 'mentioned', presentation: 'full' }
+                        : { needsAttention: true, reasons: ['unread'], primary: 'unread', presentation: 'full' },
+                },
+            }),
+        });
+
+        expect(result?.attentionItems.map((item) => (
+            item.type === 'session' ? item.attentionPlacementReason : item.headerKind
+        ))).toEqual(['attention', 'mentioned', 'unread']);
+    });
+
     it('holds the read selected row with the neutral reason instead of replaying the one it resolved', () => {
         const source = createSource(['selected-now-read']);
 

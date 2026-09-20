@@ -549,41 +549,37 @@ describe('SessionCockpitSurfaceScreen navigation surface', () => {
             .toEqual({ serverId: 'server-1', sessionId: 'session-1' });
     });
 
-    it('refuses a retained Companion destination on a Home without Board and falls through to the incumbent Session surface host', async () => {
-        // Companion has no feature bit of its own. A stale or deep-linked
-        // Companion route on a Home whose `sessions.board` answer is missing,
-        // malformed or false must land on the same unsupported-surface host
-        // every other retired destination uses — never on a Companion screen
-        // and never on a second navigator.
+    it('serves a retained Companion destination on a Home without Board', async () => {
+        // Companion has no feature bit of its own and its first-party Session
+        // Summary is composed from Session facts alone, so a Home whose
+        // `sessions.board` answer is missing, malformed or false still opens the
+        // destination. Only the Board content it can present follows that answer.
         await primeSessionBoardFeature(false);
         const CockpitHarness = await loadCockpitHarness();
         const screen = await renderScreen(
             <CockpitHarness events={[]} initialSurface={'companion' as SessionMobileSurface} />,
         );
 
-        expect(screen.findByTestId('session-companion-screen')).toBeNull();
-        expect(screen.tree.root.findAll((node) => (node.type as unknown) === 'SessionCompanionScreen')).toHaveLength(0);
-        expect(screen.findByTestId('session-details-screen')).toBeTruthy();
+        expect(screen.findByTestId('session-companion-screen')).toBeTruthy();
+        expect(screen.findByTestId('session-board-screen')).toBeNull();
     });
 
-    it('follows a live Board decision on the current retained Companion route', async () => {
-        // The canonical feature owner publishes a new answer for this exact
-        // Home while the Companion destination is the current route. Admission
-        // must follow it in place — on, then off again — without a second
-        // navigator and without a stale Companion left mounted.
+    it('keeps the Companion route mounted across a live Board decision change', async () => {
+        // The canonical feature owner publishes a new answer for this exact Home
+        // while the Companion destination is the current route. Companion stays
+        // in place on every answer; the Board destination is the one that follows.
         const CockpitHarness = await loadCockpitHarness();
         await primeSessionBoardFeature(false);
         const screen = await renderScreen(
             <CockpitHarness events={[]} initialSurface={'companion' as SessionMobileSurface} />,
         );
-        expect(screen.findByTestId('session-companion-screen')).toBeNull();
+        expect(screen.findByTestId('session-companion-screen')).toBeTruthy();
 
         await act(async () => { await primeSessionBoardFeature(true); });
         expect(screen.findByTestId('session-companion-screen')).toBeTruthy();
 
         await act(async () => { await primeSessionBoardFeature(false); });
-        expect(screen.findByTestId('session-companion-screen')).toBeNull();
-        expect(screen.findByTestId('session-details-screen')).toBeTruthy();
+        expect(screen.findByTestId('session-companion-screen')).toBeTruthy();
     });
 
     it('publishes the exact mobile Companion reveal destination to the Board host', async () => {

@@ -23,6 +23,7 @@ import {
     assertSessionFollowSourceReadInTx,
     evaluateCurrentSessionContextPairInTx,
     mayInjectSessionContextInTx,
+    resolveSessionFollowRuntimePrincipalAuthenticationInTx,
     type SessionFollowRuntimePrincipalV1,
 } from "@/app/session/access/sessionContextInjection";
 import { AccountStatus } from "@/storage/prisma";
@@ -101,11 +102,12 @@ export async function projectSessionFollowSourceForRunnerInTx(
     })).ok) return null;
     const destination = await loadSession(tx, input.destinationSessionId);
     if (!destination || destination.archivedAt !== null || !await isActingAccountActive(tx, input.principal.accountId)) return null;
-    if (!await canSubmitDestinationInput(tx, input.principal.accountId, input.destinationSessionId, {
-        env: process.env,
-        authority: "account_automation",
-        authenticationEvidence: undefined,
-    })) return null;
+    if (!await canSubmitDestinationInput(
+        tx,
+        input.principal.accountId,
+        input.destinationSessionId,
+        await resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, input.principal),
+    )) return null;
 
     const source = await tx.session.findUnique({
         where: { id: input.request.sourceSessionId },
@@ -639,9 +641,7 @@ export async function observePendingSessionFollowForDestinationInTx(tx: Tx, inpu
     const destinationRuntimeAccountId = input.principal.kind === "destination_runtime"
         ? input.principal.destinationRuntimeAccountId
         : input.principal.accountId;
-    const authentication = input.principal.kind === "destination_runtime"
-        ? input.principal.authentication
-        : { env: process.env, authority: "account_automation" as const, authenticationEvidence: undefined };
+    const authentication = await resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, input.principal);
     const destination = await loadSession(tx, input.destinationSessionId);
     if (!destination || destination.archivedAt !== null) return { currentSourceSessionIds: [], observations: [] };
     // Only the verified destination runtime observes its own edges; custody is
@@ -725,9 +725,7 @@ export async function acknowledgeSessionFollowFrontierInTx(tx: Tx, input: Readon
     const destinationRuntimeAccountId = input.principal.kind === "destination_runtime"
         ? input.principal.destinationRuntimeAccountId
         : input.principal.accountId;
-    const authentication = input.principal.kind === "destination_runtime"
-        ? input.principal.authentication
-        : { env: process.env, authority: "account_automation" as const, authenticationEvidence: undefined };
+    const authentication = await resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, input.principal);
     const acceptance = input.acceptance;
     if (!acceptance) {
         return { ok: false, rejection: "provider_acceptance_unverified" };

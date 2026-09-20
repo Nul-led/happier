@@ -3,7 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const callExactMachineRpc = vi.hoisted(() => vi.fn());
 vi.mock('@/session/transport/rpc/machineRpc', () => ({ callExactMachineRpc }));
 
+import { buildSessionFollowSourceKeyPrepareRequestV1 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { encodeBase64 } from '@/api/encryption';
 import { prepareSessionFollowSourceKey } from './prepareSessionFollowSourceKey';
 
 const credentials = {
@@ -45,15 +47,12 @@ describe('prepareSessionFollowSourceKey', () => {
         creatorAccountId: 'account-1',
         machineId: 'machine-1',
       },
-      authorization: {
-        kind: 'session.follow.sourceKey.prepare',
+      // Built by the one Protocol owner both DEK-sending hosts use; a locally
+      // assembled literal here is how the two hosts drift apart.
+      ...buildSessionFollowSourceKeyPrepareRequestV1({
         sourceSessionId: 'source',
         destinationSessionId: 'destination',
-      },
-      request: expect.objectContaining({
-        v: 1,
-        sourceSessionId: 'source',
-        destinationSessionId: 'destination',
+        sourceDataEncryptionKeyBase64: encodeBase64(new Uint8Array(32).fill(9)),
       }),
     }));
   });

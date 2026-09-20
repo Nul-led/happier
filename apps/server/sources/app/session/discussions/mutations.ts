@@ -212,7 +212,9 @@ function scheduleDiscussionMentionRemoteAlertsInTx(tx: Tx, params: Readonly<{
     sessionId: string;
     discussionId: string;
     committedMessageSeq: number;
+    authorAccountId: string;
     mentionedAccountIds: readonly string[];
+    producer: SessionDiscussionProducerV1 | undefined;
 }>): void {
     if (params.mentionedAccountIds.length === 0) return;
     afterTx(tx, () => scheduleSessionActivityRemoteAlerts({
@@ -222,6 +224,10 @@ function scheduleDiscussionMentionRemoteAlertsInTx(tx: Tx, params: Readonly<{
             domain: "discussion", discussionId: params.discussionId, seq: params.committedMessageSeq,
         },
         targetAccountIds: params.mentionedAccountIds,
+        // A directly authenticated human never gets attention for their own
+        // post, mention leg included. Agent posts stay eligible for the
+        // execution Account exactly as the all-messages leg keeps them.
+        ...(params.producer ? {} : { sourceAccountId: params.authorAccountId }),
     }));
 }
 
@@ -443,7 +449,9 @@ async function createSessionDiscussionTransaction(
             sessionId: params.sessionId,
             discussionId: created.id,
             committedMessageSeq: firstMessage.seq,
+            authorAccountId: params.actorAccountId,
             mentionedAccountIds: intent.mentionedAccountIds,
+            producer: undefined,
         });
         scheduleDiscussionMessageRemoteAlertsInTx(tx, {
             sessionId: params.sessionId,
@@ -619,7 +627,9 @@ export async function postSessionDiscussionMessageInTx(tx: Tx, params: Readonly<
             sessionId: params.sessionId,
             discussionId: discussion.id,
             committedMessageSeq: allocated.messageSeq,
+            authorAccountId: params.actorAccountId,
             mentionedAccountIds: intent.mentionedAccountIds,
+            producer,
         });
         scheduleDiscussionMessageRemoteAlertsInTx(tx, {
             sessionId: params.sessionId,

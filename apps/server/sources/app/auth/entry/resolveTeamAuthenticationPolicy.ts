@@ -47,8 +47,13 @@ export function resolveTeamAuthenticationPolicy(input: Readonly<{
     const normalized = normalizeTeamAuthenticationPolicyV1(parsed.data);
     if (normalized === null) return { status: "inherit" };
 
+    // Provider method IDs are case-insensitive identities everywhere else in
+    // this module (`sameReference`) and in operation qualification, and the
+    // in-transaction caller already lowercases the catalog ids it passes. Join
+    // on the same normalized form so a stored mixed-case selector is not
+    // reported unavailable; connection IDs stay exact opaque identities.
     const availableHomeMethods = new Set(
-        input.homeMethods.filter((method) => method.available).map((method) => method.id),
+        input.homeMethods.filter((method) => method.available).map((method) => method.id.toLowerCase()),
     );
     const availableConnections = new Set(
         input.teamConnections.filter((connection) => connection.available).map((connection) => connection.id),
@@ -58,7 +63,7 @@ export function resolveTeamAuthenticationPolicy(input: Readonly<{
         choices: normalized.accepted.map((reference) => ({
             reference,
             availability: (reference.kind === "home_method"
-                ? availableHomeMethods.has(reference.methodId)
+                ? availableHomeMethods.has(reference.methodId.toLowerCase())
                 : availableConnections.has(reference.connectionId))
                 ? "usable" as const
                 : "unavailable" as const,

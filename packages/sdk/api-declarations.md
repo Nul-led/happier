@@ -2713,6 +2713,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                             encrypted: "encrypted";
                             plain: "plain";
                         }>>;
+                        hosting: z.ZodDefault<z.ZodOptional<z.ZodNullable<z.ZodEnum<{
+                            personal: "personal";
+                            shared: "shared";
+                        }>>>>;
                     }, z.core.$strict>;
                     team: z.ZodObject<{
                         teamId: z.ZodString;
@@ -10330,6 +10334,10 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         encrypted: "encrypted";
                         plain: "plain";
                     }>>;
+                    hosting: z.ZodDefault<z.ZodOptional<z.ZodNullable<z.ZodEnum<{
+                        personal: "personal";
+                        shared: "shared";
+                    }>>>>;
                 }, z.core.$strict>;
                 team: z.ZodObject<{
                     teamId: z.ZodString;
@@ -22887,7 +22895,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                                 session_access_subject_ineligible: "session_access_subject_ineligible";
                                 session_access_subject_not_found: "session_access_subject_not_found";
                                 session_access_team_policy_required: "session_access_team_policy_required";
-                                session_access_transcript_not_shareable: "session_access_transcript_not_shareable";
                                 session_initial_access_creator_mismatch: "session_initial_access_creator_mismatch";
                                 session_responsibility_assignee_unavailable: "session_responsibility_assignee_unavailable";
                             }>
@@ -23139,7 +23146,6 @@ const ACTION_SPECS_WITHOUT_APPROVAL_PREFIX: readonly [
                         session_access_subject_ineligible: "session_access_subject_ineligible";
                         session_access_subject_not_found: "session_access_subject_not_found";
                         session_access_team_policy_required: "session_access_team_policy_required";
-                        session_access_transcript_not_shareable: "session_access_transcript_not_shareable";
                         session_initial_access_creator_mismatch: "session_initial_access_creator_mismatch";
                         session_responsibility_assignee_unavailable: "session_responsibility_assignee_unavailable";
                     }>
@@ -29933,12 +29939,20 @@ const ACTION_SPECS_WITHOUT_APPROVAL_SUFFIX: readonly [
                             session_access_subject_ineligible: "session_access_subject_ineligible";
                             session_access_subject_not_found: "session_access_subject_not_found";
                             session_access_team_policy_required: "session_access_team_policy_required";
-                            session_access_transcript_not_shareable: "session_access_transcript_not_shareable";
                             session_initial_access_creator_mismatch: "session_initial_access_creator_mismatch";
                             session_responsibility_assignee_unavailable: "session_responsibility_assignee_unavailable";
                         }>>;
                     }, z.core.$strict>;
                 }, z.core.$strict>>;
+                credentialBindingConsequences: z.ZodOptional<z.ZodArray<z.ZodObject<{
+                    resourceId: z.ZodString;
+                    teamId: z.ZodString;
+                    displayName: z.ZodString;
+                    policy: z.ZodEnum<{
+                        team_context_required: "team_context_required";
+                        team_visibility_required: "team_visibility_required";
+                    }>;
+                }, z.core.$strict>>>;
             }, z.core.$strict>,
             z.ZodObject<{
                 owner: z.ZodObject<{
@@ -96346,6 +96360,21 @@ const MANAGED_GITHUB_APP_ACTION_OUTPUT_SCHEMAS_V1: Readonly<{
                     }, z.core.$strict>
                 ], "kind">;
             }, z.core.$strict>>>;
+            requirements: z.ZodOptional<z.ZodObject<{
+                permissions: z.ZodRecord<z.ZodString, z.ZodEnum<{
+                    read: "read";
+                    write: "write";
+                }>>;
+                events: z.ZodArray<z.ZodString>;
+                missingPermissions: z.ZodArray<z.ZodObject<{
+                    permission: z.ZodString;
+                    required: z.ZodEnum<{
+                        read: "read";
+                        write: "write";
+                    }>;
+                }, z.core.$strict>>;
+                missingEvents: z.ZodArray<z.ZodString>;
+            }, z.core.$strict>>;
         }, z.core.$strict>>;
     }, z.core.$strict>;
     'identity.githubApps.create': z.ZodObject<{
@@ -109678,11 +109707,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -109692,16 +109716,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -109869,11 +109898,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -109883,16 +109907,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -110073,11 +110102,6 @@ const WorkflowActionInputSchemasV1: {
                             bindingsByServiceId: Record<string, {
                                 source: "team_resource";
                                 resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
                                 deliveryMode: "direct";
                                 disclosedMember: {
                                     service: {
@@ -110087,16 +110111,21 @@ const WorkflowActionInputSchemasV1: {
                                     accountId: string;
                                 };
                             } | {
-                                source: "native";
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
                             } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                source: "native";
                             } | {
                                 source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
                             }>;
                         } | null | undefined;
                         transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -110264,11 +110293,6 @@ const WorkflowActionInputSchemasV1: {
                             bindingsByServiceId: Record<string, {
                                 source: "team_resource";
                                 resourceId: string;
-                                deliveryMode: "brokered";
-                                disclosedMember?: undefined;
-                            } | {
-                                source: "team_resource";
-                                resourceId: string;
                                 deliveryMode: "direct";
                                 disclosedMember: {
                                     service: {
@@ -110278,16 +110302,21 @@ const WorkflowActionInputSchemasV1: {
                                     accountId: string;
                                 };
                             } | {
-                                source: "native";
+                                source: "team_resource";
+                                resourceId: string;
+                                deliveryMode: "brokered";
+                                disclosedMember?: undefined;
                             } | {
-                                source: "connected";
-                                selection: "profile";
-                                profileId: string;
+                                source: "native";
                             } | {
                                 source: "connected";
                                 selection: "group";
                                 groupId: string;
                                 profileId?: string | undefined;
+                            } | {
+                                source: "connected";
+                                selection: "profile";
+                                profileId: string;
                             }>;
                         } | null | undefined;
                         transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -110848,11 +110877,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -110862,16 +110886,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -111039,11 +111068,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -111053,16 +111077,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -111242,11 +111271,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -111256,16 +111280,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -111433,11 +111462,6 @@ const WorkflowActionInputSchemasV1: {
                     bindingsByServiceId: Record<string, {
                         source: "team_resource";
                         resourceId: string;
-                        deliveryMode: "brokered";
-                        disclosedMember?: undefined;
-                    } | {
-                        source: "team_resource";
-                        resourceId: string;
                         deliveryMode: "direct";
                         disclosedMember: {
                             service: {
@@ -111447,16 +111471,21 @@ const WorkflowActionInputSchemasV1: {
                             accountId: string;
                         };
                     } | {
-                        source: "native";
+                        source: "team_resource";
+                        resourceId: string;
+                        deliveryMode: "brokered";
+                        disclosedMember?: undefined;
                     } | {
-                        source: "connected";
-                        selection: "profile";
-                        profileId: string;
+                        source: "native";
                     } | {
                         source: "connected";
                         selection: "group";
                         groupId: string;
                         profileId?: string | undefined;
+                    } | {
+                        source: "connected";
+                        selection: "profile";
+                        profileId: string;
                     }>;
                 } | null | undefined;
                 transcriptStorage?: "direct" | "persisted" | null | undefined;
@@ -112752,11 +112781,6 @@ const WorkflowActionOutputSchemasV1: {
                                     bindingsByServiceId: Record<string, {
                                         source: "team_resource";
                                         resourceId: string;
-                                        deliveryMode: "brokered";
-                                        disclosedMember?: undefined;
-                                    } | {
-                                        source: "team_resource";
-                                        resourceId: string;
                                         deliveryMode: "direct";
                                         disclosedMember: {
                                             service: {
@@ -112766,16 +112790,21 @@ const WorkflowActionOutputSchemasV1: {
                                             accountId: string;
                                         };
                                     } | {
-                                        source: "native";
+                                        source: "team_resource";
+                                        resourceId: string;
+                                        deliveryMode: "brokered";
+                                        disclosedMember?: undefined;
                                     } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        source: "native";
                                     } | {
                                         source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -112783,13 +112812,13 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>,
                                 z.ZodPipe<z.ZodPipe<z.ZodObject<{
@@ -112818,14 +112847,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        [x: string]: unknown;
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        [x: string]: unknown;
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -112833,22 +112862,17 @@ const WorkflowActionOutputSchemasV1: {
                                         source: "native";
                                     } | {
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>, z.ZodTransform<{
                                     v: 2;
                                     bindingsByServiceId: Record<string, {
-                                        source: "team_resource";
-                                        resourceId: string;
-                                        deliveryMode: "brokered";
-                                        disclosedMember?: undefined;
-                                    } | {
                                         source: "team_resource";
                                         resourceId: string;
                                         deliveryMode: "direct";
@@ -112860,16 +112884,21 @@ const WorkflowActionOutputSchemasV1: {
                                             accountId: string;
                                         };
                                     } | {
-                                        source: "native";
+                                        source: "team_resource";
+                                        resourceId: string;
+                                        deliveryMode: "brokered";
+                                        disclosedMember?: undefined;
                                     } | {
-                                        source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
+                                        source: "native";
                                     } | {
                                         source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }, {
                                     v: 1;
@@ -112879,14 +112908,14 @@ const WorkflowActionOutputSchemasV1: {
                                     } | {
                                         [x: string]: unknown;
                                         source: "connected";
-                                        selection: "profile";
-                                        profileId: string;
-                                    } | {
-                                        [x: string]: unknown;
-                                        source: "connected";
                                         selection: "group";
                                         groupId: string;
                                         profileId?: string | undefined;
+                                    } | {
+                                        [x: string]: unknown;
+                                        source: "connected";
+                                        selection: "profile";
+                                        profileId: string;
                                     }>;
                                 }>>
                             ]>>>;

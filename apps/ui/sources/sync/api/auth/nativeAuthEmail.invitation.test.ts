@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
 
 import {
-    clearNativeInvitationEmailVerificationContinuation,
-    readNativeInvitationEmailVerificationContinuation,
-    rememberNativeInvitationEmailVerificationContinuation,
+    clearNativeEmailVerificationContinuation,
+    readNativeEmailVerificationContinuation,
+    rememberNativeEmailVerificationContinuation,
     requestNativeEmailVerification,
 } from './nativeAuthEmail';
 
@@ -13,7 +13,15 @@ const admission = Object.freeze({
 });
 
 afterEach(() => {
-    clearNativeInvitationEmailVerificationContinuation(admission);
+    clearNativeEmailVerificationContinuation({
+        homeServerIdentityId: 'home-a',
+        normalizedEmail: 'person@example.test',
+        admission,
+    });
+    clearNativeEmailVerificationContinuation({
+        homeServerIdentityId: 'home-a',
+        normalizedEmail: 'person@example.test',
+    });
 });
 
 it('sends the exact invitation admission through the neutral native verification request', async () => {
@@ -39,21 +47,21 @@ it('sends the exact invitation admission through the neutral native verification
 });
 
 it('releases the exact process-local invitation continuation only to its matching Home mailbox landing', () => {
-    rememberNativeInvitationEmailVerificationContinuation({
+    rememberNativeEmailVerificationContinuation({
         homeServerIdentityId: 'home-a',
         normalizedEmail: 'person@example.test',
         admission,
     });
 
-    expect(readNativeInvitationEmailVerificationContinuation({
+    expect(readNativeEmailVerificationContinuation({
         homeServerIdentityId: 'home-b',
         maskedDestination: 'p•••••@example.test',
     })).toBeNull();
-    expect(readNativeInvitationEmailVerificationContinuation({
+    expect(readNativeEmailVerificationContinuation({
         homeServerIdentityId: 'home-a',
         maskedDestination: 'o••••@example.test',
     })).toBeNull();
-    expect(readNativeInvitationEmailVerificationContinuation({
+    expect(readNativeEmailVerificationContinuation({
         homeServerIdentityId: 'home-a',
         maskedDestination: 'p•••••@example.test',
     })).toEqual({
@@ -63,6 +71,21 @@ it('releases the exact process-local invitation continuation only to its matchin
     });
 });
 
+
+it('retains a self-service verified mailbox with no invitation bearer', () => {
+    rememberNativeEmailVerificationContinuation({
+        homeServerIdentityId: 'home-a',
+        normalizedEmail: 'person@example.test',
+    });
+
+    expect(readNativeEmailVerificationContinuation({
+        homeServerIdentityId: 'home-a',
+        maskedDestination: 'p•••••@example.test',
+    })).toEqual({
+        homeServerIdentityId: 'home-a',
+        normalizedEmail: 'person@example.test',
+    });
+});
 
 it.each([404, 405, 501])('reports an unsupported native-auth operation as update-required without retrying (%s)', async (status) => {
     const request = vi.fn(async () => new Response(null, { status }));

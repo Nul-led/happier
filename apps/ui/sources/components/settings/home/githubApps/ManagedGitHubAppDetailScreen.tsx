@@ -138,6 +138,29 @@ export const ManagedGitHubAppDetailContent = React.memo(function ManagedGitHubAp
     const busy = pending !== null || !props.surface.mutationsAvailable;
     const directoryRoute = props.surface.routes.directory;
     const teamConsumers = installations.flatMap((installation) => installation.teamConsumers);
+    // The Home publishes what its own readiness checks require, so an administrator
+    // repairing least privilege reads the rule the Home applies rather than a
+    // hand-kept list. A Home that publishes no projection shows nothing here.
+    const requirementRows = installations.flatMap((installation) => {
+        const requirements = installation.requirements;
+        if (!requirements) return [];
+        const missingPermissions = new Map(requirements.missingPermissions.map((row) => [row.permission, row.required]));
+        const missingEvents = new Set(requirements.missingEvents);
+        return [
+            ...Object.entries(requirements.permissions).map(([permission, level]) => ({
+                key: `${installation.id}:permission:${permission}`,
+                title: permission,
+                subtitle: t('identityAdministration.githubRequiredPermission', { level }),
+                missing: missingPermissions.has(permission),
+            })),
+            ...requirements.events.map((event) => ({
+                key: `${installation.id}:event:${event}`,
+                title: event,
+                subtitle: t('identityAdministration.githubRequiredEvent'),
+                missing: missingEvents.has(event),
+            })),
+        ];
+    });
     // The Home derives this from its public server URL and never persists it; it
     // is absent only when the Home has no public URL to derive one from, and the
     // manifest flow sets its own `redirect_url`, so only manual setup needs it.
@@ -192,6 +215,27 @@ export const ManagedGitHubAppDetailContent = React.memo(function ManagedGitHubAp
                                         : consumer.binding.state === 'paused'
                                             ? t('teams.authentication.directory.state.paused')
                                             : t('teams.authentication.directory.state.needsAttention')}
+                            showChevron={false}
+                        />
+                    ))}
+                </ItemGroup>
+            ) : null}
+            {requirementRows.length > 0 ? (
+                <ItemGroup
+                    title={t('identityAdministration.githubRequiredAccess')}
+                    footer={requirementRows.some((row) => row.missing)
+                        ? t('identityAdministration.githubRequiredAccessSubtitle')
+                        : t('identityAdministration.githubRequiredAccessSatisfied')}
+                >
+                    {requirementRows.map((row) => (
+                        <Item
+                            key={row.key}
+                            testID={`github-app-requirement:${row.key}`}
+                            title={row.title}
+                            subtitle={row.subtitle}
+                            detail={row.missing
+                                ? t('identityAdministration.githubRequirementMissing')
+                                : t('identityAdministration.githubRequirementGranted')}
                             showChevron={false}
                         />
                     ))}

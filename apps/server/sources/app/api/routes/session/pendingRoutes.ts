@@ -174,7 +174,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                     .optional(),
             },
             config: {
-                ephemeralSessionRunnerOperation: "session_runtime",
+                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending"),
             },
         },
@@ -765,7 +765,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
                 body: z.object({ reason: PendingDeliveryBlockedReasonSchema }),
             },
             config: {
-                ephemeralSessionRunnerOperation: "session_runtime",
+                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending.materialize"),
             },
         },
@@ -902,7 +902,7 @@ function registerSessionPendingResource(app: Fastify, executionRunTarget: boolea
             preHandler: app.authenticate,
             schema: { params: z.object({ runId, sessionId: z.string(), localId: PendingLocalIdSchema }) },
             config: {
-                ephemeralSessionRunnerOperation: "session_runtime",
+                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
                 rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.pending.materialize"),
             },
         },

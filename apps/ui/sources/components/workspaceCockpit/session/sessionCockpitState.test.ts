@@ -71,25 +71,31 @@ describe('sessionCockpitState', () => {
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: false,
             explicitSurface: 'companion',
-            companionDestinationAvailable: true,
+            companionAddressQualified: true,
         })).toBe(true);
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: false,
             explicitSurface: 'chat',
-            companionDestinationAvailable: true,
+            companionAddressQualified: true,
         })).toBe(false);
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: false,
             explicitSurface: 'unknown',
-            companionDestinationAvailable: true,
+            companionAddressQualified: true,
         })).toBe(false);
         expect(shouldUseSessionCockpitExperience({ cockpitEnabled: true, explicitSurface: null })).toBe(true);
     });
 
-    it('refuses a stale Companion route hint when this Home does not serve the Board destination', () => {
-        // Companion has no feature of its own, so a retained or shared
-        // `?mobileSurface=companion` link must not pull a classic viewer into
-        // the Cockpit experience on a Home that serves no Board.
+    it('admits the Companion route hint on every Home once the route resolves to an exact Session', () => {
+        // Companion's first-party Session Summary is composed from Session facts
+        // alone, so a Home that serves no Board still opens the destination; only
+        // the Board content it can present follows `sessions.board`.
+        expect(shouldUseSessionCockpitExperience({
+            cockpitEnabled: false,
+            explicitSurface: 'companion',
+            companionAddressQualified: true,
+        })).toBe(true);
+        // An unresolved route has no Session to summarise.
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: false,
             explicitSurface: 'companion',
@@ -97,10 +103,8 @@ describe('sessionCockpitState', () => {
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: false,
             explicitSurface: 'companion',
-            companionDestinationAvailable: false,
+            companionAddressQualified: false,
         })).toBe(false);
-        // An actual Cockpit viewer keeps the Cockpit; the incumbent navigator
-        // then normalizes the unavailable destination back to Chat.
         expect(shouldUseSessionCockpitExperience({
             cockpitEnabled: true,
             explicitSurface: 'companion',

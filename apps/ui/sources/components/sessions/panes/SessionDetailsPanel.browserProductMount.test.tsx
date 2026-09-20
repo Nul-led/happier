@@ -426,4 +426,53 @@ describe('SessionDetailsPanel browser product mount', () => {
         if (!React.isValidElement<{ callerHostedHtmlRuntime?: unknown }>(rendered)) return;
         expect(rendered.props.callerHostedHtmlRuntime).toBe(callerHostedHtmlRuntime);
     });
+    it('replaces a discussion tab title with the opened discussion under the same tab key', async () => {
+        const { createSessionDetailsSurfaceRenderers } = await import('./surfaces/sessionDetailsSurfaceRenderers');
+        const { createSessionDiscussionDetailsTab } = await import('./details/sessionDetailsTabBuilders');
+        const address = { serverId: 'server-1', sessionId: 's1' } as const;
+        const replaceTab = vi.fn();
+        const renderers = createSessionDetailsSurfaceRenderers({
+            sessionId: address.sessionId,
+            serverId: address.serverId,
+            scopeId: 'session:s1',
+            requestClose: vi.fn(),
+            openFileTab: vi.fn(),
+            getStartEditingFileHandler: () => vi.fn(),
+            sessionScreenTestIdsEnabled: false,
+            closeDetailsTab: vi.fn(),
+        });
+        // A discussion opened from a link, mention or Activity item carries no title yet.
+        const tab = createSessionDiscussionDetailsTab({ kind: 'discussion', address, discussionId: 'discussion-1' });
+        expect(tab.title).toBe('session.collaboration.discussion.title');
+
+        const renderer = renderers.find((candidate) => candidate.id === 'session-discussion');
+        expect(renderer).toBeDefined();
+        if (!renderer) return;
+
+        const rendered = renderer.render({
+            tab: { ...tab, isPinned: false, isPreview: false },
+            descriptor: {
+                surfaceId: 'session:s1:discussion',
+                resourceKey: tab.key,
+                scope: { kind: 'session', sessionId: 's1', serverId: 'server-1' },
+                region: 'details',
+                status: 'available',
+            },
+            scope: { kind: 'session', sessionId: 's1', serverId: 'server-1' },
+            region: 'details',
+            active: true,
+            callbacks: { replaceTab },
+        } as never);
+
+        expect(React.isValidElement(rendered)).toBe(true);
+        if (!React.isValidElement<{ onOpened?: (summary: { id: string; title: string }) => void }>(rendered)) return;
+        expect(typeof rendered.props.onOpened).toBe('function');
+        rendered.props.onOpened?.({ id: 'discussion-1', title: 'Release readiness' });
+
+        expect(replaceTab).toHaveBeenCalledTimes(1);
+        const [replacedKey, replacement] = replaceTab.mock.calls[0] as [string, { key: string; title: string }];
+        expect(replacedKey).toBe(tab.key);
+        expect(replacement.key).toBe(tab.key);
+        expect(replacement.title).toBe('Release readiness');
+    });
 });

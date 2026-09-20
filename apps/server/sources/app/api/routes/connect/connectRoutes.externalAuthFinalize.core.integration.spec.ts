@@ -464,6 +464,7 @@ describe("connectRoutes (external auth finalize) (integration)", () => {
                 serverId: "home-1",
                 displayName: "Test Home",
                 storageMode: "encrypted",
+                hosting: null,
             }),
             email: {
                 delivery: { isReady: true, deliver: async () => ({ status: "sent" as const }) },

@@ -4,7 +4,6 @@ import type { SessionSurfaceItemV1 } from '@happier-dev/protocol/sessions/board'
 
 import type { SessionBoardItemState } from './sessionBoardItemState';
 import {
-    canSessionBoardMountPostToChat,
     resolveSessionBoardMountMode,
     resolveSessionBoardPrimaryMountHost,
 } from './sessionBoardPrimaryMount';
@@ -66,7 +65,6 @@ describe('resolveSessionBoardPrimaryMountHost', () => {
         expect(resolveSessionBoardPrimaryMountHost({ foreground: true, visibleHosts: [] })).toBeNull();
     });
 });
-
 describe('resolveSessionBoardMountMode', () => {
     it('renders declarative content live in every visible placement', () => {
         const state = readyState('declarative');
@@ -87,16 +85,5 @@ describe('resolveSessionBoardMountMode', () => {
             primaryHost: 'details',
             state: { kind: 'locked' },
         })).toBe('inert');
-    });
-});
-
-describe('canSessionBoardMountPostToChat', () => {
-    it('requires the visible focused primary mount plus a genuine user activation', () => {
-        const base = { mode: 'executable' as const, hostVisible: true, hostFocused: true, userActivation: true };
-        expect(canSessionBoardMountPostToChat(base)).toBe(true);
-        expect(canSessionBoardMountPostToChat({ ...base, userActivation: false })).toBe(false);
-        expect(canSessionBoardMountPostToChat({ ...base, hostFocused: false })).toBe(false);
-        expect(canSessionBoardMountPostToChat({ ...base, hostVisible: false })).toBe(false);
-        expect(canSessionBoardMountPostToChat({ ...base, mode: 'preview' })).toBe(false);
     });
 });

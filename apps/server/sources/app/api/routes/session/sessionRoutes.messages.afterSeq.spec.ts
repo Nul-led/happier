@@ -54,7 +54,7 @@ describe("sessionRoutes v1 messages pagination", () => {
         registerSessionMessageRoutes(app);
         try {
             expect(routeConfig).toMatchObject({
-                ephemeralSessionRunnerOperation: "session_runtime",
+                ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
             });
             expect(routeConfig?.allowApiToken).toBeUndefined();
         } finally {

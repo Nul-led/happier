@@ -1,7 +1,12 @@
+import * as React from 'react';
 import type { HomeTargetInput } from '@happier-dev/cli-common/homeTarget';
 
 import { getServerProfileById } from '@/sync/domains/server/serverProfiles';
-import { resolveTeamJoinTarget } from '@/components/teams/join/teamJoinTarget';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
+import {
+    usePortableHomeLinkTarget,
+    type PortableHomeLinkTargetState,
+} from '@/components/teams/join/teamJoinTarget';
 
 /**
  * Which Home a public `/teams/:teamId/sign-in` link addresses.
@@ -24,6 +29,10 @@ import { resolveTeamJoinTarget } from '@/components/teams/join/teamJoinTarget';
  * Team sign-in URL carries no bearer, so nothing secret is at stake — but the
  * entry projection still has to be requested from a Home whose identity this
  * build can verify, and adopting one is the existing Homes acquisition flow.
+ * A member sign-in link carries that Home's full descriptor exactly as an
+ * invitation does, so this consumes the same acquisition lifecycle the join
+ * screen does rather than discarding the descriptor and asking the person to
+ * find the Home by hand.
  */
 export type TeamSignInHome =
     /**
@@ -36,6 +45,8 @@ export type TeamSignInHome =
     | Readonly<{ kind: 'ambiguous' }>
     /** A real Home this device has not adopted, and cannot address from the link alone. */
     | Readonly<{ kind: 'unknown_home'; homeServerIdentityId: string }>
+    /** The descriptor's Home is being observed and adopted; the link stays put. */
+    | Extract<PortableHomeLinkTargetState, { kind: 'acquiring' | 'acquisition_failed' }>
     /** No usable Home carrier at all. */
     | Readonly<{ kind: 'unresolved' }>;
 
@@ -45,23 +56,24 @@ const AMBIGUOUS: TeamSignInHome = Object.freeze({ kind: 'ambiguous' as const });
 export function resolveTeamSignInHome(params: Readonly<{
     /** The portable explicit-target carrier from the link. */
     carrier?: string | null;
+    /**
+     * The Homes acquisition owner's live answer for that carrier. The carrier is
+     * never re-resolved here: `usePortableHomeLinkTarget` is the single owner of
+     * descriptor parsing, identity observation and adoption, and this projects
+     * its state into the Team page's vocabulary.
+     */
+    linkTarget?: PortableHomeLinkTargetState | null;
     /** Device-local profile reference used by in-app navigation and OAuth return. */
     serverId?: string | null;
 }>): TeamSignInHome {
     const carrier = String(params.carrier ?? '').trim();
     if (carrier) {
-        const resolved = resolveTeamJoinTarget(carrier);
+        const resolved = params.linkTarget ?? UNRESOLVED;
         if (resolved.kind === 'ambiguous') return AMBIGUOUS;
         if (resolved.kind === 'unknown_home') {
             return { kind: 'unknown_home', homeServerIdentityId: resolved.homeServerIdentityId };
         }
-        if (resolved.kind === 'acquisition_required') {
-            // A portable descriptor is still advisory until the Homes owner has
-            // observed and adopted it. Team entry must not treat that descriptor
-            // as an already-authorized request target; defer to the existing Add
-            // Home flow just as an identity-only carrier does.
-            return { kind: 'unknown_home', homeServerIdentityId: resolved.homeServerIdentityId };
-        }
+        if (resolved.kind === 'acquiring' || resolved.kind === 'acquisition_failed') return resolved;
         if (resolved.kind === 'unresolved') return UNRESOLVED;
         return {
             kind: 'resolved',
@@ -82,6 +94,29 @@ export function resolveTeamSignInHome(params: Readonly<{
         target: { kind: 'saved_profile', profileRef: profile.id },
         savedProfileId: profile.id,
     };
+}
+
+/**
+ * The live Home binding the Team sign-in page consumes.
+ *
+ * A saved Home resolves synchronously. A link carrying the Home's own
+ * descriptor is acquired in place through the same owner the join screen uses,
+ * so the page that is already mounted simply carries on once the Home is
+ * adopted. Adopting a Home from the recovery action re-resolves the
+ * device-local reference through the profiles generation.
+ */
+export function useTeamSignInHome(params: Readonly<{
+    carrier?: string | null;
+    serverId?: string | null;
+}>): TeamSignInHome {
+    const carrier = params.carrier ?? null;
+    const serverId = params.serverId ?? null;
+    const linkTarget = usePortableHomeLinkTarget(carrier);
+    const profilesGeneration = useServerProfilesGeneration();
+    return React.useMemo(
+        () => resolveTeamSignInHome({ carrier, linkTarget, serverId }),
+        [carrier, linkTarget, profilesGeneration, serverId],
+    );
 }
 
 /**

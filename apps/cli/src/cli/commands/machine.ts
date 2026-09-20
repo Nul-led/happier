@@ -16,7 +16,6 @@ import { promptSecret } from '@/terminal/prompts/promptSecret';
 import {
   parseApproveRemoteProvisioningPromptData,
   parseReplaceRemoteBackgroundServicesPromptData,
-  parseSshTrustPromptData,
   type SystemTaskEvent,
   type SystemTaskJsonObject,
   type SystemTaskResult,
@@ -24,6 +23,11 @@ import {
 } from '@happier-dev/protocol';
 
 import { showMachineHelp } from './machine/help';
+import {
+  answerSshHostTrustPrompt,
+  isSshHostTrustPromptKind,
+  normalizeTrustedHostKeyFlag,
+} from './sshHostTrustPrompt';
 import { type CliSystemTasksRunnerAdapter, runSystemTaskToCompletion } from './systemTaskCliRunner';
 
 export type MachineCommandDeps = Readonly<{
@@ -239,10 +243,7 @@ function buildMachineSetupSpec(params: Readonly<{
     throw new Error('--ssh-auth=keyfile requires --identity-file <path>.');
   }
   const sshAuthMode = explicitSshAuth ?? (identityFile.value && identityFile.value.trim() ? 'keyfile' : 'agent');
-  const normalizedTrustedHostKey = trustedHostKey.value?.trim() ?? '';
-  if (normalizedTrustedHostKey && (normalizedTrustedHostKey.includes('\n') || normalizedTrustedHostKey.includes('\r'))) {
-    throw new Error('Invalid --trusted-host-key: expected a single known_hosts line');
-  }
+  const normalizedTrustedHostKey = normalizeTrustedHostKeyFlag(trustedHostKey.value);
 
   return {
     protocolVersion: 1,
@@ -287,17 +288,6 @@ function buildMachineSetupSpec(params: Readonly<{
 }
 
 function formatPromptMessage(prompt: Readonly<{ kind: string; data: SystemTaskJsonObject }>, fallbackMessage = ''): string {
-  if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
-    const parsed = parseSshTrustPromptData(prompt.kind, prompt.data);
-    return [
-      fallbackMessage || 'Trust remote SSH host key?',
-      parsed?.host ? `Host: ${parsed.host}` : '',
-      parsed?.keyType ? `Key type: ${parsed.keyType}` : '',
-      parsed?.fingerprint ? `Fingerprint: ${parsed.fingerprint}` : '',
-      parsed?.existingFingerprint ? `Existing fingerprint: ${parsed.existingFingerprint}` : '',
-    ].filter(Boolean).join('\n');
-  }
-
   if (prompt.kind === 'auth.approveRemoteProvisioning') {
     const parsed = parseApproveRemoteProvisioningPromptData(prompt.data);
     return [
@@ -333,20 +323,37 @@ async function resolvePromptAnswer(params: Readonly<{
   assumeYes: boolean;
   promptInput: (prompt: string) => Promise<string>;
   promptSecret: (prompt: string) => Promise<string>;
-  message: string;
+  /** The task's own prompt message, before command-local formatting. */
+  eventMessage: string;
 }>): Promise<unknown> {
+  // Host identity is decided by the one CLI prompt policy `happier home` also
+  // uses, so `--yes` cannot mean "trust a changed key" on one command and
+  // "refuse it" on another.
+  if (isSshHostTrustPromptKind(params.prompt.kind)) {
+    if (!params.assumeYes && !params.interactive) {
+      throw new Error('Non-interactive mode requires --yes for setup prompts.');
+    }
+    return await answerSshHostTrustPrompt({
+      prompt: { kind: params.prompt.kind, data: params.prompt.data },
+      assumeYes: params.assumeYes,
+      interactive: params.interactive,
+      message: params.eventMessage,
+      confirm: async (message) => /^y(?:es)?$/i.test(
+        (await params.promptInput(`${message}\nTrust this host key? [y/N]: `)).trim(),
+      ),
+    });
+  }
+
+  const message = formatPromptMessage(params.prompt, params.eventMessage);
   if (params.prompt.kind === 'ssh.password') {
     if (!params.interactive) {
       throw new Error('Non-interactive mode requires an interactive terminal for SSH password auth.');
     }
-    const password = await params.promptSecret(`${params.message}\nSSH password: `);
+    const password = await params.promptSecret(`${message}\nSSH password: `);
     return { password };
   }
 
   if (params.assumeYes) {
-    if (params.prompt.kind === 'ssh.trustHost' || params.prompt.kind === 'ssh.replaceHostKey') {
-      return { trusted: true };
-    }
     if (params.prompt.kind === 'auth.approveRemoteProvisioning') {
       return { approved: true };
     }
@@ -360,19 +367,15 @@ async function resolvePromptAnswer(params: Readonly<{
     throw new Error('Non-interactive mode requires --yes for setup prompts.');
   }
 
-  if (params.prompt.kind === 'ssh.trustHost' || params.prompt.kind === 'ssh.replaceHostKey') {
-    const answer = await params.promptInput(`${params.message}\nTrust this host key? [y/N]: `);
-    return { trusted: /^y(?:es)?$/i.test(answer.trim()) };
-  }
   if (params.prompt.kind === 'auth.approveRemoteProvisioning') {
-    const answer = await params.promptInput(`${params.message}\nApprove pairing? [Y/n]: `);
+    const answer = await params.promptInput(`${message}\nApprove pairing? [Y/n]: `);
     return { approved: !/^n(?:o)?$/i.test(answer.trim()) };
   }
   if (params.prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
-    const answer = await params.promptInput(`${params.message}\nReplace existing background services? [Y/n]: `);
+    const answer = await params.promptInput(`${message}\nReplace existing background services? [Y/n]: `);
     return { replaceExistingServices: !/^n(?:o)?$/i.test(answer.trim()) };
   }
-  await params.promptInput(`${params.message}\nPress Enter to continue...`);
+  await params.promptInput(`${message}\nPress Enter to continue...`);
   return {};
 }
 
@@ -421,17 +424,14 @@ async function runSetupSubcommand(argsRaw: string[], deps: MachineCommandDeps): 
       }
       printHumanEvent(event);
     },
-    onPrompt: async (prompt, eventMessage) => {
-      const promptMessage = formatPromptMessage(prompt, eventMessage);
-      return await resolvePromptAnswer({
-        prompt,
-        interactive: deps.isInteractiveTerminal() && !json,
-        assumeYes: yes.present,
-        promptInput: deps.promptInput,
-        promptSecret: deps.promptSecret,
-        message: promptMessage,
-      });
-    },
+    onPrompt: async (prompt, eventMessage) => await resolvePromptAnswer({
+      prompt,
+      interactive: deps.isInteractiveTerminal() && !json,
+      assumeYes: yes.present,
+      promptInput: deps.promptInput,
+      promptSecret: deps.promptSecret,
+      eventMessage,
+    }),
   });
   if (json) {
     await writeJsonStdout(result);

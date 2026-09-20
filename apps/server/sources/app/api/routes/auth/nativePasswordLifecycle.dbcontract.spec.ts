@@ -3,7 +3,20 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { serializerCompiler, validatorCompiler, type ZodTypeProvider } from "fastify-type-provider-zod";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
-import { createNativeAuthOneTimeOperationKeyV1, normalizeVerifiedEmail } from "@happier-dev/protocol";
+import * as privacyKit from "privacy-kit";
+import tweetnacl from "tweetnacl";
+
+import {
+    createNativeAuthOneTimeOperationKeyV1,
+    createPasswordMutationChallengeSigningInputV1,
+    normalizeVerifiedEmail,
+    type PasswordCredentialMutationV1,
+} from "@happier-dev/protocol";
+import {
+    consumePasswordMutationKeyChallengeInTx,
+    issuePasswordMutationKeyChallengeV1,
+} from "@/app/auth/keyChallengeV2";
+import { acquireAccountSessionOwnerMetadataFenceInTx } from "@/app/encryption/accountSessionOwnerMetadataFence";
 import { auth } from "@/app/auth/auth";
 import { issueNativeAuthOneTimeOperationInTx } from "@/app/auth/email/nativeAuthOneTimeOperations";
 import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
@@ -233,6 +246,46 @@ describe("native password public-owner provider contract", () => {
         } finally {
             await app.close();
         }
+    }, 120_000);
+
+    providerIt("claims exactly one of two simultaneous password-mutation proofs over one credential revision", async () => {
+        const signing = tweetnacl.sign.keyPair();
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            encryptionMode: "e2ee",
+        } });
+        createdAccountIds.add(account.id);
+        const mutation: PasswordCredentialMutationV1 = {
+            v: 1,
+            action: "change",
+            accountId: account.id,
+            expectedCredentialRevision: 1,
+            normalizedNativeEmail: `${randomUUID().replace(/-/gu, "")}@race.example.test`,
+            newCredentialDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        };
+        const challenge = await issuePasswordMutationKeyChallengeV1({ mutation, env: process.env });
+        if (!challenge) throw new Error("challenge issuance unavailable");
+        const proof = {
+            challengeId: challenge.challengeId,
+            publicKey: privacyKit.encodeBase64(new Uint8Array(signing.publicKey)),
+            signature: privacyKit.encodeBase64(new Uint8Array(tweetnacl.sign.detached(
+                createPasswordMutationChallengeSigningInputV1(challenge), signing.secretKey,
+            ))),
+        };
+        const consume = () => inTx(async (tx) => {
+            await acquireAccountSessionOwnerMetadataFenceInTx(tx, account.id);
+            return consumePasswordMutationKeyChallengeInTx(tx, { mutation, proof, env: process.env });
+        });
+
+        // The same valid proof is presented twice at once on this provider's
+        // real isolation level. The claim is once-only: one commits, the other
+        // is refused or aborts, and the challenge cannot be replayed after.
+        const outcomes = await Promise.allSettled([consume(), consume()]);
+        const claims = outcomes.map((outcome) => outcome.status === "fulfilled" ? outcome.value : "rejected");
+        expect(claims.filter((claim) => claim === true)).toHaveLength(1);
+        expect(await db.keyChallengeV2.findUnique({ where: { id: challenge.challengeId } }))
+            .toMatchObject({ consumedAt: expect.any(Date) });
+        expect(await consume()).toBe(false);
     }, 120_000);
 
     providerIt("rolls Account, identity, mailbox, password, and invitation consumption back when membership admission fails", async () => {

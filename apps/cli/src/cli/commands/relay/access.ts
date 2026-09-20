@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { wantsJson, printJsonEnvelope } from "@/cli/output/jsonEnvelope";
 import { safeBashSingleQuote, type SshAuth } from '@/capabilities/systemTasks/ssh/sshTransport';
+import { answerSshHostTrustPrompt } from '@/cli/commands/sshHostTrustPrompt';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
 import { promptSecret } from '@/terminal/prompts/promptSecret';
 import { resolveHappyHomeDirFromEnvironment } from "@happier-dev/cli-common/agents";
@@ -352,22 +353,6 @@ type RelayAccessSshRunner = Readonly<{
     runRemoteText: (remoteCommand: string) => Promise<Readonly<{ status: number; stdout: string; stderr: string }>>;
 }>;
 
-function formatSshHostTrustMessage(params: Readonly<{
-    promptKind: 'ssh.trustHost' | 'ssh.replaceHostKey';
-    host: string;
-    keyType: string;
-    fingerprint: string;
-    existingFingerprint?: string;
-}>): string {
-    return [
-        params.promptKind === 'ssh.replaceHostKey' ? 'SSH host key has changed.' : 'Trust remote SSH host key?',
-        params.host ? `Host: ${params.host}` : '',
-        params.keyType ? `Key type: ${params.keyType}` : '',
-        params.fingerprint ? `Fingerprint: ${params.fingerprint}` : '',
-        params.existingFingerprint ? `Existing fingerprint: ${params.existingFingerprint}` : '',
-    ].filter(Boolean).join('\n');
-}
-
 function createRelayAccessSshRunner(params: Readonly<{
     ssh: systemTasks.SystemTaskSshConnectionConfig;
     auth: SshAuth;
@@ -475,21 +460,27 @@ function createRelayAccessSshRunner(params: Readonly<{
             }
 
             if (trust.status === 'prompt') {
-                if (!params.assumeYes) {
-                    if (!params.interactive) {
-                        throw new Error('Non-interactive mode requires --yes for SSH host trust prompts.');
-                    }
-                    const message = formatSshHostTrustMessage({
-                        promptKind: trust.promptKind,
-                        host: trust.scanned.host,
-                        keyType: trust.scanned.keyType,
-                        fingerprint: trust.scanned.fingerprint,
-                        ...(trust.existingFingerprint ? { existingFingerprint: trust.existingFingerprint } : {}),
-                    });
-                    const answer = await promptInput(`${message}\nTrust this host key? [y/N]: `);
-                    if (!/^y(?:es)?$/i.test(answer.trim())) {
-                        throw new Error('SSH host trust was declined.');
-                    }
+                if (!params.assumeYes && !params.interactive) {
+                    throw new Error('Non-interactive mode requires --yes for SSH host trust prompts.');
+                }
+                const answer = await answerSshHostTrustPrompt({
+                    prompt: {
+                        kind: trust.promptKind,
+                        data: {
+                            host: trust.scanned.host,
+                            keyType: trust.scanned.keyType,
+                            fingerprint: trust.scanned.fingerprint,
+                            ...(trust.existingFingerprint ? { existingFingerprint: trust.existingFingerprint } : {}),
+                        },
+                    },
+                    assumeYes: params.assumeYes,
+                    interactive: params.interactive,
+                    confirm: async (message) => /^y(?:es)?$/i.test(
+                        (await promptInput(`${message}\nTrust this host key? [y/N]: `)).trim(),
+                    ),
+                });
+                if (!answer.trusted) {
+                    throw new Error('SSH host trust was declined.');
                 }
 
                 writeKnownHostsTextSync(knownHostsPath, trust.nextKnownHostsText);

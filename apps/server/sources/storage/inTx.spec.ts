@@ -13,7 +13,10 @@ installDbModuleMock({
     },
 });
 
+const logMock = vi.fn();
+
 vi.mock("@/utils/runtime/delay", () => ({ delay: delayMock }));
+vi.mock("@/utils/logging/log", () => ({ log: (...args: any[]) => logMock(...args) }));
 vi.mock("@/app/monitoring/metrics/sessionWriteMetrics", () => ({
     recordDatabaseTransactionRetry: (...args: any[]) => recordDatabaseTransactionRetry(...args),
 }));
@@ -27,7 +30,29 @@ describe("inTx", () => {
         transaction.mockReset();
         transaction.mockImplementation(async (fn: any, _opts?: any) => fn({} as any));
         delayMock.mockClear();
+        logMock.mockClear();
         recordDatabaseTransactionRetry.mockClear();
+    });
+
+    it("reports a failed after-commit callback instead of discarding it", async () => {
+        const { inTx, afterTx } = await import("./inTx");
+        const later = vi.fn();
+        const failure = new Error("eviction publication failed");
+
+        await expect(inTx(async (tx) => {
+            afterTx(tx, () => { throw failure; });
+            afterTx(tx, later);
+            return "committed";
+        })).resolves.toBe("committed");
+
+        // The commit stands and later callbacks still run, but the failure is
+        // observable rather than swallowed.
+        expect(later).toHaveBeenCalledTimes(1);
+        expect(logMock).toHaveBeenCalledWith(
+            expect.objectContaining({ module: "storage-tx" }),
+            expect.stringContaining("after-commit callback failed"),
+            failure,
+        );
     });
 
     it("uses serializable transactions by default", async () => {

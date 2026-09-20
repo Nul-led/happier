@@ -62,15 +62,16 @@ export function shouldUseSessionCockpitExperience(input: Readonly<{
     cockpitEnabled: boolean;
     explicitSurface: string | null | undefined;
     /**
-     * The exact Home's `sessions.board` decision. Companion presents Board
-     * content and has no feature of its own, so a stale or shared Companion
-     * link cannot claim the Cockpit experience on a Home without Board;
-     * omitted means unavailable.
+     * Whether the route resolved to an exact qualified Session address.
+     * Companion's first-party Session Summary is composed from Session facts
+     * alone, so an unresolvable link cannot claim the Cockpit experience;
+     * omitted means unresolved. Board content inside Companion still follows
+     * the exact Home's `sessions.board` decision at the Board owner.
      */
-    companionDestinationAvailable?: boolean;
+    companionAddressQualified?: boolean;
 }>): boolean {
     return input.cockpitEnabled
-        || (input.companionDestinationAvailable === true
+        || (input.companionAddressQualified === true
             && normalizeSessionMobileSurface(input.explicitSurface) === 'companion');
 }
 

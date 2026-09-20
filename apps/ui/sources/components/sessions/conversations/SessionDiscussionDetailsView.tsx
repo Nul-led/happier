@@ -230,7 +230,7 @@ function useRepository(
     return [repository, snapshot];
 }
 
-export function SessionDiscussionDetailsView(props: Readonly<{ target: SessionDiscussionDetailsTarget; active: boolean; onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>): React.ReactElement {
+export function SessionDiscussionDetailsView(props: Readonly<{ target: SessionDiscussionDetailsTarget; active: boolean; onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void; onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>): React.ReactElement {
     const requestedServerIds = React.useMemo(() => [props.target.address.serverId], [props.target.address.serverId]);
     const bindings = useServerCredentialAccountScopeBindings(requestedServerIds);
     const binding = React.useMemo(() => [...bindings.values()][0] ?? null, [bindings]);
@@ -239,7 +239,7 @@ export function SessionDiscussionDetailsView(props: Readonly<{ target: SessionDi
     if (!enabled || availability !== 'full_collaboration' || !binding) return <View style={styles.center}><Text style={styles.status}>{t('session.collaboration.discussion.unavailable')}</Text></View>;
     return props.target.kind === 'new'
         ? <NewDiscussion target={props.target} scope={binding.scope} accountLifetime={binding} onCreated={props.onCreated} />
-        : <Discussion target={props.target} scope={binding.scope} accountLifetime={binding} active={props.active} />;
+        : <Discussion target={props.target} scope={binding.scope} accountLifetime={binding} active={props.active} onOpened={props.onOpened} />;
 }
 
 function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'new' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; onCreated?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>) {
@@ -268,9 +268,13 @@ function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetail
         ? t('session.collaboration.discussion.offline')
         : snapshot.lists.active.status === 'locked'
             ? t('session.access.preparing')
-            : draft.status === 'error' || snapshot.lists.active.status === 'error'
-                ? t('session.collaboration.discussion.loadError')
-                : null;
+            // The draft is retained locally and the conversation still works:
+            // the only lost capability is syncing this draft to other devices.
+            : draft.status === 'unsupported'
+                ? t('sessionDrafts.status.unsupported')
+                : draft.status === 'error' || snapshot.lists.active.status === 'error'
+                    ? t('session.collaboration.discussion.loadError')
+                    : null;
     React.useEffect(() => {
         if (accessRevoked) void draft.purgePresentation();
     }, [accessRevoked, draft]);
@@ -333,7 +337,7 @@ function NewDiscussion(props: Readonly<{ target: Extract<SessionDiscussionDetail
     return <View style={styles.root} testID="session-discussion-new-details"><View style={styles.body}><TextInput testID="session-discussion-title" style={styles.input} value={draft.title} onChangeText={(title) => { draft.setTitle(title); if (title.trim()) setTitleRequired(false); }} placeholder={t('session.collaboration.discussion.titlePlaceholder')} accessibilityLabel={t('session.collaboration.discussion.titlePlaceholder')} aria-invalid={titleRequired} autoFocus />{titleRequired ? <Text testID="session-discussion-title-required" accessibilityLiveRegion="polite" style={styles.fieldHint}>{t('session.collaboration.discussion.titleRequired')}</Text> : null}{mutation?.content ? <View style={styles.message}><View style={styles.messageBody}><Text testID={`session-discussion-message-content-${mutation.messageLocalId}`}>{textOf(mutation.content)}</Text>{mutationStatusLabel(mutation) ? <Text testID={`session-discussion-message-status-${mutation.messageLocalId}`} accessibilityLiveRegion="polite" style={mutation.status === 'failed' ? styles.error : styles.deliveryStatus}>{mutationStatusLabel(mutation)}</Text> : null}<MutationRecovery mutation={mutation} onRetry={() => void repository.retry(activeCreationLocalId)} onDismiss={dismissRefusal} /></View></View> : null}</View>{draft.conflict ? <SessionDraftConflictResolution scope={props.scope} address={draftAddress} conflict={draft.conflict} /> : null}{createUnavailableLabel ? <Text style={styles.banner}>{createUnavailableLabel}</Text> : null}<SessionDiscussionComposer scope={props.scope} address={props.target.address} availability="full_collaboration" value={{ text: draft.text, mentions: draft.mentions }} onChange={draft.setComposer} disabled={createDisabled} onSend={(content) => void submit(content)} /></View>;
 }
 
-function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'discussion' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; active: boolean }>) {
+function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTarget, { kind: 'discussion' }>; scope: ServerAccountScope; accountLifetime: ServerCredentialAccountScopeBinding; active: boolean; onOpened?: (discussion: SessionDiscussionOpenedSummaryV1) => void }>) {
     const router = useRouter();
     const device = useDeviceType();
     const session = useSessionViewShellSession(props.target.address.sessionId, props.target.address.serverId);
@@ -361,6 +365,18 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
     const [repository, snapshot] = useRepository(props.scope, props.target.address, props.accountLifetime);
     const thread = snapshot.threads[props.target.discussionId];
     const discussion = thread?.summary ?? null;
+    // A discussion opened from a link, an Activity item or a mention carries no title yet, so
+    // its Details tab shows the generic label. Report the opened summary through the same
+    // channel creation uses; the tab owner replaces the tab under its existing key.
+    const onOpenedRef = React.useRef(props.onOpened);
+    onOpenedRef.current = props.onOpened;
+    const openedTitle = discussion?.title ?? null;
+    React.useEffect(() => {
+        if (!discussion || !openedTitle) return;
+        onOpenedRef.current?.(discussion);
+        // The summary identity that matters here is the discussion and its current title.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [discussion?.id, openedTitle]);
     const messages = thread?.messages ?? [];
     const historicalActorLabels = React.useMemo(() => new Map(messages.flatMap((message) => {
         const actor = message.accountActor;
@@ -409,9 +425,11 @@ function Discussion(props: Readonly<{ target: Extract<SessionDiscussionDetailsTa
         ? t('session.collaboration.discussion.offline')
         : thread?.status === 'locked'
             ? t('session.access.preparing')
-            : thread?.status === 'error' || draft.status === 'error'
-                ? t('session.collaboration.discussion.loadError')
-                : null;
+            : draft.status === 'unsupported'
+                ? t('sessionDrafts.status.unsupported')
+                : thread?.status === 'error' || draft.status === 'error'
+                    ? t('session.collaboration.discussion.loadError')
+                    : null;
     React.useEffect(() => {
         if (accessRevoked) void draft.purgePresentation();
     }, [accessRevoked, draft]);

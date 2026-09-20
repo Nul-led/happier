@@ -47,6 +47,8 @@ import { declineEphemeralRunnerActivationByEndpoint } from './endpointDecline';
 import { readPublishedRunnerArtifacts, runnerArtifactPublicationSnapshots } from './runnerArtifactAvailability';
 import { readRunnerCreatorRecipient } from './activationCurrentness';
 import { resolveRunnerCredentialSelection } from './credentialSelection';
+import { getMachineDaemonPresenceInventory } from '@/app/machines/machineDaemonPresence';
+import { createTeamCredentialPoolSourceEligibilityReader } from '@/app/teams/credentials/poolSourceEligibility';
 import { normalizePublicReleaseRingId } from '@happier-dev/release-runtime/releaseRings';
 
 // One Runner error vocabulary: the Protocol owner types every failure reply on
@@ -300,11 +302,23 @@ export function registerEphemeralRunnerRoutes(rawApp: Fastify, env: NodeJS.Proce
     }, async (request, reply) => {
         reply.header('Cache-Control', 'private, no-store');
         if (request.validationError) return reply.code(400).send({ error: 'invalid_input' });
+        // Pool member eligibility is asked over live Machine RPC, so the
+        // selection follows the client: a closed request stops asking.
+        const eligibilityAbort = new AbortController();
+        const abortEligibility = () => eligibilityAbort.abort(new Error('runner_credential_selection_client_closed'));
+        request.raw.once('aborted', abortEligibility);
+        reply.raw.once('close', abortEligibility);
         return reply.send(await resolveRunnerCredentialSelection({
             creatorAccountId: request.userId,
             activationId: request.params.activationId,
             request: request.body,
             authentication: readSessionAccessAuthenticationFromRequest(request),
+            signal: eligibilityAbort.signal,
+            readCurrentPresence: async custodianAccountId => await getMachineDaemonPresenceInventory({
+                accountId: custodianAccountId,
+                io: app.machineDaemonPresence,
+            }),
+            readPoolSourceEligibility: createTeamCredentialPoolSourceEligibilityReader(app.forwardRpcForUser),
             readProviderProjection: async ({ custodianAccountId, brokerMachineId, source, request: selectionRequest }) => {
                 const result = await app.forwardRpcForUser({
                     userId: custodianAccountId,

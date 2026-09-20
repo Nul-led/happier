@@ -3,12 +3,12 @@ import {
     resolveWorkspaceTargetForSessionFromState,
     type WorkspaceTargetForSession,
 } from './resolveWorkspaceTargetForSessionFromState';
-import type { ExactSessionMachineTargetIdentity } from './resolveMachineTargetForSessionFromState';
+import type { SessionMachineTargetIdentity } from './resolveMachineTargetForSessionFromState';
 
 export type { WorkspaceTargetForSession };
 
 export function resolveWorkspaceTargetForSession(
-    session: string | ExactSessionMachineTargetIdentity,
+    session: SessionMachineTargetIdentity,
 ): WorkspaceTargetForSession | null {
     return resolveWorkspaceTargetForSessionFromState(storage.getState(), session);
 }

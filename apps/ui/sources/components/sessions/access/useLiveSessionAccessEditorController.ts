@@ -325,6 +325,8 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
             target,
             current: currentTeam,
             grants: snapshot.grants.map((row) => row.grant),
+            ...(snapshot.visibility === 'complete' && snapshot.credentialBindingConsequences
+                ? { credentialBindings: snapshot.credentialBindingConsequences } : {}),
         });
         if (consequences.length > 0) {
             setPendingContextTeamId(teamId);
@@ -428,6 +430,8 @@ export function useLiveSessionAccessEditorController(input: Readonly<{
         target: pendingContextTeam ?? null,
         current: currentContextPolicyTeam,
         grants: current.snapshot?.grants.map((row) => row.grant) ?? [],
+        ...(current.snapshot?.visibility === 'complete' && current.snapshot.credentialBindingConsequences
+            ? { credentialBindings: current.snapshot.credentialBindingConsequences } : {}),
     });
     return {actions,model:{...projection,revision:directoryRevision,
         ...(current.snapshot && availability === 'full_collaboration' ? { context: { primaryTeamId: current.snapshot.primaryTeamId, options: [{ teamId: null, label: t('session.access.private'),

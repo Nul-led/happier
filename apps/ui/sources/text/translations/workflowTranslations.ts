@@ -38,6 +38,8 @@ const en = {
         runsBody: 'Runs appear here whether or not you save the workflow.',
         filteredTitle: 'No runs match this filter',
         filteredBody: 'Clear the filter to see the rest of your runs.',
+        missingTitle: 'This workflow is not available',
+        missingBody: 'Happier could not open the workflow this link points to. Your other workflows, Automations and runs are unaffected.',
     },
 
     loadFailedTitle: 'Could not load workflows',
@@ -70,6 +72,7 @@ const en = {
         customize: 'Customize',
         useWorkflowDefault: 'Use workflow default',
         defaultsTitle: 'Defaults',
+        produces: 'Produces',
         whereTitle: 'Where',
         add: 'Add',
         addAccessibility: 'Add a block to this workflow',
@@ -130,6 +133,7 @@ const en = {
     input: {
         ...workflowReferenceScopeTranslations,
         label: 'Input',
+        result: 'Result',
         change: 'Change',
         none: 'No input',
         previousResult: ({ block }: { block: string }) => `${block} result`,
@@ -149,6 +153,12 @@ const en = {
             count: 'Round count',
             stopReason: 'Stop reason',
         },
+        valueKindGroup: 'Value source',
+        inputNameGroup: 'Workflow input',
+        producerGroup: 'Source step',
+        workspaceFieldGroup: 'Workspace field',
+        itemFieldGroup: 'Item field',
+        iterationFieldGroup: 'Round field',
     },
 
     inputs: {
@@ -181,13 +191,14 @@ const en = {
     conversation: {
         title: 'Conversation',
         sharedRun: 'Same conversation',
+        branchesShareAndTakeTurns: 'Branches share one conversation and take turns.',
         fresh: 'Separate conversations',
         fromStep: ({ block }: { block: string }) => `Continue ${block}`,
         existingSession: 'An existing session',
         existingSessionById: ({ sessionId }: { sessionId: string }) => `Session ${sessionId}`,
         noExistingSessions: 'No session on this machine can be continued here.',
         chooseExistingSession: 'Choose a session to continue',
-        startsNewConversation: 'Changing the Agent or folder starts a new conversation.',
+        continuingKeepsAgentAndFolder: 'Continuing keeps the Agent and folder of that conversation. A different Agent or folder needs a separate conversation.',
         waitingForConversation: ({ block }: { block: string }) => `Waiting for ${block} to finish in this conversation.`,
         branchesUseSeparate: 'Branches in a parallel group use separate conversations.',
     },
@@ -315,11 +326,14 @@ const en = {
             fromSession: 'From a session',
         },
         needsYou: 'Needs you',
+        needsYouLoadedCount: 'loaded',
         review: 'Review',
         stop: 'Stop',
         stopAgain: 'Stop again',
         stopping: 'Stopping…',
         stopRequested: ({ machine }: { machine: string }) => `Stop requested. Waiting for ${machine} to confirm.`,
+        resultDeliveryUnavailable: 'The result was not delivered.',
+        evidenceStale: 'Showing the last known details. Happier could not confirm they are current.',
         pauseAtBoundary: 'Pause at boundary',
         pausePending: 'Finishing current work, then pausing.',
         paused: 'Paused after the last completed boundary.',
@@ -482,12 +496,15 @@ const en = {
         validationInBlock: ({ block, reason }: { block: string; reason: string }) => `${block}: ${reason}`,
         needsYou: ({ count }: { count: number }) =>
             `${count} ${count === 1 ? 'step needs' : 'steps need'} you`,
+        needsYouLoaded: 'loaded',
         terminal: ({ state }: { state: string }) => state,
         terminalWithAttention: ({ state, count }: { state: string; count: number }) =>
             `${state}. ${count} ${count === 1 ? 'step needs' : 'steps need'} you`,
         selectedRowUpdated: ({ block }: { block: string }) => `${block} updated`,
         progress: ({ count }: { count: number }) =>
             `${count} ${count === 1 ? 'step' : 'steps'} updated`,
+        progressLoaded: ({ count }: { count: number }) =>
+            `${count} ${count === 1 ? 'step' : 'steps'} updated so far`,
         progressWithAttention: ({ count, attention }: { count: number; attention: number }) =>
             `${count} ${count === 1 ? 'step' : 'steps'} updated; ${attention} ${attention === 1 ? 'needs' : 'need'} you`,
         flowNode: ({ node, state }: { node: string; state: string }) => `${node}, ${state}`,
@@ -562,6 +579,8 @@ const de = translated({
         runsBody: 'Läufe erscheinen hier, egal ob du den Workflow speicherst oder nicht.',
         filteredTitle: 'Keine Läufe passen zu diesem Filter',
         filteredBody: 'Setz den Filter zurück, um deine übrigen Läufe zu sehen.',
+        missingTitle: 'Dieser Workflow ist nicht verfügbar',
+        missingBody: 'Happier konnte den Workflow, auf den dieser Link zeigt, nicht öffnen. Deine anderen Workflows, Automationen und Läufe sind davon nicht betroffen.',
     },
 
     loadFailedTitle: 'Workflows konnten nicht geladen werden',
@@ -590,6 +609,7 @@ const de = translated({
         customize: 'Anpassen',
         useWorkflowDefault: 'Workflow-Standard verwenden',
         defaultsTitle: 'Standards',
+        produces: 'Liefert',
         whereTitle: 'Wo',
         add: 'Hinzufügen',
         addAccessibility: 'Einen Block zu diesem Workflow hinzufügen',
@@ -649,6 +669,7 @@ const de = translated({
 
     input: {
         label: 'Eingabe',
+        result: 'Ergebnis',
         change: 'Ändern',
         none: 'Keine Eingabe',
         previousResult: ({ block }) => `Ergebnis von ${block}`,
@@ -668,6 +689,12 @@ const de = translated({
             count: 'Anzahl der Runden',
             stopReason: 'Grund für den Stopp',
         },
+        valueKindGroup: 'Wertquelle',
+        inputNameGroup: 'Workflow-Eingabe',
+        producerGroup: 'Quellschritt',
+        workspaceFieldGroup: 'Arbeitsbereich-Feld',
+        itemFieldGroup: 'Elementfeld',
+        iterationFieldGroup: 'Rundenfeld',
     },
 
     inputs: {
@@ -700,13 +727,14 @@ const de = translated({
     conversation: {
         title: 'Unterhaltung',
         sharedRun: 'Dieselbe Unterhaltung',
+        branchesShareAndTakeTurns: 'Die Zweige teilen eine Unterhaltung und sind nacheinander an der Reihe.',
         fresh: 'Getrennte Unterhaltungen',
         fromStep: ({ block }) => `${block} fortsetzen`,
         existingSession: 'Eine bestehende Session',
         existingSessionById: ({ sessionId }) => `Session ${sessionId}`,
         noExistingSessions: 'Auf diesem Rechner kann hier keine Session fortgesetzt werden.',
         chooseExistingSession: 'Wähle eine Session zum Fortsetzen',
-        startsNewConversation: 'Ein Wechsel von Agent oder Ordner startet eine neue Unterhaltung.',
+        continuingKeepsAgentAndFolder: 'Beim Fortsetzen bleiben Agent und Ordner dieser Unterhaltung erhalten. Ein anderer Agent oder Ordner braucht eine getrennte Unterhaltung.',
         waitingForConversation: ({ block }) => `Wartet darauf, dass ${block} in dieser Unterhaltung fertig wird.`,
         branchesUseSeparate: 'Zweige in einer parallelen Gruppe verwenden getrennte Unterhaltungen.',
     },
@@ -832,11 +860,14 @@ const de = translated({
             fromSession: 'Aus einer Session',
         },
         needsYou: 'Braucht dich',
+        needsYouLoadedCount: 'geladen',
         review: 'Prüfen',
         stop: 'Stoppen',
         stopAgain: 'Erneut stoppen',
         stopping: 'Wird gestoppt…',
         stopRequested: ({ machine }) => `Stopp angefordert. Warten auf die Bestätigung von ${machine}.`,
+        resultDeliveryUnavailable: 'Das Ergebnis wurde nicht zugestellt.',
+        evidenceStale: 'Zeigt die zuletzt bekannten Details. Happier konnte nicht bestätigen, dass sie aktuell sind.',
         pauseAtBoundary: 'An der nächsten Grenze pausieren',
         pausePending: 'Beendet die laufende Arbeit und pausiert dann.',
         paused: 'Nach der letzten abgeschlossenen Grenze pausiert.',
@@ -992,12 +1023,15 @@ const de = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count === 1 ? 'Schritt braucht' : 'Schritte brauchen'} dich`,
+        needsYouLoaded: 'geladen',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count === 1 ? 'Schritt braucht' : 'Schritte brauchen'} dich`,
         selectedRowUpdated: ({ block }) => `${block} aktualisiert`,
         progress: ({ count }) =>
             `${count} ${count === 1 ? 'Schritt' : 'Schritte'} aktualisiert`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count === 1 ? 'Schritt' : 'Schritte'} bisher aktualisiert`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count === 1 ? 'Schritt' : 'Schritte'} aktualisiert; ${attention} ${attention === 1 ? 'braucht' : 'brauchen'} dich`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -1041,6 +1075,8 @@ const es = translated({
         runsBody: 'Las ejecuciones aparecen aquí, guardes o no el flujo de trabajo.',
         filteredTitle: 'Ninguna ejecución coincide con este filtro',
         filteredBody: 'Quita el filtro para ver el resto de tus ejecuciones.',
+        missingTitle: 'Este flujo de trabajo no está disponible',
+        missingBody: 'Happier no pudo abrir el flujo de trabajo al que apunta este enlace. Tus otros flujos, Automatizaciones y ejecuciones no se ven afectados.',
     },
 
     loadFailedTitle: 'No se han podido cargar los flujos de trabajo',
@@ -1069,6 +1105,7 @@ const es = translated({
         customize: 'Personalizar',
         useWorkflowDefault: 'Usar el valor del flujo de trabajo',
         defaultsTitle: 'Valores por defecto',
+        produces: 'Produce',
         whereTitle: 'Dónde',
         add: 'Añadir',
         addAccessibility: 'Añadir un bloque a este flujo de trabajo',
@@ -1128,6 +1165,7 @@ const es = translated({
 
     input: {
         label: 'Entrada',
+        result: 'Resultado',
         change: 'Cambiar',
         none: 'Sin entrada',
         previousResult: ({ block }) => `Resultado de ${block}`,
@@ -1147,6 +1185,12 @@ const es = translated({
             count: 'Número de rondas',
             stopReason: 'Motivo de la parada',
         },
+        valueKindGroup: 'Origen del valor',
+        inputNameGroup: 'Entrada del flujo',
+        producerGroup: 'Paso de origen',
+        workspaceFieldGroup: 'Campo del espacio de trabajo',
+        itemFieldGroup: 'Campo del elemento',
+        iterationFieldGroup: 'Campo de la ronda',
     },
 
     inputs: {
@@ -1179,13 +1223,14 @@ const es = translated({
     conversation: {
         title: 'Conversación',
         sharedRun: 'La misma conversación',
+        branchesShareAndTakeTurns: 'Las ramas comparten una conversación y se turnan.',
         fresh: 'Conversaciones separadas',
         fromStep: ({ block }) => `Continuar ${block}`,
         existingSession: 'Una sesión existente',
         existingSessionById: ({ sessionId }) => `Sesión ${sessionId}`,
         noExistingSessions: 'Ninguna sesión de esta máquina puede continuarse aquí.',
         chooseExistingSession: 'Elige una sesión para continuar',
-        startsNewConversation: 'Cambiar el Agente o la carpeta inicia una conversación nueva.',
+        continuingKeepsAgentAndFolder: 'Al continuar se mantienen el Agente y la carpeta de esa conversación. Otro Agente u otra carpeta necesitan una conversación separada.',
         waitingForConversation: ({ block }) => `Esperando a que ${block} termine en esta conversación.`,
         branchesUseSeparate: 'Las ramas de un grupo paralelo usan conversaciones separadas.',
     },
@@ -1311,11 +1356,14 @@ const es = translated({
             fromSession: 'Desde una sesión',
         },
         needsYou: 'Te necesita',
+        needsYouLoadedCount: 'cargados',
         review: 'Revisar',
         stop: 'Parar',
         stopAgain: 'Detener de nuevo',
         stopping: 'Parando…',
         stopRequested: ({ machine }) => `Parada solicitada. Esperando la confirmación de ${machine}.`,
+        resultDeliveryUnavailable: 'El resultado no se entregó.',
+        evidenceStale: 'Mostrando los últimos detalles conocidos. Happier no pudo confirmar que sean actuales.',
         pauseAtBoundary: 'Pausar en el siguiente límite',
         pausePending: 'Terminando el trabajo actual y luego pausando.',
         paused: 'En pausa tras el último límite completado.',
@@ -1471,12 +1519,15 @@ const es = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count === 1 ? 'paso te necesita' : 'pasos te necesitan'}`,
+        needsYouLoaded: 'cargados',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count === 1 ? 'paso te necesita' : 'pasos te necesitan'}`,
         selectedRowUpdated: ({ block }) => `${block} actualizado`,
         progress: ({ count }) =>
             `${count} ${count === 1 ? 'paso actualizado' : 'pasos actualizados'}`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count === 1 ? 'paso actualizado' : 'pasos actualizados'} hasta ahora`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count === 1 ? 'paso actualizado' : 'pasos actualizados'}; ${attention} ${attention === 1 ? 'te necesita' : 'te necesitan'}`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -1520,6 +1571,8 @@ const fr = translated({
         runsBody: 'Les exécutions apparaissent ici, que tu enregistres le flux de travail ou non.',
         filteredTitle: 'Aucune exécution ne correspond à ce filtre',
         filteredBody: 'Efface le filtre pour voir le reste de tes exécutions.',
+        missingTitle: 'Ce flux de travail n’est pas disponible',
+        missingBody: 'Happier n’a pas pu ouvrir le flux de travail visé par ce lien. Tes autres flux, Automatisations et exécutions ne sont pas affectés.',
     },
 
     loadFailedTitle: 'Impossible de charger les flux de travail',
@@ -1548,6 +1601,7 @@ const fr = translated({
         customize: 'Personnaliser',
         useWorkflowDefault: 'Utiliser la valeur du flux de travail',
         defaultsTitle: 'Valeurs par défaut',
+        produces: 'Produit',
         whereTitle: 'Où',
         add: 'Ajouter',
         addAccessibility: 'Ajouter un bloc à ce flux de travail',
@@ -1607,6 +1661,7 @@ const fr = translated({
 
     input: {
         label: 'Entrée',
+        result: 'Résultat',
         change: 'Changer',
         none: 'Aucune entrée',
         previousResult: ({ block }) => `Résultat de ${block}`,
@@ -1626,6 +1681,12 @@ const fr = translated({
             count: 'Nombre de tours',
             stopReason: 'Raison de l’arrêt',
         },
+        valueKindGroup: 'Source de la valeur',
+        inputNameGroup: 'Entrée du flux',
+        producerGroup: 'Étape source',
+        workspaceFieldGroup: 'Champ de l’espace de travail',
+        itemFieldGroup: 'Champ de l’élément',
+        iterationFieldGroup: 'Champ du tour',
     },
 
     inputs: {
@@ -1658,13 +1719,14 @@ const fr = translated({
     conversation: {
         title: 'Discussion',
         sharedRun: 'La même discussion',
+        branchesShareAndTakeTurns: 'Les branches partagent une discussion et passent chacune à leur tour.',
         fresh: 'Discussions séparées',
         fromStep: ({ block }) => `Continuer ${block}`,
         existingSession: 'Une session existante',
         existingSessionById: ({ sessionId }) => `Session ${sessionId}`,
         noExistingSessions: 'Aucune session de cette machine ne peut être poursuivie ici.',
         chooseExistingSession: 'Choisis une session à poursuivre',
-        startsNewConversation: 'Changer d’Agent ou de dossier démarre une nouvelle discussion.',
+        continuingKeepsAgentAndFolder: 'Continuer conserve l’Agent et le dossier de cette discussion. Un autre Agent ou dossier nécessite une discussion séparée.',
         waitingForConversation: ({ block }) => `En attente que ${block} se termine dans cette discussion.`,
         branchesUseSeparate: 'Les branches d’un groupe parallèle utilisent des discussions séparées.',
     },
@@ -1790,11 +1852,14 @@ const fr = translated({
             fromSession: 'Depuis une session',
         },
         needsYou: 'A besoin de toi',
+        needsYouLoadedCount: 'chargées',
         review: 'Examiner',
         stop: 'Arrêter',
         stopAgain: 'Arrêter à nouveau',
         stopping: 'Arrêt en cours…',
         stopRequested: ({ machine }) => `Arrêt demandé. En attente de la confirmation de ${machine}.`,
+        resultDeliveryUnavailable: 'Le résultat n’a pas été remis.',
+        evidenceStale: 'Affichage des derniers détails connus. Happier n’a pas pu confirmer qu’ils sont à jour.',
         pauseAtBoundary: 'Mettre en pause à la prochaine limite',
         pausePending: 'Termine le travail en cours, puis se met en pause.',
         paused: 'En pause après la dernière limite terminée.',
@@ -1950,12 +2015,15 @@ const fr = translated({
         validationInBlock: ({ block, reason }) => `${block} : ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count <= 1 ? 'étape a' : 'étapes ont'} besoin de toi`,
+        needsYouLoaded: 'chargées',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count <= 1 ? 'étape a' : 'étapes ont'} besoin de toi`,
         selectedRowUpdated: ({ block }) => `${block} mis à jour`,
         progress: ({ count }) =>
             `${count} ${count <= 1 ? 'étape mise à jour' : 'étapes mises à jour'}`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count <= 1 ? 'étape mise à jour' : 'étapes mises à jour'} pour l’instant`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count <= 1 ? 'étape mise à jour' : 'étapes mises à jour'} ; ${attention} ${attention <= 1 ? 'a' : 'ont'} besoin de toi`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -1999,6 +2067,8 @@ const it = translated({
         runsBody: 'Le esecuzioni compaiono qui, che tu salvi il flusso di lavoro o no.',
         filteredTitle: 'Nessuna esecuzione corrisponde a questo filtro',
         filteredBody: 'Rimuovi il filtro per vedere le altre esecuzioni.',
+        missingTitle: 'Questo workflow non è disponibile',
+        missingBody: 'Happier non è riuscito ad aprire il workflow a cui punta questo link. Gli altri workflow, le Automazioni e le esecuzioni non sono interessati.',
     },
 
     loadFailedTitle: 'Impossibile caricare i flussi di lavoro',
@@ -2027,6 +2097,7 @@ const it = translated({
         customize: 'Personalizza',
         useWorkflowDefault: 'Usa il valore del flusso di lavoro',
         defaultsTitle: 'Impostazioni predefinite',
+        produces: 'Produce',
         whereTitle: 'Dove',
         add: 'Aggiungi',
         addAccessibility: 'Aggiungi un blocco a questo flusso di lavoro',
@@ -2086,6 +2157,7 @@ const it = translated({
 
     input: {
         label: 'Ingresso',
+        result: 'Risultato',
         change: 'Cambia',
         none: 'Nessun ingresso',
         previousResult: ({ block }) => `Risultato di ${block}`,
@@ -2105,6 +2177,12 @@ const it = translated({
             count: 'Numero di giri',
             stopReason: 'Motivo dell’arresto',
         },
+        valueKindGroup: 'Origine del valore',
+        inputNameGroup: 'Input del flusso',
+        producerGroup: 'Passaggio di origine',
+        workspaceFieldGroup: 'Campo dell’area di lavoro',
+        itemFieldGroup: 'Campo dell’elemento',
+        iterationFieldGroup: 'Campo del giro',
     },
 
     inputs: {
@@ -2137,13 +2215,14 @@ const it = translated({
     conversation: {
         title: 'Conversazione',
         sharedRun: 'La stessa conversazione',
+        branchesShareAndTakeTurns: 'I rami condividono una conversazione e procedono a turno.',
         fresh: 'Conversazioni separate',
         fromStep: ({ block }) => `Continua ${block}`,
         existingSession: 'Una sessione esistente',
         existingSessionById: ({ sessionId }) => `Sessione ${sessionId}`,
         noExistingSessions: 'Nessuna sessione di questa macchina può essere continuata qui.',
         chooseExistingSession: 'Scegli una sessione da continuare',
-        startsNewConversation: 'Cambiare Agente o cartella avvia una nuova conversazione.',
+        continuingKeepsAgentAndFolder: 'Continuare mantiene l’Agente e la cartella di quella conversazione. Un Agente o una cartella diversi richiedono una conversazione separata.',
         waitingForConversation: ({ block }) => `In attesa che ${block} finisca in questa conversazione.`,
         branchesUseSeparate: 'I rami di un gruppo parallelo usano conversazioni separate.',
     },
@@ -2269,11 +2348,14 @@ const it = translated({
             fromSession: 'Da una sessione',
         },
         needsYou: 'Ha bisogno di te',
+        needsYouLoadedCount: 'caricati',
         review: 'Controlla',
         stop: 'Ferma',
         stopAgain: 'Ferma di nuovo',
         stopping: 'Arresto in corso…',
         stopRequested: ({ machine }) => `Arresto richiesto. In attesa della conferma di ${machine}.`,
+        resultDeliveryUnavailable: 'Il risultato non è stato consegnato.',
+        evidenceStale: 'Mostra gli ultimi dettagli noti. Happier non ha potuto confermare che siano aggiornati.',
         pauseAtBoundary: 'Metti in pausa al prossimo confine',
         pausePending: 'Completa il lavoro in corso, poi va in pausa.',
         paused: 'In pausa dopo l’ultimo confine completato.',
@@ -2429,12 +2511,15 @@ const it = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count === 1 ? 'passaggio ha' : 'passaggi hanno'} bisogno di te`,
+        needsYouLoaded: 'caricati',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count === 1 ? 'passaggio ha' : 'passaggi hanno'} bisogno di te`,
         selectedRowUpdated: ({ block }) => `${block} aggiornato`,
         progress: ({ count }) =>
             `${count} ${count === 1 ? 'passaggio aggiornato' : 'passaggi aggiornati'}`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count === 1 ? 'passaggio aggiornato' : 'passaggi aggiornati'} finora`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count === 1 ? 'passaggio aggiornato' : 'passaggi aggiornati'}; ${attention} ${attention === 1 ? 'ha' : 'hanno'} bisogno di te`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -2478,6 +2563,8 @@ const pt = translated({
         runsBody: 'As execuções aparecem aqui, você salvando o fluxo de trabalho ou não.',
         filteredTitle: 'Nenhuma execução corresponde a este filtro',
         filteredBody: 'Limpe o filtro para ver o restante das suas execuções.',
+        missingTitle: 'Este fluxo de trabalho não está disponível',
+        missingBody: 'O Happier não conseguiu abrir o fluxo de trabalho para o qual este link aponta. Seus outros fluxos, Automações e execuções não são afetados.',
     },
 
     loadFailedTitle: 'Não foi possível carregar os fluxos de trabalho',
@@ -2506,6 +2593,7 @@ const pt = translated({
         customize: 'Personalizar',
         useWorkflowDefault: 'Usar o padrão do fluxo de trabalho',
         defaultsTitle: 'Padrões',
+        produces: 'Produz',
         whereTitle: 'Onde',
         add: 'Adicionar',
         addAccessibility: 'Adicionar um bloco a este fluxo de trabalho',
@@ -2565,6 +2653,7 @@ const pt = translated({
 
     input: {
         label: 'Entrada',
+        result: 'Resultado',
         change: 'Alterar',
         none: 'Sem entrada',
         previousResult: ({ block }) => `Resultado de ${block}`,
@@ -2584,6 +2673,12 @@ const pt = translated({
             count: 'Quantidade de rodadas',
             stopReason: 'Motivo da parada',
         },
+        valueKindGroup: 'Origem do valor',
+        inputNameGroup: 'Entrada do fluxo',
+        producerGroup: 'Passo de origem',
+        workspaceFieldGroup: 'Campo do espaço de trabalho',
+        itemFieldGroup: 'Campo do item',
+        iterationFieldGroup: 'Campo da rodada',
     },
 
     inputs: {
@@ -2616,13 +2711,14 @@ const pt = translated({
     conversation: {
         title: 'Conversa',
         sharedRun: 'A mesma conversa',
+        branchesShareAndTakeTurns: 'Os ramos compartilham uma conversa e se alternam.',
         fresh: 'Conversas separadas',
         fromStep: ({ block }) => `Continuar ${block}`,
         existingSession: 'Uma sessão existente',
         existingSessionById: ({ sessionId }) => `Sessão ${sessionId}`,
         noExistingSessions: 'Nenhuma sessão desta máquina pode ser continuada aqui.',
         chooseExistingSession: 'Escolha uma sessão para continuar',
-        startsNewConversation: 'Trocar o Agente ou a pasta inicia uma nova conversa.',
+        continuingKeepsAgentAndFolder: 'Continuar mantém o Agente e a pasta dessa conversa. Outro Agente ou outra pasta precisa de uma conversa separada.',
         waitingForConversation: ({ block }) => `Aguardando ${block} terminar nesta conversa.`,
         branchesUseSeparate: 'Os ramos de um grupo paralelo usam conversas separadas.',
     },
@@ -2748,11 +2844,14 @@ const pt = translated({
             fromSession: 'A partir de uma sessão',
         },
         needsYou: 'Precisa de você',
+        needsYouLoadedCount: 'carregadas',
         review: 'Revisar',
         stop: 'Parar',
         stopAgain: 'Parar novamente',
         stopping: 'Parando…',
         stopRequested: ({ machine }) => `Parada solicitada. Aguardando a confirmação de ${machine}.`,
+        resultDeliveryUnavailable: 'O resultado não foi entregue.',
+        evidenceStale: 'Mostrando os últimos detalhes conhecidos. O Happier não conseguiu confirmar se estão atuais.',
         pauseAtBoundary: 'Pausar no próximo limite',
         pausePending: 'Terminando o trabalho atual e depois pausando.',
         paused: 'Pausado após o último limite concluído.',
@@ -2908,12 +3007,15 @@ const pt = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count === 1 ? 'etapa precisa' : 'etapas precisam'} de você`,
+        needsYouLoaded: 'carregadas',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count === 1 ? 'etapa precisa' : 'etapas precisam'} de você`,
         selectedRowUpdated: ({ block }) => `${block} atualizado`,
         progress: ({ count }) =>
             `${count} ${count === 1 ? 'etapa atualizada' : 'etapas atualizadas'}`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count === 1 ? 'etapa atualizada' : 'etapas atualizadas'} até agora`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count === 1 ? 'etapa atualizada' : 'etapas atualizadas'}; ${attention} ${attention === 1 ? 'precisa' : 'precisam'} de você`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -2957,6 +3059,8 @@ const ca = translated({
         runsBody: 'Les execucions apareixen aquí tant si deses el flux de treball com si no.',
         filteredTitle: 'Cap execució coincideix amb aquest filtre',
         filteredBody: 'Esborra el filtre per veure la resta d’execucions.',
+        missingTitle: 'Aquest flux de treball no està disponible',
+        missingBody: 'Happier no ha pogut obrir el flux de treball al qual apunta aquest enllaç. La resta de fluxos, Automatitzacions i execucions no es veuen afectats.',
     },
 
     loadFailedTitle: 'No s’han pogut carregar els fluxos de treball',
@@ -2985,6 +3089,7 @@ const ca = translated({
         customize: 'Personalitza',
         useWorkflowDefault: 'Fes servir el valor del flux de treball',
         defaultsTitle: 'Valors per defecte',
+        produces: 'Produeix',
         whereTitle: 'On',
         add: 'Afegeix',
         addAccessibility: 'Afegeix un bloc a aquest flux de treball',
@@ -3044,6 +3149,7 @@ const ca = translated({
 
     input: {
         label: 'Entrada',
+        result: 'Resultat',
         change: 'Canvia',
         none: 'Sense entrada',
         previousResult: ({ block }) => `Resultat de ${block}`,
@@ -3063,6 +3169,12 @@ const ca = translated({
             count: 'Nombre de rondes',
             stopReason: 'Motiu de l’aturada',
         },
+        valueKindGroup: 'Origen del valor',
+        inputNameGroup: 'Entrada del flux',
+        producerGroup: 'Pas d’origen',
+        workspaceFieldGroup: 'Camp de l’espai de treball',
+        itemFieldGroup: 'Camp de l’element',
+        iterationFieldGroup: 'Camp de la ronda',
     },
 
     inputs: {
@@ -3095,13 +3207,14 @@ const ca = translated({
     conversation: {
         title: 'Conversa',
         sharedRun: 'La mateixa conversa',
+        branchesShareAndTakeTurns: 'Les branques comparteixen una conversa i s’alternen.',
         fresh: 'Converses separades',
         fromStep: ({ block }) => `Continua ${block}`,
         existingSession: 'Una sessió existent',
         existingSessionById: ({ sessionId }) => `Sessió ${sessionId}`,
         noExistingSessions: 'Cap sessió d’aquesta màquina es pot continuar aquí.',
         chooseExistingSession: 'Tria una sessió per continuar',
-        startsNewConversation: 'Canviar l’Agent o la carpeta inicia una conversa nova.',
+        continuingKeepsAgentAndFolder: 'Continuar manté l’Agent i la carpeta d’aquesta conversa. Un altre Agent o una altra carpeta necessita una conversa separada.',
         waitingForConversation: ({ block }) => `S’espera que ${block} acabi en aquesta conversa.`,
         branchesUseSeparate: 'Les branques d’un grup paral·lel fan servir converses separades.',
     },
@@ -3227,11 +3340,14 @@ const ca = translated({
             fromSession: 'Des d’una sessió',
         },
         needsYou: 'Et necessita',
+        needsYouLoadedCount: 'carregats',
         review: 'Revisa',
         stop: 'Atura',
         stopAgain: 'Atura de nou',
         stopping: 'Aturant-se…',
         stopRequested: ({ machine }) => `S’ha demanat l’aturada. S’espera la confirmació de ${machine}.`,
+        resultDeliveryUnavailable: 'El resultat no s’ha lliurat.',
+        evidenceStale: 'Es mostren els darrers detalls coneguts. Happier no ha pogut confirmar que siguin actuals.',
         pauseAtBoundary: 'Fes una pausa al proper límit',
         pausePending: 'Acaba la feina en curs i després es posa en pausa.',
         paused: 'En pausa després de l’últim límit completat.',
@@ -3387,12 +3503,15 @@ const ca = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${count === 1 ? 'pas et necessita' : 'passos et necessiten'}`,
+        needsYouLoaded: 'carregats',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${count === 1 ? 'pas et necessita' : 'passos et necessiten'}`,
         selectedRowUpdated: ({ block }) => `${block} actualitzat`,
         progress: ({ count }) =>
             `${count} ${count === 1 ? 'pas actualitzat' : 'passos actualitzats'}`,
+        progressLoaded: ({ count }) =>
+            `${count} ${count === 1 ? 'pas actualitzat' : 'passos actualitzats'} fins ara`,
         progressWithAttention: ({ count, attention }) =>
             `${count} ${count === 1 ? 'pas actualitzat' : 'passos actualitzats'}; ${attention} ${attention === 1 ? 'et necessita' : 'et necessiten'}`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -3436,6 +3555,8 @@ const pl = translated({
         runsBody: 'Uruchomienia pojawiają się tutaj niezależnie od tego, czy zapiszesz przepływ pracy.',
         filteredTitle: 'Żadne uruchomienie nie pasuje do tego filtra',
         filteredBody: 'Wyczyść filtr, aby zobaczyć pozostałe uruchomienia.',
+        missingTitle: 'Ten workflow jest niedostępny',
+        missingBody: 'Happier nie mógł otworzyć workflow, do którego prowadzi ten link. Pozostałe workflow, Automatyzacje i uruchomienia są nienaruszone.',
     },
 
     loadFailedTitle: 'Nie udało się wczytać przepływów pracy',
@@ -3464,6 +3585,7 @@ const pl = translated({
         customize: 'Dostosuj',
         useWorkflowDefault: 'Użyj wartości z przepływu pracy',
         defaultsTitle: 'Ustawienia domyślne',
+        produces: 'Zwraca',
         whereTitle: 'Gdzie',
         add: 'Dodaj',
         addAccessibility: 'Dodaj blok do tego przepływu pracy',
@@ -3523,6 +3645,7 @@ const pl = translated({
 
     input: {
         label: 'Wejście',
+        result: 'Wynik',
         change: 'Zmień',
         none: 'Brak wejścia',
         previousResult: ({ block }) => `Wynik: ${block}`,
@@ -3542,6 +3665,12 @@ const pl = translated({
             count: 'Liczba rund',
             stopReason: 'Powód zatrzymania',
         },
+        valueKindGroup: 'Źródło wartości',
+        inputNameGroup: 'Wejście przepływu',
+        producerGroup: 'Krok źródłowy',
+        workspaceFieldGroup: 'Pole obszaru roboczego',
+        itemFieldGroup: 'Pole elementu',
+        iterationFieldGroup: 'Pole rundy',
     },
 
     inputs: {
@@ -3574,13 +3703,14 @@ const pl = translated({
     conversation: {
         title: 'Rozmowa',
         sharedRun: 'Ta sama rozmowa',
+        branchesShareAndTakeTurns: 'Gałęzie współdzielą jedną rozmowę i działają po kolei.',
         fresh: 'Osobne rozmowy',
         fromStep: ({ block }) => `Kontynuuj ${block}`,
         existingSession: 'Istniejąca sesja',
         existingSessionById: ({ sessionId }) => `Sesja ${sessionId}`,
         noExistingSessions: 'Żadnej sesji na tej maszynie nie można tu kontynuować.',
         chooseExistingSession: 'Wybierz sesję do kontynuowania',
-        startsNewConversation: 'Zmiana Agenta lub folderu rozpoczyna nową rozmowę.',
+        continuingKeepsAgentAndFolder: 'Kontynuacja zachowuje Agenta i folder tej rozmowy. Inny Agent lub folder wymaga osobnej rozmowy.',
         waitingForConversation: ({ block }) => `Czekamy, aż ${block} zakończy pracę w tej rozmowie.`,
         branchesUseSeparate: 'Gałęzie w grupie równoległej używają osobnych rozmów.',
     },
@@ -3706,11 +3836,14 @@ const pl = translated({
             fromSession: 'Z sesji',
         },
         needsYou: 'Wymaga Ciebie',
+        needsYouLoadedCount: 'wczytano',
         review: 'Przejrzyj',
         stop: 'Zatrzymaj',
         stopAgain: 'Zatrzymaj ponownie',
         stopping: 'Zatrzymywanie…',
         stopRequested: ({ machine }) => `Poproszono o zatrzymanie. Czekamy na potwierdzenie z ${machine}.`,
+        resultDeliveryUnavailable: 'Nie dostarczono wyniku.',
+        evidenceStale: 'Pokazujemy ostatnie znane szczegóły. Happier nie mógł potwierdzić, że są aktualne.',
         pauseAtBoundary: 'Wstrzymaj na najbliższej granicy',
         pausePending: 'Kończy bieżącą pracę, a potem się wstrzymuje.',
         paused: 'Wstrzymano po ostatniej ukończonej granicy.',
@@ -3867,12 +4000,15 @@ const pl = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${pluralPl(count, 'krok wymaga', 'kroki wymagają', 'kroków wymaga')} Twojej uwagi`,
+        needsYouLoaded: 'wczytano',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${pluralPl(count, 'krok wymaga', 'kroki wymagają', 'kroków wymaga')} Twojej uwagi`,
         selectedRowUpdated: ({ block }) => `Zaktualizowano ${block}`,
         progress: ({ count }) =>
             `Zaktualizowano ${count} ${pluralPl(count, 'krok', 'kroki', 'kroków')}`,
+        progressLoaded: ({ count }) =>
+            `Do tej pory zaktualizowano ${count} ${pluralPl(count, 'krok', 'kroki', 'kroków')}`,
         progressWithAttention: ({ count, attention }) =>
             `Zaktualizowano ${count} ${pluralPl(count, 'krok', 'kroki', 'kroków')}; ${attention} ${pluralPl(attention, 'wymaga', 'wymagają', 'wymaga')} Twojej uwagi`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -3916,6 +4052,8 @@ const ru = translated({
         runsBody: 'Запуски появляются здесь независимо от того, сохраняете вы рабочий процесс или нет.',
         filteredTitle: 'Нет запусков, подходящих под этот фильтр',
         filteredBody: 'Сбросьте фильтр, чтобы увидеть остальные запуски.',
+        missingTitle: 'Этот рабочий процесс недоступен',
+        missingBody: 'Happier не смог открыть рабочий процесс, на который ведёт эта ссылка. Другие рабочие процессы, Автоматизации и запуски не затронуты.',
     },
 
     loadFailedTitle: 'Не удалось загрузить рабочие процессы',
@@ -3944,6 +4082,7 @@ const ru = translated({
         customize: 'Настроить',
         useWorkflowDefault: 'Использовать значение рабочего процесса',
         defaultsTitle: 'Значения по умолчанию',
+        produces: 'Выдаёт',
         whereTitle: 'Где',
         add: 'Добавить',
         addAccessibility: 'Добавить блок в этот рабочий процесс',
@@ -4003,6 +4142,7 @@ const ru = translated({
 
     input: {
         label: 'Вход',
+        result: 'Результат',
         change: 'Изменить',
         none: 'Без входных данных',
         previousResult: ({ block }) => `Результат: ${block}`,
@@ -4022,6 +4162,12 @@ const ru = translated({
             count: 'Количество раундов',
             stopReason: 'Причина остановки',
         },
+        valueKindGroup: 'Источник значения',
+        inputNameGroup: 'Вход рабочего процесса',
+        producerGroup: 'Шаг-источник',
+        workspaceFieldGroup: 'Поле рабочего пространства',
+        itemFieldGroup: 'Поле элемента',
+        iterationFieldGroup: 'Поле раунда',
     },
 
     inputs: {
@@ -4054,13 +4200,14 @@ const ru = translated({
     conversation: {
         title: 'Диалог',
         sharedRun: 'Тот же диалог',
+        branchesShareAndTakeTurns: 'Ветки используют один диалог и выполняются по очереди.',
         fresh: 'Отдельные диалоги',
         fromStep: ({ block }) => `Продолжить ${block}`,
         existingSession: 'Существующая сессия',
         existingSessionById: ({ sessionId }) => `Сессия ${sessionId}`,
         noExistingSessions: 'Ни одну сессию на этой машине здесь продолжить нельзя.',
         chooseExistingSession: 'Выберите сессию для продолжения',
-        startsNewConversation: 'Смена Агента или папки начинает новый диалог.',
+        continuingKeepsAgentAndFolder: 'При продолжении сохраняются Агент и папка этого диалога. Для другого Агента или папки нужен отдельный диалог.',
         waitingForConversation: ({ block }) => `Ожидание, пока ${block} завершится в этом диалоге.`,
         branchesUseSeparate: 'Ветки в параллельной группе используют отдельные диалоги.',
     },
@@ -4186,11 +4333,14 @@ const ru = translated({
             fromSession: 'Из сессии',
         },
         needsYou: 'Требует вашего внимания',
+        needsYouLoadedCount: 'загружено',
         review: 'Просмотреть',
         stop: 'Остановить',
         stopAgain: 'Остановить ещё раз',
         stopping: 'Останавливается…',
         stopRequested: ({ machine }) => `Запрошена остановка. Ожидаем подтверждения от ${machine}.`,
+        resultDeliveryUnavailable: 'Результат не был доставлен.',
+        evidenceStale: 'Показаны последние известные данные. Happier не смог подтвердить, что они актуальны.',
         pauseAtBoundary: 'Приостановить на ближайшей границе',
         pausePending: 'Завершает текущую работу, затем приостанавливается.',
         paused: 'Приостановлено после последней завершённой границы.',
@@ -4347,12 +4497,15 @@ const ru = translated({
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) =>
             `${count} ${pluralRu(count, 'шаг требует', 'шага требуют', 'шагов требуют')} вашего внимания`,
+        needsYouLoaded: 'загружено',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}. ${count} ${pluralRu(count, 'шаг требует', 'шага требуют', 'шагов требуют')} вашего внимания`,
         selectedRowUpdated: ({ block }) => `${block} обновлён`,
         progress: ({ count }) =>
             `Обновлено ${count} ${pluralRu(count, 'шаг', 'шага', 'шагов')}`,
+        progressLoaded: ({ count }) =>
+            `Пока обновлено ${count} ${pluralRu(count, 'шаг', 'шага', 'шагов')}`,
         progressWithAttention: ({ count, attention }) =>
             `Обновлено ${count} ${pluralRu(count, 'шаг', 'шага', 'шагов')}; ${attention} ${pluralRu(attention, 'требует', 'требуют', 'требуют')} вашего внимания`,
         flowNode: ({ node, state }) => `${node}, ${state}`,
@@ -4396,6 +4549,8 @@ const ja = translated({
         runsBody: 'ワークフローを保存してもしなくても、実行はここに表示されます。',
         filteredTitle: 'このフィルターに一致する実行はありません',
         filteredBody: 'フィルターを解除すると、ほかの実行が表示されます。',
+        missingTitle: 'このワークフローは利用できません',
+        missingBody: 'このリンクが指すワークフローを Happier は開けませんでした。他のワークフロー、オートメーション、実行には影響ありません。',
     },
 
     loadFailedTitle: 'ワークフローを読み込めませんでした',
@@ -4424,6 +4579,7 @@ const ja = translated({
         customize: 'カスタマイズ',
         useWorkflowDefault: 'ワークフローの既定値を使う',
         defaultsTitle: '既定値',
+        produces: '出力',
         whereTitle: '場所',
         add: '追加',
         addAccessibility: 'このワークフローにブロックを追加',
@@ -4483,6 +4639,7 @@ const ja = translated({
 
     input: {
         label: '入力',
+        result: '結果',
         change: '変更',
         none: '入力なし',
         previousResult: ({ block }) => `${block} の結果`,
@@ -4502,6 +4659,12 @@ const ja = translated({
             count: 'ラウンド数',
             stopReason: '停止理由',
         },
+        valueKindGroup: '値のソース',
+        inputNameGroup: 'ワークフロー入力',
+        producerGroup: 'ソースステップ',
+        workspaceFieldGroup: 'ワークスペース項目',
+        itemFieldGroup: 'アイテム項目',
+        iterationFieldGroup: 'ラウンド項目',
     },
 
     inputs: {
@@ -4534,13 +4697,14 @@ const ja = translated({
     conversation: {
         title: '会話',
         sharedRun: '同じ会話',
+        branchesShareAndTakeTurns: 'ブランチは同じ会話を共有し、順番に実行されます。',
         fresh: '別々の会話',
         fromStep: ({ block }) => `${block} を続ける`,
         existingSession: '既存のセッション',
         existingSessionById: ({ sessionId }) => `セッション ${sessionId}`,
         noExistingSessions: 'このマシンで続行できるセッションはありません。',
         chooseExistingSession: '続行するセッションを選択',
-        startsNewConversation: 'エージェントまたはフォルダーを変更すると、新しい会話が始まります。',
+        continuingKeepsAgentAndFolder: '続行すると、その会話のエージェントとフォルダーがそのまま使われます。別のエージェントやフォルダーには別の会話が必要です。',
         waitingForConversation: ({ block }) => `この会話で ${block} が終わるのを待っています。`,
         branchesUseSeparate: '並列グループ内のブランチは、それぞれ別の会話を使います。',
     },
@@ -4666,11 +4830,14 @@ const ja = translated({
             fromSession: 'セッションから',
         },
         needsYou: '要対応',
+        needsYouLoadedCount: '件読み込み済み',
         review: '確認',
         stop: '停止',
         stopAgain: 'もう一度停止',
         stopping: '停止中…',
         stopRequested: ({ machine }) => `停止を要求しました。${machine} の確認を待っています。`,
+        resultDeliveryUnavailable: '結果は配信されませんでした。',
+        evidenceStale: '最後に確認できた詳細を表示しています。Happier は最新かどうかを確認できませんでした。',
         pauseAtBoundary: '区切りで一時停止',
         pausePending: '現在の作業を終えてから一時停止します。',
         paused: '最後に完了した区切りで一時停止しました。',
@@ -4825,11 +4992,13 @@ const ja = translated({
         validation: ({ reason }) => reason,
         validationInBlock: ({ block, reason }) => `${block}: ${reason}`,
         needsYou: ({ count }) => `${count} 個のステップが対応を待っています`,
+        needsYouLoaded: '読み込み済み',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) =>
             `${state}。${count} 個のステップが対応を待っています`,
         selectedRowUpdated: ({ block }) => `${block} を更新しました`,
         progress: ({ count }) => `${count} 個のステップを更新しました`,
+        progressLoaded: ({ count }) => `ここまで ${count} 個のステップを更新しました`,
         progressWithAttention: ({ count, attention }) =>
             `${count} 個のステップを更新しました。うち ${attention} 個が対応を待っています`,
         flowNode: ({ node, state }) => `${node}、${state}`,
@@ -4873,6 +5042,8 @@ const zhHans = translated({
         runsBody: '无论你是否保存工作流，运行记录都会显示在这里。',
         filteredTitle: '没有运行记录符合这个筛选条件',
         filteredBody: '清除筛选即可看到其余的运行记录。',
+        missingTitle: '此工作流不可用',
+        missingBody: 'Happier 无法打开此链接指向的工作流。你的其他工作流、自动化和运行不受影响。',
     },
 
     loadFailedTitle: '无法加载工作流',
@@ -4901,6 +5072,7 @@ const zhHans = translated({
         customize: '自定义',
         useWorkflowDefault: '使用工作流的默认值',
         defaultsTitle: '默认值',
+        produces: '产出',
         whereTitle: '位置',
         add: '添加',
         addAccessibility: '向这个工作流添加一个块',
@@ -4960,6 +5132,7 @@ const zhHans = translated({
 
     input: {
         label: '输入',
+        result: '结果',
         change: '更改',
         none: '没有输入',
         previousResult: ({ block }) => `${block} 的结果`,
@@ -4979,6 +5152,12 @@ const zhHans = translated({
             count: '轮次数量',
             stopReason: '停止原因',
         },
+        valueKindGroup: '值来源',
+        inputNameGroup: '工作流输入',
+        producerGroup: '来源步骤',
+        workspaceFieldGroup: '工作区字段',
+        itemFieldGroup: '项目字段',
+        iterationFieldGroup: '轮次字段',
     },
 
     inputs: {
@@ -5011,13 +5190,14 @@ const zhHans = translated({
     conversation: {
         title: '对话',
         sharedRun: '同一个对话',
+        branchesShareAndTakeTurns: '分支共享同一个对话，并依次执行。',
         fresh: '各自独立的对话',
         fromStep: ({ block }) => `继续 ${block}`,
         existingSession: '一个已有的会话',
         existingSessionById: ({ sessionId }) => `会话 ${sessionId}`,
         noExistingSessions: '此设备上没有可在此继续的会话。',
         chooseExistingSession: '选择要继续的会话',
-        startsNewConversation: '更换代理或文件夹会开始一个新的对话。',
+        continuingKeepsAgentAndFolder: '继续时会沿用该对话的代理和文件夹。要使用其他代理或文件夹，需要独立的对话。',
         waitingForConversation: ({ block }) => `正在等待 ${block} 在这个对话中完成。`,
         branchesUseSeparate: '并行分组中的分支各自使用独立的对话。',
     },
@@ -5143,11 +5323,14 @@ const zhHans = translated({
             fromSession: '来自某个会话',
         },
         needsYou: '需要你处理',
+        needsYouLoadedCount: '个已加载',
         review: '查看',
         stop: '停止',
         stopAgain: '再次停止',
         stopping: '正在停止…',
         stopRequested: ({ machine }) => `已请求停止。正在等待 ${machine} 确认。`,
+        resultDeliveryUnavailable: '结果未送达。',
+        evidenceStale: '显示的是最后一次已知的详情。Happier 无法确认它们是否是最新的。',
         pauseAtBoundary: '在下一个边界暂停',
         pausePending: '完成当前工作后暂停。',
         paused: '已在最后一个完成的边界处暂停。',
@@ -5301,10 +5484,12 @@ const zhHans = translated({
         validation: ({ reason }) => reason,
         validationInBlock: ({ block, reason }) => `${block}：${reason}`,
         needsYou: ({ count }) => `有 ${count} 个步骤需要你处理`,
+        needsYouLoaded: '个已加载',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) => `${state}。有 ${count} 个步骤需要你处理`,
         selectedRowUpdated: ({ block }) => `${block} 已更新`,
         progress: ({ count }) => `已更新 ${count} 个步骤`,
+        progressLoaded: ({ count }) => `截至目前已更新 ${count} 个步骤`,
         progressWithAttention: ({ count, attention }) =>
             `已更新 ${count} 个步骤，其中 ${attention} 个需要你处理`,
         flowNode: ({ node, state }) => `${node}，${state}`,
@@ -5348,6 +5533,8 @@ const zhHant = translated({
         runsBody: '不論你是否儲存工作流程，執行紀錄都會顯示在這裡。',
         filteredTitle: '沒有執行紀錄符合這個篩選條件',
         filteredBody: '清除篩選就能看到其餘的執行紀錄。',
+        missingTitle: '此工作流程無法使用',
+        missingBody: 'Happier 無法開啟此連結指向的工作流程。你的其他工作流程、自動化和執行不受影響。',
     },
 
     loadFailedTitle: '無法載入工作流程',
@@ -5376,6 +5563,7 @@ const zhHant = translated({
         customize: '自訂',
         useWorkflowDefault: '使用工作流程的預設值',
         defaultsTitle: '預設值',
+        produces: '產出',
         whereTitle: '位置',
         add: '新增',
         addAccessibility: '在這個工作流程中新增一個區塊',
@@ -5435,6 +5623,7 @@ const zhHant = translated({
 
     input: {
         label: '輸入',
+        result: '結果',
         change: '變更',
         none: '沒有輸入',
         previousResult: ({ block }) => `${block} 的結果`,
@@ -5454,6 +5643,12 @@ const zhHant = translated({
             count: '回合數量',
             stopReason: '停止原因',
         },
+        valueKindGroup: '值來源',
+        inputNameGroup: '工作流程輸入',
+        producerGroup: '來源步驟',
+        workspaceFieldGroup: '工作區欄位',
+        itemFieldGroup: '項目欄位',
+        iterationFieldGroup: '回合欄位',
     },
 
     inputs: {
@@ -5486,13 +5681,14 @@ const zhHant = translated({
     conversation: {
         title: '對話',
         sharedRun: '同一個對話',
+        branchesShareAndTakeTurns: '分支共用同一個對話，並依序執行。',
         fresh: '各自獨立的對話',
         fromStep: ({ block }) => `繼續 ${block}`,
         existingSession: '一個既有的工作階段',
         existingSessionById: ({ sessionId }) => `工作階段 ${sessionId}`,
         noExistingSessions: '此裝置上沒有可在此繼續的工作階段。',
         chooseExistingSession: '選擇要繼續的工作階段',
-        startsNewConversation: '更換代理或資料夾會開始一段新的對話。',
+        continuingKeepsAgentAndFolder: '繼續時會沿用該對話的代理和資料夾。要使用其他代理或資料夾，需要獨立的對話。',
         waitingForConversation: ({ block }) => `正在等待 ${block} 在這個對話中完成。`,
         branchesUseSeparate: '平行群組中的分支會各自使用獨立的對話。',
     },
@@ -5618,11 +5814,14 @@ const zhHant = translated({
             fromSession: '來自某個工作階段',
         },
         needsYou: '需要你處理',
+        needsYouLoadedCount: '個已載入',
         review: '檢視',
         stop: '停止',
         stopAgain: '再次停止',
         stopping: '正在停止…',
         stopRequested: ({ machine }) => `已要求停止。正在等待 ${machine} 確認。`,
+        resultDeliveryUnavailable: '結果未送達。',
+        evidenceStale: '顯示的是最後一次已知的詳情。Happier 無法確認它們是否是最新的。',
         pauseAtBoundary: '在下一個界線暫停',
         pausePending: '完成目前的工作後暫停。',
         paused: '已在最後一個完成的界線暫停。',
@@ -5776,10 +5975,12 @@ const zhHant = translated({
         validation: ({ reason }) => reason,
         validationInBlock: ({ block, reason }) => `${block}：${reason}`,
         needsYou: ({ count }) => `有 ${count} 個步驟需要你處理`,
+        needsYouLoaded: '個已載入',
         terminal: ({ state }) => state,
         terminalWithAttention: ({ state, count }) => `${state}。有 ${count} 個步驟需要你處理`,
         selectedRowUpdated: ({ block }) => `${block} 已更新`,
         progress: ({ count }) => `已更新 ${count} 個步驟`,
+        progressLoaded: ({ count }) => `截至目前已更新 ${count} 個步驟`,
         progressWithAttention: ({ count, attention }) =>
             `已更新 ${count} 個步驟，其中 ${attention} 個需要你處理`,
         flowNode: ({ node, state }) => `${node}，${state}`,

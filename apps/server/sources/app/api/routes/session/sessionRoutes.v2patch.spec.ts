@@ -28,7 +28,7 @@ describe("sessionRoutes v2 patch", () => {
     it("admits the restricted runtime only through the exact-Session guard", async () => {
         const route = await createSessionRouteTestBuilder("PATCH", "/v2/sessions/:sessionId");
         const entry = route.app.routes.get("PATCH /v2/sessions/:sessionId");
-        expect(entry?.opts.config).toMatchObject({ ephemeralSessionRunnerOperation: "session_shared_editor" });
+        expect(entry?.opts.config).toMatchObject({ ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } });
         expect(entry?.opts.preHandler).toBe(route.app.authenticate);
     });
 

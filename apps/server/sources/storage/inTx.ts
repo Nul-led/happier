@@ -4,6 +4,7 @@ import { delay } from "@/utils/runtime/delay";
 import { db } from "@/storage/db";
 import { getDbProviderFromEnv, isPrismaErrorCode, type TransactionClient } from "@/storage/prisma";
 import { isRetryableSqliteWriteError } from "@/storage/sqliteRetryClassifier";
+import { log } from "@/utils/logging/log";
 
 export type Tx = TransactionClient;
 export type InTxOptions = Readonly<{
@@ -161,8 +162,17 @@ export async function inTx<T>(fn: (tx: Tx) => Promise<T>, options?: InTxOptions)
             for (let callback of result.callbacks) {
                 try {
                     callback();
-                } catch {
-                    // Ignore callback failures; transactional result is already committed.
+                } catch (callbackError) {
+                    // The committed result stands, so a failed after-commit
+                    // callback never fails the transaction. It is still the
+                    // only signal that a post-commit consequence — a socket
+                    // eviction, an alert, a projection refresh — did not run,
+                    // so it is reported rather than discarded.
+                    log(
+                        { module: "storage-tx", level: "error" },
+                        "after-commit callback failed",
+                        callbackError,
+                    );
                 }
             }
             return result.result;

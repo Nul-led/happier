@@ -44,6 +44,7 @@ describe("Team invitation routes (SQLite integration)", () => {
                 serverId: "home-1",
                 displayName: "Acme Home",
                 storageMode: "plain",
+                hosting: null,
             }),
             email: { delivery, isDeliveryReady: () => deliveryReady },
         });
@@ -73,7 +74,7 @@ describe("Team invitation routes (SQLite integration)", () => {
 
     async function teamWithOwner(encryptionMode: "plain" | "e2ee" = "plain") {
         const actor = await db.account.create({
-            data: { publicKey: randomUUID(), encryptionMode },
+            data: { publicKey: randomUUID(), encryptionMode, firstName: "Ada", lastName: "Lovelace" },
         });
         const team = await db.team.create({ data: { name: "Acme" } });
         await db.teamMembership.create({
@@ -367,6 +368,9 @@ describe("Team invitation routes (SQLite integration)", () => {
             if (message.kind !== "invitation") throw new Error("expected invitation mail");
             expect(message.emailBound).toBe(true);
             expect(message.teamName).toBe("Acme");
+            // The mail reaches only the invited mailbox, so it names the person
+            // who invited them — the strongest trust signal in the message.
+            expect(message.inviterLabel).toBe("Ada Lovelace");
             expect(message.joinUrl).toMatch(
                 /\/join\/[A-Za-z0-9]{43}\?target=portable-home-target&targetBinding=[A-Za-z0-9_-]{43}$/u,
             );

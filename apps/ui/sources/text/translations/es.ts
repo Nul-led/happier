@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Crea un servidor, importa JSON del host o instala un preajuste recomendado.',
@@ -661,8 +663,9 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const es = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.es,
     actionConfirmations: actionConfirmationTranslations.es,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.es, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.es.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.es.resolve } },
+    workspaceSync: workspaceSyncTranslations.es,
     sessionDrafts: sessionDraftTranslations.es,
     transferRecovery: {
         title: 'Finalizar carga preparada',
@@ -1620,6 +1623,7 @@ export const es = {
     awaitingUpdates: "Esperando actualizaciones",
     queuedInput: "Entrada en cola",
     unread: "Sin leer",
+    mentioned: "Te mencionó",
     connected: "conectado",
     connecting: "conectando",
     disconnected: "desconectado",
@@ -6432,6 +6436,7 @@ export const es = {
             },
                         panel: {
               title: "Agentes",
+              tabWithRunningCount: ({ count }: { count: number }) => `Agentes, ${count} en ejecución`,
               active: "Activos",
               recent: "Recientes",
               emptyActive: "No hay agentes activos.",
@@ -13203,6 +13208,11 @@ settingsSession: {
       actions: {
         manageAccess: "Gestionar acceso",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `Compartido por ${owner}`,
+          via: ({ source }: { source: string }) => `a través de ${source}`,
+          direct: 'Compartido directamente contigo',
+      },
       relationship: {
         owner: "Tuyos",
         recipient: "Compartidos contigo",
@@ -14012,11 +14022,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.es.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.es,
+        auth: {
+            signupClosed: 'Tu Hogar personal solo acepta cuentas existentes. Inicia sesión con una cuenta que ya esté conectada a este Hogar.',
+        },
         bootstrap: {
             title: 'Preparando tu Hogar personal',
+            checkingStatus: 'Comprobando tu Hogar personal…',
             ensuringHomeStatus: 'Preparando tu Hogar local.',
             preparingComputerStatus: 'Tu Hogar está listo. Preparando este ordenador en segundo plano.',
-            blockedStatus: 'La configuración necesita tu atención antes de continuar.',
+            blockedStatus: 'No pudimos terminar de configurar tu Hogar personal.',
             readyStatus: 'Tu Hogar está listo.',
             failureBody: 'No pudimos completar este paso. La configuración que ya completaste está segura; inténtalo de nuevo o abre los detalles.',
             profileRecoveryBody: 'Tu Hogar personal está listo. Happier aún tiene que terminar de conectarlo.',
@@ -14026,15 +14040,7 @@ settingsSession: {
             useExistingDetail: 'Verifica su acceso y protege el registro sin cambiar el Hogar seleccionado.',
             useAnother: 'Usar otro Hogar',
             useAnotherDetail: 'Deja intacto este Hogar local y elige entre tus Hogares.',
-            blocked: {
-                runtime_unhealthy: 'Tu Home local necesita atención antes de poder iniciarse.',
-                home_auth_invalid: 'La autenticación del Home necesita atención.',
-                existing_runtime: 'Un Home local existente necesita una decisión antes de continuar la configuración.',
-                personal_home_erased: 'Tu Personal Home se eliminó. Inténtalo de nuevo para crear uno nuevo.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Los datos de tu Home se eliminaron. Aquí no queda nada por recuperar: crea un nuevo Personal Home o usa otro Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.es,
         },
     },
     settingsSearch: {

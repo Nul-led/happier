@@ -395,6 +395,8 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         companionPreferenceExists: input.companionHeaderAction?.preferenceExists === true,
         companionVisible: input.companionHeaderAction?.visible === true,
         companionItemCount: input.companionHeaderAction?.itemCount ?? 0,
+        companionPlacement: input.companionHeaderAction?.placement ?? null,
+        companionIsPhone: input.companionHeaderAction?.isPhone === true,
         hasCollaborationHeader: input.collaborationHeader !== undefined,
     });
 
@@ -404,8 +406,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
     // for authority-free headers rather than caching stale action closures.
     const hasLiveUiAuthority = input.pluginUiProjection != null
         || (input.workspaceSyncConflictCount ?? 0) > 0
-        || input.boardHeaderAction !== undefined
-        || input.companionHeaderAction !== undefined;
+        || input.boardHeaderAction !== undefined;
     if (!hasLiveUiAuthority) {
         const cached = SESSION_VIEW_HEADER_PROPS_CACHE.get(cacheKey);
         if (cached) {

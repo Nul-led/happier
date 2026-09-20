@@ -3,7 +3,10 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
-import { resolveTeamCredentialBrokerPoolForSaveInTx } from "./brokerPlacementResolver";
+import {
+    admitTeamCredentialBrokerPoolForBrokeredUseInTx,
+    resolveTeamCredentialBrokerPoolForSaveInTx,
+} from "./brokerPlacementResolver";
 
 describe("Team credential broker Pool placement save", () => {
     let harness: LightSqliteHarness;
@@ -12,7 +15,7 @@ describe("Team credential broker Pool placement save", () => {
     }, 180_000);
     afterAll(async () => { await harness?.close(); });
 
-    async function fixture() {
+    async function fixture(options?: Readonly<{ withEligibleMember?: boolean }>) {
         const custodian = await db.account.create({ data: { encryptionMode: "plain" } });
         const machine = await db.machine.create({ data: {
             id: `pool-broker-${custodian.id}`,
@@ -26,11 +29,17 @@ describe("Team credential broker Pool placement save", () => {
             id: crypto.randomUUID(),
             accountId: custodian.id,
             name: "Broker pool",
-            members: { create: { machineId: machine.id, priorityTier: 0, enabled: true } },
+            ...(options?.withEligibleMember === false
+                ? {}
+                : { members: { create: { machineId: machine.id, priorityTier: 0, enabled: true } } }),
         } });
         return {
             pool,
             save: () => inTx(tx => resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
+                custodianAccountId: custodian.id,
+                poolId: pool.id,
+            })),
+            admit: () => inTx(tx => admitTeamCredentialBrokerPoolForBrokeredUseInTx(tx, {
                 custodianAccountId: custodian.id,
                 poolId: pool.id,
             })),
@@ -40,6 +49,16 @@ describe("Team credential broker Pool placement save", () => {
     it("saves a Pool that carries one eligible persistent broker member", async () => {
         const f = await fixture();
         await expect(f.save()).resolves.toEqual({ ok: true, poolId: f.pool.id });
+        await expect(f.admit()).resolves.toEqual({ ok: true, poolId: f.pool.id });
+    });
+
+    // Saving a placement validates ownership, not that some member can run the
+    // source today. An empty or offline Pool stays a repairable placement the
+    // custodian can fix; brokered use is what must then find a ready member.
+    it("saves an owned Pool with no enabled members and refuses it only at brokered admission", async () => {
+        const f = await fixture({ withEligibleMember: false });
+        await expect(f.save()).resolves.toEqual({ ok: true, poolId: f.pool.id });
+        await expect(f.admit()).resolves.toEqual({ ok: false, error: "broker_unavailable" });
     });
 
     // A Home whose operator opted out of Machine Pools offers no Pool broker

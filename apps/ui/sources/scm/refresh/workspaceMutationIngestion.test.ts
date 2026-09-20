@@ -57,12 +57,40 @@ describe('createWorkspaceMutationIngestion', () => {
         flushNextTimer();
 
         expect(invalidateKnownMutation).toHaveBeenCalledTimes(1);
-        expect(invalidateKnownMutation).toHaveBeenCalledWith('s1', ['a.ts']);
+        expect(invalidateKnownMutation).toHaveBeenCalledWith('s1', ['a.ts'], null);
         expect(invalidateUnknownMutation).not.toHaveBeenCalled();
 
         ingestion.ingest('s1', [toolCallMessage('bash', { command: 'echo hi' })]);
         flushNextTimer();
 
         expect(invalidateUnknownMutation).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the same Session id on two Homes as two pending mutation scopes', () => {
+        const invalidateKnownMutation = vi.fn();
+        const invalidateUnknownMutation = vi.fn();
+        const timers: Array<() => void> = [];
+        const flushAllTimers = () => {
+            const pending = timers.splice(0, timers.length);
+            for (const fn of pending) fn();
+        };
+        const ingestion = createWorkspaceMutationIngestion({
+            debounceMs: 10,
+            minUnknownOnlyIntervalMs: 1000,
+            now: () => 0,
+            setTimer: (fn) => { timers.push(fn); return timers.length; },
+            clearTimer: () => {},
+            invalidateKnownMutation,
+            invalidateUnknownMutation,
+        });
+
+        ingestion.ingest('s1', [toolCallMessage('file-edit', { filePath: 'a.ts' })], 'home-a');
+        ingestion.ingest('s1', [toolCallMessage('file-edit', { filePath: 'b.ts' })], 'home-b');
+        flushAllTimers();
+
+        expect(invalidateKnownMutation.mock.calls).toEqual([
+            ['s1', ['a.ts'], 'home-a'],
+            ['s1', ['b.ts'], 'home-b'],
+        ]);
     });
 });

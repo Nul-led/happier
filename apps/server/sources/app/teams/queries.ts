@@ -13,7 +13,7 @@ import { AccountStatus, TeamMembershipStatus, TeamRole } from "@/storage/enums.g
 
 import {
     composeTeamActorContext,
-    qualifyTeamProjectionReadAuthenticationInTx,
+    qualifyTeamProjectionReadAuthenticationsInTx,
     type TeamOperationAuthenticationContext,
 } from "./actorContext";
 import { isEffectiveTeamMembership } from "./memberships/effectiveMembership";
@@ -146,10 +146,9 @@ export async function listTeamsForActorInTx(
         select: { teamId: true },
     })).map((row) => row.teamId));
 
-    const items: TeamsPageV1["items"] = [];
-    for (const row of page) {
+    const contexts = page.map((row) => {
         const membership = row.memberships[0] ?? null;
-        const context = composeTeamActorContext({
+        return composeTeamActorContext({
             team: row,
             actorAccountId: input.actorAccountId,
             accountStatus: account.status,
@@ -159,11 +158,19 @@ export async function listTeamsForActorInTx(
             homeAuthority: authority,
             ownerRequired: !teamsWithActiveOwner.has(row.id),
         });
-        if (input.scope === "member") {
-            const qualification = await qualifyTeamProjectionReadAuthenticationInTx(tx, {
-                context,
-                ...input.authentication,
-            });
+    });
+    // One qualification for the whole page. The member scope is the only one
+    // that carries Team-derived authority, and the first failing row in page
+    // order still refuses the whole read exactly as before.
+    const qualifications = input.scope === "member"
+        ? await qualifyTeamProjectionReadAuthenticationsInTx(tx, { contexts, ...input.authentication })
+        : null;
+
+    const items: TeamsPageV1["items"] = [];
+    for (const context of contexts) {
+        if (qualifications) {
+            const qualification = qualifications.get(context.team.id)
+                ?? { ok: false as const, error: "team_authentication_unavailable" as const };
             if (!qualification.ok) return { ok: false, error: qualification.error };
         }
         items.push(projectTeamSummaryV1({

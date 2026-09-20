@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { projectLegacySessionAccessCapabilitiesV1 } from '@happier-dev/protocol';
 
 import type { Session } from '@/sync/domains/state/storageTypes';
 import { storage } from '@/sync/domains/state/storage';
@@ -70,44 +69,6 @@ describe('buildUpdatedSessionFromSocketUpdate (plaintext)', () => {
       updatedAt: 2,
       activeEntries: [expect.objectContaining({ title: 'Home A' })],
     }));
-  });
-
-  it('clears an owner-only Agent headline when an access-only socket update makes the row a recipient', async () => {
-    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
-      renderable: {
-        ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
-        agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
-      },
-      updateBody: {
-        effectiveAccess: {
-          v: 1,
-          level: 'view',
-          capabilities: projectLegacySessionAccessCapabilitiesV1({ level: 'view', canApprovePermissions: false }),
-        },
-      },
-      updateSeq: 2,
-      updateCreatedAt: 2,
-      sessionEncryption: null,
-    });
-
-    expect(patch.agentActivityHeadline).toBeNull();
-    expect(patch.access).toMatchObject({ role: 'recipient', level: 'view' });
-  });
-
-  it('clears an owner-only Agent headline when a supplied effective-access projection is malformed', async () => {
-    const patch = await buildUpdatedSessionListRenderablePatchFromSocketUpdate({
-      renderable: {
-        ...createSession({ sessionId: 'same-id', encryptionMode: 'plain' }),
-        agentActivityHeadline: { v: 1, backendId: 'claude', updatedAt: 1, activeEntries: [] },
-      },
-      updateBody: { effectiveAccess: { v: 1, level: 'view' } },
-      updateSeq: 2,
-      updateCreatedAt: 2,
-      sessionEncryption: null,
-    });
-
-    expect(patch.agentActivityHeadline).toBeNull();
-    expect(patch.access).toBeNull();
   });
 
   it.each(['wrong_key', 'unsupported', 'ready'] as const)('uses authenticated metadata outcome for socket availability (%s)', async (kind) => {

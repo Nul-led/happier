@@ -130,6 +130,16 @@ export async function requirePresentUserOrExternalDiscussionPost(
     if (request.authAuthority === "present_user" && request.authTokenKind === "account") {
         return undefined;
     }
+    // A Runner is this Session's own unattended runtime. The credential
+    // boundary has already bound the request to the exact Session named in the
+    // path, so posting here needs no second Session comparison and no external
+    // Action target; every other Discussion mutation stays present-user only.
+    if (
+        request.authAuthority === "account_automation"
+        && request.authTokenKind === "ephemeral_session_runner"
+    ) {
+        return undefined;
+    }
     const sessionId = typeof request.params === "object" && request.params !== null
         ? Reflect.get(request.params, "sessionId")
         : null;
@@ -170,7 +180,11 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
 
     discussionsApp.get(SESSION_DISCUSSION_HTTP_PATHS_V1.collection, {
         preHandler: app.authenticate,
-        config: { allowApiToken: true, rateLimit },
+        config: {
+            allowApiToken: true,
+            rateLimit,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteParamsV1Schema,
@@ -215,7 +229,11 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
 
     discussionsApp.get(SESSION_DISCUSSION_HTTP_PATHS_V1.discussion, {
         preHandler: app.authenticate,
-        config: { allowApiToken: true, rateLimit },
+        config: {
+            allowApiToken: true,
+            rateLimit,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,
@@ -296,7 +314,11 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
 
     discussionsApp.get(SESSION_DISCUSSION_HTTP_PATHS_V1.messages, {
         preHandler: app.authenticate,
-        config: { allowApiToken: true, rateLimit },
+        config: {
+            allowApiToken: true,
+            rateLimit,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
+        },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {
             params: SessionDiscussionRouteDiscussionParamsV1Schema,
@@ -321,6 +343,7 @@ export function registerSessionDiscussionRoutes(app: Fastify) {
         preHandler: [app.authenticate, requirePresentUserOrExternalDiscussionPost],
         config: {
             rateLimit,
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
         },
         errorHandler: sessionDiscussionRouteErrorHandler,
         schema: {

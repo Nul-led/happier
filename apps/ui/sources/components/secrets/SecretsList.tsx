@@ -8,6 +8,7 @@ import { ItemList } from '@/components/ui/lists/ItemList';
 import { ItemRowActions } from '@/components/ui/lists/ItemRowActions';
 import { InlineAddExpander } from '@/components/ui/forms/InlineAddExpander';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
+import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
 import { Typography } from '@/constants/Typography';
 import { t } from '@/text';
 import { Text, TextInput } from '@/components/ui/text/Text';
@@ -72,6 +73,30 @@ function sharedSecretStatusLabel(status: SavedSecretCatalogEntryV1['materialStat
         case 'deleted': return t('secrets.catalog.status.deleted');
         case 'update_required': return t('secrets.catalog.status.update_required');
     }
+}
+
+/**
+ * Where a shared secret came from, in the words the Home already projected.
+ *
+ * Picking a shared secret decides whose credential a Session spends, so the row
+ * states the recipient-safe owner and the access that carries it. Both facts are
+ * read straight from the catalog projection — nothing is inferred from the
+ * focused Home, the Team the surface happens to sit in, or the secret's name —
+ * and an owner row states neither, because it is the person's own secret.
+ */
+function sharedSecretProvenanceSegments(entry: SavedSecretCatalogEntryV1): readonly string[] {
+    const ownerName = entry.owner ? formatAccountDisplayName(entry.owner) : null;
+    return [
+        ...(entry.relationship === 'recipient' && ownerName
+            ? [t('secrets.catalog.provenance.sharedBy', { owner: ownerName })]
+            : []),
+        ...entry.accessSources.map((source) => {
+            if (source.kind === 'account') return t('secrets.catalog.provenance.direct');
+            return t('secrets.catalog.provenance.via', {
+                source: source.kind === 'group' ? `${source.teamName} · ${source.name}` : source.name,
+            });
+        }),
+    ];
 }
 
 export function SecretsList(props: SecretsListProps) {
@@ -184,6 +209,7 @@ export function SecretsList(props: SecretsListProps) {
 
     const renderSharedEntry = (entry: SavedSecretCatalogEntryV1, idx: number, total: number) => {
         const resolvedStatus = props.resolveSharedReference?.(entry.ref).status ?? entry.materialStatus;
+        const provenance = sharedSecretProvenanceSegments(entry);
         const ready = props.allowSharedSelection !== false
             && resolvedStatus === 'ready'
             && entry.capabilities.use;
@@ -214,12 +240,13 @@ export function SecretsList(props: SecretsListProps) {
                 key={entry.ref}
                 testID={`saved-secret:${entry.ref}`}
                 title={entry.name ?? t('secrets.catalog.unavailableName')}
-                subtitle={sharedSecretStatusLabel(resolvedStatus)}
+                subtitle={[...provenance, sharedSecretStatusLabel(resolvedStatus)].join(' · ')}
                 accessibilityLabel={[
                     entry.name ?? t('secrets.catalog.unavailableName'),
                     entry.relationship === 'owner'
                         ? t('secrets.catalog.relationship.owner')
                         : t('secrets.catalog.relationship.recipient'),
+                    ...provenance,
                     sharedSecretStatusLabel(resolvedStatus),
                 ].join(', ')}
                 icon={<Icon name="key" size={29} color={theme.colors.button.secondary.tint} />}
@@ -465,17 +492,5 @@ const stylesheet = StyleSheet.create((theme) => ({
         lineHeight: Platform.select({ ios: 20, default: 22 }),
         letterSpacing: Platform.select({ ios: -0.24, default: 0.1 }),
         color: theme.colors.input.text,
-        ...(Platform.select({
-            web: {
-                outline: 'none',
-                outlineStyle: 'none',
-                outlineWidth: 0,
-                outlineColor: 'transparent',
-                boxShadow: 'none',
-                WebkitBoxShadow: 'none',
-                WebkitAppearance: 'none',
-            },
-            default: {},
-        }) as object),
     },
 }));

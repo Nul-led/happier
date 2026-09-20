@@ -105,6 +105,13 @@ export type SessionWidgetHostProps = Readonly<{
     /** Shared layout width intent, reported to assistive technology; the grid applies it. */
     width?: SessionBoardItemWidth;
     heightBounds: SessionBoardHeightBounds;
+    /**
+     * The mounted surface decides, from its own scroll geometry, that this card
+     * is far enough outside the viewport that its body is not worth building
+     * yet. Card chrome — title, menu, accessibility identity — always renders;
+     * only the document, hosted surface or plugin frame waits.
+     */
+    deferBody?: boolean;
     /** Bounded renderer height report for an `auto` item, when the host measured one. */
     reportedHeight?: number | null;
     /**
@@ -650,6 +657,15 @@ export function SessionWidgetHost(props: SessionWidgetHostProps): React.ReactEle
                 accessibilitySemantics="status"
                 {...(stateActions[0] ? { action: stateActions[0] } : {})}
                 {...(stateActions[1] ? { secondaryAction: stateActions[1] } : {})}
+            />
+        )
+        : props.deferBody === true
+        ? (
+            <View
+                testID={`${testID}-deferred`}
+                style={{ minHeight: props.heightBounds.min }}
+                accessibilityElementsHidden
+                importantForAccessibility="no-hide-descendants"
             />
         )
         : state.kind === 'ready' && state.item.source.kind === 'declarative'

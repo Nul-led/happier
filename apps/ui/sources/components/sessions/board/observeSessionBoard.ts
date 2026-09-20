@@ -10,9 +10,14 @@ import type { SessionSystemRecordRepository } from '@/sync/domains/sessionSystem
 import type { SessionStoredContentContext } from '@/sync/encryption/sessionStoredContent';
 import type { SessionBoardCapabilities, SessionBoardSnapshot } from '@/sync/domains/session/board';
 import type { SessionSystemRecordFetchResult } from '@/sync/domains/sessionSystemRecords/transport';
+import type { ServerCredentialAccountScopeResolution } from '@/sync/domains/scope/serverCredentialAccountScope';
 
+// The credential-resolution kinds are read from their own owner rather than
+// copied here, so a new non-bound kind can never silently fall outside the
+// Board's unavailable reasons.
 export type SessionBoardBindingUnavailableReason = Exclude<SessionSystemRecordFetchResult<never>, { status: 'ok' }>['status']
-    | 'board_feature_disabled' | 'invalid_address' | 'unknown_home' | 'signed_out';
+    | 'board_feature_disabled' | 'invalid_address'
+    | Exclude<ServerCredentialAccountScopeResolution['kind'], 'bound' | 'resolving'>;
 export type SessionBoardBinding = Readonly<{ status: 'ready'; snapshot: SessionBoardSnapshot }>
     | Readonly<{ status: 'unavailable'; reason: SessionBoardBindingUnavailableReason }>;
 export type SessionBoardAuthority = Readonly<{

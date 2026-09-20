@@ -138,6 +138,17 @@ export const TeamInvitationPreviewV1Schema = z.object({
      * then shows no disclosure rather than asserting a mode it cannot substantiate.
      */
     storageMode: z.enum(['plain', 'encrypted']).nullable(),
+    /**
+     * Who runs this Home, read from the runtime's own published purpose.
+     * `personal` is a Home running on somebody's own computer, which is the one
+     * consequence a person has to know before joining: it can be offline. A Home
+     * that publishes no purpose is `null` and the join screen says nothing rather
+     * than inferring hosting from a URL, a storage mode or the focused Home.
+     *
+     * Additive: a Home that predates this field simply omits it and reads as the
+     * same "publishes no hosting" answer.
+     */
+    hosting: z.enum(['personal', 'shared']).nullable().optional().default(null),
   }).strict(),
   team: z.object({
     teamId: TeamIdSchema,

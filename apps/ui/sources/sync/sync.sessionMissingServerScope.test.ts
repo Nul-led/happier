@@ -138,6 +138,7 @@ vi.mock('@/activity/notifications/runtime/activityLocalNotificationBus', async (
 });
 
 import { storage } from './domains/state/storage';
+import { scmStatusSync } from '@/scm/scmStatusSync';
 import { actionOperationStore } from './domains/actionOperations/actionOperationStore';
 import type { ApiUpdateContainer } from './api/types/apiTypes';
 import {
@@ -2815,7 +2816,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             .toEqual(['home-b-second', 'home-b-first']);
     });
 
-    it('does not settle or clear an exact-Home pending edit after its captured credentials are replaced', async () => {
+    it('settles an accepted exact-Home pending edit without local projection after its captured credentials are replaced', async () => {
         const sessionId = 'duplicate-pending-edit-session';
         const activeServer = await upsertServerProfile({ serverUrl: 'https://home-a-edit.example', name: 'Home A' });
         const mountedServer = await upsertServerProfile({ serverUrl: 'https://home-b-edit.example', name: 'Home B' });
@@ -2883,7 +2884,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         current = false;
         releasePatch();
 
-        await expect(update).rejects.toThrow('Pending owner server-account scope changed');
+        // The 204 already committed the edit on Home B. The retired scope stops
+        // the local projection, and must not clear the active duplicate Session
+        // state or turn the accepted write into a caller rejection.
+        await expect(update).resolves.toBeUndefined();
         expect(requestMock).not.toHaveBeenCalled();
         expect(storage.getState().sessions[sessionId]).toMatchObject({
             serverId: activeServer.id,
@@ -3075,9 +3079,18 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
                 });
             }
 
+            if (crossing === 'before transport') {
+                await expect(owner.request('/v2/sessions/s/pending', { method: 'POST' }))
+                    .rejects.toThrow('Pending owner server-account scope changed');
+                expect(requestMock).toHaveBeenCalledTimes(0);
+                return;
+            }
+            // The request already reached the server; a scope that retires while
+            // it is in flight cannot unsend it, so the adapter returns the
+            // response it actually received.
             await expect(owner.request('/v2/sessions/s/pending', { method: 'POST' }))
-                .rejects.toThrow('Pending owner server-account scope changed');
-            expect(requestMock).toHaveBeenCalledTimes(crossing === 'before transport' ? 0 : 1);
+                .resolves.toBeInstanceOf(Response);
+            expect(requestMock).toHaveBeenCalledTimes(1);
         },
     );
 
@@ -6106,5 +6119,190 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(sessionMessages?.messagesById[appliedMessageId as string]).toMatchObject({
             localId: 'segment-1',
         });
+    });
+    // The on-open catch-up, the deferred-newer drain and the stale-region repair each
+    // already resolve the exact Home their page came from. Handing the workspace-mutation
+    // owner a bare Session id instead makes it invalidate an ambiguous Session: the same
+    // Session id can exist on two Homes, and the ingestion owner keys its pending
+    // mutations by Home.
+    function scmMutationApiMessage(id: string, seq: number) {
+        return {
+            id,
+            seq,
+            localId: null,
+            sidechainId: null,
+            content: {
+                t: 'plain' as const,
+                v: {
+                    role: 'agent' as const,
+                    content: {
+                        type: 'output',
+                        data: {
+                            type: 'assistant',
+                            uuid: `uuid-${id}`,
+                            message: {
+                                role: 'assistant',
+                                model: 'claude-3',
+                                content: [{
+                                    type: 'tool_use',
+                                    id: `call-${id}`,
+                                    name: 'Edit',
+                                    input: { file_path: 'apps/ui/sources/app.ts' },
+                                }],
+                            },
+                        },
+                    },
+                },
+            },
+            createdAt: seq,
+            updatedAt: seq,
+        };
+    }
+
+    function scmMutationNewerPageResponse(id: string, seq: number): Response {
+        return new Response(
+            JSON.stringify({ messages: [scmMutationApiMessage(id, seq)], hasMore: false, nextAfterSeq: null }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    function scmEmptyNewerPageResponse(): Response {
+        return new Response(
+            JSON.stringify({ messages: [], hasMore: false, nextAfterSeq: null }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+        );
+    }
+
+    async function seedWorkspaceMutationSession(params: Readonly<{
+        sessionId: string;
+        serverId: string;
+        sessionSeq: number;
+        materializedMaxSeq: number;
+        historyLength: number;
+    }>): Promise<typeof import('./sync').sync> {
+        const { sync } = await import('./sync');
+        resolvePreferredServerIdForSessionIdMock.mockReturnValue(params.serverId);
+        // This Home IS the applied transport, so the exact-Home page travels the
+        // active socket request the suite already mocks; the assertion is only
+        // about which Home the ingested mutation is attributed to.
+        appliedServerSnapshotOverride.current = {
+            serverId: params.serverId,
+            serverUrl: `https://${params.serverId}.example`,
+            generation: 0,
+        };
+        appliedRuntimeAvailableOverride.current = true;
+        storage.getState().applySessions([{
+            ...createSession(params.sessionId),
+            seq: params.sessionSeq,
+            serverId: params.serverId,
+            encryptionMode: 'plain',
+        } as Session]);
+        const history = Array.from({ length: params.historyLength }, (_unused, index) => ({
+            id: `mm${index + 1}`,
+            localId: null,
+            createdAt: index + 1,
+            role: 'user',
+            content: { type: 'text', text: `mm${index + 1}` },
+            seq: index + 1,
+            isSidechain: false,
+        })) as unknown as NormalizedMessage[];
+        storage.getState().applyMessages(params.sessionId, history);
+        storage.getState().applyMessagesLoaded(params.sessionId);
+        const syncInternals = sync as any;
+        syncInternals.encryption = { getSessionEncryption: () => null };
+        syncInternals.activeServerSessionIds = new Set<string>([params.sessionId]);
+        syncInternals.hasFetchedSessionsSnapshotForActiveServer = true;
+        syncInternals.isForeground = true;
+        syncInternals.sessionMaterializedMaxSeqById = { [params.sessionId]: params.materializedMaxSeq };
+        markSessionSurfaceVisible(params.sessionId);
+        return sync;
+    }
+
+    it('invalidates workspace mutations from an on-open catch-up page on the exact Home it came from', async () => {
+        const sessionId = 'scm-catchup-home-session';
+        const sync = await seedWorkspaceMutationSession({
+            sessionId,
+            serverId: 'home-scm-catchup',
+            sessionSeq: 20,
+            materializedMaxSeq: 10,
+            historyLength: 10,
+        });
+        requestMock.mockImplementation((path: string) => Promise.resolve(
+            String(path).includes('afterSeq=')
+                ? scmMutationNewerPageResponse('mm11', 11)
+                : scmEmptyNewerPageResponse(),
+        ));
+        const invalidateFromMutation = vi.spyOn(scmStatusSync, 'invalidateFromMutation').mockImplementation(() => {});
+
+        try {
+            await sync.refreshSessionMessages(sessionId);
+            await vi.waitFor(() => {
+                expect(invalidateFromMutation).toHaveBeenCalledWith(sessionId, 'home-scm-catchup');
+            }, { timeout: 5_000 });
+        } finally {
+            invalidateFromMutation.mockRestore();
+        }
+    });
+
+    it('invalidates workspace mutations from the deferred-newer drain on the exact Home it came from', async () => {
+        const sessionId = 'scm-drain-home-session';
+        const sync = await seedWorkspaceMutationSession({
+            sessionId,
+            serverId: 'home-scm-drain',
+            sessionSeq: 600,
+            materializedMaxSeq: 10,
+            historyLength: 10,
+        });
+        sync.onSessionViewportChange(sessionId, { isPinned: false, offsetY: 420, shouldRestoreViewport: true });
+        requestMock.mockImplementation(() => Promise.resolve(scmEmptyNewerPageResponse()));
+        await sync.refreshSessionMessages(sessionId);
+        expect(sync.hasDeferredNewerMessages(sessionId)).toBe(true);
+
+        requestMock.mockImplementation((path: string) => Promise.resolve(
+            String(path).includes('afterSeq=')
+                ? scmMutationNewerPageResponse('mm11', 11)
+                : scmEmptyNewerPageResponse(),
+        ));
+        const invalidateFromMutation = vi.spyOn(scmStatusSync, 'invalidateFromMutation').mockImplementation(() => {});
+
+        try {
+            sync.maybeDrainDeferredNewerMessages(sessionId, { isPinned: false, distanceFromBottomPx: 10 });
+            await vi.waitFor(() => {
+                expect(invalidateFromMutation).toHaveBeenCalledWith(sessionId, 'home-scm-drain');
+            }, { timeout: 5_000 });
+        } finally {
+            invalidateFromMutation.mockRestore();
+        }
+    });
+
+    it('invalidates workspace mutations from the stale-region repair on the exact Home it came from', async () => {
+        const sessionId = 'scm-stale-home-session';
+        const sync = await seedWorkspaceMutationSession({
+            sessionId,
+            serverId: 'home-scm-stale',
+            sessionSeq: 20,
+            materializedMaxSeq: 20,
+            historyLength: 20,
+        });
+        requestMock.mockImplementation((path: string) => Promise.resolve(
+            String(path).includes('afterSeq=14')
+                ? scmMutationNewerPageResponse('mm15', 15)
+                : scmEmptyNewerPageResponse(),
+        ));
+        (sync as any).markSessionTranscriptStale(sessionId, {
+            updateType: 'message-updated',
+            seq: 15,
+            messageId: 'mm15',
+        });
+        const invalidateFromMutation = vi.spyOn(scmStatusSync, 'invalidateFromMutation').mockImplementation(() => {});
+
+        try {
+            sync.onSessionVisible(sessionId);
+            await vi.waitFor(() => {
+                expect(invalidateFromMutation).toHaveBeenCalledWith(sessionId, 'home-scm-stale');
+            }, { timeout: 5_000 });
+        } finally {
+            invalidateFromMutation.mockRestore();
+        }
     });
 });

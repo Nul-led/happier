@@ -154,6 +154,7 @@ import {
 import { resolveVisibleMachinesForActiveServerFromState } from './domains/machines/resolveMachinesForActiveServerFromState';
 import { isMachineVisibleForSelection } from '@/sync/domains/machines/identity/filterVisibleMachines';
 import type { SessionsDomainSlice, StorageState } from './types';
+import { createFriendRequestCountSelector } from './friendRequestCount';
 
 export { useAccountSettingsScope } from './settingsWriters';
 export type { MessageStoreRef } from './messageSelection';
@@ -2533,8 +2534,12 @@ export function useSessionProjectScmSnapshot(sessionId: string | null, serverId?
   );
 }
 
+/**
+ * Registers the mounted SCM surface's exact Session address, so realtime routing and the
+ * workspace-mutation side channel can never match the same Session id on another Home.
+ */
 export function useSessionRealtimeScmTranscriptConsumer(
-  sessionId: string | null,
+  address: Readonly<{ serverId?: string | null; sessionId: string | null }>,
   snapshot: ScmWorkingSnapshot | null,
 ): void {
   const mountedScmConsumerResetVersion = React.useSyncExternalStore(
@@ -2542,14 +2547,17 @@ export function useSessionRealtimeScmTranscriptConsumer(
     getMountedSessionRealtimeScmConsumerScopeResetVersion,
     getMountedSessionRealtimeScmConsumerScopeResetVersion,
   );
+  const sessionId = address.sessionId;
+  const serverId = address.serverId ?? null;
 
   React.useEffect(() => {
     if (!sessionId) return undefined;
     const scope = snapshot
-      ? buildSessionRealtimeScmScopeFromSnapshot(getStorage().getState(), sessionId, snapshot) ?? { sessionId }
-      : { sessionId };
+      ? buildSessionRealtimeScmScopeFromSnapshot(getStorage().getState(), { serverId, sessionId }, snapshot)
+        ?? { serverId, sessionId }
+      : { serverId, sessionId };
     return registerSessionRealtimeScmConsumerScope(scope);
-  }, [mountedScmConsumerResetVersion, sessionId, snapshot]);
+  }, [mountedScmConsumerResetVersion, serverId, sessionId, snapshot]);
 }
 
 export function useSessionProjectScmSnapshotError(
@@ -3204,6 +3212,12 @@ export function useFriendRequests() {
       return requests.length > 0 ? requests : emptyArray as UserProfile[];
     })
   );
+}
+
+const selectFriendRequestCount = createFriendRequestCountSelector();
+
+export function useFriendRequestCount(): number {
+  return getStorage()(selectFriendRequestCount);
 }
 
 export function useAcceptedFriends() {

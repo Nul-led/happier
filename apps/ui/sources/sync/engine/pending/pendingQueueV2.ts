@@ -2821,8 +2821,11 @@ export async function updatePendingMessageV2(params: {
     isCurrent?: () => boolean | Promise<boolean>;
 }): Promise<PendingMessageComposerAdmissionAcceptedFactV1 | undefined> {
     const { sessionId, pendingId, text, encryption, request } = params;
+    const isOwnerCurrent = async (): Promise<boolean> => (
+        !params.isCurrent || await params.isCurrent()
+    );
     const assertCurrent = async (): Promise<void> => {
-        if (params.isCurrent && !await params.isCurrent()) {
+        if (!await isOwnerCurrent()) {
             throw new Error('Pending owner server-account scope changed');
         }
     };
@@ -3017,10 +3020,8 @@ export async function updatePendingMessageV2(params: {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(writeBody),
         });
-        await assertCurrent();
         if (!response.ok) {
             await assertPendingResponseOk(response, 'Failed to update pending message');
-            await assertCurrent();
         }
         // A replacement identity changes the server row's lookup key. Do not
         // update the local projection unless this exact response confirms it;
@@ -3029,7 +3030,6 @@ export async function updatePendingMessageV2(params: {
         let confirmedLocalId = localId;
         if (params.replacementLocalId) {
             const payload = await response.json().catch(() => null) as unknown;
-            await assertCurrent();
             const responseLocalId = isPlainObject(payload)
                 ? readPendingLocalId(payload.localId)
                 : null;
@@ -3054,8 +3054,11 @@ export async function updatePendingMessageV2(params: {
         // free to overwrite the write the server just accepted.
         markPendingLocalIdAcceptedAfterSnapshotCapture(params.outboxScope, sessionId, confirmedLocalId, recipient);
         supersedePendingSnapshotRefreshForLocalWrite(params.outboxScope, sessionId);
+        // Past that acceptance boundary a retired owner scope may only stop the
+        // LOCAL projection — the write is already durable, and rejecting here
+        // loses the Composer's one post-accept settlement and its prepared media.
+        if (!await isOwnerCurrent()) return acceptedComposerAdmission;
         const afterPatch = (await findPendingOutboxMessage(sessionId, localId, params.outboxScope));
-        await assertCurrent();
         // A 2xx is the durable acceptance boundary. A cancellation that began
         // while this PATCH was in flight still owns projection removal, but it
         // must not turn an accepted write into a rejection: callers need the
@@ -3075,9 +3078,8 @@ export async function updatePendingMessageV2(params: {
 
         if (afterPatch?.operation === 'enqueue') {
             (await removePendingOutboxMessage(sessionId, localId, params.outboxScope, 'enqueue'));
-            await assertCurrent();
         }
-        await assertCurrent();
+        if (!await isOwnerCurrent()) return acceptedComposerAdmission;
         storage.getState().upsertPendingMessage(sessionId, {
             ...currentProjection,
             ...(afterPatch?.operation === 'enqueue'

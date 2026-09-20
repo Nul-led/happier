@@ -19,11 +19,21 @@ import {
     createSavedSecretResourceInTx,
     deleteSavedSecretResourceInTx,
     listSavedSecretResourceMaterialsForAccountInTx,
+    listSavedSecretResourcesForAccountInTx,
     promoteSavedSecretResourceInTx,
     repairSavedSecretResourceKeyEnvelopesInTx,
     setSavedSecretResourceGrantsInTx,
     updateSavedSecretResourceInTx,
 } from "./savedSecretResourceService";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+
+const ACCEPTED_EMAIL_PASSWORD = { kind: "home_method" as const, methodId: "email_password" };
+const EMAIL_PASSWORD_EVIDENCE = [ACCEPTED_EMAIL_PASSWORD];
+const HOME_OFFERS_EMAIL_PASSWORD = {
+    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+    HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+    HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+};
 
 function createE2eeAccountMaterial() {
     const signing = tweetnacl.sign.keyPair();
@@ -101,6 +111,8 @@ describe("Saved Secret resource service (SQLite integration)", () => {
             () => db.teamGroup.deleteMany(),
             () => db.teamMembership.deleteMany(),
             () => db.team.deleteMany(),
+            () => db.accountPasswordCredential.deleteMany(),
+            () => db.accountIdentity.deleteMany(),
             () => db.userRelationship.deleteMany(),
             () => db.account.deleteMany(),
         ]);
@@ -436,6 +448,117 @@ describe("Saved Secret resource service (SQLite integration)", () => {
             teamGrants: [team.id],
         }));
         expect(revokedResult).toEqual({ ok: false, error: "forbidden" });
+    });
+
+    it("withholds a restricted Team's shared secret from a member whose credential does not qualify", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const member = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const team = await db.team.create({
+            data: {
+                name: "Restricted audience",
+                authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] },
+            },
+            select: { id: true },
+        });
+        await db.teamMembership.createMany({
+            data: [
+                { teamId: team.id, accountId: custodian.id, role: "owner" },
+                { teamId: team.id, accountId: member.id, role: "member" },
+            ],
+        });
+        await db.accountIdentity.create({
+            data: { accountId: custodian.id, provider: "email", providerUserId: "owner@example.test", profile: {} },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: custodian.id,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("owner password factor")),
+                },
+            },
+        });
+        await db.accountIdentity.create({
+            data: { accountId: member.id, provider: "email", providerUserId: "member@example.test", profile: {} },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: member.id,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("member password factor")),
+                },
+            },
+        });
+
+        const qualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authenticationAuthority: "present_user" as const,
+            authenticationEvidence: EMAIL_PASSWORD_EVIDENCE,
+        };
+        const unqualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authenticationAuthority: "present_user" as const,
+            authenticationEvidence: undefined,
+        };
+
+        expect(await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: custodian.id,
+            authentication: qualified,
+            resourceId: "resource_restricted_team",
+            displayName: "Team token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Team token", kind: "token", value: "team-value" } },
+            teamGrants: [team.id],
+        }))).toMatchObject({ ok: true });
+        expect(await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: custodian.id,
+            authentication: qualified,
+            resourceId: "resource_direct_grant",
+            displayName: "Direct token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Direct token", kind: "token", value: "direct-value" } },
+            accountGrants: [member.id],
+        }))).toMatchObject({ ok: true });
+
+        // The member is structurally an active non-guest member of the Team, but
+        // presents no evidence of the accepted method.
+        const withoutEvidence = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, unqualified));
+        expect(withoutEvidence.map((entry) => (entry.materialStatus === "resource_corrupt" ? null : entry.ref))).toEqual([formatSharedSavedSecretRefV1("resource_direct_grant")]);
+        const materialsWithoutEvidence = await inTx((tx) =>
+            listSavedSecretResourceMaterialsForAccountInTx(tx, member.id, unqualified));
+        expect(materialsWithoutEvidence.map((row) => (row.entry.materialStatus === "resource_corrupt" ? null : row.entry.ref))).toEqual([formatSharedSavedSecretRefV1("resource_direct_grant")]);
+
+        const withEvidence = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, qualified));
+        expect([...withEvidence.map((entry) => (entry.materialStatus === "resource_corrupt" ? null : entry.ref))].sort())
+            .toEqual([
+                formatSharedSavedSecretRefV1("resource_direct_grant"),
+                formatSharedSavedSecretRefV1("resource_restricted_team"),
+            ].sort());
+
+        // The custodian's own resources never depend on the Team credential.
+        const ownerView = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, custodian.id, unqualified));
+        expect([...ownerView.map((entry) => (entry.materialStatus === "resource_corrupt" ? null : entry.ref))].sort())
+            .toEqual([
+                formatSharedSavedSecretRefV1("resource_direct_grant"),
+                formatSharedSavedSecretRefV1("resource_restricted_team"),
+            ].sort());
+
+        // A Team audience cannot be written with an unqualified credential either.
+        expect(await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: member.id,
+            authentication: unqualified,
+            resourceId: "resource_member_unqualified_team",
+            displayName: "Member token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Member token", kind: "token", value: "member-value" } },
+            teamGrants: [team.id],
+        }))).toEqual({ ok: false, error: "forbidden" });
     });
 
     it("replaces explicit grants under one owner-only resource revision CAS", async () => {

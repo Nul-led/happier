@@ -55,6 +55,9 @@ describe("ordinary authenticated Follow context admission", () => {
     afterEach(async () => {
         if (!harness) return;
         await db.sessionShare.deleteMany();
+        await db.ephemeralRunnerActivation.deleteMany();
+        await db.accessKey.deleteMany();
+        await db.machine.deleteMany();
         await db.session.deleteMany();
         await db.team.deleteMany();
         await db.account.deleteMany();
@@ -196,6 +199,95 @@ describe("ordinary authenticated Follow context admission", () => {
                 authenticatedAccountId: runtime.id, sourceSessionId, destinationSessionId,
             }))).toEqual({ ok: false, reason: "unavailable" });
         }
+    });
+
+    it("resolves a Runner's credential from its persisted activation instead of an evidence-free automation credential", async () => {
+        const creator = await createAccount();
+        const destination = await createSession(creator.id);
+        const machineId = `runner-${randomUUID()}`;
+        await db.machine.create({ data: {
+            id: machineId,
+            accountId: creator.id,
+            metadata: "{}",
+            kind: "ephemeral_session_runner",
+            installationId: "runner-installation",
+            installationPublicKey: randomBytes(32),
+        } });
+        const activationId = randomUUID();
+        await db.ephemeralRunnerActivation.create({ data: {
+            id: activationId,
+            creatorAccountId: creator.id,
+            creatorTokenEpoch: creator.tokenEpoch,
+            draftId: `draft-${randomUUID()}`,
+            sessionId: destination.id,
+            machineId,
+            state: "materialized",
+            workspacePolicy: "choose_on_endpoint",
+            homeServerIdentityId: "home",
+            activationSigningPublicKey: "a".repeat(43),
+            authoringCommitment: "b".repeat(43),
+            artifact: {},
+            endpointFactsRecipient: {},
+            authenticationEvidence: { v: 1, evidence: [{ kind: "home_method", methodId: "email_password" }] },
+        } });
+        const principal = {
+            kind: "ephemeral_session_runner" as const,
+            authority: "session_runtime" as const,
+            accountId: creator.id,
+            activationId,
+            sessionId: destination.id,
+            machineId,
+            installationId: "runner-installation",
+            installationPublicKey: "c".repeat(43),
+            creatorTokenEpoch: creator.tokenEpoch,
+        };
+
+        // The Runner holds no request credential of its own; the activation the
+        // creator authorized is its only honest evidence.
+        expect(await inTx(tx => contextInjection.resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, principal)))
+            .toMatchObject({
+                authority: "account_automation",
+                authenticationEvidence: [{ kind: "home_method", methodId: "email_password" }],
+            });
+
+        // An activation that persisted no evidence stays an unqualified
+        // automation credential rather than inheriting the observer's.
+        const bareActivationId = randomUUID();
+        const bareDestination = await createSession(creator.id);
+        const bareMachineId = `runner-${randomUUID()}`;
+        await db.machine.create({ data: {
+            id: bareMachineId,
+            accountId: creator.id,
+            metadata: "{}",
+            kind: "ephemeral_session_runner",
+            installationId: "runner-installation-bare",
+            installationPublicKey: randomBytes(32),
+        } });
+        await db.ephemeralRunnerActivation.create({ data: {
+            id: bareActivationId,
+            creatorAccountId: creator.id,
+            creatorTokenEpoch: creator.tokenEpoch,
+            draftId: `draft-${randomUUID()}`,
+            sessionId: bareDestination.id,
+            machineId: bareMachineId,
+            state: "materialized",
+            workspacePolicy: "choose_on_endpoint",
+            homeServerIdentityId: "home",
+            activationSigningPublicKey: "a".repeat(43),
+            authoringCommitment: "b".repeat(43),
+            artifact: {},
+            endpointFactsRecipient: {},
+        } });
+        expect(await inTx(tx => contextInjection.resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, {
+            ...principal, activationId: bareActivationId, sessionId: bareDestination.id, machineId: bareMachineId,
+        }))).toMatchObject({ authority: "account_automation", authenticationEvidence: undefined });
+
+        // A destination runtime keeps the credential its own request was admitted with.
+        expect(await inTx(tx => contextInjection.resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, {
+            kind: "destination_runtime",
+            destinationRuntimeAccountId: creator.id,
+            authentication,
+        }))).toEqual(authentication);
     });
 
     it("admits only the current edge's own source, never a sibling Session the runtime can read", async () => {

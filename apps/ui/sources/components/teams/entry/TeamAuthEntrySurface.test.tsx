@@ -31,10 +31,27 @@ const approvalArtifactState = vi.hoisted(() => ({
 }));
 
 const routerReplaceSpy = vi.hoisted(() => vi.fn());
+const routerPushSpy = vi.hoisted(() => vi.fn());
 vi.mock('expo-router', async () => {
     const { createExpoRouterMock } = await import('@/dev/testkit/mocks/router');
-    return createExpoRouterMock({ router: { replace: routerReplaceSpy } }).module;
+    return createExpoRouterMock({ router: { replace: routerReplaceSpy, push: routerPushSpy } }).module;
 });
+
+/**
+ * The account service is a separate endpoint this page never owns. Only its
+ * discovery probe is replaced; the sign-in-service policy, the effective-service
+ * resolution and the entry-href builder stay real.
+ */
+const accountServiceDiscovery = vi.hoisted(() => ({
+    value: null as null | Record<string, unknown>,
+}));
+vi.mock('@/auth/accountDirectory/accountDirectoryAuthClient', () => ({
+    accountDirectoryAuthClient: {
+        discoverAuthenticationMethods: async () => accountServiceDiscovery.value
+            ?? { kind: 'unavailable' },
+    },
+    createVerifiedAccountServiceAuthority: () => null,
+}));
 
 vi.mock('@/sync/http/client', () => ({
     serverFetch: vi.fn(),
@@ -133,6 +150,7 @@ function readyResponse(
         ...(scope === 'invitation'
             ? { invitationEmailVerificationRequired }
             : {}),
+        ...(entrySignInService ? { signInService: entrySignInService } : {}),
         actions,
         ...(currentAccountRecipientStatus ? { currentAccountRecipientStatus } : {}),
         autoRedirect: null,
@@ -157,7 +175,7 @@ function nativeMtlsReadyResponse() {
  */
 function activePreview(overrides: Record<string, unknown> = {}) {
     return {
-        home: { serverId: 'home-team', displayName: 'home.example.test', storageMode: null },
+        home: { serverId: 'home-team', displayName: 'home.example.test', storageMode: null, hosting: null },
         team: {
             teamId: 'team-1',
             name: 'A very long Team name that remains fully available to assistive technology',
@@ -232,6 +250,7 @@ function deferAdmission(artifactId: string, answer: TeamInvitationAcceptResultV1
 }
 
 let entryScope: 'team' | 'invitation' = 'team';
+let entrySignInService: unknown;
 let previewResult: unknown;
 let invitationEmailVerificationRequired = true;
 
@@ -255,6 +274,9 @@ describe('TeamAuthEntrySurface', () => {
         };
         approvalArtifactState.requests.length = 0;
         entryScope = 'team';
+        entrySignInService = undefined;
+        accountServiceDiscovery.value = null;
+        routerPushSpy.mockReset();
         invitationEmailVerificationRequired = true;
         previewResult = { outcome: 'ok', preview: activePreview() };
         endpointFetch.mockImplementation(async (path: string) => (
@@ -982,7 +1004,7 @@ describe('TeamAuthEntrySurface', () => {
             outcome: 'ok',
             preview: activePreview({
                 role: 'guest',
-                home: { serverId: 'home-team', displayName: 'home.example.test', storageMode: 'plain' },
+                home: { serverId: 'home-team', displayName: 'home.example.test', storageMode: 'plain', hosting: null },
                 recipientEmailMask: 'a\u2026e@example.test',
             }),
         };
@@ -1003,6 +1025,64 @@ describe('TeamAuthEntrySurface', () => {
         expect(screen.findByTestId('team-join-preview-storage')).toBeTruthy();
         expect(screen.findByTestId('team-join-preview-recipient')).toBeTruthy();
         expect(screen.findByTestId('team-auth-entry-join')).toBeTruthy();
+        // Hosting was not published, so nothing is asserted about it.
+        expect(screen.findByTestId('team-join-preview-hosting')).toBeNull();
+    });
+
+    it('offers another Account on a Team page when the Home says the current one is wrong', async () => {
+        // Outside an invitation the surface had no way to act on the Home's
+        // switch offer, so somebody signed in as the wrong Account was shown a
+        // list of sign-in methods their current credential had already used.
+        entryScope = 'team';
+        const onRecoverIdentity = vi.fn();
+        endpointFetch.mockImplementation(async () => readyResponse('team', undefined, undefined, 'Acme Home', [{
+            kind: 'authenticate',
+            methodId: 'home-password',
+            action: 'login',
+            mode: 'keyed',
+            origin: 'home',
+            presentation: { displayName: 'Password' },
+        }, { kind: 'switch_account' }]));
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                teamId="team-1"
+                target={target}
+                onRecoverIdentity={onRecoverIdentity}
+                onSelectAction={() => {}}
+            />,
+        );
+        await waitForTestId(screen, 'team-auth-entry-ready');
+
+        await screen.pressByTestIdAsync('team-auth-entry-use-another-account');
+        expect(onRecoverIdentity).toHaveBeenCalledOnce();
+    });
+
+    it('states the personal-hosting consequence only when the Home published that purpose', async () => {
+        entryScope = 'invitation';
+        previewResult = {
+            outcome: 'ok',
+            preview: activePreview({
+                home: { serverId: 'home-team', displayName: 'home.example.test', storageMode: null, hosting: 'personal' },
+            }),
+        };
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                invitation={{
+                    token: 'F'.repeat(43),
+                    accountScope: { serverId: 'home-team', accountId: 'account-1' },
+                }}
+                target={target}
+                onSelectAction={() => {}}
+                onAdmissionComplete={() => {}}
+            />,
+        );
+        await waitForTestId(screen, 'team-join-preview');
+
+        // A Personal Home runs on somebody's own computer, so it can be offline
+        // when this person tries to work. That is a consequence of joining, and
+        // the Home publishes it as a runtime purpose rather than leaving the
+        // joiner to guess it from the address.
+        expect(screen.findByTestId('team-join-preview-hosting')).toBeTruthy();
     });
 
     it('keeps invitation terminal outcomes distinct and never admits through another Home scope', async () => {
@@ -1114,6 +1194,62 @@ describe('TeamAuthEntrySurface', () => {
         expect(onAdmissionComplete).toHaveBeenCalledWith({
             outcome: 'already_member',
             teamId: 'team-1',
+        });
+    });
+
+    describe('account-service sign-in handoff', () => {
+        const service = {
+            kind: 'supported_account_service',
+            endpointUrl: 'https://accounts.example.test',
+            serverIdentityId: 'srv_accounts',
+            canonicalServerUrl: 'https://accounts.example.test',
+            capability: {},
+            keyLoginAvailable: true,
+            oauthProviderIds: [],
+            preferredProvisionProviderId: null,
+            authenticationCatalog: { methods: [] },
+            authenticationActions: [],
+            accountServiceDisplayName: 'Acme Accounts',
+            snapshot: { status: 'ready' },
+        };
+
+        it('hands off to the Home-named account service instead of offering only local methods', async () => {
+            entrySignInService = {
+                v: 1,
+                mode: 'external',
+                endpoint: 'https://accounts.example.test',
+                expectedServerIdentityId: 'srv_accounts',
+            };
+            accountServiceDiscovery.value = service;
+            const screen = await renderScreen(
+                <TeamAuthEntrySurface target={target} teamId="team-1" onSelectAction={vi.fn()} />,
+            );
+            await waitForTestId(screen, 'team-auth-entry-account-service');
+            const card = screen.tree.root.findAll(
+                (node) => (node.props as { testID?: unknown }).testID === 'team-auth-entry-account-service'
+                    && typeof (node.props as { title?: unknown }).title === 'string',
+                { deep: true },
+            ).at(0)?.props as { title: string; onPress: () => void };
+            expect(card.title).toBe(t('teams.entry.continueWith', { method: 'Acme Accounts' }));
+
+            await act(async () => { card.onPress(); });
+            expect(routerPushSpy).toHaveBeenCalledWith(expect.objectContaining({
+                pathname: '/setup/wizard',
+                params: expect.objectContaining({ mode: 'account-entry' }),
+            }));
+            // The Home's own methods stay available; the handoff is an addition,
+            // never a narrowing of what this page offers.
+            expect(screen.findByTestId('team-auth-entry-action:home-password')).toBeTruthy();
+        });
+
+        it('offers no handoff when the Home signs Accounts in itself', async () => {
+            entrySignInService = { v: 1, mode: 'self' };
+            accountServiceDiscovery.value = service;
+            const screen = await renderScreen(
+                <TeamAuthEntrySurface target={target} teamId="team-1" onSelectAction={vi.fn()} />,
+            );
+            await waitForTestId(screen, 'team-auth-entry-action:home-password');
+            expect(screen.findByTestId('team-auth-entry-account-service')).toBeNull();
         });
     });
 });

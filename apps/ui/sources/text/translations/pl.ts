@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Utwórz serwer, zaimportuj JSON hosta albo zainstaluj zalecany preset.',
@@ -672,8 +674,9 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const pl = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.pl,
     actionConfirmations: actionConfirmationTranslations.pl,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pl, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pl.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pl.resolve } },
+    workspaceSync: workspaceSyncTranslations.pl,
     sessionDrafts: sessionDraftTranslations.pl,
     transferRecovery: {
         title: 'Dokończ przygotowane przesyłanie',
@@ -1641,6 +1644,7 @@ export const pl = {
     awaitingUpdates: "Oczekiwanie na aktualizacje",
     queuedInput: "Dane w kolejce",
     unread: "Nieprzeczytane",
+    mentioned: "Wspomniano o Tobie",
     connected: "połączono",
     connecting: "łączenie",
     disconnected: "rozłączono",
@@ -6452,6 +6456,7 @@ export const pl = {
           },
                     panel: {
             title: "Agenci",
+            tabWithRunningCount: ({ count }: { count: number }) => `Agenci, uruchomionych: ${count}`,
             active: "Aktywne",
             recent: "Ostatnie",
             emptyActive: "Brak aktywnych agentów.",
@@ -13224,6 +13229,11 @@ settingsSession: {
       actions: {
         manageAccess: "Zarządzaj dostępem",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `Udostępnione przez ${owner}`,
+          via: ({ source }: { source: string }) => `przez ${source}`,
+          direct: 'Udostępnione bezpośrednio Tobie',
+      },
       relationship: {
         owner: "Twoje",
         recipient: "Udostępnione Tobie",
@@ -14031,11 +14041,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.pl.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.pl,
+        auth: {
+            signupClosed: 'Twój Dom osobisty przyjmuje tylko istniejące konta. Zaloguj się na konto, które jest już połączone z tym Domem.',
+        },
         bootstrap: {
             title: 'Przygotowywanie Twojego Domu osobistego',
+            checkingStatus: 'Sprawdzanie Twojego Domu osobistego…',
             ensuringHomeStatus: 'Przygotowywanie lokalnego Domu.',
             preparingComputerStatus: 'Twój Dom jest gotowy. Przygotowywanie tego komputera w tle.',
-            blockedStatus: 'Konfiguracja wymaga Twojej uwagi, zanim będzie można kontynuować.',
+            blockedStatus: 'Nie udało się dokończyć konfiguracji Twojego Domu osobistego.',
             readyStatus: 'Twój Dom jest gotowy.',
             failureBody: 'Nie udało się ukończyć tego kroku. Ukończona część konfiguracji jest bezpieczna; spróbuj ponownie lub otwórz szczegóły.',
             profileRecoveryBody: 'Twój Dom osobisty jest gotowy. Happier musi jeszcze dokończyć łączenie z nim.',
@@ -14045,15 +14059,7 @@ settingsSession: {
             useExistingDetail: 'Zweryfikuj dostęp i zabezpiecz rejestrację bez zmiany wybranego Domu.',
             useAnother: 'Użyj innego Domu',
             useAnotherDetail: 'Pozostaw ten lokalny Dom bez zmian i wybierz jeden ze swoich Domów.',
-            blocked: {
-                runtime_unhealthy: 'Twój lokalny Home wymaga uwagi, zanim będzie mógł wystartować.',
-                home_auth_invalid: 'Uwierzytelnianie Home wymaga uwagi.',
-                existing_runtime: 'Istniejący lokalny Home wymaga decyzji, zanim konfiguracja będzie kontynuowana.',
-                personal_home_erased: 'Twój Personal Home został usunięty. Spróbuj ponownie, aby utworzyć nowy.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Dane Twojego Home zostały usunięte. Nie ma tu nic do odzyskania — utwórz nowy Personal Home lub użyj innego Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.pl,
         },
     },
     settingsSearch: {

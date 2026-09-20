@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 type SessionRowAttentionState =
     | 'quiet'
+    | 'mentioned'
     | 'unread'
     | 'pending'
     | 'working'
@@ -28,6 +29,7 @@ type ResolveSessionRowPresentation = (input: Readonly<{
         | 'status.backgroundActive'
         | 'status.keptInAttention'
         | 'status.unread'
+        | 'status.mentioned'
         | 'status.queuedInput'
         | 'sessionsList.attentionSectionTitle';
 }>;
@@ -214,6 +216,23 @@ describe('session row attention standing presentation', () => {
             secondaryLine: 'status',
             statusTextKey: 'status.keptInAttention',
             accessibilityStatusTextKey: 'status.keptInAttention',
+        });
+    });
+
+    it('says a mention out loud instead of announcing the row as plain unread', async () => {
+        const resolveSessionRowPresentation = await loadRowPresentationResolver();
+
+        expect(resolveSessionRowPresentation({
+            attentionState: 'mentioned',
+            density: 'default',
+            requestedSecondaryLineMode: 'path',
+            hasPathSubtitle: true,
+        })).toEqual({
+            // The marker is shared with unread on purpose; the words are not.
+            attentionIndicator: 'unread',
+            titleTone: 'emphasized',
+            secondaryLine: 'path',
+            accessibilityStatusTextKey: 'status.mentioned',
         });
     });
 

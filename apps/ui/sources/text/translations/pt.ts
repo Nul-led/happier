@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle:
@@ -710,8 +712,9 @@ function plural({
  * Must match the exact structure of the English translations
  */
 export const pt = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.pt,
     actionConfirmations: actionConfirmationTranslations.pt,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.pt, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.pt.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.pt.resolve } },
+    workspaceSync: workspaceSyncTranslations.pt,
     sessionDrafts: sessionDraftTranslations.pt,
     transferRecovery: {
         title: 'Concluir envio preparado',
@@ -1668,6 +1671,7 @@ export const pt = {
     awaitingUpdates: "A aguardar atualizações",
     queuedInput: "Entrada em fila",
     unread: "Não lido",
+    mentioned: "Mencionou você",
     connected: "conectado",
     connecting: "conectando",
     disconnected: "desconectado",
@@ -6554,6 +6558,7 @@ export const pt = {
           },
                     panel: {
             title: "Agentes",
+            tabWithRunningCount: ({ count }: { count: number }) => `Agentes, ${count} em execução`,
             active: "Ativos",
             recent: "Recentes",
             emptyActive: "Nenhum agente ativo.",
@@ -13660,6 +13665,11 @@ settingsSession: {
       actions: {
         manageAccess: "Gerenciar acesso",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `Partilhado por ${owner}`,
+          via: ({ source }: { source: string }) => `através de ${source}`,
+          direct: 'Partilhado diretamente contigo',
+      },
       relationship: {
         owner: "Seus",
         recipient: "Compartilhados com você",
@@ -14135,11 +14145,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.pt.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.pt,
+        auth: {
+            signupClosed: 'A tua Casa Pessoal aceita apenas contas existentes. Inicia sessão com uma conta já ligada a esta Casa.',
+        },
         bootstrap: {
             title: 'Preparando sua Casa Pessoal',
+            checkingStatus: 'Verificando sua Casa Pessoal…',
             ensuringHomeStatus: 'Preparando sua Casa local.',
             preparingComputerStatus: 'Sua Casa está pronta. Preparando este computador em segundo plano.',
-            blockedStatus: 'A configuração precisa da sua atenção antes de continuarmos.',
+            blockedStatus: 'Não foi possível concluir a configuração da sua Casa Pessoal.',
             readyStatus: 'Sua Casa está pronta.',
             failureBody: 'Não foi possível concluir esta etapa. A configuração já concluída está segura; tente novamente ou abra os detalhes.',
             profileRecoveryBody: 'Sua Casa Pessoal está pronta. O Happier ainda precisa terminar de conectá-la.',
@@ -14149,15 +14163,7 @@ settingsSession: {
             useExistingDetail: 'Verifique o acesso e proteja o cadastro sem alterar a Casa selecionada.',
             useAnother: 'Usar outra Casa',
             useAnotherDetail: 'Deixe esta Casa local intacta e escolha entre suas Casas.',
-            blocked: {
-                runtime_unhealthy: 'O teu Home local precisa de atenção antes de poder iniciar.',
-                home_auth_invalid: 'A autenticação do Home precisa de atenção.',
-                existing_runtime: 'Um Home local existente precisa de uma escolha antes de a configuração continuar.',
-                personal_home_erased: 'O teu Personal Home foi eliminado. Tenta novamente para criar um novo.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Os dados do teu Home foram eliminados. Não há nada a recuperar aqui — cria um novo Personal Home ou usa outro Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.pt,
         },
     },
     settingsSearch: {

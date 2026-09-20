@@ -10,6 +10,8 @@ export type SessionListAttentionState =
     | 'failed'
     | 'ready'
     | 'attention'
+    /** Somebody addressed this viewer by name; unread content with a named author. */
+    | 'mentioned'
     | 'unread'
     | 'pending'
     | 'thinking'
@@ -26,7 +28,10 @@ export function presentSessionPersonalAttentionReason(
         case 'user_action_required':
         case 'pending_blocked': return 'action_required';
         case 'ready_after_read': return 'ready';
-        case 'mentioned':
+        // A mention is unread content somebody pointed AT this viewer. Flattening
+        // it onto plain unread cost the row the only fact that distinguishes
+        // "there is more here" from "somebody asked you".
+        case 'mentioned': return 'mentioned';
         case 'unread':
         case 'unread_discussion': return 'unread';
         case 'manual':
@@ -91,9 +96,16 @@ export function mapSessionAwarenessToListAttentionState(
 export function resolveSessionListAttentionState(input: Readonly<{
     operational: SessionAwarenessOperationalPrimaryV1;
     hasUnreadMessages: boolean;
+    /**
+     * 09B's primary personal reason, so an unread row that is unread BECAUSE
+     * somebody addressed this viewer keeps that fact instead of being flattened
+     * onto plain unread. Absent on pre-viewer rows, which stay `unread`.
+     */
+    personalAttentionReason?: SessionPersonalAttentionReasonV1 | null;
 }>): SessionListAttentionState {
     const operational = mapSessionAwarenessToListAttentionState(input.operational);
-    return operational === 'quiet' && input.hasUnreadMessages ? 'unread' : operational;
+    if (operational !== 'quiet' || !input.hasUnreadMessages) return operational;
+    return input.personalAttentionReason === 'mentioned' ? 'mentioned' : 'unread';
 }
 
 /**
@@ -109,8 +121,9 @@ const SESSION_LIST_ATTENTION_RANK: Readonly<Record<SessionListAttentionState, nu
     const ordered: SessionListAttentionState[] = SessionAwarenessOperationalPrimaryV1Schema.options
         .map(mapSessionAwarenessToListAttentionState);
     // 09B's personal states have no operational rank of their own. A generic reason such as a
-    // due reminder is stronger than unread, while both outrank a session with nothing to report.
-    ordered.splice(ordered.indexOf('quiet'), 0, 'attention', 'unread');
+    // due reminder is stronger than a mention, a mention is stronger than plain unread, and all
+    // three outrank a session with nothing to report.
+    ordered.splice(ordered.indexOf('quiet'), 0, 'attention', 'mentioned', 'unread');
     const rank = {} as Record<SessionListAttentionState, number>;
     ordered.forEach((state, index) => {
         rank[state] = ordered.length - index;

@@ -4,6 +4,7 @@ import {
     resolveEffectiveWebappUrl,
 } from "@/app/serverUrls/effectiveServerUrls";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
+import { PERSONAL_HOME_RUNTIME_PURPOSE } from "@/app/home/governance/ownerAssignment";
 import type { HomeConnectionDescriptorV1 } from "@happier-dev/protocol";
 import type { HomeConnectionDescriptorContinuityStore } from "@/app/features/homeConnectionDescriptorContinuity";
 import { readRequiredAuthenticatedHomeConnectionDescriptor } from "@/app/features/homeConnectionDescriptorPublication";
@@ -54,6 +55,24 @@ export function resolveJoinScreenHomeDisplayName(env: NodeJS.ProcessEnv): string
     }
 }
 
+/**
+ * Who runs this Home.
+ *
+ * The runtime's own published purpose is the only authority for this: a Personal
+ * Home is the runtime the Homes owner started as one, and it is the single
+ * hosting consequence a joiner needs — that Home is a personal computer and can
+ * be offline. A runtime that publishes another purpose is shared, and one that
+ * publishes none says nothing rather than letting the join screen infer hosting
+ * from a URL, a storage mode or whichever Home this device has focused.
+ */
+export function resolveJoinScreenHomeHosting(
+    env: NodeJS.ProcessEnv,
+): JoinScreenHomeIdentity["hosting"] {
+    const purpose = String(env.HAPPIER_MANAGED_RELAY_PURPOSE ?? "").trim();
+    if (!purpose) return null;
+    return purpose === PERSONAL_HOME_RUNTIME_PURPOSE ? "personal" : "shared";
+}
+
 export async function resolveJoinScreenHomeIdentity(
     env: NodeJS.ProcessEnv,
 ): Promise<JoinScreenHomeIdentity> {
@@ -61,6 +80,7 @@ export async function resolveJoinScreenHomeIdentity(
         serverId: await getOrCreateServerIdentityId(env),
         displayName: resolveJoinScreenHomeDisplayName(env),
         storageMode: resolveJoinScreenStorageMode(env),
+        hosting: resolveJoinScreenHomeHosting(env),
     };
 }
 

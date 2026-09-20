@@ -423,6 +423,8 @@ import {
 import { buildAttachmentMessageMeta, formatAttachmentsBlock, uploadAttachmentDraftsToSession } from '@/components/sessions/attachments/uploadAttachmentDraftsToSession';
 import { Text } from '@/components/ui/text/Text';
 import { sessionGoalClear, sessionGoalSet } from '@/sync/ops/sessionGoals';
+import { SessionRightSidebarProvider } from '@/components/sessions/panes/SessionRightPanel';
+import { createSessionPaneSurfaceScope } from '@/components/sessions/plugins/useSessionPluginRuntime';
 import { AppPaneScopeHost } from '@/components/appShell/panes/AppPaneScopeHost';
 import { useRegisterSessionPaneDriver } from '@/components/sessions/panes/useRegisterSessionPaneDriver';
 import {
@@ -1915,19 +1917,22 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         && Platform.OS === 'web'
         && ((pane.scopeState?.right.isOpen ?? false) || (pane.scopeState?.details.isOpen ?? false)));
 
-    const collaborationTarget = React.useMemo(
+    // The one qualified Session address this header works from: the exact Home
+    // and Session every address-scoped destination (Collaboration, Board,
+    // Companion) is bound to.
+    const sessionRouteAddress = React.useMemo(
         () => normalizeSessionAddress(currentSessionRouteServerId, sessionId),
         [currentSessionRouteServerId, sessionId],
     );
     const collaborationAdmitted = useSessionCollaborationDestinationAdmitted(currentSessionRouteServerId ?? '');
-    const collaborationAvailable = session !== null && collaborationTarget !== null && collaborationAdmitted;
+    const collaborationAvailable = session !== null && sessionRouteAddress !== null && collaborationAdmitted;
     const foldCollaborationHeaderEntry = shouldFoldSessionHeaderIconActions(windowWidth);
-    const collaborationHeader = React.useMemo(() => collaborationAvailable && collaborationTarget
-        ? { target: collaborationTarget, compact: foldCollaborationHeaderEntry }
-        : undefined, [collaborationAvailable, collaborationTarget, foldCollaborationHeaderEntry]);
-    const openSessionCollaboration = useOpenSessionCollaboration({ target: collaborationTarget, pane });
-    const openSessionAccess = useOpenSessionCollaboration({ target: collaborationTarget, pane, focusTarget: 'access' });
-    const mountedBoardForHeader = useMountedSessionBoardController(collaborationTarget);
+    const collaborationHeader = React.useMemo(() => collaborationAvailable && sessionRouteAddress
+        ? { target: sessionRouteAddress, compact: foldCollaborationHeaderEntry }
+        : undefined, [collaborationAvailable, sessionRouteAddress, foldCollaborationHeaderEntry]);
+    const openSessionCollaboration = useOpenSessionCollaboration({ target: sessionRouteAddress, pane });
+    const openSessionAccess = useOpenSessionCollaboration({ target: sessionRouteAddress, pane, focusTarget: 'access' });
+    const mountedBoardForHeader = useMountedSessionBoardController(sessionRouteAddress);
     const boardIsOpen = isSessionBoardVisibleInDetails(pane.scopeState?.details);
     const boardHasContent = mountedBoardForHeader?.binding.status === 'ready'
         && mountedBoardForHeader.binding.snapshot.itemsById.size > 0;
@@ -2188,9 +2193,11 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
                 preferDirect: boardHasContent || boardIsOpen,
             }
             : undefined,
-        // Companion presents Board content and has no feature of its own, so it
-        // is admitted by the same exact-Home decision as the Board destination.
-        companionHeaderAction: boardDestinationAvailable ? {
+        // Companion is not a Board placement gate. Its first-party Session
+        // Summary is composed from Session facts alone, so the entry point is
+        // admitted by the same qualified Session address its host mounts on.
+        // Board records and the Board destination stay behind `sessions.board`.
+        companionHeaderAction: sessionRouteAddress ? {
             availability: companionPreference.availability,
             preferenceExists: companionPreference.preferenceExists,
             visible: companionPreference.preference.visible,
@@ -2214,6 +2221,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
         openHeaderWorkspaceSyncConflicts,
         openSessionBoard,
         boardDestinationAvailable,
+        sessionRouteAddress,
         boardHasContent,
         boardIsOpen,
         companionPreference.availability,
@@ -2246,19 +2254,19 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
     // At compact widths the empty people state uses the canonical header overflow, while a live
     // facepile stays direct. Both presentations carry the same attention label and command.
     const headerRightElement = React.useMemo(() => (
-        collaborationAvailable && collaborationTarget
+        collaborationAvailable && sessionRouteAddress
             ? (
                 <>
                     {headerProps.rightElement}
                     <SessionCollaborationHeaderEntry
-                        target={collaborationTarget}
+                        target={sessionRouteAddress}
                         compact={foldCollaborationHeaderEntry}
                         onPress={openSessionCollaboration}
                     />
                 </>
             )
             : headerProps.rightElement
-    ), [collaborationAvailable, collaborationTarget, foldCollaborationHeaderEntry, headerProps.rightElement, openSessionCollaboration]);
+    ), [collaborationAvailable, sessionRouteAddress, foldCollaborationHeaderEntry, headerProps.rightElement, openSessionCollaboration]);
 
     const handleBlockedSurfaceAction = React.useCallback(async (
         intent: SessionBlockedSurfaceActionIntent,
@@ -2457,7 +2465,7 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
                            sessionRunnerRuntimeStatusMachineId={sessionRunnerRuntimeStatusRetention.machineId}
                            onSessionRunnerRuntimeStatusInvalidated={sessionRunnerRuntimeStatusRetention.invalidateAndRefresh}
                            onAppPanePluginSurfaceNavigationBindingChange={handleAppPanePluginSurfaceNavigationBindingChange}
-                           collaborationTarget={collaborationTarget}
+                           collaborationTarget={sessionRouteAddress}
                            collaborationAvailable={collaborationAvailable}
                            foldCollaborationHeaderEntry={foldCollaborationHeaderEntry}
                            openSessionCollaboration={openSessionCollaboration}
@@ -9260,6 +9268,7 @@ function SessionViewLoaded({
                 />
             </TranscriptMessageSelectionProvider>
     );
+    const sidebarSurfaceScope = React.useMemo(() => createSessionPaneSurfaceScope(sessionId, sessionPluginRuntime), [sessionId, sessionPluginRuntime]);
     const wrapPaneScopeContent = React.useCallback((content: React.ReactElement) => (
         <SessionCompanionRevealOwner
             address={companionAddress}
@@ -9267,9 +9276,14 @@ function SessionViewLoaded({
             openFullSurface={openCompanionFullSurface}
             revealBoardItem={revealCompanionBoardItemThroughPresentation}
         >
-            {content}
+            <SessionRightSidebarProvider sessionId={sessionId} scopeId={paneScopeId} paneSurfaceScope={sidebarSurfaceScope} resolveBoardPrimaryHost={resolveBoardPrimaryHost}>
+                {content}
+            </SessionRightSidebarProvider>
         </SessionCompanionRevealOwner>
     ), [
+        sessionId,
+        sidebarSurfaceScope,
+        resolveBoardPrimaryHost,
         companionAddress,
         openCompanionFullSurface,
         paneScopeId,

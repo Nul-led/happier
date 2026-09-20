@@ -231,7 +231,7 @@ describe("Account Directory central route admission", () => {
                 installationPublicKey: "public-key-1",
                 creatorTokenEpoch: 0,
             },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "runtime_features" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "account" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -247,7 +247,7 @@ describe("Account Directory central route admission", () => {
                 installationPublicKey: "public-key-1",
                 creatorTokenEpoch: 0,
             },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "runtime_features" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "account" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -264,7 +264,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             params: { sessionId: "session-1" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_detail" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -281,7 +281,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             params: { sessionId: "session-2" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_detail" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -298,7 +298,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: "machine-1" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -315,7 +315,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: null },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -332,7 +332,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -349,7 +349,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-1", machineId: "machine-2" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -366,7 +366,7 @@ describe("Account Directory central route admission", () => {
                 creatorTokenEpoch: 0,
             },
             body: { sessionId: "session-2", machineId: "machine-1" },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "session_usage_event" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.sessionId", machine: "body.machineId", machineOptional: true } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -386,7 +386,7 @@ describe("Account Directory central route admission", () => {
                 initiatorMachineId: "machine-1",
                 consumer: { kind: "session", sessionId: "session-1" },
             },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "provider_broker_open" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
         })).toBe(false);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "ephemeral_session_runner",
@@ -406,7 +406,7 @@ describe("Account Directory central route admission", () => {
                 initiatorMachineId: "machine-2",
                 consumer: { kind: "session", sessionId: "session-1" },
             },
-            routeOptions: { config: { ephemeralSessionRunnerOperation: "provider_broker_open" } },
+            routeOptions: { config: { ephemeralSessionRunnerBinding: { scope: "session", session: "body.consumer.sessionId", machine: "body.initiatorMachineId" } } },
         })).toBe(true);
         expect(isRestrictedAuthTokenDeniedForRoute({
             authTokenKind: "terminal",

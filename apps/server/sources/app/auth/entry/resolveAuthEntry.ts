@@ -21,7 +21,7 @@ import {
     resolveTeamInvitationAuthEntryReferenceContextInTx,
     type TeamInvitationAuthEntryContext,
 } from '@/app/teams/invitations/invitationService';
-import { resolveTeamAuthEntryContextInTx } from '@/app/teams/authEntryContext';
+import { resolveTeamAuthEntryContextInTx, type TeamAuthEntryContext } from '@/app/teams/authEntryContext';
 import {
     qualifyTeamOperationAuthenticationInTx,
     resolveTeamActorContextInTx,
@@ -117,7 +117,9 @@ async function resolveAuthenticatedAccountPresentationInTx(
 
 const AUTH_ENTRY_UTF8_ENCODER = new TextEncoder();
 
-function unavailableProjection(reason: 'not_account_service' | 'authentication_policy_unavailable'): AuthEntryProjectionV1 {
+export function projectUnavailableHomeAuthEntry(
+    reason: 'not_account_service' | 'authentication_policy_unavailable',
+): AuthEntryProjectionV1 {
     return AuthEntryProjectionV1Schema.parse({
         v: 1,
         state: 'unavailable',
@@ -171,18 +173,22 @@ function hasUsableTeamAuthentication(policy: ResolvedTeamAuthenticationPolicyInT
  * The reason a visitor who is already signed in to this Home may be told when a
  * Team refuses entry for its authentication policy alone.
  *
- * A `restricted` policy with no currently usable choice is the Team insisting on
- * a sign-in this visitor cannot use — exactly what `sso_required` says. An
- * anonymous visitor has proved nothing, and an unresolved policy is not a
- * statement about the visitor at all, so both keep the opaque default.
+ * A `provisioned` Team takes its membership from a directory, so no sign-in this
+ * visitor performs can admit them: `directory_delayed` is the truthful answer,
+ * and telling them to use a different method would send them round a loop.
+ * Otherwise a `restricted` policy with no currently usable choice is the Team
+ * insisting on a sign-in this visitor cannot use — exactly what `sso_required`
+ * says. An anonymous visitor has proved nothing, and an unresolved policy is not
+ * a statement about the visitor at all, so both keep the opaque default.
  */
 function teamEntryPolicyRefusalReason(
     policy: ResolvedTeamAuthenticationPolicyInTx,
     principal: AuthEntryPrincipal | null,
+    admissionMode?: TeamAuthEntryContext['admissionMode'],
 ): TeamEntryUnavailableReasonV1 {
-    return principal !== null && policy.resolution.status === 'restricted'
-        ? 'sso_required'
-        : 'entry_not_available';
+    if (principal === null) return 'entry_not_available';
+    if (admissionMode === 'provisioned') return 'directory_delayed';
+    return policy.resolution.status === 'restricted' ? 'sso_required' : 'entry_not_available';
 }
 
 function defaultMethodDisplayName(id: string): string {
@@ -271,7 +277,7 @@ function projectHomeAuthEntryProjection(
     } as const;
     if (AUTH_ENTRY_UTF8_ENCODER.encode(JSON.stringify(projection)).byteLength
         > AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1) {
-        return unavailableProjection('authentication_policy_unavailable');
+        return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
     }
     return AuthEntryProjectionV1Schema.parse(projection);
 }
@@ -295,7 +301,9 @@ async function resolveTeamAuthEntry(
             resolveEffectiveHomeAuthMethodsInTx(tx, { env, emailDeliveryReady }),
         ]);
         if (!hasUsableTeamAuthentication(policy)) {
-            return unavailableTeamProjection(teamEntryPolicyRefusalReason(policy, principal));
+            return unavailableTeamProjection(
+                teamEntryPolicyRefusalReason(policy, principal, teamContext.admissionMode),
+            );
         }
 
         const account = await resolveAuthenticatedAccountPresentationInTx(tx, principal);
@@ -371,7 +379,16 @@ async function resolveTeamAuthEntry(
             home,
             ...(account ? { account } : {}),
             team: teamContext.team,
-            actions: [...teamActions, ...homeActions],
+            // A visitor who already proved an Account and is still not admitted
+            // is signed in as the wrong one. Offering another Account is the
+            // only remedy the Home can name, and it discloses nothing: the
+            // caller already knows which Account they presented. An anonymous
+            // visitor gets no such offer, so this cannot become an oracle.
+            actions: [
+                ...teamActions,
+                ...homeActions,
+                ...(principal !== null ? [{ kind: 'switch_account' as const }] : []),
+            ],
             ...(homeMethods.signInService ? { signInService: homeMethods.signInService } : {}),
             autoRedirect: null,
         } as const;
@@ -545,7 +562,7 @@ export async function resolveAuthEntry(
     }
     if (input.scope.kind === 'home' && input.purpose === 'account_service'
         && homeFeatures.capabilities.accountDirectory?.homeDirectory !== true) {
-        return unavailableProjection('not_account_service');
+        return projectUnavailableHomeAuthEntry('not_account_service');
     }
     if (input.scope.kind === 'invitation') {
         if (readServerEnabledBit(homeFeatures, 'teams') !== true) {
@@ -588,7 +605,7 @@ export async function resolveAuthEntry(
                 env: context.env,
                 emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
             });
-            if (homeMethods.status !== 'ready') return unavailableProjection('authentication_policy_unavailable');
+            if (homeMethods.status !== 'ready') return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
             return projectHomeAuthEntryProjection(homeMethods, {
                 env: context.env,
                 principal: context.principal ?? null,
@@ -601,7 +618,7 @@ export async function resolveAuthEntry(
         emailDeliveryReady: context.emailDeliveryReady ?? isAuthEmailDeliveryReady(context.env),
     });
     if (homeMethods.status !== 'ready') {
-        return unavailableProjection('authentication_policy_unavailable');
+        return projectUnavailableHomeAuthEntry('authentication_policy_unavailable');
     }
     return projectHomeAuthEntryProjection(homeMethods, {
         env: context.env,

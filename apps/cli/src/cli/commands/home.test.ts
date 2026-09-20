@@ -5,7 +5,14 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { SYSTEM_TASK_PROTOCOL_VERSION, type SystemTaskJsonObject, type SystemTaskResult, type SystemTaskSpec } from '@happier-dev/protocol';
+import {
+  SYSTEM_TASK_PROTOCOL_VERSION,
+  SystemTaskSpecSchema,
+  type SystemTaskJsonObject,
+  type SystemTaskJsonValue,
+  type SystemTaskResult,
+  type SystemTaskSpec,
+} from '@happier-dev/protocol';
 import {
   createRemoteSshPersonalHomeRelocationDestination,
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
@@ -55,6 +62,28 @@ function createDeps(results: readonly ScriptedTaskResult[], overrides: Partial<H
     ...overrides,
   };
   return { deps, start, poll, respond, cancel };
+}
+
+function isSystemTaskJsonObject(value: SystemTaskJsonValue): value is SystemTaskJsonObject {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function expectJsonSafeSshTaskWithoutTrustedHostKey(spec: unknown): void {
+  const parsed = SystemTaskSpecSchema.safeParse(spec);
+  expect(parsed.success).toBe(true);
+  if (!parsed.success) return;
+
+  const params = parsed.data.params;
+  if (!isSystemTaskJsonObject(params)) {
+    throw new Error('Expected a JSON object for the system-task params.');
+  }
+  const ssh = params.ssh;
+  if (!isSystemTaskJsonObject(ssh)) {
+    throw new Error('Expected a JSON object for the SSH task params.');
+  }
+
+  expect(Object.hasOwn(ssh, 'trustedHostKey')).toBe(false);
+  expect(ssh).not.toHaveProperty('trustedHostKey');
 }
 
 const selectedAccountServicePresentation = {
@@ -546,6 +575,7 @@ describe('handleHomeCommand', () => {
   });
 
   it('uses the current CLI release ring when --channel is omitted', async () => {
+    const controller = new AbortController();
     const createPersonalHome = vi.fn(async () => ({
       profileId: 'personal-home',
       homeServerIdentityId: 'srv_personal_home',
@@ -559,9 +589,12 @@ describe('handleHomeCommand', () => {
       isInteractiveTerminal: () => false,
     });
 
-    await handleHomeCommand(['create', '--yes'], deps);
+    await handleHomeCommand(['create', '--yes'], deps, controller.signal);
 
-    expect(createPersonalHome).toHaveBeenCalledWith({ channel: 'dev', mode: 'user' });
+    expect(createPersonalHome).toHaveBeenCalledWith(
+      { channel: 'dev', mode: 'user' },
+      { allowErasedRuntimeRecreate: true, signal: controller.signal },
+    );
   });
 
   it('declines before artifact, runtime, profile, or bootstrap mutation', async () => {
@@ -928,6 +961,64 @@ describe('handleHomeCommand', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it.each([
+    ['daemon.replaceRemoteBackgroundServices', { replaceExistingServices: true }],
+    ['releaseChannel.switchDefaultForSetup', { switchDefaultReleaseChannel: true }],
+  ] as const)('answers the remote %s prompt through the canonical confirmation path', async (kind, expectedAnswer) => {
+    const remoteCreated = success(`remote-create-${kind}`, {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete', homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true, channel: 'preview', mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const { deps, respond } = createDeps([{
+      prompt: {
+        kind,
+        data: kind === 'daemon.replaceRemoteBackgroundServices'
+          ? { targetReleaseChannel: 'preview', targetServerUrl: null, services: [] }
+          : { targetReleaseChannel: 'preview', currentDefaultReleaseChannel: 'stable', targetServerUrl: null, managedReleaseChannels: [] },
+      },
+      result: remoteCreated,
+    }], {
+      isInteractiveTerminal: () => true,
+      promptInput: async () => 'yes',
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--channel', 'preview'], deps);
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: expectedAnswer });
+  });
+
+  it.each([
+    ['daemon.replaceRemoteBackgroundServices', { replaceExistingServices: false }],
+    ['releaseChannel.switchDefaultForSetup', { switchDefaultReleaseChannel: false }],
+  ] as const)('keeps --yes fail-closed for the remote %s authority', async (kind, expectedAnswer) => {
+    const remoteCreated = success(`remote-create-${kind}-declined`, {
+      action: 'personalHome.create',
+      personalHome: {
+        status: 'complete', homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123',
+        accountCreated: true, channel: 'preview', mode: 'user',
+        descriptor: { v: 1, homeServerIdentityId: 'srv_remote_home', canonicalServerUrl: 'http://127.0.0.1:43123', revision: 1, endpoints: [{ kind: 'iroh', endpointId: 'a'.repeat(64) }] },
+        pairing: { kind: 'not_requested' },
+        invokingClientEnrollment: { kind: 'enrolled' },
+      },
+    });
+    const { deps, respond } = createDeps([{
+      prompt: { kind, data: { targetReleaseChannel: 'preview' } },
+      result: remoteCreated,
+    }], {
+      promptInput: async () => { throw new Error('--yes must not prompt or grant reconciliation authority'); },
+    });
+
+    await handleHomeCommand(['create', '--ssh', 'dev@example.test', '--channel', 'preview', '--yes'], deps);
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-1', answer: expectedAnswer });
+  });
+
   it('keeps remote create mutation-free without confirmation and makes JSON output secret-free', async () => {
     const createPersonalHome = vi.fn();
     const { deps, start } = createDeps([], { createPersonalHome, promptInput: async () => 'no', isInteractiveTerminal: () => true });
@@ -996,6 +1087,43 @@ describe('handleHomeCommand', () => {
         ...(personalHomeOperation ? { personalHomeOperation } : {}),
       },
     } });
+  });
+
+  it('omits an absent trusted host key from every remote Home task spec and keeps the payload JSON-safe', async () => {
+    const createHarness = createDeps([
+      failure('remote-create', 'payload_captured', 'Stop after capturing the task payload.'),
+    ]);
+    await expect(handleHomeCommand(['create', '--ssh', 'dev@example.test', '--yes'], createHarness.deps))
+      .rejects.toMatchObject({ code: 'payload_captured' });
+    expectJsonSafeSshTaskWithoutTrustedHostKey(createHarness.start.mock.calls[0]?.[0].spec);
+
+    const operationHarness = createDeps([
+      failure('remote-status', 'payload_captured', 'Stop after capturing the task payload.'),
+    ]);
+    await expect(handleHomeCommand(['status', '--ssh', 'dev@example.test'], operationHarness.deps))
+      .rejects.toMatchObject({ code: 'payload_captured' });
+    expectJsonSafeSshTaskWithoutTrustedHostKey(operationHarness.start.mock.calls[0]?.[0].spec);
+
+    const sourceDescriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const relocationHarness = createDeps([
+      homeStatus,
+      relocationInspectionNone,
+      failure('remote-relocate', 'payload_captured', 'Stop after capturing the task payload.'),
+    ], {
+      createRelocationOperationId: () => 'relocation-fixed',
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor: sourceDescriptor }),
+      publishRelocationDescriptor: async ({ descriptor }) => descriptor,
+      readRelocationDescriptor: async () => sourceDescriptor,
+    });
+    await expect(handleHomeCommand(['relocate', '--target', 'dev@example.test', '--yes'], relocationHarness.deps))
+      .rejects.toMatchObject({ code: 'payload_captured' });
+    expectJsonSafeSshTaskWithoutTrustedHostKey(relocationHarness.start.mock.calls[2]?.[0].spec);
   });
 
   it('relocates the local Personal Home to the explicit SSH target through the shared coordinator contract', async () => {
@@ -1430,6 +1558,126 @@ describe('handleHomeCommand', () => {
     expect(start).toHaveBeenCalledWith({ spec: expect.objectContaining({ kind: 'relay.runtime.status.v1' }) });
   });
 
+  it('relocate --yes declines ssh.replaceHostKey and starts no transfer', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const publishRelocationDescriptor = vi.fn(async () => descriptor);
+    const { deps, start, respond } = createDeps([
+      homeStatus,
+      relocationInspectionNone,
+      {
+        prompt: {
+          kind: 'ssh.replaceHostKey',
+          data: {
+            sshHost: 'dev@example.test',
+            host: 'dev@example.test',
+            keyType: 'ssh-ed25519',
+            fingerprint: 'SHA256:replacement',
+            existingFingerprint: 'SHA256:pinned',
+          },
+        },
+        result: failure('relocation-task', 'host_trust_declined', 'SSH host trust was declined.'),
+      },
+    ], {
+      createRelocationOperationId: () => 'relocation-fixed',
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor }),
+      publishRelocationDescriptor,
+      readRelocationDescriptor: async () => descriptor,
+    });
+
+    await expect(handleHomeCommand(['relocate', '--target', 'dev@example.test', '--yes'], deps))
+      .rejects.toMatchObject({ code: 'host_trust_declined' });
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-3', answer: { trusted: false } });
+    expect(publishRelocationDescriptor).not.toHaveBeenCalled();
+    expect(start).toHaveBeenCalledTimes(3);
+  });
+
+  it('relocate --yes still trusts a first-use ssh.trustHost key', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const { deps, respond } = createDeps([
+      homeStatus,
+      relocationInspectionNone,
+      {
+        prompt: {
+          kind: 'ssh.trustHost',
+          data: { sshHost: 'dev@example.test', host: 'dev@example.test', keyType: 'ssh-ed25519', fingerprint: 'SHA256:first-use' },
+        },
+        result: success('relocation-task', {
+          action: 'personalHome.relocate',
+          personalHome: {
+            operationId: 'relocation-fixed',
+            status: 'committed',
+            destinationMachineId: 'dev@example.test',
+            sourceDescriptorRevision: 4,
+            publishedDescriptor: descriptor,
+          },
+        }),
+      },
+    ], {
+      createRelocationOperationId: () => 'relocation-fixed',
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor }),
+      publishRelocationDescriptor: async () => descriptor,
+      readRelocationDescriptor: async () => descriptor,
+    });
+
+    await handleHomeCommand(['relocate', '--target', 'dev@example.test', '--yes'], deps);
+
+    expect(respond).toHaveBeenCalledWith({ taskId: 'task-3', answer: { trusted: true } });
+  });
+
+  it('accepts an exact --trusted-host-key pin as the non-interactive replacement path', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const descriptor = {
+      v: 1 as const,
+      homeServerIdentityId: 'srv_home1',
+      canonicalServerUrl: 'http://127.0.0.1:53288',
+      revision: 4,
+      endpoints: [{ kind: 'iroh' as const, endpointId: 'a'.repeat(64) }],
+    };
+    const { deps, start } = createDeps([
+      homeStatus,
+      relocationInspectionNone,
+      success('relocation-task', {
+        action: 'personalHome.relocate',
+        personalHome: {
+          operationId: 'relocation-fixed',
+          status: 'committed',
+          destinationMachineId: 'dev@example.test',
+          sourceDescriptorRevision: 4,
+          publishedDescriptor: descriptor,
+        },
+      }),
+    ], {
+      createRelocationOperationId: () => 'relocation-fixed',
+      readRelocationSourceProfile: async () => ({ profileId: 'home-profile', name: 'My Home', descriptor }),
+      publishRelocationDescriptor: async () => descriptor,
+      readRelocationDescriptor: async () => descriptor,
+    });
+
+    await handleHomeCommand(
+      ['relocate', '--target', 'dev@example.test', '--trusted-host-key', 'example.test ssh-ed25519 AAAAC3Nz', '--yes'],
+      deps,
+    );
+
+    expect(start).toHaveBeenLastCalledWith({ spec: expect.objectContaining({ params: expect.objectContaining({
+      ssh: { target: 'dev@example.test', auth: 'agent', trustedHostKey: 'example.test ssh-ed25519 AAAAC3Nz' },
+    }) }) });
+  });
+
   it('renders exact remote erase facts and keeps approval in the in-memory prompt response', async () => {
     const remoteErase: ScriptedTaskResult = {
       prompt: {
@@ -1540,10 +1788,28 @@ describe('handleHomeCommand', () => {
         },
       });
       expect(JSON.stringify(parsed)).not.toMatch(/token|secret|credential|approval|qr/i);
-      expect(reconcileCreatedHome).toHaveBeenCalledWith('personal-home', { quiet: true });
+      expect(reconcileCreatedHome).toHaveBeenCalledWith('personal-home', { quiet: true, signal: undefined });
     } finally {
       output.restore();
     }
+  });
+
+  it('forwards explicit local reconciliation authority without deriving it from --yes', async () => {
+    const createPersonalHome = vi.fn(async () => ({
+      profileId: 'personal-home', homeServerIdentityId: 'srv_personal_home',
+      canonicalServerUrl: 'http://127.0.0.1:43123', accountCreated: true,
+    }));
+    const reconcileCreatedHome = vi.fn(async () => undefined);
+    const { deps } = createDeps([], { createPersonalHome, reconcileCreatedHome });
+
+    await handleHomeCommand(['create', '--yes', '--replace-services', '--switch-channel'], deps);
+
+    expect(reconcileCreatedHome).toHaveBeenCalledWith('personal-home', {
+      quiet: false,
+      signal: undefined,
+      replaceServices: true,
+      switchChannel: true,
+    });
   });
 
   it('keeps the compatibility --this-computer alias on the canonical create path', async () => {

@@ -133,6 +133,75 @@ describe("Team directory (SQLite integration)", () => {
         expect(administered.page.items.map((item) => item.id)).toContain(restricted.id);
     });
 
+    it("bounds authentication fact reads for one versus a full page of restricted Teams", async () => {
+        const authenticationPolicy = {
+            v: 1,
+            mode: "restricted",
+            accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+        } as const;
+        const createViewerWithTeams = async (prefix: string, count: number) => {
+            const viewer = await account("member", "e2ee");
+            const teams = Array.from({ length: count }, (_, index) => ({
+                id: `${prefix}-team-${index}`,
+                name: `${prefix} Team ${String(index).padStart(3, "0")}`,
+                authenticationPolicy,
+            }));
+            await db.team.createMany({ data: teams });
+            await db.teamMembership.createMany({ data: teams.map((created) => ({
+                teamId: created.id,
+                accountId: viewer.id,
+                role: "member" as const,
+            })) });
+            return viewer;
+        };
+        const oneViewer = await createViewerWithTeams("bounded-one", 1);
+        const manyViewer = await createViewerWithTeams("bounded-many", 100);
+
+        const listWithQueryCount = async (viewerId: string, limit: number) => await inTx(async (tx) => {
+            let queryCount = 0;
+            const observedTx = new Proxy(tx, {
+                get(target, property, receiver) {
+                    const delegate = Reflect.get(target, property, receiver);
+                    if (typeof delegate !== "object" || delegate === null) return delegate;
+                    return new Proxy(delegate, {
+                        get(delegateTarget, method, delegateReceiver) {
+                            const operation = Reflect.get(delegateTarget, method, delegateReceiver);
+                            if (typeof method !== "string" || !method.startsWith("find") || typeof operation !== "function") {
+                                return operation;
+                            }
+                            return (...args: readonly unknown[]) => {
+                                queryCount += 1;
+                                return Reflect.apply(operation, delegateTarget, args);
+                            };
+                        },
+                    });
+                },
+            }) as typeof tx;
+            const result = await listTeamsForActorInTx(observedTx, {
+                actorAccountId: viewerId,
+                v: 1,
+                scope: "member",
+                archived: "active",
+                limit,
+                authentication: {
+                    authenticationEvidence: [{ kind: "home_method", methodId: "key_challenge" }],
+                    authenticationAuthority: "present_user",
+                },
+            } as Parameters<typeof listTeamsForActorInTx>[1]);
+            return { result, queryCount };
+        });
+
+        const one = await listWithQueryCount(oneViewer.id, 1);
+        const many = await listWithQueryCount(manyViewer.id, 100);
+        expect(one.result.ok).toBe(true);
+        expect(many.result.ok).toBe(true);
+        if (!one.result.ok || !many.result.ok) return;
+        expect(one.result.page.items).toHaveLength(1);
+        expect(many.result.page.items).toHaveLength(100);
+        expect(one.queryCount).toBeGreaterThan(0);
+        expect(many.queryCount).toBe(one.queryCount);
+    });
+
     it("lets structural Team administrators list a malformed policy only as repair-required", async () => {
         const owner = await account();
         const admin = await account();

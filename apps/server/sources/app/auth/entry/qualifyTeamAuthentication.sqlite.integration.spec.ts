@@ -79,11 +79,14 @@ describe('qualifyTeamAuthenticationInTx', () => {
         const team = await restrictedTeam();
         const account = await db.account.create({ data: { publicKey: null, encryptionMode: 'plain' } });
 
-        // Structurally valid policy, but email/password is not enabled on this Home:
-        // nothing the caller can present would satisfy it, so this is not an
+        // Structurally valid policy, but the operator has turned email/password off
+        // on this Home — the method is on by default, so the opt-out is explicit.
+        // Nothing the caller can present would satisfy it, so this is not an
         // authentication request.
-        await expect(qualify({ HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional' }, team, account.id))
-            .resolves.toEqual({ status: 'unavailable' });
+        await expect(qualify({
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: 'optional',
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '0',
+        }, team, account.id)).resolves.toEqual({ status: 'unavailable' });
     });
 
     it('asks for authentication when an offered accepted method has no current evidence for this Account', async () => {

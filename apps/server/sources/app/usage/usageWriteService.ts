@@ -185,6 +185,12 @@ async function resolveSessionUsageAttributionInTx(
             executionRunId: null,
         }
         : null;
+    // The authoritative turn witness carries no Team attribution, and every
+    // admission row is written with a resource and actor, so no admission could
+    // agree with it. Reading them would only re-derive the same nulls.
+    if (turnAttribution && turnAttribution.resourceId === null) {
+        return { ...turnAttribution, sourceCredentialId: null, brokerMachineId: null };
+    }
     const admissions = await tx.usageEvent.findMany({
         where: {
             accountId: params.accountId,
@@ -203,6 +209,7 @@ async function resolveSessionUsageAttributionInTx(
             credentialDeliveryMode: true,
             teamCredentialSourceCredentialId: true,
             brokerMachineId: true,
+            executionRunId: true,
         },
     });
     const first = admissions[0];
@@ -222,12 +229,8 @@ async function resolveSessionUsageAttributionInTx(
     const brokerMachineAgrees = admissions.every((candidate) => (
         candidate.brokerMachineId === first.brokerMachineId
     ));
-    const executionRunIds = await Promise.all(admissions.map(({ id }) => accessUsageEventExecutionRunIdInTx(tx, {
-        kind: "read",
-        eventId: id,
-    })));
-    const executionRunId = executionRunIds.every((candidate) => candidate === executionRunIds[0])
-        ? executionRunIds[0] ?? null
+    const executionRunId = admissions.every((candidate) => candidate.executionRunId === first.executionRunId)
+        ? first.executionRunId ?? null
         : null;
     if (!turnAttribution) {
         return admissionAttributionAgrees

@@ -147,6 +147,62 @@ describe('resolveAuthEntry', () => {
         ]));
     });
 
+    it('offers a signed-in non-member another Account, and names directory delay on a provisioned Team', async () => {
+        // Signed in as the wrong Account is the common way a Team link fails:
+        // the person has an Account, it simply is not the one the Team admits.
+        // Outside an invitation the Team surface had no way to say that, so the
+        // only offers were sign-in methods the current credential already used.
+        const restricted = await db.team.create({
+            data: {
+                name: 'Acme Team',
+                authenticationPolicy: {
+                    v: 1,
+                    mode: 'restricted',
+                    accepted: [{ kind: 'home_method', methodId: 'email_password' }],
+                },
+            },
+        });
+        const stranger = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' },
+        });
+        const env = {
+            HAPPIER_FEATURE_TEAMS__ENABLED: '1',
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+        } as const;
+
+        const wrongAccount = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: restricted.id } },
+            { env, principal: { accountId: stranger.id } },
+        );
+        if (wrongAccount.state !== 'admission_required') throw new Error('expected Team admission');
+        expect(wrongAccount.actions).toContainEqual({ kind: 'switch_account' });
+
+        // An anonymous visitor has no other Account to offer, and proving one
+        // exists would make this public endpoint an Account oracle.
+        const anonymous = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: restricted.id } },
+            { env },
+        );
+        if (anonymous.state !== 'admission_required') throw new Error('expected Team admission');
+        expect(anonymous.actions).not.toContainEqual({ kind: 'switch_account' });
+
+        // A provisioned Team's membership arrives from its directory. Telling a
+        // signed-in visitor to try another sign-in method would be false: there
+        // is nothing they can do but wait for the directory to catch up.
+        const provisioned = await db.team.create({
+            data: {
+                name: 'Provisioned',
+                admissionMode: 'provisioned',
+                authenticationPolicy: { v: 1, mode: 'restricted', accepted: [] },
+            },
+        });
+        const delayed = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: provisioned.id } },
+            { env, principal: { accountId: stranger.id } },
+        );
+        expect(delayed).toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
+    });
+
     it('keeps unknown and archived Team targets non-enumerating', async () => {
         const archived = await db.team.create({
             data: { name: 'Do not disclose', archivedAt: new Date('2026-09-06T00:00:00.000Z') },
@@ -270,7 +326,7 @@ describe('resolveAuthEntry', () => {
             v: 1,
             state: 'already_member',
             scope: { kind: 'team' },
-            home: { serverId: expect.any(String), displayName: 'home.example.test', storageMode: 'encrypted' },
+            home: { serverId: expect.any(String), displayName: 'home.example.test', storageMode: 'encrypted', hosting: null },
             account: { firstName: 'Alice', lastName: null, username: 'alice', avatarUrl: null },
             team: { teamId: team.id, name: 'Acme Team', logo: null },
             actions: [{ kind: 'continue' }],
@@ -459,7 +515,7 @@ describe('resolveAuthEntry', () => {
             v: 1,
             state: 'already_member',
             scope: { kind: 'team' },
-            home: { serverId: expect.any(String), displayName: null, storageMode: null },
+            home: { serverId: expect.any(String), displayName: null, storageMode: null, hosting: null },
             account: { firstName: null, lastName: null, username: null, avatarUrl: null },
             team: { teamId: team.id, name: 'Restricted Evidence Team', logo: null },
             actions: [{ kind: 'continue' }],
@@ -563,7 +619,7 @@ describe('resolveAuthEntry', () => {
             v: 1,
             state: 'already_member',
             scope: { kind: 'invitation' },
-            home: { serverId: expect.any(String), displayName: null, storageMode: 'encrypted' },
+            home: { serverId: expect.any(String), displayName: null, storageMode: 'encrypted', hosting: null },
             account: { firstName: null, lastName: null, username: null, avatarUrl: null },
             team: { teamId: team.id, name: 'Acme', logo: null },
             actions: [{ kind: 'continue' }],

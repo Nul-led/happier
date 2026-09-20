@@ -17,6 +17,24 @@ describe("resolveTeamAuthenticationPolicy", () => {
         })).toEqual({ status: "inherit" });
     });
 
+    it("resolves a stored provider method id against the catalog case-insensitively", () => {
+        expect(resolveTeamAuthenticationPolicy({
+            policy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: "GitHub" }],
+            },
+            homeMethods: [{ id: "github", available: true }],
+            teamConnections: [],
+        })).toEqual({
+            status: "restricted",
+            choices: [{
+                reference: { kind: "home_method", methodId: "GitHub" },
+                availability: "usable",
+            }],
+        });
+    });
+
     it("retains configured unavailable references while resolving exact usable alternatives", () => {
         const result = resolveTeamAuthenticationPolicy({
             policy: {

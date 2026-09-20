@@ -8,6 +8,7 @@ import {
     SESSION_SYSTEM_RECORDS_CONTRACT_MIGRATION,
 } from "@/app/session/systemRecords/sessionSystemRecordProtocolContract";
 import { createEnvPatcher } from "@/testkit/env";
+import { isRestrictedAuthTokenDeniedForRoute } from "@/app/api/utils/apiTokenRouteAdmission";
 
 import {
     createSessionAccessProjectionRelations,
@@ -85,6 +86,10 @@ function activeOwnerSessionWhere(sessionId: string, accountId: string) {
     };
 }
 
+type AdmissionRouteConfig = NonNullable<
+    Parameters<typeof isRestrictedAuthTokenDeniedForRoute>[0]["routeOptions"]
+>["config"];
+
 describe("sessionRoutes system records", () => {
     const storagePolicyEnv = createEnvPatcher(["HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY"]);
 
@@ -102,6 +107,45 @@ describe("sessionRoutes system records", () => {
                 findMany: async () => [],
             },
         } as unknown as ProtocolActivationDatabase);
+    });
+
+    // System Records are a promised Session surface for the Session's own
+    // runtime, so a Runner credential reaches its Session's records and no
+    // other Session's under the only credential it holds.
+    it("admits a Runner credential only on its own Session's System Records", async () => {
+        const runnerPrincipal = {
+            kind: "ephemeral_session_runner",
+            authority: "session_runtime",
+            accountId: "u1",
+            activationId: "activation-1",
+            sessionId: "session-1",
+            machineId: "machine-1",
+            installationId: "installation-1",
+            installationPublicKey: "public-key-1",
+            creatorTokenEpoch: 0,
+        } as never;
+        for (const [method, path] of [
+            ["GET", "/v2/sessions/:sessionId/system-records"],
+            ["PUT", "/v2/sessions/:sessionId/system-records"],
+            ["GET", "/v2/sessions/:sessionId/permission-mediation-records"],
+        ] as const) {
+            const route = await createSessionRouteTestBuilder(method, path);
+            const config = route.app.routes.get(`${method} ${path}`)?.opts.config as AdmissionRouteConfig;
+            expect(isRestrictedAuthTokenDeniedForRoute({
+                authTokenKind: "ephemeral_session_runner",
+                userId: "u1",
+                sessionRuntimePrincipal: runnerPrincipal,
+                params: { sessionId: "session-1" },
+                routeOptions: { config },
+            })).toBe(false);
+            expect(isRestrictedAuthTokenDeniedForRoute({
+                authTokenKind: "ephemeral_session_runner",
+                userId: "u1",
+                sessionRuntimePrincipal: runnerPrincipal,
+                params: { sessionId: "session-2" },
+                routeOptions: { config },
+            })).toBe(true);
+        }
     });
 
     it("registers the v2 session system-record route surface", async () => {

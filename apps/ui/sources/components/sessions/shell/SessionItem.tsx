@@ -1420,6 +1420,7 @@ const SessionItemContent = React.memo(
         const derivedRowAttentionState = resolveSessionRowAttentionState(resolveSessionListAttentionState({
             operational: sessionStatus.awareness.operational.primary,
             hasUnreadMessages,
+            personalAttentionReason: resolvedSession.viewer?.attention.primary ?? null,
         }));
         // Retention controls placement only. It cannot turn quiet, unread, or pending facts into
         // semantic work after the canonical awareness owner stopped reporting work.

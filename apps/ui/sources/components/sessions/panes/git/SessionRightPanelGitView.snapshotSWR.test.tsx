@@ -239,9 +239,12 @@ describe('SessionRightPanelGitView (snapshot SWR)', () => {
         mockSnapshot = validSnapshot;
         useSessionRealtimeScmTranscriptConsumerMock.mockClear();
 
-        await renderScreen(React.createElement(SessionRightPanelGitView, { sessionId: 's1', scopeId: 'session:s1' }));
+        await renderScreen(React.createElement(SessionRightPanelGitView, { sessionId: 's1', scopeId: 'session:s1', serverId: 'home-a' }));
 
-        expect(useSessionRealtimeScmTranscriptConsumerMock).toHaveBeenCalledWith('s1', validSnapshot);
+        // The exact Home travels with the registration: another Home hosting the same Session
+        // id must not receive this surface's realtime SCM routing.
+        expect(useSessionRealtimeScmTranscriptConsumerMock)
+            .toHaveBeenCalledWith({ serverId: 'home-a', sessionId: 's1' }, validSnapshot);
     });
 
     it('keeps retrying source-control refresh while the first snapshot is still unavailable', async () => {

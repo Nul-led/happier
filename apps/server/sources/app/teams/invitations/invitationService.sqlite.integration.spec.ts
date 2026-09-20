@@ -15,7 +15,7 @@ import {
 } from "./invitationService";
 import { digestTeamInvitationToken, mintTeamInvitationToken } from "./token";
 
-const HOME = { serverId: "home-1", displayName: "Acme Home", storageMode: "plain" } as const;
+const HOME = { serverId: "home-1", displayName: "Acme Home", storageMode: "plain", hosting: null } as const;
 
 describe("Team invitation service authority (SQLite integration)", () => {
     let harness: LightSqliteHarness;

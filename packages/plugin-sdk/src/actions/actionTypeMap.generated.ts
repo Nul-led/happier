@@ -12487,7 +12487,7 @@ export type PluginActionResultById = {
                 accessLevels: ('admin' | 'edit' | 'view')[];
                 canChangePermissionDelegation: boolean;
                 canRemove: boolean;
-                reason?: 'data_key_not_required' | 'invalid_cursor' | 'invalid_request' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_access_transcript_not_shareable' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | undefined;
+                reason?: 'data_key_not_required' | 'invalid_cursor' | 'invalid_request' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | undefined;
             };
         }[];
         owner: {
@@ -12540,6 +12540,12 @@ export type PluginActionResultById = {
             primaryTeamId?: null | string | undefined;
         };
         primaryTeamId: null | string;
+        credentialBindingConsequences?: undefined | {
+            resourceId: string;
+            teamId: string;
+            displayName: string;
+            policy: 'team_context_required' | 'team_visibility_required';
+        }[];
     } | {
         visibility: 'self';
         grants: [
@@ -13306,7 +13312,7 @@ export type PluginActionResultById = {
     };
     readonly "session.spawn_new": {
         type: 'error';
-        code: 'cancelled' | 'creation_conflict' | 'data_key_not_required' | 'incompatible_target' | 'invalid_cursor' | 'invalid_input' | 'invalid_request' | 'machine_offline' | 'organization_invalid' | 'organization_unavailable' | 'permission_denied' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_request_failed' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_access_transcript_not_shareable' | 'session_data_key_unavailable' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | 'spawn_failed' | 'target_required' | 'target_unavailable';
+        code: 'cancelled' | 'creation_conflict' | 'data_key_not_required' | 'incompatible_target' | 'invalid_cursor' | 'invalid_input' | 'invalid_request' | 'machine_offline' | 'organization_invalid' | 'organization_unavailable' | 'permission_denied' | 'recipient_envelope_required' | 'recipient_key_unavailable' | 'session_access_authentication_required' | 'session_access_authentication_unavailable' | 'session_access_external_sharing_disabled' | 'session_access_external_sharing_requires_team_admin' | 'session_access_forbidden' | 'session_access_invalid_recipient_envelope' | 'session_access_owner_grant_invalid' | 'session_access_permission_delegation_forbidden' | 'session_access_permission_delegation_requires_edit' | 'session_access_request_failed' | 'session_access_self_grant_invalid' | 'session_access_session_not_found' | 'session_access_subject_ineligible' | 'session_access_subject_not_found' | 'session_access_team_policy_required' | 'session_data_key_unavailable' | 'session_initial_access_creator_mismatch' | 'session_responsibility_assignee_unavailable' | 'spawn_failed' | 'target_required' | 'target_unavailable';
         retryable: boolean;
         providerError?: undefined | {
             v: 1;
@@ -35621,6 +35627,15 @@ export type PluginActionResultById = {
                     enabled: boolean;
                 };
             }[];
+            requirements?: undefined | {
+                permissions: Record<string, 'read' | 'write'>;
+                events: string[];
+                missingPermissions: {
+                    permission: string;
+                    required: 'read' | 'write';
+                }[];
+                missingEvents: string[];
+            };
         }[];
     };
     readonly "identity.githubApps.create": {
@@ -39946,6 +39961,7 @@ export type PluginActionResultById = {
                 serverId: string;
                 displayName: null | string;
                 storageMode: 'encrypted' | 'plain' | null;
+                hosting: 'personal' | 'shared' | null;
             };
             team: {
                 teamId: string;
@@ -41364,7 +41380,7 @@ export type PluginActionResultById = {
                 kind: 'broker_unavailable';
             } | {
                 kind: 'limit_reached';
-                metric: 'cost_usd' | 'request_count' | 'total_tokens';
+                metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
                 resetsAtUtc: string;
             } | {
                 kind: 'policy_denied';
@@ -41598,7 +41614,7 @@ export type PluginActionResultById = {
                 kind: 'broker_unavailable';
             } | {
                 kind: 'limit_reached';
-                metric: 'cost_usd' | 'request_count' | 'total_tokens';
+                metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
                 resetsAtUtc: string;
             } | {
                 kind: 'policy_denied';
@@ -41722,7 +41738,7 @@ export type PluginActionResultById = {
             kind: 'broker_unavailable';
         } | {
             kind: 'limit_reached';
-            metric: 'cost_usd' | 'request_count' | 'total_tokens';
+            metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
             resetsAtUtc: string;
         } | {
             kind: 'policy_denied';
@@ -41793,7 +41809,7 @@ export type PluginActionResultById = {
                 kind: 'broker_unavailable';
             } | {
                 kind: 'limit_reached';
-                metric: 'cost_usd' | 'request_count' | 'total_tokens';
+                metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
                 resetsAtUtc: string;
             } | {
                 kind: 'policy_denied';
@@ -42005,7 +42021,7 @@ export type PluginActionResultById = {
             kind: 'broker_unavailable';
         } | {
             kind: 'limit_reached';
-            metric: 'cost_usd' | 'request_count' | 'total_tokens';
+            metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
             resetsAtUtc: string;
         } | {
             kind: 'policy_denied';
@@ -42084,7 +42100,7 @@ export type PluginActionResultById = {
             kind: 'broker_unavailable';
         } | {
             kind: 'limit_reached';
-            metric: 'cost_usd' | 'request_count' | 'total_tokens';
+            metric: 'cost_usd' | 'inference_requests' | 'total_tokens';
             resetsAtUtc: string;
         } | {
             kind: 'policy_denied';

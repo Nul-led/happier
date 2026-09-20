@@ -221,7 +221,7 @@ export async function qualifyTeamOperationAuthenticationInTx(
  * page while preserving the operation adapter's exact fail-closed contract. */
 export async function qualifyTeamOperationAuthenticationsInTx(
     tx: Tx,
-    input: TeamOperationAuthenticationContext & Readonly<{
+    input: Partial<TeamOperationAuthenticationContext> & Readonly<{
         contexts: readonly TeamActorContext[];
     }>,
 ): Promise<ReadonlyMap<string, Readonly<{ ok: true }> | Readonly<{
@@ -249,7 +249,11 @@ export async function qualifyTeamOperationAuthenticationsInTx(
         teams: contexts.map((context) => context.team),
         accountId: actorAccountId,
         verifiedCredentialEvidence: input.authenticationEvidence,
-        operationContext: { kind: input.authenticationAuthority },
+        // Same default as the scalar entry point: a direct owner-level call with
+        // no credential evidence is an unqualified present-user attempt, while
+        // an evidence-bearing caller without a verified authority already failed
+        // closed above.
+        operationContext: { kind: input.authenticationAuthority ?? "present_user" },
     });
     return new Map(contexts.map((context) => {
         const qualification = qualifications.get(context.team.id) ?? { status: "unavailable" as const };
@@ -285,11 +289,52 @@ export async function qualifyTeamProjectionReadAuthenticationInTx(
         "team_authentication_required" | "team_authentication_unavailable"
     > }>
 > {
-    if (input.context.teamCapabilities.manageAuthentication
-        && projectTeamPolicyV1(input.context.team).authenticationPolicyStatus === "repair_required") {
+    if (isTeamAuthenticationPolicyRepairRead(input.context)) {
         return { ok: true };
     }
     return qualifyTeamOperationAuthenticationInTx(tx, input);
+}
+
+function isTeamAuthenticationPolicyRepairRead(context: TeamActorContext): boolean {
+    return context.teamCapabilities.manageAuthentication
+        && projectTeamPolicyV1(context.team).authenticationPolicyStatus === "repair_required";
+}
+
+/**
+ * The same projection-read resolution for a bounded page of Team contexts.
+ *
+ * The directory reads a whole page at once, so qualifying row by row issues one
+ * authentication fact query per Team for a decision the batch owner already
+ * answers in one. The repair exception stays row-local because it is decided
+ * from the row's own capabilities and stored policy.
+ */
+export async function qualifyTeamProjectionReadAuthenticationsInTx(
+    tx: Tx,
+    input: Partial<TeamOperationAuthenticationContext> & Readonly<{
+        contexts: readonly TeamActorContext[];
+    }>,
+): Promise<ReadonlyMap<string, Readonly<{ ok: true }> | Readonly<{
+    ok: false;
+    error: Extract<TeamErrorCodeV1,
+        "team_authentication_required" | "team_authentication_unavailable">;
+    }>>> {
+    const results = new Map<string, Readonly<{ ok: true }> | Readonly<{
+        ok: false;
+        error: Extract<TeamErrorCodeV1,
+            "team_authentication_required" | "team_authentication_unavailable">;
+    }>>();
+    const qualifiable: TeamActorContext[] = [];
+    for (const context of input.contexts) {
+        if (isTeamAuthenticationPolicyRepairRead(context)) {
+            results.set(context.team.id, { ok: true });
+            continue;
+        }
+        qualifiable.push(context);
+    }
+    if (qualifiable.length === 0) return results;
+    const qualified = await qualifyTeamOperationAuthenticationsInTx(tx, { ...input, contexts: qualifiable });
+    for (const [teamId, result] of qualified) results.set(teamId, result);
+    return results;
 }
 
 /**

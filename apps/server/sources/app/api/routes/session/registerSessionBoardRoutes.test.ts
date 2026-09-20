@@ -8,6 +8,49 @@ import { isSessionBoardExternalActionEffectAllowed, registerSessionBoardRoutes }
 import { isRestrictedAuthTokenDeniedForRoute } from "@/app/api/utils/apiTokenRouteAdmission";
 
 describe("registerSessionBoardRoutes", () => {
+    const runnerPrincipal = (sessionId: string) => ({
+        kind: "ephemeral_session_runner",
+        authority: "session_runtime",
+        accountId: "account-1",
+        activationId: "activation-1",
+        sessionId,
+        machineId: "machine-1",
+        installationId: "installation-1",
+        installationPublicKey: "public-key-1",
+        creatorTokenEpoch: 0,
+    }) as never;
+
+    // A Runner is an ordinary daemon runtime for exactly one Session. The Board
+    // is a promised Session surface, so its own Session's Board must be
+    // reachable under the only credential the Runner holds, and another
+    // Session's Board must not be.
+    it("admits a Runner credential on its own Session's Board and refuses another Session's", () => {
+        let registered: Readonly<{ path: string; options: any }> | undefined;
+        const app = {
+            authenticate: vi.fn(),
+            put: (path: string, options: unknown) => {
+                registered = { path, options };
+            },
+        };
+        registerSessionBoardRoutes(app as never);
+        const config = registered?.options.config;
+
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: runnerPrincipal("session-1"),
+            params: { sessionId: "session-1" },
+            routeOptions: { config },
+        })).toBe(false);
+        expect(isRestrictedAuthTokenDeniedForRoute({
+            authTokenKind: "ephemeral_session_runner",
+            userId: "account-1",
+            sessionRuntimePrincipal: runnerPrincipal("session-1"),
+            params: { sessionId: "session-2" },
+            routeOptions: { config },
+        })).toBe(true);
+    });
+
     it("registers the public Board mutation with strict family validation and the canonical API guardrails", () => {
         let registered: Readonly<{ path: string; options: any }> | undefined;
         const app = {

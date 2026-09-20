@@ -69,6 +69,8 @@ export function resolveActivitySurfaceAttentionSymbol(
             return 'clock.badge.exclamationmark';
         case 'attention':
             return 'bell.fill';
+        case 'mentioned':
+            return 'at.circle.fill';
         case 'unread':
             return 'tray.full.fill';
         case 'quiet':
@@ -90,6 +92,7 @@ export function resolveActivitySurfaceAttentionTintName(
         case 'pending':
             return 'systemYellow';
         case 'attention':
+        case 'mentioned':
         case 'unread':
             return 'systemIndigo';
         case 'quiet':

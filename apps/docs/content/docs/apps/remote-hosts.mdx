@@ -79,6 +79,14 @@ happier home create --ssh user@host
 
 This is different from machine setup: `home create --ssh` makes that host the Home authority, while `machine setup --ssh` connects a session-running machine to the selected Home.
 
+Noninteractive creation keeps existing Happier services and the host's default managed release channel unchanged. If the command reports a conflict, inspect the host and rerun with `--replace-services`, `--switch-channel`, or both only when you intend those exact changes:
+
+```bash
+happier home create --ssh user@host --replace-services --switch-channel --yes
+```
+
+`--replace-services` may remove conflicting Happier service registrations before installing the Home service. `--switch-channel` changes the default managed channel and refreshes its installed shims. Plain `--yes` grants neither authority.
+
 Bootstrap a remote machine:
 
 ```bash
@@ -120,6 +128,7 @@ See: [Server → Setup & bootstrap policy](/self-hosting/setup-and-bootstrap-pol
 ## Security notes
 
 - SSH host-key trust prompts should be reviewed carefully the first time you connect.
+- A prompt about a *changed* host key is different: the stored key for that host no longer matches. In the CLI, `--yes` trusts a first-use host but never a changed key — confirm it interactively after you know why it changed, or pin the exact new `known_hosts` line with `--trusted-host-key <line>`.
 - When secret material is supported by your server/build policy, it is stored in your synced account
   settings. On an E2EE account it is encrypted on your device before it is sent; on a plaintext
   account it is stored in a form the Happier server can read. See [Encryption](/security/encryption).

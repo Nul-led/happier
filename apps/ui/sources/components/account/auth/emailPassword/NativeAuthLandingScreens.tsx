@@ -24,8 +24,8 @@ import {
     previewNativeEmailVerification,
     previewNativePasswordReset,
     submitNativePasswordReset,
-    clearNativeInvitationEmailVerificationContinuation,
-    readNativeInvitationEmailVerificationContinuation,
+    clearNativeEmailVerificationContinuation,
+    readNativeEmailVerificationContinuation,
 } from '@/sync/api/auth/nativeAuthEmail';
 import { createServerFetchAtEndpoint, type ServerFetch } from '@/sync/http/client';
 import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
@@ -183,10 +183,10 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
         onFocused: React.useCallback(() => router.replace('/'), [router]),
     });
     const readyPreview = state.kind === 'ready' ? state.preview : null;
-    const invitationContinuation = state.kind === 'ready'
+    const verificationContinuation = state.kind === 'ready'
         && state.preview.continuation === 'account_admission'
         && landingTarget.kind === 'ready'
-        ? readNativeInvitationEmailVerificationContinuation({
+        ? readNativeEmailVerificationContinuation({
             homeServerIdentityId: landingTarget.homeServerIdentityId,
             maskedDestination: state.preview.maskedDestination,
         })
@@ -241,10 +241,10 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
             // invitation-only Home even when ordinary public provisioning is
             // closed. Ask the existing invitation entry owner for the exact
             // admission actions instead of reinterpreting Home policy here.
-            const entry = invitationContinuation
+            const entry = verificationContinuation?.admission
                 ? await fetchAuthEntry({
                     ...transport,
-                    scope: { kind: 'invitation', token: invitationContinuation.admission.token },
+                    scope: { kind: 'invitation', token: verificationContinuation.admission.token },
                 })
                 : readyPreview.continuation === 'account_admission' && props.token
                 ? await fetchAuthEntry({
@@ -272,7 +272,7 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
             active = false;
             abortController.abort();
         };
-    }, [invitationContinuation?.admission.token, landingTarget, props.token, readyPreview?.continuation]);
+    }, [verificationContinuation?.admission?.token, landingTarget, props.token, readyPreview?.continuation]);
 
     React.useEffect(() => {
         setProblem(null);
@@ -307,14 +307,17 @@ export const NativeAuthEmailVerifyScreen = React.memo(function NativeAuthEmailVe
                 target={landingTarget.target}
                 actions={[authActions.provision]}
                 returnTo="/"
-                nativeAdmission={invitationContinuation
-                    ? { ...invitationContinuation.admission, emailVerificationToken: props.token }
+                nativeAdmission={verificationContinuation?.admission
+                    ? { ...verificationContinuation.admission, emailVerificationToken: props.token }
                     : { kind: 'native_email_verification', token: props.token }}
+                // The mailbox this landing just proved. Without it the panel asks for the
+                // address again on the very screen that verified it.
+                {...(verificationContinuation ? { initialEmail: verificationContinuation.normalizedEmail } : {})}
                 homeLabel={landingTarget.homeLabel}
                 keyChallengeV2Available={false}
                 onAuthenticated={async ({ teamId }) => {
-                    if (invitationContinuation) {
-                        clearNativeInvitationEmailVerificationContinuation(invitationContinuation.admission);
+                    if (verificationContinuation) {
+                        clearNativeEmailVerificationContinuation(verificationContinuation);
                     }
                     // The Account was created on this exact Home while another
                     // may be focused. Landing on the previous Home would read as

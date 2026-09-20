@@ -1,4 +1,8 @@
-import type { EphemeralSessionRunnerHttpOperation } from "../types";
+import type {
+    EphemeralSessionRunnerRouteBinding,
+    EphemeralSessionRunnerRouteMachineField,
+    EphemeralSessionRunnerRouteSessionField,
+} from "../types";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
 import type {
     AuthTokenAuthenticationEvidenceV1,
@@ -72,7 +76,7 @@ type AuthenticatedRouteRequest = Readonly<{
         config?: Readonly<{
             allowApiToken?: unknown;
             allowAccountDirectoryToken?: unknown;
-            ephemeralSessionRunnerOperation?: EphemeralSessionRunnerHttpOperation;
+            ephemeralSessionRunnerBinding?: EphemeralSessionRunnerRouteBinding;
         }>;
     }>;
 }>;
@@ -83,38 +87,47 @@ function readRecord(value: unknown): Readonly<Record<string, unknown>> | null {
         : null;
 }
 
-function isEphemeralSessionRunnerOperationAllowed(request: AuthenticatedRouteRequest): boolean {
-    const principal = request.sessionRuntimePrincipal;
-    if (!principal || request.userId !== principal.accountId) return false;
-    const operation = request.routeOptions?.config?.ephemeralSessionRunnerOperation;
+function readEphemeralSessionRunnerRouteField(
+    request: AuthenticatedRouteRequest,
+    field: EphemeralSessionRunnerRouteSessionField | EphemeralSessionRunnerRouteMachineField,
+): unknown {
     const params = readRecord(request.params);
     const body = readRecord(request.body);
-    switch (operation) {
-        case "runtime_features":
-            return true;
-        case "session_detail":
-        case "session_runtime":
-            return params?.sessionId === principal.sessionId;
-        case "session_shared_editor":
-            return params?.sessionId === principal.sessionId && body?.mode === "shared_editor";
-        case "session_follow_destination_runtime":
-            return params?.destinationSessionId === principal.sessionId;
-        case "session_machine_runtime":
-            return body?.sessionId === principal.sessionId && body?.machineId === principal.machineId;
-        case "session_usage_event":
-            return body?.sessionId === principal.sessionId
-                && (body?.machineId === undefined
-                    || body.machineId === null
-                    || body.machineId === principal.machineId);
-        case "provider_broker_open": {
+    switch (field) {
+        case "params.sessionId":
+            return params?.sessionId;
+        case "params.destinationSessionId":
+            return params?.destinationSessionId;
+        case "body.sessionId":
+            return body?.sessionId;
+        case "body.consumer.sessionId": {
             const consumer = readRecord(body?.consumer);
-            return body?.initiatorMachineId === principal.machineId
-                && consumer?.kind === "session"
-                && consumer?.sessionId === principal.sessionId;
+            return consumer?.kind === "session" ? consumer.sessionId : undefined;
         }
-        default:
-            return false;
+        case "body.machineId":
+            return body?.machineId;
+        case "body.initiatorMachineId":
+            return body?.initiatorMachineId;
     }
+}
+
+/**
+ * A Runner credential is admitted on a route that declares how the request
+ * names its Session and Machine, and only when those exact values are the ones
+ * the credential was issued for. A route that declares no binding is not a
+ * Runner surface and fails closed.
+ */
+function isEphemeralSessionRunnerRequestBound(request: AuthenticatedRouteRequest): boolean {
+    const principal = request.sessionRuntimePrincipal;
+    if (!principal || request.userId !== principal.accountId) return false;
+    const binding = request.routeOptions?.config?.ephemeralSessionRunnerBinding;
+    if (!binding) return false;
+    if (binding.scope === "account") return true;
+    if (readEphemeralSessionRunnerRouteField(request, binding.session) !== principal.sessionId) return false;
+    if (binding.machine === undefined) return true;
+    const machineId = readEphemeralSessionRunnerRouteField(request, binding.machine);
+    if (binding.machineOptional === true && (machineId === undefined || machineId === null)) return true;
+    return machineId === principal.machineId;
 }
 
 /** Restricted kinds never gain ordinary Home transport capabilities. */
@@ -154,7 +167,7 @@ export function isRestrictedAuthTokenDeniedForRoute(
         case "account_directory":
             return request.routeOptions?.config?.allowAccountDirectoryToken !== true;
         case "ephemeral_session_runner":
-            return !isEphemeralSessionRunnerOperationAllowed(request);
+            return !isEphemeralSessionRunnerRequestBound(request);
         default:
             return true;
     }

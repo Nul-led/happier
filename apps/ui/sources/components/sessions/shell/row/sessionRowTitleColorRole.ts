@@ -42,6 +42,7 @@ export function resolveSessionRowTitleColorRole(input: Readonly<{
 
 function isUserAttentionState(attentionState: SessionRowTitleAttentionState): boolean {
     return attentionState === 'attention'
+        || attentionState === 'mentioned'
         || attentionState === 'unread'
         || attentionState === 'pending'
         || attentionState === 'ready'

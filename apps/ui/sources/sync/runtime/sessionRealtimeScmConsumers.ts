@@ -1,6 +1,7 @@
 import type { ScmWorkingSnapshot, Session } from '@/sync/domains/state/storageTypes';
 import { readSessionWorkspaceContext } from '@/sync/domains/session/readSessionWorkspaceContext';
 import type { SessionRealtimeScmScope } from '@/sync/domains/session/realtime/sessionRealtimeVisibility';
+import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { resolveProjectMachineScopeId } from '@/sync/runtime/orchestration/projectManager';
 import { isSessionPathWithinRepoRoot } from '@/scm/sync/paths';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
@@ -10,6 +11,14 @@ type SessionRealtimeScmScopeState = Readonly<{
   getProjectForSession?: (sessionId: string) => { key?: { machineId?: string | null; path?: string | null } } | null;
   getSessionProjectScmSnapshot?: (sessionId: string) => ScmWorkingSnapshot | null;
 }>;
+
+/**
+ * The Session a SCM scope is built for. `serverId` is absent only on the legacy unscoped
+ * callers that never learned a Home; every mounted surface supplies one.
+ */
+export type SessionScmScopeAddress =
+  | SessionAddress
+  | Readonly<{ serverId?: string | null; sessionId: string }>;
 
 type MountedScmConsumerResetListener = () => void;
 
@@ -36,9 +45,10 @@ function readMachineScopeId(
 
 export function buildSessionRealtimeScmScopeFromSnapshot(
   state: SessionRealtimeScmScopeState,
-  sessionId: string,
+  address: SessionScmScopeAddress,
   snapshot: ScmWorkingSnapshot | null | undefined,
 ): SessionRealtimeScmScope | null {
+  const sessionId = address.sessionId;
   const session = state.sessions?.[sessionId];
   if (!session || snapshot?.repo.isRepo !== true) return null;
   const repoRoot = normalizeText(snapshot.repo.rootPath);
@@ -46,6 +56,7 @@ export function buildSessionRealtimeScmScopeFromSnapshot(
   const machineScopeId = readMachineScopeId(state, sessionId, session);
   if (!machineScopeId || machineScopeId === 'unknown') return null;
   return {
+    serverId: normalizeText(address.serverId),
     sessionId,
     canonicalProjectKey: normalizeText(snapshot.projectKey) ?? `${machineScopeId}:${repoRoot}`,
     machineScopeId,
@@ -55,12 +66,14 @@ export function buildSessionRealtimeScmScopeFromSnapshot(
 
 export function resolveSessionRealtimeScmScopeForMountedConsumers(
   state: SessionRealtimeScmScopeState,
-  sessionId: string,
+  address: SessionScmScopeAddress,
   mountedScopes: ReadonlyArray<SessionRealtimeScmScope>,
 ): SessionRealtimeScmScope | null {
+  const sessionId = address.sessionId;
+  const serverId = normalizeText(address.serverId);
   const snapshotScope = buildSessionRealtimeScmScopeFromSnapshot(
     state,
-    sessionId,
+    address,
     state.getSessionProjectScmSnapshot?.(sessionId) ?? null,
   );
   if (snapshotScope) return snapshotScope;
@@ -68,10 +81,10 @@ export function resolveSessionRealtimeScmScopeForMountedConsumers(
   const session = state.sessions?.[sessionId];
   if (!session) return null;
   const machineScopeId = readMachineScopeId(state, sessionId, session);
-  if (!machineScopeId || machineScopeId === 'unknown') return { sessionId };
+  if (!machineScopeId || machineScopeId === 'unknown') return { serverId, sessionId };
 
   const workspacePath = normalizeText(readSessionWorkspaceContext(state, sessionId).workspacePath);
-  if (!workspacePath) return { sessionId, machineScopeId };
+  if (!workspacePath) return { serverId, sessionId, machineScopeId };
 
   for (const mountedScope of mountedScopes) {
     if (normalizeText(mountedScope.machineScopeId) !== machineScopeId) continue;
@@ -80,6 +93,7 @@ export function resolveSessionRealtimeScmScopeForMountedConsumers(
     if (!repoRoot || !canonicalProjectKey) continue;
     if (!isSessionPathWithinRepoRoot(workspacePath, repoRoot)) continue;
     return {
+      serverId,
       sessionId,
       canonicalProjectKey,
       machineScopeId,
@@ -87,7 +101,7 @@ export function resolveSessionRealtimeScmScopeForMountedConsumers(
     };
   }
 
-  return { sessionId, machineScopeId };
+  return { serverId, sessionId, machineScopeId };
 }
 
 export function registerSessionRealtimeScmConsumerScope(scope: SessionRealtimeScmScope): () => void {

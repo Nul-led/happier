@@ -4,6 +4,7 @@ import {
     type SessionAccessGrantsListResponseV1,
 } from "@happier-dev/protocol";
 import { ACCOUNT_DISPLAY_PROFILE_SELECT, projectAccountDisplayProfileV1 } from "@/app/account/profile/accountDisplayProfile";
+import { listSessionTeamCredentialBindingConsequencesInTx } from "@/app/teams/credentials/sessionBinding";
 import { inTx } from "@/storage/inTx";
 import { projectSessionEffectiveAccessV1, resolveSessionAccessForOperation } from "./sessionAccess";
 import type { SessionAccessAuthentication } from "./sessionAccessAuthentication";
@@ -11,20 +12,22 @@ import { enforceTeamExternalSharingPolicyInTx, isSubjectExternalToTeamInTx } fro
 import { resolveSessionAccessGrantSubjectInTx } from "./sessionAccessGrantEligibility";
 import { teamPolicyStillRequiresGrant } from "./sessionAccessGrantService";
 
+/** What the grant inspector answers: the roster projection, or a typed refusal. */
+type SessionAccessGrantInspectionResult =
+    | { ok: true; value: SessionAccessGrantsListResponseV1 }
+    | { ok: false; error:
+        | "session_access_forbidden"
+        | "session_access_authentication_required"
+        | "session_access_authentication_unavailable"
+    };
+
 /** Inspect explicit grants only after admission, keeping roster topology private to access managers. */
 export async function inspectSessionAccessGrants(params: Readonly<{
     actorAccountId: string;
     sessionId: string;
     authentication: SessionAccessAuthentication;
-}>): Promise<
-    { ok: true; value: SessionAccessGrantsListResponseV1 }
-    | { ok: false; error:
-        | "session_access_forbidden"
-        | "session_access_authentication_required"
-        | "session_access_authentication_unavailable"
-    }
-> {
-    return await inTx(async (tx) => {
+}>): Promise<SessionAccessGrantInspectionResult> {
+    return await inTx(async (tx): Promise<SessionAccessGrantInspectionResult> => {
         const admission = await resolveSessionAccessForOperation(tx, {
             accountId: params.actorAccountId,
             sessionId: params.sessionId,
@@ -97,6 +100,16 @@ export async function inspectSessionAccessGrants(params: Readonly<{
                 ...(external && externalSharing !== null ? { externalSharing } : {}),
             }) });
         }
-        return { ok: true, value: { ...base, visibility: "complete", grants } };
+        // What the access manager is about to break: the Teams whose grant this
+        // editor can remove, plus the Team the context currently names, which the
+        // same editor can move away.
+        const credentialBindingConsequences = await listSessionTeamCredentialBindingConsequencesInTx(tx, {
+            sessionId: params.sessionId,
+            teamIds: [...new Set([
+                ...roster.teamGrants.map((row) => row.team.id),
+                ...(primaryTeamId === null ? [] : [primaryTeamId]),
+            ])],
+        });
+        return { ok: true, value: { ...base, visibility: "complete", grants, credentialBindingConsequences: [...credentialBindingConsequences] } };
     });
 }

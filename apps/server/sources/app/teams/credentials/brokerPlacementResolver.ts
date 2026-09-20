@@ -49,12 +49,6 @@ export function readTeamCredentialBrokerPlacement(row: TeamCredentialBrokerPlace
     return parsed.success ? { ok: true, placement: parsed.data } : { ok: false, error: "resource_corrupt" };
 }
 
-/** True only for an exact placement naming this Machine; Pool placements never pin. */
-export function teamCredentialBrokerPlacementPinsMachine(row: TeamCredentialBrokerPlacementRow, machineId: string): boolean {
-    const read = readTeamCredentialBrokerPlacement(row);
-    return read.ok && read.placement?.kind === "machine" && read.placement.machineId === machineId;
-}
-
 const BROKER_MACHINE_ELIGIBILITY_SELECT = {
     kind: true,
     revokedAt: true,
@@ -64,10 +58,13 @@ const BROKER_MACHINE_ELIGIBILITY_SELECT = {
 } as const;
 
 /**
- * Saved Pool placement mirrors the saved exact-Machine rule: the Pool must be
- * the custodian's and carry at least one enabled member that is a compatible
- * persistent broker. Presence is not required to save; an offline Pool remains
- * repairable, an empty or incompatible one is not a broker location.
+ * Saved Pool placement validates what a saved reference must be: the operator
+ * still offers Pools and the Pool is the custodian's own. It deliberately does
+ * not require a member that can run the source today, so an empty, offline or
+ * outdated Pool stays a truthful placement its custodian can repair instead of
+ * a write the editor offers and the writer refuses. Readiness for a brokered
+ * open is the separate question `admitTeamCredentialBrokerPoolForBrokeredUseInTx`
+ * answers.
  */
 export async function resolveTeamCredentialBrokerPoolForSaveInTx(
     tx: Tx,
@@ -82,12 +79,56 @@ export async function resolveTeamCredentialBrokerPoolForSaveInTx(
     }
     const pool = await tx.machinePool.findFirst({
         where: { id: input.poolId, accountId: input.custodianAccountId },
-        select: { id: true, members: { where: { enabled: true }, select: { machine: { select: BROKER_MACHINE_ELIGIBILITY_SELECT } } } },
+        select: { id: true },
     });
     if (!pool) return { ok: false, error: "broker_unavailable" };
-    const eligibilities = pool.members.map((member) => classifyTeamCredentialBrokerMachineEligibility(member.machine));
-    if (eligibilities.includes("eligible")) return { ok: true, poolId: pool.id };
+    return { ok: true, poolId: pool.id };
+}
+
+/**
+ * Brokered-use readiness for an already-saved Pool placement: the placement
+ * must still be a Pool this Home offers and the custodian owns, and at least
+ * one enabled member must currently be a compatible persistent broker. This is
+ * the admission question, not the reference-validity question the save owner
+ * answers, and it is the one place Pool member eligibility is classified.
+ */
+export async function admitTeamCredentialBrokerPoolForBrokeredUseInTx(
+    tx: Tx,
+    input: Readonly<{ custodianAccountId: string; poolId: string }>,
+): Promise<Readonly<{ ok: true; poolId: string }> | TeamCredentialBrokerMachineEligibilityError> {
+    const saved = await resolveTeamCredentialBrokerPoolForSaveInTx(tx, input);
+    if (!saved.ok) return saved;
+    const members = await tx.machinePoolMember.findMany({
+        where: { poolId: input.poolId, enabled: true, pool: { accountId: input.custodianAccountId } },
+        select: { machine: { select: BROKER_MACHINE_ELIGIBILITY_SELECT } },
+    });
+    const eligibilities = members.map((member) => classifyTeamCredentialBrokerMachineEligibility(member.machine));
+    if (eligibilities.includes("eligible")) return { ok: true, poolId: saved.poolId };
     return { ok: false, error: eligibilities.includes("update_required") ? "update_required" : "broker_unavailable" };
+}
+
+/**
+ * True when this Machine is the broker the resource's current placement names:
+ * an exact placement must name it, and a Pool placement must still carry it as
+ * an enabled member. Established Runner bindings and existing-Session
+ * validations ask exactly this; the Machine's own eligibility stays with the
+ * Machine owner.
+ */
+export async function isTeamCredentialBrokerPlacementBoundToMachineInTx(
+    tx: Tx,
+    input: Readonly<{
+        resource: TeamCredentialBrokerPlacementRow & Readonly<{ custodianAccountId: string }>;
+        machineId: string;
+    }>,
+): Promise<boolean> {
+    const read = readTeamCredentialBrokerPlacement(input.resource);
+    if (!read.ok || read.placement === null) return false;
+    if (read.placement.kind === "machine") return read.placement.machineId === input.machineId;
+    return await isCurrentTeamCredentialBrokerPoolMemberInTx(tx, {
+        custodianAccountId: input.resource.custodianAccountId,
+        poolId: read.placement.poolId,
+        machineId: input.machineId,
+    });
 }
 
 async function isCurrentTeamCredentialBrokerPoolMemberInTx(

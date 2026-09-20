@@ -8,12 +8,12 @@ export type WorkspaceMutationIngestionOptions = Readonly<{
     now: () => number;
     setTimer: (fn: () => void, ms: number) => unknown;
     clearTimer: (handle: unknown) => void;
-    invalidateKnownMutation: (sessionId: string, changedPaths: readonly string[]) => void;
-    invalidateUnknownMutation: (sessionId: string) => void;
+    invalidateKnownMutation: (sessionId: string, changedPaths: readonly string[], serverId: string | null) => void;
+    invalidateUnknownMutation: (sessionId: string, serverId: string | null) => void;
 }>;
 
 export type WorkspaceMutationIngestion = Readonly<{
-    ingest: (sessionId: string, messages: readonly NormalizedMessage[]) => void;
+    ingest: (sessionId: string, messages: readonly NormalizedMessage[], serverId?: string | null) => void;
 }>;
 
 export function createWorkspaceMutationIngestion(options: WorkspaceMutationIngestionOptions): WorkspaceMutationIngestion {
@@ -25,16 +25,16 @@ export function createWorkspaceMutationIngestion(options: WorkspaceMutationInges
         clearTimer: options.clearTimer,
         onInvalidate: (event) => {
             if (event.changedPaths.length > 0) {
-                options.invalidateKnownMutation(event.sessionId, event.changedPaths);
+                options.invalidateKnownMutation(event.sessionId, event.changedPaths, event.serverId);
                 return;
             }
             if (event.hasUnknownMutations) {
-                options.invalidateUnknownMutation(event.sessionId);
+                options.invalidateUnknownMutation(event.sessionId, event.serverId);
             }
         },
     });
 
     return {
-        ingest: (sessionId, messages) => invalidator.ingest(sessionId, messages),
+        ingest: (sessionId, messages, serverId) => invalidator.ingest(sessionId, messages, serverId),
     };
 }

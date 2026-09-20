@@ -260,7 +260,10 @@ describe("planned Session Team credential selection (SQLite)", () => {
             .resolves.toEqual({ ok: false, reason: "resource_changed" });
     });
 
-    it("rejects Pool-backed resources for Runner selection even when an eligible member is selected", async () => {
+    // A Pool placement is a broker location, so the exact member the placement
+    // owner already selected is admitted; a Machine the Pool does not currently
+    // carry is not, and an unselected Pool has no Machine to bind.
+    it("admits the selected current Pool member for Runner selection and refuses a non-member", async () => {
         const current = await fixture("personal_allowed");
         const pool = await db.machinePool.create({ data: {
             id: crypto.randomUUID(),
@@ -283,6 +286,31 @@ describe("planned Session Team credential selection (SQLite)", () => {
         } as const;
 
         await expect(inTx(tx => resolvePlannedRunnerCredentialSelectionBindingInTx(tx, input)))
+            .resolves.toEqual({
+                ok: true,
+                binding: {
+                    v: 1,
+                    resourceId: current.resource.id,
+                    brokerMachineId: current.broker.id,
+                    revision: current.resource.revision,
+                },
+            });
+
+        const outsider = await db.machine.create({ data: {
+            id: `non-member-${crypto.randomUUID()}`,
+            accountId: current.broker.accountId,
+            metadata: "{}",
+            kind: "persistent",
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await expect(inTx(tx => resolvePlannedRunnerCredentialSelectionBindingInTx(tx, {
+            ...input,
+            selectedBrokerMachineId: outsider.id,
+        }))).resolves.toEqual({ ok: false, reason: "broker_unavailable" });
+
+        const { selectedBrokerMachineId: _unselected, ...withoutSelection } = input;
+        await expect(inTx(tx => resolvePlannedRunnerCredentialSelectionBindingInTx(tx, withoutSelection)))
             .resolves.toEqual({ ok: false, reason: "broker_unavailable" });
     });
 

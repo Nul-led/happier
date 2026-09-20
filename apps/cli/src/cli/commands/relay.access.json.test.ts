@@ -497,6 +497,7 @@ describe('happier relay access --json', () => {
 
             const invocations = fakeTailscale.readInvocations();
             expect(invocations).toEqual([
+                ['serve', 'status'],
                 ['serve', '--bg', 'http://127.0.0.1:3005'],
                 ['serve', 'status'],
                 ['status', '--json'],
@@ -548,6 +549,7 @@ describe('happier relay access --json', () => {
 
             const invocations = fakeTailscale.readInvocations();
             expect(invocations).toEqual([
+                ['serve', 'status'],
                 ['serve', '--bg', 'http://127.0.0.1:3005'],
                 ['serve', 'status'],
                 ['status', '--json'],
@@ -858,6 +860,73 @@ describe('happier relay access --json', () => {
             expect(readFileSync(knownHostsPath, 'utf8')).toContain('example.test ssh-ed25519 AAAANEW');
             const invocations = fakeSsh.readInvocations();
             expect(invocations[0]?.join(' ')).toContain(`UserKnownHostsFile=${knownHostsPath}`);
+        } finally {
+            output.restore();
+            process.exitCode = prevExitCode;
+            fakeSsh.cleanup();
+            rmSync(knownHostsRoot, { recursive: true, force: true });
+        }
+    });
+
+    it('refuses a changed SSH host key under --yes and runs no remote command', async () => {
+        const fakeSsh = createFakeSsh({
+            outputs: [
+                { status: 0, stdout: `${JSON.stringify({ providerId: 'lan', url: 'https://relay.remote.lan.test' })}\n` },
+            ],
+        });
+
+        const knownHostsRoot = mkdtempSync(join(tmpdir(), 'happier-relay-access-known-hosts-'));
+        const knownHostsPath = join(knownHostsRoot, 'known_hosts');
+        writeFileSync(knownHostsPath, 'example.test ssh-ed25519 AAAAPINNED\n', 'utf8');
+
+        const keyscanPath = join(fakeSsh.binDir, 'ssh-keyscan');
+        writeFileSync(
+            keyscanPath,
+            '#!/usr/bin/env bash\nset -eu\necho \"example.test ssh-ed25519 AAAAROGUE\"\n',
+            'utf8',
+        );
+        chmodSync(keyscanPath, 0o755);
+
+        const output = captureConsoleLogAndMuteStdout();
+        const prevExitCode = process.exitCode;
+        process.exitCode = undefined;
+        try {
+            await withPatchedPath(fakeSsh.binDir, async () => {
+                await commandRegistry.relay({
+                    args: [
+                        'relay',
+                        'access',
+                        'status',
+                        '--ssh',
+                        'dev@example.test',
+                        '--known-hosts-path',
+                        knownHostsPath,
+                        '--yes',
+                        '--json',
+                    ],
+                    rawArgv: [
+                        'node',
+                        'happier',
+                        'relay',
+                        'access',
+                        'status',
+                        '--ssh',
+                        'dev@example.test',
+                        '--known-hosts-path',
+                        knownHostsPath,
+                        '--yes',
+                        '--json',
+                    ],
+                    terminalRuntime: null,
+                }).catch(() => undefined);
+            });
+
+            // `--yes` is accept-new, never accept-changed: the pinned line survives
+            // and no command reaches the host whose key changed.
+            const persisted = readFileSync(knownHostsPath, 'utf8');
+            expect(persisted).toContain('AAAAPINNED');
+            expect(persisted).not.toContain('AAAAROGUE');
+            expect(fakeSsh.readInvocations()).toHaveLength(0);
         } finally {
             output.restore();
             process.exitCode = prevExitCode;

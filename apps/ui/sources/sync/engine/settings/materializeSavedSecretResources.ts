@@ -66,6 +66,15 @@ export async function materializeSavedSecretResources(params: Readonly<{
                     }
                 })();
             if (!content) throw new Error('Saved Secret resource material authentication failed');
+            // The catalog row and the opened material must describe the same
+            // secret. They are read as two snapshots, so a stale pair would
+            // otherwise hand a picker a row labelled as one secret carrying the
+            // value of another. The entry's own name/kind are null until the
+            // catalog publishes them, and only a published contradiction fails.
+            if ((resource.entry.name !== null && resource.entry.name !== content.name)
+                || (resource.entry.kind !== null && resource.entry.kind !== content.kind)) {
+                throw new Error('Saved Secret catalog entry contradicts its opened material');
+            }
 
             entries.push(resource.entry);
             materialized.push(Object.freeze({

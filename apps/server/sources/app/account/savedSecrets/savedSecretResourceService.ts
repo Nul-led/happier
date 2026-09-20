@@ -21,7 +21,12 @@ import {
     resolveSessionAccessGrantAccountSubjectsInTx,
     resolveSessionAccessGrantSubjectInTx,
 } from "@/app/session/access/sessionAccessGrantEligibility";
-import { resolveTeamActorContextInTx } from "@/app/teams/actorContext";
+import {
+    qualifyTeamOperationAuthenticationsInTx,
+    resolveTeamActorContextInTx,
+    resolveTeamActorContextsInTx,
+    type TeamOperationAuthenticationContext,
+} from "@/app/teams/actorContext";
 import { resolveTeamCredentialCapabilities } from "@/app/teams/capabilities";
 import {
     ACCOUNT_DISPLAY_PROFILE_SELECT,
@@ -72,6 +77,100 @@ type SavedSecretRecipientAccountRow = Readonly<{
 }>;
 
 /**
+ * Which of these Teams the caller's exact credential currently qualifies for.
+ *
+ * Shared Saved Secrets own no authentication policy: they read the one Team
+ * qualification owner, in this transaction, for every Team-derived arm. The
+ * batch entry point is used so a catalog page costs one qualification, not one
+ * per row.
+ */
+async function qualifiedSavedSecretTeamIdsInTx(
+    tx: Tx,
+    input: Readonly<{
+        teamIds: readonly string[];
+        actorAccountId: string;
+        authentication?: TeamOperationAuthenticationContext;
+    }>,
+): Promise<ReadonlySet<string>> {
+    const teamIds = [...new Set(input.teamIds)];
+    if (teamIds.length === 0) return new Set();
+    const contexts = await resolveTeamActorContextsInTx(tx, {
+        teamIds,
+        actorAccountId: input.actorAccountId,
+    });
+    if (contexts.size === 0) return new Set();
+    const qualifications = await qualifyTeamOperationAuthenticationsInTx(tx, {
+        ...input.authentication,
+        contexts: [...contexts.values()],
+    });
+    const qualified = new Set<string>();
+    for (const [teamId, result] of qualifications) if (result.ok) qualified.add(teamId);
+    return qualified;
+}
+
+/** Every named Team qualifies, or the Team-derived operation is refused. */
+async function areSavedSecretTeamsQualifiedInTx(
+    tx: Tx,
+    input: Readonly<{
+        teamIds: readonly string[];
+        actorAccountId: string;
+        authentication?: TeamOperationAuthenticationContext;
+    }>,
+): Promise<boolean> {
+    const teamIds = [...new Set(input.teamIds)];
+    if (teamIds.length === 0) return true;
+    const qualified = await qualifiedSavedSecretTeamIdsInTx(tx, input);
+    return teamIds.every((teamId) => qualified.has(teamId));
+}
+
+type SavedSecretTeamDerivedRow = Readonly<{
+    ownerAccountId: string;
+    accountGrants: readonly { accountId: string }[];
+    teamGrants: readonly { teamId: string }[];
+    groupGrants: readonly { teamGroup: { teamId: string } }[];
+}>;
+
+/**
+ * Drop the rows whose only authorization is a Team or Group arm the caller's
+ * current credential does not satisfy.
+ *
+ * The owner and direct-Account arms are independent of any Team policy and are
+ * never touched. Only the Team-derived arms consume the Lane 03 qualification,
+ * so a restricted Team never discloses its granted secrets to a member holding
+ * a weaker credential — and never refuses the caller's own resources either.
+ */
+async function retainQualifiedSavedSecretRowsInTx<TRow extends SavedSecretTeamDerivedRow>(
+    tx: Tx,
+    input: Readonly<{
+        rows: readonly TRow[];
+        accountId: string;
+        authentication?: TeamOperationAuthenticationContext;
+    }>,
+): Promise<readonly TRow[]> {
+    const teamDerivedRows = input.rows.filter((row) => !isDirectlyAuthorizedSavedSecretRow(row, input.accountId));
+    if (teamDerivedRows.length === 0) return input.rows;
+    const qualified = await qualifiedSavedSecretTeamIdsInTx(tx, {
+        teamIds: teamDerivedRows.flatMap(savedSecretRowTeamIds),
+        actorAccountId: input.accountId,
+        authentication: input.authentication,
+    });
+    return input.rows.filter((row) => isDirectlyAuthorizedSavedSecretRow(row, input.accountId)
+        || savedSecretRowTeamIds(row).some((teamId) => qualified.has(teamId)));
+}
+
+function isDirectlyAuthorizedSavedSecretRow(row: SavedSecretTeamDerivedRow, accountId: string): boolean {
+    return row.ownerAccountId === accountId
+        || row.accountGrants.some((grant) => grant.accountId === accountId);
+}
+
+function savedSecretRowTeamIds(row: SavedSecretTeamDerivedRow): readonly string[] {
+    return [
+        ...row.teamGrants.map((grant) => grant.teamId),
+        ...row.groupGrants.map((grant) => grant.teamGroup.teamId),
+    ];
+}
+
+/**
  * Compose the existing Home-local collaboration and Team credential decisions.
  * This service owns no role, lifecycle, friendship, membership, or Group rule.
  */
@@ -82,6 +181,7 @@ async function isSavedSecretAudienceEligibleInTx(
         accountIds: readonly string[];
         teamIds: readonly string[];
         groupIds: readonly string[];
+        authentication?: TeamOperationAuthenticationContext;
     }>,
 ): Promise<boolean> {
     const groups = input.groupIds.length === 0
@@ -93,6 +193,14 @@ async function isSavedSecretAudienceEligibleInTx(
     if (groups.length !== input.groupIds.length) return false;
 
     const teamIds = [...new Set([...input.teamIds, ...groups.map((group) => group.teamId)])];
+    // A Team or Group audience is Team-derived authority, so the writer's exact
+    // credential must satisfy that Team's current authentication policy before
+    // the grant is persisted. Structural membership alone is not admission.
+    if (!await areSavedSecretTeamsQualifiedInTx(tx, {
+        teamIds,
+        actorAccountId: input.ownerAccountId,
+        authentication: input.authentication,
+    })) return false;
     const [accountSubjects, teamSubjects, groupSubjects, teamActors] = await Promise.all([
         resolveSessionAccessGrantAccountSubjectsInTx(tx, {
             actorAccountId: input.ownerAccountId,
@@ -433,6 +541,7 @@ function projectRow(
 export async function listSavedSecretResourcesForAccountInTx(
     tx: Tx,
     accountId: string,
+    authentication?: TeamOperationAuthenticationContext,
 ): Promise<readonly SavedSecretCatalogResultV1[]> {
     const [rows, account] = await Promise.all([tx.savedSecretResource.findMany({
         where: {
@@ -469,7 +578,8 @@ export async function listSavedSecretResourcesForAccountInTx(
             contentPublicKeySig: true,
         },
     })]);
-    return rows.flatMap((row) => {
+    const authorized = await retainQualifiedSavedSecretRowsInTx(tx, { rows, accountId, authentication });
+    return authorized.flatMap((row) => {
         const projected = projectRow(
             row,
             accountId,
@@ -571,6 +681,7 @@ export async function listSavedSecretResourceEnvelopeCensusInTx(
 export async function listSavedSecretResourceMaterialsForAccountInTx(
     tx: Tx,
     accountId: string,
+    authentication?: TeamOperationAuthenticationContext,
 ): Promise<readonly SavedSecretResourceMaterialProjection[]> {
     const [rows, account] = await Promise.all([tx.savedSecretResource.findMany({
         where: {
@@ -616,8 +727,9 @@ export async function listSavedSecretResourceMaterialsForAccountInTx(
             contentPublicKeySig: true,
         },
     })]);
+    const authorized = await retainQualifiedSavedSecretRowsInTx(tx, { rows, accountId, authentication });
     const projectedRows: SavedSecretResourceMaterialProjection[] = [];
-    for (const row of rows) {
+    for (const row of authorized) {
         const envelope = row.keyEnvelopes?.[0] ?? null;
         const entry = projectRow(
             row,
@@ -644,6 +756,7 @@ export async function listSavedSecretResourceMaterialsForAccountInTx(
 
 export type CreateSavedSecretResourceInput = Readonly<{
     accountId: string;
+    authentication?: TeamOperationAuthenticationContext;
     resourceId: string;
     displayName: string;
     kind: "apiKey" | "token" | "password" | "other";
@@ -745,6 +858,7 @@ export async function createSavedSecretResourceInTx(
         accountIds: recipients.filter((accountId) => accountId !== input.accountId),
         teamIds: teams,
         groupIds: groups,
+        ...(input.authentication ? { authentication: input.authentication } : {}),
     })) {
         return { ok: false, error: "forbidden" };
     }
@@ -845,6 +959,7 @@ export type PromoteSavedSecretResourceInput = CreateSavedSecretResourceInput & R
 
 export type SetSavedSecretResourceGrantsInput = Readonly<{
     accountId: string;
+    authentication?: TeamOperationAuthenticationContext;
     resourceId: string;
     expectedRevision: number;
     accountGrants: readonly string[];
@@ -877,6 +992,7 @@ export async function setSavedSecretResourceGrantsInTx(
         accountIds,
         teamIds,
         groupIds,
+        ...(input.authentication ? { authentication: input.authentication } : {}),
     })) return { ok: false, error: "forbidden" };
 
     const [before, after] = await Promise.all([

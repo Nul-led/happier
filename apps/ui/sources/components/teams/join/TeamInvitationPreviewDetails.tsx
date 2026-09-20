@@ -135,6 +135,12 @@ export const TeamInvitationPreviewDetails = React.memo(function TeamInvitationPr
                     text={t('teams.join.guestNotice', { team: preview.team.name })}
                 />
             ) : null}
+            {preview.home.hosting === 'personal' ? (
+                <PreviewLine
+                    testID="team-join-preview-hosting"
+                    text={t('teams.join.personalHomeNotice')}
+                />
+            ) : null}
             {preview.home.storageMode === 'plain' ? (
                 <PreviewLine
                     testID="team-join-preview-storage"

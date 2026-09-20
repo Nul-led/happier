@@ -35,8 +35,8 @@ describe('Personal Home translations', () => {
             .sort();
         expect(expectedLeaves).toContain('settings.restoreCleanupWarningTitle:string');
         expect(expectedLeaves).toContain('settings.restoreCleanupWarningBody:string');
-        expect(expectedLeaves).not.toContain('settings.searchTitle:string');
-        expect(expectedLeaves).not.toContain('settings.searchIndexing:string');
+        expect(expectedLeaves).toContain('settings.searchTitle:string');
+        expect(expectedLeaves).toContain('settings.searchIndexing:string');
         const shapeMismatches = locales.flatMap(({ code, root }) => {
             const actualLeaves = flattenTranslationLeaves(root.personalHome)
                 .map((leaf) => `${leaf.key}:${leaf.kind}`)

@@ -283,7 +283,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerOperation: "session_runtime",
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
         },
     }, async (request, reply) => {
@@ -364,7 +364,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerOperation: "session_runtime",
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages.byLocalId"),
         },
     }, async (request, reply) => {
@@ -516,7 +516,7 @@ export function registerSessionMessageRoutes(app: Fastify) {
         },
         preHandler: app.authenticate,
         config: {
-            ephemeralSessionRunnerOperation: "session_runtime",
+            ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" },
             rateLimit: resolveApiHotEndpointRateLimit(process.env, "session.messages"),
         },
     }, async (request, reply) => {

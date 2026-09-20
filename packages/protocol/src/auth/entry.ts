@@ -144,7 +144,14 @@ const TeamReadyProjectionV1Schema = z.object({
   home: AuthEntryHomePresentationV1Schema,
   account: AccountDisplayProfileV1Schema.optional(),
   team: InvitationAuthEntryTeamV1Schema,
-  actions: z.array(AuthEntryAuthenticationActionV1Schema).max(AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1),
+  /**
+   * Shares the invitation action union: signing in as the wrong Account is the
+   * same dead end on a Team link as on an invitation, and `switch_account` is
+   * the only remedy for it. A reader that predates this widening already
+   * ignores every non-`authenticate` action here, so the offer simply does not
+   * appear on it.
+   */
+  actions: z.array(InvitationAuthEntryActionV1Schema).max(AUTH_ENTRY_RESPONSE_MAX_UTF8_BYTES_V1),
   signInService: HomeSignInServicePolicyV1Schema.optional(),
   autoRedirect: z.null(),
 }).strict();

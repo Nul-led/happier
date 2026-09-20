@@ -14,6 +14,11 @@ import type {
 
 import { fetchAuthEntry } from '@/auth/entry/authEntryClient';
 import { resolveHomeAuthenticationTarget } from '@/auth/flows/resolveHomeAuthenticationTarget';
+import {
+    useAccountServiceEntryOptions,
+    type AccountServiceEntryTargetContext,
+} from '@/components/account/auth/useAccountServiceEntryOptions';
+import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
 import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
 import {
@@ -137,6 +142,12 @@ type TeamAuthEntrySurfaceProps = Readonly<{
     onRecoverIdentity?: () => void;
     /** Returns a recovery attempt to the already-bound Account without accepting the invitation. */
     onUseCurrentAccount?: () => void;
+    /**
+     * Where the account-service handoff comes back to. The Home's own surfaces
+     * name their return path the same way; this page defaults to the app root
+     * like every other account-entry caller rather than inventing one.
+     */
+    accountServiceReturnTo?: string;
 }> & (
     | Readonly<{
         teamId: string;
@@ -469,6 +480,56 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
         settle(result.value);
     }, [accountScope, approvalPending, invitationContinuation, invitationToken, requestApproval, requestKey]);
 
+    /**
+     * Where this Home says Accounts sign in.
+     *
+     * A Home whose Accounts live at a separate account service publishes that
+     * policy on its Team admission answer. Offering only the Home's own local
+     * methods there strands exactly the people the Team is for, so this page
+     * hands off to the one account-entry surface every other Home surface uses.
+     * `mode: 'self'` and `'disabled'` resolve to no handoff — the Home's own
+     * methods below already are it — and an unreachable or unsupported service
+     * publishes no discovery either, so nothing is offered that cannot be
+     * completed. The handoff is added beside the Home's methods, never instead
+     * of them.
+     */
+    const projectedSignInService = loadState.kind === 'ready'
+        && loadState.projection.state === 'admission_required'
+        ? loadState.projection.signInService ?? null
+        : null;
+    const accountServiceContext = React.useMemo<AccountServiceEntryTargetContext>(() => {
+        // `self` means this Home is already the account service the page is on,
+        // so its own methods below are the handoff; `disabled` offers none.
+        if (projectedSignInService?.mode !== 'external' || !resolvedTarget) return { kind: 'none' };
+        return { kind: 'home', target: props.target, policy: projectedSignInService };
+    }, [projectedSignInService, props.target, resolvedTarget]);
+    const accountServiceEntry = useAccountServiceEntryOptions(accountServiceContext);
+    const accountServiceDiscovery = accountServiceEntry.status === 'ready'
+        ? accountServiceEntry.discovery
+        : null;
+    const accountServiceReturnTo = props.accountServiceReturnTo ?? '/';
+    const accountServiceHref = React.useMemo(() => {
+        // Only the Home's own external policy opens this door. With no policy the
+        // hook still probes the device's selected service, which is this device's
+        // choice and has nothing to say about signing in to this Team's Home.
+        if (accountServiceContext.kind !== 'home' || !accountServiceDiscovery || !resolvedTarget) return null;
+        try {
+            return buildAuthenticatedAccountEntryHref({
+                service: {
+                    endpointUrl: accountServiceDiscovery.endpointUrl,
+                    serverIdentityId: accountServiceDiscovery.serverIdentityId,
+                },
+                intent: {
+                    kind: 'enter',
+                    target: { kind: 'explicit', homeServerIdentityId: resolvedTarget.serverIdentityId },
+                },
+                returnTo: accountServiceReturnTo,
+            });
+        } catch {
+            return null;
+        }
+    }, [accountServiceContext, accountServiceDiscovery, accountServiceReturnTo, resolvedTarget]);
+
     let content: React.ReactNode;
     if (loadState.kind === 'ready') {
         const { projection } = loadState;
@@ -680,11 +741,23 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                     </>
                                 ) : null
                             ) : invitation && !invitationIsJoinable ? null : <>
+                                {accountServiceHref && accountServiceDiscovery ? (
+                                    <WelcomeActionCard
+                                        testID="team-auth-entry-account-service"
+                                        primary
+                                        title={t('teams.entry.continueWith', {
+                                            method: accountServiceDiscovery.accountServiceDisplayName
+                                                ?? fallbackHomeLabel(accountServiceDiscovery.endpointUrl),
+                                        })}
+                                        subtitle={t('settingsAccount.accountServiceSignInService')}
+                                        onPress={() => { router.push(accountServiceHref); }}
+                                    />
+                                ) : null}
                                 {projection.actions.map((action, index) => action.kind === 'authenticate' ? (
                                     <WelcomeActionCard
                                         key={`${action.origin}:${action.methodId}:${action.action}:${action.mode}`}
                                         testID={`team-auth-entry-action:${action.methodId}`}
-                                        primary={index === 0}
+                                        primary={index === 0 && accountServiceHref === null}
                                         title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
                                         onPress={() => props.onSelectAction({
                                             action,
@@ -698,7 +771,16 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                         })}
                                     />
                                 ) : null)}
-                                {invitation && props.onUseCurrentAccount ? (
+                                {switchAccountOffered && props.onRecoverIdentity ? (
+                                    <WelcomeActionCard
+                                        testID="team-auth-entry-use-another-account"
+                                        primary={false}
+                                        title={t('teams.join.useAnotherAccount')}
+                                        subtitle={t('teams.join.useAnotherAccountHint')}
+                                        onPress={props.onRecoverIdentity}
+                                    />
+                                ) : null}
+                                {props.onUseCurrentAccount ? (
                                     <WelcomeActionCard
                                         testID="team-auth-entry-use-current-account"
                                         primary={false}

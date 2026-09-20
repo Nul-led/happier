@@ -16,6 +16,14 @@ import {
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { projectTeamCredentialProviderModels } from "@/app/teams/credentials/providerModelProjection";
 import {
+    readTeamCredentialBrokerPlacement,
+    resolveTeamCredentialBrokerPlacementInTx,
+} from "@/app/teams/credentials/brokerPlacementResolver";
+import type {
+    TeamCredentialPoolSourceEligibilityReader,
+} from "@/app/teams/credentials/poolSourceEligibility";
+import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
+import {
     resolvePlannedRunnerCredentialSelectionBindingInTx,
 } from "@/app/teams/credentials/sessionBinding";
 import { inTx } from "@/storage/inTx";
@@ -223,6 +231,112 @@ async function freezeSelection(input: Readonly<{
     }
 }
 
+export type RunnerBrokerPresenceReader =
+    (custodianAccountId: string) => Promise<MachineDaemonPresenceInventory>;
+
+type RunnerBrokerMachineSelection =
+    | Readonly<{ ok: true; brokerMachineId: string | null }>
+    | Readonly<{ ok: false; reason: Extract<RunnerCredentialSelectionResolutionResponseV1, { status: "unavailable" }>['reason'] }>;
+
+/**
+ * Resolves the one exact broker Machine this activation will be bound to.
+ *
+ * An exact placement already names its Machine, so nothing is selected here.
+ * A Pool placement is ranked once, through the same placement owner every other
+ * broker ingress uses: candidates first, then the source-eligible members. The
+ * winner is then frozen into the activation's binding and revalidated as a
+ * current member on every later read, never reranked — so membership edits
+ * after review cannot move a reviewed activation onto another Machine.
+ */
+async function selectRunnerBrokerMachine(input: Readonly<{
+    activationId: string;
+    request: RunnerCredentialSelectionResolutionRequestV1;
+    readCurrentPresence: RunnerBrokerPresenceReader;
+    readPoolSourceEligibility: TeamCredentialPoolSourceEligibilityReader;
+    signal: AbortSignal;
+}>): Promise<RunnerBrokerMachineSelection> {
+    const resource = await inTx(tx => tx.teamCredentialResource.findUnique({
+        where: { id: input.request.selection.resourceId },
+        select: {
+            id: true,
+            teamId: true,
+            custodianAccountId: true,
+            revision: true,
+            sourceBindingJson: true,
+            brokerMachineId: true,
+            brokerPoolId: true,
+        },
+    }));
+    if (!resource) return { ok: false, reason: "resource_missing" };
+    if (resource.teamId !== input.request.selection.teamId
+        || resource.revision !== input.request.selection.expectedResourceRevision) {
+        return { ok: false, reason: "resource_changed" };
+    }
+    const placement = readTeamCredentialBrokerPlacement(resource);
+    if (!placement.ok) return { ok: false, reason: "resource_corrupt" };
+    if (placement.placement === null) return { ok: false, reason: "broker_unavailable" };
+    if (placement.placement.kind === "machine") return { ok: true, brokerMachineId: null };
+
+    let rawSource: unknown;
+    try {
+        rawSource = JSON.parse(resource.sourceBindingJson);
+    } catch {
+        return { ok: false, reason: "resource_corrupt" };
+    }
+    const source = TeamCredentialSourceBindingV1Schema.safeParse(rawSource);
+    if (!source.success) return { ok: false, reason: "resource_corrupt" };
+
+    let presence: MachineDaemonPresenceInventory;
+    try {
+        presence = await input.readCurrentPresence(resource.custodianAccountId);
+    } catch {
+        return { ok: false, reason: "broker_unavailable" };
+    }
+    // The activation is this selection's identity, so a retried resolution for
+    // the same activation ranks the same members in the same order.
+    const requestKey = [resource.id, "runner_activation", input.activationId].join("\u0000");
+    const placementResource = {
+        id: resource.id,
+        custodianAccountId: resource.custodianAccountId,
+        brokerMachineId: resource.brokerMachineId,
+        brokerPoolId: resource.brokerPoolId,
+    };
+    const candidates = await inTx(tx => resolveTeamCredentialBrokerPlacementInTx(tx, {
+        resource: placementResource,
+        presence,
+        requestKey,
+    }));
+    if (!candidates.ok || candidates.poolSnapshot === null || candidates.candidateMachineIds.length === 0) {
+        return { ok: false, reason: "broker_unavailable" };
+    }
+    let eligibility: Awaited<ReturnType<TeamCredentialPoolSourceEligibilityReader>>;
+    try {
+        eligibility = await input.readPoolSourceEligibility({
+            custodianAccountId: resource.custodianAccountId,
+            machineIds: candidates.candidateMachineIds,
+            teamId: resource.teamId,
+            resourceId: resource.id,
+            resourceRevision: resource.revision,
+            source: source.data,
+            application: input.request.application,
+            modelId: input.request.selection.modelId,
+            sourceRevision: input.request.sourceRevision,
+            signal: input.signal,
+        });
+    } catch {
+        return { ok: false, reason: "broker_unavailable" };
+    }
+    if (input.signal.aborted) return { ok: false, reason: "broker_unavailable" };
+    const selected = await inTx(tx => resolveTeamCredentialBrokerPlacementInTx(tx, {
+        resource: placementResource,
+        presence,
+        requestKey,
+        poolEligibleMachineIds: eligibility.eligibleMachineIds,
+    }));
+    if (!selected.ok || selected.broker === null) return { ok: false, reason: "broker_unavailable" };
+    return { ok: true, brokerMachineId: selected.broker.machineId };
+}
+
 async function readCurrentSelection(input: Readonly<{
     activationId: string;
     creatorAccountId: string;
@@ -309,6 +423,9 @@ export async function resolveRunnerCredentialSelection(input: Readonly<{
     request: unknown;
     authentication: SessionAccessAuthentication;
     readProviderProjection: (input: ProviderProjectionInput) => Promise<unknown>;
+    readCurrentPresence: RunnerBrokerPresenceReader;
+    readPoolSourceEligibility: TeamCredentialPoolSourceEligibilityReader;
+    signal: AbortSignal;
 }>): Promise<RunnerCredentialSelectionResolutionResponseV1> {
     const request = RunnerCredentialSelectionResolutionRequestV1Schema.safeParse(input.request);
     if (!request.success) return { v: 1, status: "unavailable", reason: "invalid_input" };
@@ -317,7 +434,18 @@ export async function resolveRunnerCredentialSelection(input: Readonly<{
     if (frozen.status === "resolved") {
         return { v: 1, status: "resolved", credentialSelectionBinding: frozen.value.binding, displayFacts: frozen.displayFacts };
     }
-    const before = await readCurrentSelection({ ...input, request: request.data });
+    const placement = await selectRunnerBrokerMachine({
+        activationId: input.activationId,
+        request: request.data,
+        readCurrentPresence: input.readCurrentPresence,
+        readPoolSourceEligibility: input.readPoolSourceEligibility,
+        signal: input.signal,
+    });
+    if (!placement.ok) return { v: 1, status: "unavailable", reason: placement.reason };
+    const selectedBrokerScope = placement.brokerMachineId === null
+        ? {}
+        : { selectedBrokerMachineId: placement.brokerMachineId };
+    const before = await readCurrentSelection({ ...input, ...selectedBrokerScope, request: request.data });
     if (!before.ok) return { v: 1, status: "unavailable", reason: before.reason };
     let response: unknown;
     try {
@@ -350,7 +478,7 @@ export async function resolveRunnerCredentialSelection(input: Readonly<{
         const sourceStillPresent = candidates.some(candidate => candidate.sourceRevision === request.data.sourceRevision);
         return { v: 1, status: "unavailable", reason: sourceStillPresent ? "model_unavailable" : "source_changed" };
     }
-    const after = await readCurrentSelection({ ...input, request: request.data });
+    const after = await readCurrentSelection({ ...input, ...selectedBrokerScope, request: request.data });
     if (!after.ok) return { v: 1, status: "unavailable", reason: after.reason };
     if (!pluginJsonValuesEqual(before.value.binding, after.value.binding)) {
         return { v: 1, status: "unavailable", reason: "resource_changed" };

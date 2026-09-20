@@ -54,7 +54,6 @@ import {
     type PrimaryTurnStatusV1,
 } from '@happier-dev/protocol';
 import { resolveSessionViewerProjectionUpdate } from '@/sync/domains/session/readState/sessionViewer';
-import { normalizeSessionAccessProjection } from './normalizeSessionAccessProjection';
 export { handleNewMessageSocketUpdate } from './sessionSocketUpdate';
 export { handleMessageUpdatedSocketUpdate } from './sessionSocketUpdate';
 export { fetchAndApplySessions } from './sessionSnapshot';
@@ -433,10 +432,6 @@ export function buildUpdatedSessionProjectionFromSocketUpdate(params: {
     onResponsibilityResyncRequired?: SessionResponsibilityResyncHandler;
 }): Session {
     const { session, updateBody, updateSeq, updateCreatedAt } = params;
-    const hasEffectiveAccessUpdate = updateBody.effectiveAccess !== undefined;
-    const accessProjection = !hasEffectiveAccessUpdate
-        ? undefined
-        : normalizeSessionAccessProjection({ effectiveAccess: updateBody.effectiveAccess });
     const encryptionMode: 'e2ee' | 'plain' = session.encryptionMode === 'plain' ? 'plain' : 'e2ee';
     const nextLatestTurnStatus = readLatestTurnStatus(updateBody.latestTurnStatus, session.latestTurnStatus);
     const rollbackEligibleTurnStarts = readRollbackEligibleTurnStarts(updateBody.rollbackEligibleTurnStarts);
@@ -463,17 +458,10 @@ export function buildUpdatedSessionProjectionFromSocketUpdate(params: {
                 : session.thinkingAt,
         );
 
+    // The `update-session` event carries no access projection; access changes
+    // reach the client through the list/detail readers instead.
     return {
         ...session,
-        ...(hasEffectiveAccessUpdate ? {
-            // A supplied current projection supersedes every previous access
-            // decision. Keep malformed current input unavailable rather than
-            // accidentally retaining the previous owner/recipient authority.
-            access: accessProjection ?? null,
-            ...(accessProjection?.role !== 'owner' && session.metadataLayoutVersion === 1
-                ? { ownerMetadataView: null }
-                : {}),
-        } : {}),
         viewer: resolveSessionViewerProjectionUpdate(updateBody.viewer, session.viewer),
         encryptionMode,
         active: projectedActive,
@@ -715,10 +703,6 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
     onResponsibilityResyncRequired?: SessionResponsibilityResyncHandler;
 }): Promise<Partial<SessionListRenderableSession>> {
     const { renderable, updateBody, updateSeq, updateCreatedAt, sessionEncryption } = params;
-    const hasEffectiveAccessUpdate = updateBody.effectiveAccess !== undefined;
-    const accessProjection = !hasEffectiveAccessUpdate
-        ? undefined
-        : normalizeSessionAccessProjection({ effectiveAccess: updateBody.effectiveAccess });
     const storedMetadataLayoutVersion = readSessionMetadataLayoutVersion(renderable.metadataLayoutVersion);
     const nextMetadataLayoutVersion = Math.max(
         storedMetadataLayoutVersion,
@@ -808,11 +792,9 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
     // same-id Session can use. Project the canonical compact headline through
     // this socket patch too, rather than leaving that Home stale until its next
     // complete list refresh.
-    const agentActivityHeadline = hasEffectiveAccessUpdate && accessProjection?.role !== 'owner'
-        ? null
-        : parsedMetadata === undefined
-            ? renderable.agentActivityHeadline ?? null
-            : parseSessionAgentActivityHeadlineV1(parsedMetadata?.sessionAgentActivityHeadlineV1);
+    const agentActivityHeadline = parsedMetadata === undefined
+        ? renderable.agentActivityHeadline ?? null
+        : parseSessionAgentActivityHeadlineV1(parsedMetadata?.sessionAgentActivityHeadlineV1);
     const nextLatestTurnStatus = readLatestTurnStatus(updateBody.latestTurnStatus, renderable.latestTurnStatus);
     const nextLatestTurnId =
         typeof updateBody.latestTurnId === 'string' || updateBody.latestTurnId === null
@@ -870,7 +852,6 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
         );
 
     return {
-        ...(hasEffectiveAccessUpdate ? { access: accessProjection ?? null } : {}),
         viewer,
         ...resolveSessionResponsibilitySocketPatch(updateBody, params.onResponsibilityResyncRequired),
         ...(hydrateMetadata && (sessionEncryption || renderable.encryptionMode === 'plain') ? {

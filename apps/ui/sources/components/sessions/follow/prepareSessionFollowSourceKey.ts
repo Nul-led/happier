@@ -1,12 +1,12 @@
 import {
     isPersistentMachine,
-    SESSION_FOLLOW_SOURCE_KEY_PREPARE_AUTHORIZATION_KIND_V1,
-    SessionFollowSourceKeyPrepareAuthorizationV1Schema,
-    SessionFollowSourceKeyPrepareRequestV1Schema,
     SessionFollowSourceKeyPrepareResponseV1Schema,
+    buildSessionFollowSourceKeyPrepareRequestV1,
     resolveSessionFollowSourceKeyPreparationFailureV1,
     supportsMachineSessionFollowContextV1,
     type MachineKind,
+    type SessionFollowSourceKeyPrepareAuthorizationV1,
+    type SessionFollowSourceKeyPrepareRequestV1,
     type SessionFollowSourceKeyPreparationResultV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -61,8 +61,8 @@ export type PrepareSessionFollowSourceKeyDeps = Readonly<{
         serverId: string;
         accountId: string;
         machineId: string;
-        request: ReturnType<typeof SessionFollowSourceKeyPrepareRequestV1Schema.parse>;
-        authorization: ReturnType<typeof SessionFollowSourceKeyPrepareAuthorizationV1Schema.parse>;
+        request: SessionFollowSourceKeyPrepareRequestV1;
+        authorization: SessionFollowSourceKeyPrepareAuthorizationV1;
     }>) => Promise<unknown>;
 }>;
 
@@ -159,17 +159,9 @@ export async function prepareSessionFollowSourceKey(
             return { kind: 'waiting', reason: 'unsupported' };
         }
 
-        const relation = {
+        const { authorization, request } = buildSessionFollowSourceKeyPrepareRequestV1({
             sourceSessionId: input.sourceSessionId,
             destinationSessionId: input.destinationSessionId,
-        };
-        const authorization = SessionFollowSourceKeyPrepareAuthorizationV1Schema.parse({
-            kind: SESSION_FOLLOW_SOURCE_KEY_PREPARE_AUTHORIZATION_KIND_V1,
-            ...relation,
-        });
-        const request = SessionFollowSourceKeyPrepareRequestV1Schema.parse({
-            v: 1,
-            ...relation,
             sourceDataEncryptionKeyBase64: encodeBase64(sourceCrypto.sessionDataKey),
         });
         try {

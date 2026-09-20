@@ -17,7 +17,7 @@ export const SessionAccessErrorCodeV1Schema = z.enum([
   'session_access_subject_not_found', 'session_access_subject_ineligible',
   'session_access_owner_grant_invalid', 'session_access_self_grant_invalid',
   'session_access_permission_delegation_forbidden', 'session_access_permission_delegation_requires_edit',
-  'session_access_team_policy_required', 'session_access_transcript_not_shareable',
+  'session_access_team_policy_required',
   'session_initial_access_creator_mismatch',
   'session_access_authentication_required',
   'session_access_authentication_unavailable',
@@ -117,13 +117,44 @@ export type SessionAccessGrantRowV1 = z.infer<typeof SessionAccessGrantRowV1Sche
 
 export const SessionAccessGrantsListRequestV1Schema = z.object({ sessionId: z.string().min(1) }).strict();
 export type SessionAccessGrantsListRequestV1 = z.infer<typeof SessionAccessGrantsListRequestV1Schema>;
+
+/**
+ * One Team credential selection this Session keeps only while the named Team
+ * still holds the standing it has now.
+ *
+ * `policy` says which standing: `team_visibility_required` ends when that Team's
+ * grant is removed, `team_context_required` ends when the Session's context
+ * moves off that Team. Carrying it lets one projection serve both edits without
+ * either confirmation claiming a consequence the other one causes.
+ *
+ * It is a consequence preview, never an admission fact: the credential admission
+ * repeats every decision in its own transaction and still fails closed. Only the
+ * resource's display name travels, so an access edit can say what stops working
+ * without disclosing the credential itself.
+ */
+export const SessionTeamCredentialBindingConsequenceV1Schema = z.object({
+  resourceId: z.string().min(1),
+  teamId: z.string().min(1),
+  displayName: z.string(),
+  policy: z.enum(['team_visibility_required', 'team_context_required']),
+}).strict();
+export type SessionTeamCredentialBindingConsequenceV1 = z.infer<typeof SessionTeamCredentialBindingConsequenceV1Schema>;
+
 const listFields = {
   owner: SessionAccessAccountSummaryV1Schema,
   effectiveAccess: SessionEffectiveAccessV1Schema,
   primaryTeamId: z.string().min(1).nullable(),
 };
 export const SessionAccessGrantsListResponseV1Schema = z.discriminatedUnion('visibility', [
-  z.object({ ...listFields, visibility: z.literal('complete'), grants: z.array(SessionAccessGrantRowV1Schema) }).strict(),
+  z.object({
+    ...listFields,
+    visibility: z.literal('complete'),
+    grants: z.array(SessionAccessGrantRowV1Schema),
+    // Manager-only, and absent on a Home that publishes no consequence preview.
+    // A viewer who cannot manage access can neither remove a grant nor change
+    // the context, so the `self` projection carries nothing to preview.
+    credentialBindingConsequences: z.array(SessionTeamCredentialBindingConsequenceV1Schema).optional(),
+  }).strict(),
   z.object({ ...listFields, visibility: z.literal('self'), grants: z.tuple([]) }).strict(),
 ]);
 export type SessionAccessGrantsListResponseV1 = z.infer<typeof SessionAccessGrantsListResponseV1Schema>;

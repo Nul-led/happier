@@ -3,6 +3,7 @@ import type {
     SessionAccessGrantsListResponseV1,
     SessionAccessPrincipalSummaryV1,
     SessionAccessSourceV1,
+    SessionTeamCredentialBindingConsequenceV1,
 } from '@happier-dev/protocol';
 import { t } from '@/text';
 import { formatAccountDisplayName } from '@/sync/domains/account/formatAccountDisplayName';
@@ -33,6 +34,26 @@ export function projectSessionAccessPrincipal(principal: SessionAccessPrincipalS
         ? { id: principal.accountId, ...(principal.avatarUrl ? { imageUrl: principal.avatarUrl } : {}) }
         : undefined;
     return {ref,key:sessionAccessSubjectKey(ref),displayName,secondaryLabel,...(avatar ? {avatar} : {}),accessibilityLabel:secondaryLabel ? `${displayName}, ${secondaryLabel}` : displayName};
+}
+
+/**
+ * The Home's credential-consequence preview for one Team, spoken as the
+ * confirmation copy the editor already uses.
+ *
+ * It is the single consumer of that projection, so both places a manager can
+ * take a Team's readability away — removing its grant and moving the Session's
+ * context — name the same credentials. A Home that publishes no preview, and a
+ * subject that is not a Team, both produce nothing.
+ */
+export function projectSessionAccessCredentialConsequences(
+    consequences: readonly SessionTeamCredentialBindingConsequenceV1[] | undefined,
+    scope: Readonly<{ teamId: string | null; policy: SessionTeamCredentialBindingConsequenceV1['policy'] }>,
+): readonly string[] {
+    if (!consequences || scope.teamId === null) return [];
+    const names = consequences
+        .filter((row) => row.teamId === scope.teamId && row.policy === scope.policy)
+        .map((row) => row.displayName);
+    return names.length === 0 ? [] : [t('session.access.credentialsLost', { names: names.join(', ') })];
 }
 
 /**
@@ -99,6 +120,9 @@ export function projectSessionAccessEditorSnapshot(input: Readonly<{
             }),
         };
     })();
+    const credentialConsequences = snapshot.visibility === 'complete'
+        ? snapshot.credentialBindingConsequences
+        : undefined;
     const grants: SessionAccessGrantRowModel[] = snapshot.grants.map((row) => {
         const key = sessionAccessSubjectKey(row.grant.subject);
         const transitions = row.allowedTransitions;
@@ -116,7 +140,15 @@ export function projectSessionAccessEditorSnapshot(input: Readonly<{
                 reason,
             }),
             removal: editable && transitions.canRemove
-                ? {kind:input.confirmingRemoval === key ? 'confirming' : 'allowed'}
+                ? (input.confirmingRemoval === key
+                    ? {kind:'confirming',consequences:projectSessionAccessCredentialConsequences(
+                        credentialConsequences,
+                        {
+                            teamId: row.grant.subject.kind === 'team' ? row.grant.subject.teamId : null,
+                            policy: 'team_visibility_required',
+                        },
+                    )}
+                    : {kind:'allowed'})
                 : {kind:'blocked',reason},
             requiredByTeamPolicy: row.grant.subject.kind === 'team' && 'requiredByTeamPolicy' in row.grant && row.grant.requiredByTeamPolicy,
             operation: input.operations?.[key] ?? {kind:'idle'},

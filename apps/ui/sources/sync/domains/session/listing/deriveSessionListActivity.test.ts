@@ -9,6 +9,7 @@ import {
     MAX_SESSION_LIST_ATTENTION_RANK,
     deriveSessionListMeaningfulActivityAt,
     isUrgentSessionListAttentionState,
+    presentSessionPersonalAttentionReason,
     resolveSessionListAttentionRank,
     resolveSessionListAttentionState,
     resolveSessionListSecondaryLineMode,
@@ -71,6 +72,21 @@ describe('resolveSessionListSecondaryLineMode', () => {
 
     it('uses path mode for date-grouped rows', () => {
         expect(resolveSessionListSecondaryLineMode({ groupKind: 'date' })).toBe('path');
+    });
+});
+
+describe('presentSessionPersonalAttentionReason', () => {
+    it('keeps a mention of the viewer distinct from ordinary unread content', () => {
+        expect(presentSessionPersonalAttentionReason('mentioned')).toBe('mentioned');
+        expect(presentSessionPersonalAttentionReason('unread')).toBe('unread');
+        expect(presentSessionPersonalAttentionReason('unread_discussion')).toBe('unread');
+    });
+
+    it('ranks a mention above ordinary unread and below every operational state', () => {
+        expect(resolveSessionListAttentionRank('mentioned'))
+            .toBeGreaterThan(resolveSessionListAttentionRank('unread'));
+        expect(resolveSessionListAttentionRank('mentioned'))
+            .toBeLessThan(resolveSessionListAttentionRank('pending'));
     });
 });
 

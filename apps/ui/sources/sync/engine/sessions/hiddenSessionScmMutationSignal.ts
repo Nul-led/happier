@@ -12,10 +12,12 @@ type SessionMessageEncryption = Readonly<{
 
 export type DeliverHiddenSessionScmMutationSignalParams = Readonly<{
     sessionId: string;
+    /** Home the realtime update arrived on; the mounted SCM scope must match it. */
+    serverId?: string | null;
     rawMessage: ApiMessage | undefined;
     getSessionEncryption: (sessionId: string) => SessionMessageEncryption | null;
     /** Test seam mirroring the workspace-mutation ingestion; production uses the runtime singleton. */
-    ingestMessages?: (sessionId: string, messages: readonly NormalizedMessage[]) => void;
+    ingestMessages?: (sessionId: string, messages: readonly NormalizedMessage[], serverId?: string | null) => void;
 }>;
 
 /**
@@ -40,7 +42,7 @@ export async function deliverHiddenSessionScmMutationSignal(
     const messageRole = rawMessage.messageRole ?? null;
     if (messageRole === 'user' || messageRole === 'event') return;
 
-    if (!resolveSessionScmMutationSignal(params.sessionId)) return;
+    if (!resolveSessionScmMutationSignal(params.sessionId, params.serverId)) return;
 
     const encryption = params.getSessionEncryption(params.sessionId);
     const decrypted = await readStoredSessionMessage({
@@ -65,5 +67,5 @@ export async function deliverHiddenSessionScmMutationSignal(
     );
     if (!normalized) return;
 
-    (params.ingestMessages ?? ingestWorkspaceMutationMessages)(params.sessionId, [normalized]);
+    (params.ingestMessages ?? ingestWorkspaceMutationMessages)(params.sessionId, [normalized], params.serverId);
 }

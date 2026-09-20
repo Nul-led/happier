@@ -26,6 +26,7 @@ function isUrgentCandidate(candidate: SessionActivityAttention, selection: Pick<
             return selection.includeUrgent;
         case 'ready':
         case 'attention':
+        case 'mentioned':
         case 'unread':
             return selection.includeReady;
         case 'thinking':

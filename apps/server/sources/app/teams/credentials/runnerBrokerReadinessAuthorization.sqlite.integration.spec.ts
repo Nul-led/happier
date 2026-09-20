@@ -177,32 +177,51 @@ describe("Runner Team credential readiness authorization", () => {
             },
         }))).resolves.toMatchObject({ readiness: { kind: "available" } });
 
+        // A Pool placement is a broker location for a Runner too: the exact member
+        // frozen into the activation's binding is revalidated as a current member,
+        // while a Machine the Pool does not carry is refused.
         const brokerPool = await db.machinePool.create({ data: {
             id: randomUUID(),
             accountId: custodian.id,
-            name: "Runner must not consume this Pool",
+            name: "Runner broker pool",
             members: { create: { machineId: machine.id, priorityTier: 0, enabled: true } },
         } });
         await db.teamCredentialResource.update({
             where: { id: resource.id },
             data: { brokerMachineId: null, brokerPoolId: brokerPool.id },
         });
+        const poolSelection = {
+            v: 1 as const,
+            resourceId: resource.id,
+            revision: resource.revision,
+            application: {
+                agentTargetKey: "agent:happier.agent.codex/codex",
+                implementationIdentity: { pluginId: "happier.provider.openai", localId: "openai" },
+                endpointTemplateId: "responses",
+                protocol: "openai-responses" as const,
+            },
+            sourceRevision: "source-revision-1",
+        };
         await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
             activationId: activation.id,
             env: harness.envBase,
-            selection: {
-                v: 1,
-                resourceId: resource.id,
-                brokerMachineId: machine.id,
-                revision: resource.revision,
-                application: {
-                    agentTargetKey: "agent:happier.agent.codex/codex",
-                    implementationIdentity: { pluginId: "happier.provider.openai", localId: "openai" },
-                    endpointTemplateId: "responses",
-                    protocol: "openai-responses",
-                },
-                sourceRevision: "source-revision-1",
+            selection: { ...poolSelection, brokerMachineId: machine.id },
+        }))).resolves.toMatchObject({ readiness: { kind: "available" } });
+        const outsider = await db.machine.create({ data: {
+            id: `outsider-${randomUUID()}`,
+            accountId: custodian.id,
+            metadata: "{}",
+            kind: "persistent",
+            operationProtocolCapabilities: {
+                providerBrokerIngress: { protocolVersions: [1] },
+                irohMachineEndpoint: { protocolVersions: [1], endpointId: "d".repeat(64) },
             },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
+            activationId: activation.id,
+            env: harness.envBase,
+            selection: { ...poolSelection, brokerMachineId: outsider.id },
         }))).resolves.toBeNull();
         await db.teamCredentialResource.update({
             where: { id: resource.id },

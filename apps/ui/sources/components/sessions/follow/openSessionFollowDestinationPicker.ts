@@ -1,3 +1,5 @@
+import type { SessionFollowSourceKeyPreparationWaitingReasonV1 } from '@happier-dev/protocol';
+
 import type { FocusReturnRef } from '@/keyboard/focusReturn';
 import { Modal } from '@/modal';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
@@ -8,6 +10,11 @@ export type SessionFollowSourcePreparationChange = Readonly<{
     sourceSessionId: string;
     destinationSessionId: string;
     preparation: 'waiting' | 'prepared';
+    /**
+     * The Protocol waiting reason the preparation actually returned, when one exists.
+     * Absent while the first attempt is still queued; consumers must not invent one.
+     */
+    reason?: SessionFollowSourceKeyPreparationWaitingReasonV1;
 }>;
 
 export function openSessionFollowDestinationPicker(

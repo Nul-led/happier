@@ -80,6 +80,23 @@ export const ManagedGitHubAppRegistrationV1Schema = z.object({
 }).strict();
 export type ManagedGitHubAppRegistrationV1 = z.infer<typeof ManagedGitHubAppRegistrationV1Schema>;
 
+/**
+ * What this installation's current Team consumers require from GitHub, and what
+ * the last verification found missing. The Home computes it from the same
+ * requirement table its readiness checks enforce, so an administrator repairing
+ * least privilege reads the Home's own rule rather than a hand-kept list.
+ */
+export const ManagedGitHubAppRequirementsV1Schema = z.object({
+  permissions: z.record(z.string(), z.enum(['read', 'write'])),
+  events: z.array(z.string().min(1)),
+  missingPermissions: z.array(z.object({
+    permission: z.string().min(1),
+    required: z.enum(['read', 'write']),
+  }).strict()),
+  missingEvents: z.array(z.string().min(1)),
+}).strict();
+export type ManagedGitHubAppRequirementsV1 = z.infer<typeof ManagedGitHubAppRequirementsV1Schema>;
+
 export const ManagedGitHubAppInstallationV1Schema = z.object({
   id: z.string().min(1),
   registrationId: z.string().min(1),
@@ -94,6 +111,8 @@ export const ManagedGitHubAppInstallationV1Schema = z.object({
   suspendedAt: z.iso.datetime().nullable(),
   lastVerifiedAt: z.iso.datetime().nullable(),
   teamConsumers: z.array(ManagedGitHubAppTeamConsumerV1Schema).default([]),
+  /** Absent on a Home that does not publish the requirement projection. */
+  requirements: ManagedGitHubAppRequirementsV1Schema.optional(),
 }).strict();
 export type ManagedGitHubAppInstallationV1 = z.infer<typeof ManagedGitHubAppInstallationV1Schema>;
 

@@ -417,6 +417,89 @@ describe("usageWriteService Team credential attribution", () => {
         ]);
     });
 
+    it("resolves one Execution Run attribution across several admissions and none for a personal turn", async () => {
+        const fixture = await createTeamFixture();
+        const session = await db.session.create({
+            data: {
+                accountId: fixture.storageAccount.id,
+                tag: crypto.randomUUID(),
+                encryptionMode: "plain",
+                metadata: "{}",
+                active: true,
+            },
+        });
+        const turnId = "multi-admission-turn";
+        for (const requestIndex of [1, 2, 3]) {
+            await inTx((tx) => recordTeamCredentialAdmissionUsageEventInTx(tx, {
+                accountId: fixture.storageAccount.id,
+                sessionId: session.id,
+                turnId,
+                observedAt: new Date("2026-09-08T12:00:00.000Z"),
+                externalKey: `multi-request-${requestIndex}`,
+                authority: admissionAuthority({
+                    actorAccountId: fixture.actorA.id,
+                    resourceId: fixture.resourceA.id,
+                    workerMachineId: "worker-multi",
+                    brokerMachineId: "broker-multi",
+                    sourceCredentialId: "source-multi",
+                    executionRunId: "attached-run-multi",
+                }),
+            }));
+        }
+        const terminal = (externalKey: string, requestTurnId: string) => ({
+            sessionId: session.id,
+            observedAt: Date.parse("2026-09-08T12:01:00.000Z"),
+            agentId: "codex",
+            backendMode: "remote",
+            modelId: "gpt-5",
+            projectKey: null,
+            workspaceId: null,
+            machineId: "worker-multi",
+            source: "codex_sdk",
+            scope: "turn_delta",
+            externalKey,
+            turnId: requestTurnId,
+            isCumulative: false,
+            tokens: { input: 4, output: 2, reasoning: 0, cacheRead: 0, cacheWrite: 0, total: 6 },
+            cost: {
+                reportedUsd: 0.1, estimatedUsd: 0, invoiceUsd: 0,
+                costSource: "provider_reported", currency: "USD",
+            },
+        } satisfies UsageEventIngestRequest);
+
+        expect(await recordUsageEvent(fixture.storageAccount.id, terminal("multi-observation", turnId)))
+            .toMatchObject({ ok: true });
+        const attributed = await db.usageEvent.findFirstOrThrow({
+            where: { source: "codex_sdk", externalKey: "multi-observation" },
+        });
+        expect(attributed).toMatchObject({
+            teamCredentialResourceId: fixture.resourceA.id,
+            teamCredentialActorAccountId: fixture.actorA.id,
+            brokerMachineId: "broker-multi",
+            teamCredentialSourceCredentialId: "source-multi",
+        });
+        expect(await db.$queryRaw<Array<{ executionRunId: string | null }>>`
+            SELECT executionRunId FROM UsageEvent WHERE id = ${attributed.id}
+        `).toEqual([{ executionRunId: "attached-run-multi" }]);
+
+        // A personal turn carries no Team attribution, and the admissions of a
+        // different turn never leak into it.
+        expect(await recordUsageEvent(fixture.storageAccount.id, terminal("personal-observation", "personal-turn")))
+            .toMatchObject({ ok: true });
+        const personal = await db.usageEvent.findFirstOrThrow({
+            where: { source: "codex_sdk", externalKey: "personal-observation" },
+        });
+        expect(personal).toMatchObject({
+            teamCredentialResourceId: null,
+            teamCredentialActorAccountId: null,
+            brokerMachineId: null,
+            teamCredentialSourceCredentialId: null,
+        });
+        expect(await db.$queryRaw<Array<{ executionRunId: string | null }>>`
+            SELECT executionRunId FROM UsageEvent WHERE id = ${personal.id}
+        `).toEqual([{ executionRunId: null }]);
+    });
+
     it("attributes two broker Machines independently and refuses to move a recorded request between them", async () => {
         const fixture = await createTeamFixture();
         const write = (requestIdentity: string, brokerMachineId: string, executionRunId: string | null = null) => inTx((tx) =>

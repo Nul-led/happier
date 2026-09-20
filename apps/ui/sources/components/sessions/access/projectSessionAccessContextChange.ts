@@ -1,6 +1,11 @@
-import type { PrincipalRefV1, SessionAccessLevelV1 } from '@happier-dev/protocol';
+import type {
+    PrincipalRefV1,
+    SessionAccessLevelV1,
+    SessionTeamCredentialBindingConsequenceV1,
+} from '@happier-dev/protocol';
 import { t } from '@/text';
 
+import { projectSessionAccessCredentialConsequences } from './projectSessionAccessEditorSnapshot';
 import type { SessionAccessDirectoryTeamContext } from './useSessionAccessDirectory';
 
 type CurrentGrant = Readonly<{
@@ -19,6 +24,11 @@ export function projectSessionAccessContextChange(input: Readonly<{
     target: SessionAccessDirectoryTeamContext | null;
     current: SessionAccessDirectoryTeamContext | null;
     grants: readonly CurrentGrant[];
+    /**
+     * The Home's credential-consequence preview. Leaving a Team ends that Team's
+     * context-required credential selections, which is a fact only the Home has.
+     */
+    credentialBindings?: readonly SessionTeamCredentialBindingConsequenceV1[];
 }>): readonly string[] {
     const consequences: string[] = [];
     if (input.target?.sessionCreationPolicy === 'team_required') {
@@ -42,6 +52,13 @@ export function projectSessionAccessContextChange(input: Readonly<{
             : nextPolicy === 'team_admins_only'
                 ? 'teams.policy.externalSharingAdmins'
                 : 'teams.policy.externalSharingAllowed')}`);
+    }
+
+    if (changesTeam) {
+        consequences.push(...projectSessionAccessCredentialConsequences(input.credentialBindings, {
+            teamId: input.current?.teamId ?? null,
+            policy: 'team_context_required',
+        }));
     }
     return consequences;
 }

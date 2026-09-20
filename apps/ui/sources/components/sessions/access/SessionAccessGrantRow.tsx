@@ -82,12 +82,16 @@ export function SessionAccessGrantRow(props: Readonly<{
         {row.operation.kind === 'error' ? <Text accessibilityLiveRegion="polite" style={styles.secondary}>{row.operation.error.message}</Text> : null}
         {editable && row.removal.kind === 'allowed' ? <SessionAccessRowAction testID={id('remove')} label={t('session.access.remove')}
             disabled={busy} onPress={() => actions.requestRemove(row.grant)} /> : null}
-        {editable && row.removal.kind === 'confirming' ? <View style={styles.choices}>
-            <SessionAccessRowAction testID={id('remove-confirm')} label={t('session.access.confirmRemove')}
-                disabled={busy} onPress={() => actions.confirmRemove(row.grant)} />
-            <SessionAccessRowAction testID={id('remove-cancel')} label={t('common.cancel')}
-                disabled={busy} onPress={() => actions.cancelRemove(row.grant)} />
-        </View> : null}
+        {editable && row.removal.kind === 'confirming' ? <>
+            {row.removal.consequences.map((consequence) => <Text key={consequence}
+                testID={id('remove-consequence')} accessibilityLiveRegion="polite" style={styles.secondary}>{consequence}</Text>)}
+            <View style={styles.choices}>
+                <SessionAccessRowAction testID={id('remove-confirm')} label={t('session.access.confirmRemove')}
+                    disabled={busy} onPress={() => actions.confirmRemove(row.grant)} />
+                <SessionAccessRowAction testID={id('remove-cancel')} label={t('common.cancel')}
+                    disabled={busy} onPress={() => actions.cancelRemove(row.grant)} />
+            </View>
+        </> : null}
         {row.removal.kind === 'blocked' ? <SessionAccessRowAction testID={id('remove-reason')} label={row.removal.reason.message}
             onPress={() => { if (row.removal.kind === 'blocked') actions.explain(row.removal.reason); }} /> : null}
     </View>;

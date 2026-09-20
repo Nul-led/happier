@@ -47,7 +47,6 @@ describe('access editor server projection',()=>{
     });
     it.each([
         ['session_access_subject_ineligible', 'This person, group, or team can no longer receive access.'],
-        ['session_access_transcript_not_shareable', 'This session cannot be shared until its transcript is available.'],
         ['session_access_team_policy_required', 'Team policy requires this access.'],
     ] as const)('preserves the manager recovery for %s instead of flattening it to permission denied', (reason, message) => {
         const original = snapshot();
@@ -74,6 +73,39 @@ describe('access editor server projection',()=>{
             kind: 'blocked',
             reason: { code: reason, message },
         });
+    });
+    it('names the Team credential selections a removal would break, and only that Team\'s visibility-bound ones', () => {
+        const original = snapshot();
+        const row = original.grants[0]!;
+        const result = projectSessionAccessEditorSnapshot({
+            snapshot: {
+                ...original,
+                grants: [{ ...row, allowedTransitions: { accessLevels: ['view'], canChangePermissionDelegation: false, canRemove: true } }],
+                credentialBindingConsequences: [
+                    { resourceId: 'r1', teamId: 'team', displayName: 'Prod deploy key', policy: 'team_visibility_required' },
+                    { resourceId: 'r2', teamId: 'team', displayName: 'Prod registry', policy: 'team_context_required' },
+                    { resourceId: 'r3', teamId: 'other', displayName: 'Design key', policy: 'team_visibility_required' },
+                ],
+            },
+            confirmingRemoval: 'team:team',
+        });
+
+        expect(result.grants[0]?.removal).toEqual({
+            kind: 'confirming',
+            consequences: [expect.stringContaining('Prod deploy key')],
+        });
+        expect(JSON.stringify(result.grants[0]?.removal)).not.toContain('Prod registry');
+        expect(JSON.stringify(result.grants[0]?.removal)).not.toContain('Design key');
+    });
+    it('confirms a removal with no consequences when the Home publishes no preview', () => {
+        const original = snapshot();
+        const row = original.grants[0]!;
+        const result = projectSessionAccessEditorSnapshot({
+            snapshot: { ...original, grants: [{ ...row, allowedTransitions: { accessLevels: ['view'], canChangePermissionDelegation: false, canRemove: true } }] },
+            confirmingRemoval: 'team:team',
+        });
+
+        expect(result.grants[0]?.removal).toEqual({ kind: 'confirming', consequences: [] });
     });
     it.each([false, true] as const)('hides permission delegation on a View row even when the stored flag is %s', (canApprovePermissions) => {
         const original = snapshot();

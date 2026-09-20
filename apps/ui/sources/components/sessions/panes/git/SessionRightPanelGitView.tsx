@@ -144,7 +144,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const scmSnapshot = useSessionProjectScmSnapshot(props.sessionId, props.serverId);
     const lastGoodScmSnapshot = useLastNonNullValue(scmSnapshot, { resetKey: props.scopeId });
     const effectiveScmSnapshot = scmSnapshot ?? lastGoodScmSnapshot;
-    useSessionRealtimeScmTranscriptConsumer(props.sessionId, effectiveScmSnapshot, props.serverId);
+    useSessionRealtimeScmTranscriptConsumer({ serverId: props.serverId ?? null, sessionId: props.sessionId }, effectiveScmSnapshot);
     const scmSnapshotError = useSessionProjectScmSnapshotError(props.sessionId, props.serverId);
     const workspaceTouchedPaths = useWorkspaceScmTouchedPathsForSession(props.sessionId, props.serverId);
     const inFlightScmOperation = useSessionProjectScmInFlightOperation(props.sessionId, props.serverId);
@@ -165,7 +165,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
     const project = useProjectForSession(props.sessionId, props.serverId);
     const contributionCatalog = useDaemonScmContributionCatalog({
         machineId: project?.key.machineId ?? ownerMetadata?.machineId ?? null,
-        serverId: props.serverId ?? project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId,
+        serverId: props.serverId ?? project?.key.serverId ?? activeServerSnapshot.serverId,
     });
     const backendUiRegistry = React.useMemo(
         () => createScmUiBackendRegistry(contributionCatalog),
@@ -677,7 +677,7 @@ export const SessionRightPanelGitView = React.memo((props: SessionRightPanelGitV
         [props.sessionId, props.serverId],
     );
     const publishRemediationMachineId = normalizeOptionalRouteSegment(project?.key.machineId ?? ownerMetadata?.machineId ?? null);
-    const publishRemediationServerId = normalizeOptionalRouteSegment(props.serverId ?? project?.key.serverId ?? session?.serverId ?? activeServerSnapshot.serverId);
+    const publishRemediationServerId = normalizeOptionalRouteSegment(props.serverId ?? project?.key.serverId ?? activeServerSnapshot.serverId);
     const openGitHubConnectedService = React.useCallback(() => {
         router.push({ pathname: '/(app)/settings/connected-services/[serviceId]', params: { serviceId: 'github' } });
     }, []);

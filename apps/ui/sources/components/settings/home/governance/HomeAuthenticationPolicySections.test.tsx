@@ -2,7 +2,24 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createHomeGovernanceHarness, homeGovernanceProjectionFixture, installHomeGovernanceBoundaries, renderScreen, standardCleanup } from '@/dev/testkit';
+/**
+ * Imported from their own testkit modules rather than the `@/dev/testkit`
+ * barrel. The barrel re-exports `fixtures/agentCatalogFixtures`, whose
+ * production projection reaches `@/sync/runtime/orchestration/connectionManager`
+ * and, through it, `@/sync/http/client` and the reachability fetch. Evaluating
+ * that graph on this file's first import binds the real transports and freezes
+ * the applied active Home to the built-in default *before*
+ * `installHomeGovernanceBoundaries` can install either boundary, so every Home
+ * request leaves the harness and the screen never settles. This is the same
+ * rule the harness states for its own late imports.
+ */
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
+import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGovernanceFixtures';
+import {
+    createHomeGovernanceHarness,
+    installHomeGovernanceBoundaries,
+} from '@/dev/testkit/harness/homeGovernanceHarness';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { HomeAdministrationContext } from './homeAdministrationContext';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';

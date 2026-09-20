@@ -8,6 +8,7 @@ import {
     encryptGitHubAppRegistrationSecretsV1,
     githubAppRegistrationSecretEncryptionPathV1,
     parseGitHubAppRegistrationConfigV1,
+    projectGitHubAppInstallationRequirementsV1,
     projectGitHubAppSecretHealthV1,
     resolveGitHubAppConsumerReadinessV1,
     validateGitHubAppInstallationEvidenceV1,
@@ -230,5 +231,37 @@ describe("managed GitHub App owner", () => {
                 events: [],
             },
         })).toEqual({ ok: false, code: "github_permission_missing", permission: "members" });
+    });
+
+    it("projects the union of its consumers' requirements and only the unsatisfied ones as gaps", () => {
+        expect(projectGitHubAppInstallationRequirementsV1({
+            purposes: [
+                { kind: "identity", requiresOrganizationEvidence: true },
+                { kind: "directorySync" },
+                {
+                    kind: "repository",
+                    requiredPermissions: { contents: "write", members: "read" },
+                    requiredEvents: ["push", "pull_request"],
+                    requiresWebhookSecret: true,
+                },
+            ],
+            // `members` is granted at `write`, which satisfies a `read` ask; `contents`
+            // is granted at `read`, which does not satisfy a `write` ask.
+            permissions: { members: "write", contents: "read" },
+            events: ["push"],
+        })).toEqual({
+            permissions: { contents: "write", members: "read" },
+            events: ["pull_request", "push"],
+            missingPermissions: [{ permission: "contents", required: "write" }],
+            missingEvents: ["pull_request"],
+        });
+    });
+
+    it("requires nothing from an installation that has no consumer", () => {
+        expect(projectGitHubAppInstallationRequirementsV1({
+            purposes: [],
+            permissions: {},
+            events: [],
+        })).toEqual({ permissions: {}, events: [], missingPermissions: [], missingEvents: [] });
     });
 });

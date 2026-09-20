@@ -20,6 +20,11 @@ export type SessionFollowSourceRuntimeState =
      * for this source, so repeating the preparation cannot change the answer.
      */
     | 'runner_key_unavailable'
+    /**
+     * Also not a wait: this client holds no usable encryption material for the SOURCE Session,
+     * so nothing the destination Runner does can complete the preparation.
+     */
+    | 'source_key_unavailable'
     | 'catch_up_pending';
 
 export function listEligibleSessionFollowSourceCandidates<T extends Readonly<{ id: string }>>(input: Readonly<{
@@ -83,7 +88,7 @@ export function refineSessionFollowSourceStateWithPreparationReason(
         case 'runner_unreachable': return 'waiting_for_runtime';
         case 'unsupported': return 'runtime_unsupported';
         case 'runner_key_unavailable': return 'runner_key_unavailable';
-        case 'source_key_unavailable': return 'waiting_for_source_key';
+        case 'source_key_unavailable': return 'source_key_unavailable';
     }
 }
 
@@ -95,6 +100,7 @@ export function sessionFollowSourceRuntimeStateLabel(state: SessionFollowSourceR
         case 'runtime_unsupported': return t('session.follow.sources.unsupported');
         case 'waiting_for_source_key': return t('session.follow.sources.sourceKeyWaiting');
         case 'runner_key_unavailable': return t('session.follow.sources.sourceKeyUnavailable');
+        case 'source_key_unavailable': return t('session.follow.sources.sourceSessionKeyUnavailable');
         case 'catch_up_pending': return t('session.follow.sources.catchUpPending');
         // `eligible` is the nominal state: the source is included with the
         // destination's next turn. The Account-Follow word "Following" describes a

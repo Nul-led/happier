@@ -1,11 +1,43 @@
-import { findCompiledActionCliCommand, listCompiledActionCliCommands } from '@/cli/actions/compiledCommands';
+import {
+  findCompiledActionCliCommand,
+  listCompiledActionCliCommands,
+  type CompiledActionCliCommand,
+} from '@/cli/actions/compiledCommands';
+import { buildActionCliHelpModel, renderActionCliHelpModel } from '@/cli/actions/commandHelp';
+import { actionCliEnvelopeKind } from '@/cli/actions/commandPresentation';
 import { type ActionCliExecutionDeps, runCompiledActionCliCommand } from '@/cli/actions/executeCommand';
+import { ACTION_CLI_HELP_FLAGS, ACTION_CLI_JSON_OUTPUT_FLAG } from '@/cli/actions/parseCommandInput';
+import { printJsonEnvelope } from '@/cli/output/jsonEnvelope';
 
 import { readTeamLogoSourceFromFile, type TeamLogoFileDeps } from './teamLogoFile';
 
 const TEAM_LOGO_SET_PATH = ['teams', 'logo', 'set'] as const;
 const IMAGE_FILE_FLAG = '--image-file';
 const IMAGE_JSON_FLAG = '--image-json';
+
+function requireTeamLogoSetCommand(): CompiledActionCliCommand {
+    const command = findCompiledActionCliCommand(TEAM_LOGO_SET_PATH, listCompiledActionCliCommands());
+    if (!command || command.path.join(' ') !== TEAM_LOGO_SET_PATH.join(' ')) {
+        throw new Error(`Missing canonical Action command: ${TEAM_LOGO_SET_PATH.join(' ')}`);
+    }
+    return command;
+}
+
+/**
+ * The compiled command's own help page with the adapter's one extra spelling
+ * beside the canonical `--image-json` row. The compiler still owns every other
+ * row, so a flag this command does not accept cannot appear here.
+ */
+function renderTeamLogoSetHelp(): string {
+    const model = buildActionCliHelpModel(requireTeamLogoSetCommand());
+    const options = [...model.options];
+    const imageRow = options.findIndex((row) => row.label.includes(`${IMAGE_JSON_FLAG} <json>`));
+    options.splice(imageRow >= 0 ? imageRow + 1 : options.length, 0, {
+        label: `${IMAGE_FILE_FLAG} <path>`,
+        description: 'Read the logo image from a local file instead of inline JSON',
+    });
+    return renderActionCliHelpModel({ ...model, options });
+}
 
 /**
  * `happier teams logo set --image-file <path>`.
@@ -28,6 +60,8 @@ export async function tryHandleTeamLogoFileCliCommand(params: Readonly<{
 
     const rest = argv.slice(TEAM_LOGO_SET_PATH.length);
     let filePath: string | null = null;
+    let helpRequested = false;
+    let jsonOutput = false;
     const forwarded: string[] = [];
     for (let index = 0; index < rest.length; index += 1) {
         const token = rest[index] ?? '';
@@ -36,6 +70,8 @@ export async function tryHandleTeamLogoFileCliCommand(params: Readonly<{
             break;
         }
         const name = token.includes('=') ? token.slice(0, token.indexOf('=')) : token;
+        if ((ACTION_CLI_HELP_FLAGS as readonly string[]).includes(name)) helpRequested = true;
+        if (name === ACTION_CLI_JSON_OUTPUT_FLAG) jsonOutput = true;
         if (name !== IMAGE_FILE_FLAG) {
             forwarded.push(token);
             continue;
@@ -56,6 +92,18 @@ export async function tryHandleTeamLogoFileCliCommand(params: Readonly<{
         }
         filePath = value;
     }
+    // Generic Action help cannot describe a CLI-local spelling, so this command
+    // answers its own help request; everything on the page still comes from the
+    // compiled command.
+    if (helpRequested) {
+        const help = renderTeamLogoSetHelp();
+        if (jsonOutput) {
+            await printJsonEnvelope({ ok: true, kind: actionCliEnvelopeKind(TEAM_LOGO_SET_PATH), data: { help } });
+        } else {
+            console.log(help);
+        }
+        return true;
+    }
     // Without the file flag this is an ordinary compiled command; the dispatcher
     // runs it exactly as it always did.
     if (filePath === null) return false;
@@ -67,12 +115,8 @@ export async function tryHandleTeamLogoFileCliCommand(params: Readonly<{
     }
 
     const image = await readTeamLogoSourceFromFile(filePath, params.deps ?? {});
-    const command = findCompiledActionCliCommand(TEAM_LOGO_SET_PATH, listCompiledActionCliCommands());
-    if (!command || command.path.join(' ') !== TEAM_LOGO_SET_PATH.join(' ')) {
-        throw new Error(`Missing canonical Action command: ${TEAM_LOGO_SET_PATH.join(' ')}`);
-    }
     await runCompiledActionCliCommand({
-        command,
+        command: requireTeamLogoSetCommand(),
         argv: [...TEAM_LOGO_SET_PATH, IMAGE_JSON_FLAG, JSON.stringify(image), ...forwarded],
         ...(params.signal ? { signal: params.signal } : {}),
         ...(params.actionExecutionDeps ? { deps: params.actionExecutionDeps } : {}),

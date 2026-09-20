@@ -405,6 +405,7 @@ import {
 } from './api/plugins/availability/pluginAvailabilityProjection';
 import {
     clearPluginAccountAvailabilityProjection,
+    invalidatePluginAccountAvailabilityProjection,
     replacePluginAccountAvailabilityProjection,
 } from './domains/plugins/availability/projection';
 import {
@@ -5369,9 +5370,7 @@ class Sync {
                 outboxScope: expectedAccountLifetime.scope,
                 request: async (path, init) => {
                     if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
-                    const response = await authority.request(path, init);
-                    if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
-                    return response;
+                    return await authority.request(path, init);
                 },
                 isCurrent,
                 encryption: authority.context.encryption,
@@ -5397,9 +5396,7 @@ class Sync {
                     outboxScope: expectedActiveScope,
                     request: async (path, init) => {
                         if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
-                        const response = await authority.request(path, init);
-                        if (!isCurrent()) throw new Error('Pending owner server-account scope changed');
-                        return response;
+                        return await authority.request(path, init);
                     },
                     isCurrent,
                     encryption: authority.context.encryption,
@@ -5415,9 +5412,7 @@ class Sync {
                 outboxScope: expectedActiveScope,
                 request: async (path, init) => {
                     assertCapturedActiveScope();
-                    const response = await this.requestViaConfiguredSocket(path, init);
-                    assertCapturedActiveScope();
-                    return response;
+                    return await this.requestViaConfiguredSocket(path, init);
                 },
                 isCurrent: () => this.isAppliedTransportAccountScopeCurrent(expectedActiveScope),
                 encryption: this.encryption,
@@ -5432,11 +5427,7 @@ class Sync {
             if (!this.isAppliedTransportAccountScopeCurrent(capturedScope)) {
                 throw new Error('Pending owner server-account scope changed');
             }
-            const response = await activeRequest(path, init);
-            if (!this.isAppliedTransportAccountScopeCurrent(capturedScope)) {
-                throw new Error('Pending owner server-account scope changed');
-            }
-            return response;
+            return await activeRequest(path, init);
         };
         const explicitServerId = typeof expectedServerId === 'string' && expectedServerId.trim().length > 0
             ? expectedServerId.trim()
@@ -5530,9 +5521,11 @@ class Sync {
         );
         try {
             if (!await owner.isCurrent()) throw new Error('Pending owner server-account scope changed');
-            const result = await operation(owner);
-            if (!await owner.isCurrent()) throw new Error('Pending owner server-account scope changed');
-            return result;
+            // The owner scope is fenced BEFORE the operation. A scope that retires
+            // while the request is in flight cannot unsend it, so re-checking
+            // afterwards would only turn a server-accepted mutation into a caller
+            // rejection; each operation gates its own local projection instead.
+            return await operation(owner);
         } finally {
             await owner.release();
         }
@@ -8189,9 +8182,10 @@ class Sync {
               afterSeq,
               onIncrementalExhausted: isPinned ? 'tail_reset_latest_page' : 'defer_forward_loading',
               fetchNewerPage: async (cursor) => {
+                  const pageServerId = resolvePreferredServerIdForSessionId(sessionId);
                   const result = await fetchAndApplyNewerMessages({
                       sessionId,
-                      serverId: resolvePreferredServerIdForSessionId(sessionId),
+                      serverId: pageServerId,
                       sessionEncryptionMode,
                       afterSeq: cursor,
                       limit: SESSION_MESSAGES_PAGE_SIZE,
@@ -8203,7 +8197,7 @@ class Sync {
                           if (isCatchUpSessionCurrent()) this.applyMessages(sid, messages);
                       },
                       onNormalizedMessages: (messages) => {
-                          if (isCatchUpSessionCurrent()) ingestWorkspaceMutationMessages(sessionId, messages);
+                          if (isCatchUpSessionCurrent()) ingestWorkspaceMutationMessages(sessionId, messages, pageServerId);
                       },
                       onTaskLifecycleEvent: (event) => {
                           if (isCatchUpSessionCurrent()) this.applySessionThinkingFromTaskLifecycle(sessionId, event);
@@ -9707,9 +9701,10 @@ class Sync {
           const session = storage.getState().sessions[sessionId] ?? null;
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
           try {
+              const pageServerId = resolvePreferredServerIdForSessionId(sessionId);
               const result = await fetchAndApplyNewerMessages({
                   sessionId,
-                  serverId: resolvePreferredServerIdForSessionId(sessionId),
+                  serverId: pageServerId,
                   sessionEncryptionMode,
                   afterSeq,
                   limit: SESSION_MESSAGES_PAGE_SIZE,
@@ -9718,7 +9713,7 @@ class Sync {
                   request: requestMessages,
                   sessionReceivedMessages: this.sessionReceivedMessages,
                   applyMessages: (sid, messages) => this.applyMessages(sid, messages, { notifyVoice: false }),
-                  onNormalizedMessages: (messages) => ingestWorkspaceMutationMessages(sessionId, messages),
+                  onNormalizedMessages: (messages) => ingestWorkspaceMutationMessages(sessionId, messages, pageServerId),
                   onTaskLifecycleEvent: (event) => this.applySessionThinkingFromTaskLifecycle(sessionId, event),
                   onMessagesPage: (page) => {
                       this.updateSessionMessagesPaginationFromPage(sessionId, { scope: 'main' }, page, { allowHasMoreInference: true, direction: 'newer' });
@@ -9813,9 +9808,10 @@ class Sync {
                   while (unresolvedMessageIds.size > 0) {
                       if (!this.isSessionKnownOnResolvedOwnerServer(sessionId)) break;
                       const observedOnPage = new Set<string>();
+                      const pageServerId = resolvePreferredServerIdForSessionId(sessionId);
                       const result = await fetchAndApplyNewerMessages({
                           sessionId,
-                          serverId: resolvePreferredServerIdForSessionId(sessionId),
+                          serverId: pageServerId,
                           sessionEncryptionMode,
                           afterSeq,
                           limit: SESSION_MESSAGES_PAGE_SIZE,
@@ -9826,7 +9822,7 @@ class Sync {
                           sessionReceivedMessages: this.sessionReceivedMessages,
                           applyMessages: (sid, messages) => this.applyMessages(sid, messages, { notifyVoice: false }),
                           onNormalizedMessages: (messages) => {
-                              ingestWorkspaceMutationMessages(sessionId, messages);
+                              ingestWorkspaceMutationMessages(sessionId, messages, pageServerId);
                               for (const message of messages) {
                                   if (unresolvedMessageIds.has(message.id)) {
                                       observedOnPage.add(message.id);
@@ -10239,12 +10235,12 @@ class Sync {
                                 // only its incumbent invalidation edge.
                                 invalidateAccountEncryptionModeCache();
                             }
-                            if (this.pluginAvailabilityProjectionHydrator.invalidate(changes)) {
-                                // AccountChange is level-triggered. Withdraw the old
-                                // projection synchronously, then let its one
-                                // coalesced owner rehydrate before consumers can
-                                // mistake stale release facts for current ones.
-                                clearPluginAccountAvailabilityProjection();
+                            const changedAvailabilityPluginIds = this.pluginAvailabilityProjectionHydrator.invalidate(changes);
+                            if (changedAvailabilityPluginIds.length > 0) {
+                                // A level-triggered hint retires only the named
+                                // plugins. Unrelated verified facts remain usable
+                                // until the coherent replacement is ready.
+                                invalidatePluginAccountAvailabilityProjection(changedAvailabilityPluginIds);
                                 this.pluginAvailabilitySync.invalidateCoalesced();
                             }
                         },

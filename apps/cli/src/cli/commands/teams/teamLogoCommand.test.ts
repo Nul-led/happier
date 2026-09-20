@@ -39,6 +39,20 @@ describe('happier teams logo set --image-file', () => {
         expect(executeCommand.run).not.toHaveBeenCalled();
     });
 
+    it('documents --image-file on the compiled command help', async () => {
+        executeCommand.run.mockClear();
+        const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            await expect(tryHandleTeamLogoFileCliCommand({ argv: ['teams', 'logo', 'set', '--help'] })).resolves.toBe(true);
+            const printed = log.mock.calls.flat().join('\n');
+            expect(printed).toContain('--image-file <path>');
+            expect(printed).toContain('Canonical Action: teams.logo.set.');
+            expect(executeCommand.run).not.toHaveBeenCalled();
+        } finally {
+            log.mockRestore();
+        }
+    });
+
     it('refuses two sources for the same image', async () => {
         await expect(tryHandleTeamLogoFileCliCommand({
             argv: ['teams', 'logo', 'set', '--image-file', './a.png', '--image-json', '{}'],

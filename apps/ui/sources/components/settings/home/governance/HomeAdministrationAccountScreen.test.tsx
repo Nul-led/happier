@@ -2,16 +2,28 @@ import * as React from 'react';
 import { act } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+/**
+ * Imported from their own testkit modules rather than the `@/dev/testkit`
+ * barrel. The barrel re-exports `fixtures/agentCatalogFixtures`, whose
+ * production projection reaches `@/sync/runtime/orchestration/connectionManager`
+ * and, through it, `@/sync/http/client` and the reachability fetch. Evaluating
+ * that graph on this file's first import binds the real transports and freezes
+ * the applied active Home to the built-in default *before*
+ * `installHomeGovernanceBoundaries` can install either boundary, so every Home
+ * request leaves the harness and the screen never settles. This is the same
+ * rule the harness states for its own late imports.
+ */
+import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import {
-    collectRenderedTestIds,
-    createHomeGovernanceHarness,
-    installHomeGovernanceBoundaries,
-    renderScreen,
-    standardCleanup,
     homeAccountRowFixture,
     homeGovernanceProjectionFixture,
-} from '@/dev/testkit';
-import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+} from '@/dev/testkit/fixtures/homeGovernanceFixtures';
+import {
+    createHomeGovernanceHarness,
+    installHomeGovernanceBoundaries,
+} from '@/dev/testkit/harness/homeGovernanceHarness';
+import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
+import { renderScreen } from '@/dev/testkit/render/renderScreen';
 
 import { installSettingsViewCommonModuleMocks } from '../../settingsViewTestHelpers';
 
@@ -123,6 +135,9 @@ beforeEach(async () => {
         '@/sync/store/home/governance/homeGovernanceSnapshots'
     );
     resetHomeGovernanceSnapshotsForTests();
+    const { resetServerFeaturesClientForTests } = await import(
+        '@/sync/api/capabilities/serverFeaturesClient'
+    );
     resetServerFeaturesClientForTests();
     await harness.reset();
     modalState.confirmResult = true;

@@ -187,7 +187,7 @@ export const SessionScmReviewDetailsView = React.memo((props: SessionScmReviewDe
     const snapshot = useSessionProjectScmSnapshot(props.sessionId, props.serverId);
     const lastGoodSnapshot = useLastNonNullValue(snapshot, { resetKey: sessionAddress ? sessionAddressKey(sessionAddress) : props.sessionId });
     const effectiveSnapshot = snapshot ?? lastGoodSnapshot;
-    useSessionRealtimeScmTranscriptConsumer(props.sessionId, effectiveSnapshot);
+    useSessionRealtimeScmTranscriptConsumer({ serverId: props.serverId ?? null, sessionId: props.sessionId }, effectiveSnapshot);
     const snapshotError = useSessionProjectScmSnapshotError(props.sessionId, props.serverId);
     const touchedPaths = useWorkspaceScmTouchedPathsForSession(props.sessionId, props.serverId);
     const commitSelectionPaths = useSessionProjectScmCommitSelectionPaths(props.sessionId, props.serverId);

@@ -6,6 +6,7 @@ import {
     type SessionTeamCredentialSlotV1,
     type TeamCredentialRouteV1,
 } from "@happier-dev/protocol/teams";
+import type { SessionTeamCredentialBindingConsequenceV1 } from "@happier-dev/protocol";
 import type { Tx } from "@/storage/inTx";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
 import { assertSessionTeamReadableGrantInTx } from "@/app/session/access/sessionAccess";
@@ -17,8 +18,8 @@ import {
 import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
 import {
     readTeamCredentialBrokerPlacement,
-    resolveTeamCredentialBrokerPoolForSaveInTx,
-    teamCredentialBrokerPlacementPinsMachine,
+    admitTeamCredentialBrokerPoolForBrokeredUseInTx,
+    isTeamCredentialBrokerPlacementBoundToMachineInTx,
 } from "./brokerPlacementResolver";
 import { resolveTeamCredentialEntitlementInTx, type TeamCredentialEntitlementDecision } from "./resourceAccess";
 import { resolveTeamCredentialResourceSourceInTx, type TeamCredentialResourceSourceResolution } from "./resourceSourceResolver";
@@ -286,7 +287,10 @@ async function validateSessionTeamCredentialResourceForContextInTx(
     }
     if (
         input.expectedBrokerMachineId !== undefined
-        && !teamCredentialBrokerPlacementPinsMachine(resource, input.expectedBrokerMachineId)
+        && !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
+            resource,
+            machineId: input.expectedBrokerMachineId,
+        })
     ) {
         return { ok: false, reason: "broker_unavailable" };
     }
@@ -340,7 +344,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         if (!placement.ok || placement.placement === null) return { ok: false, reason: "resource_corrupt" };
         const broker = placement.placement.kind === "machine"
             ? await resolveTeamCredentialBrokerMachineForSaveInTx(tx, resource)
-            : await resolveTeamCredentialBrokerPoolForSaveInTx(tx, {
+            : await admitTeamCredentialBrokerPoolForBrokeredUseInTx(tx, {
                 custodianAccountId: resource.custodianAccountId,
                 poolId: placement.placement.poolId,
             });
@@ -402,9 +406,10 @@ export async function validatePlannedSessionTeamCredentialBindingIntentInTx(
 
 /**
  * Canonical pre-Session producer for the Runner's reviewed credential binding.
- * It reuses the planned Session admission owner and reveals only the exact
- * broker Machine already selected by the resource owner. No Session or broker
- * lease is created by this bounded read.
+ * It reuses the planned Session admission owner and reveals one exact broker
+ * Machine: the resource's own placement when it names a Machine, and otherwise
+ * the Pool member the placement owner already selected for this activation. No
+ * Session or broker lease is created by this bounded read.
  */
 export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
     tx: Tx,
@@ -414,7 +419,7 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
         expectedResourceRevision: number;
         plannedSession: PlannedSessionTeamCredentialContext;
         authentication: SessionAccessAuthentication;
-        /** Exact persistent Machine selected by the resource owner before review. */
+        /** Exact persistent Machine already selected for this activation before review. */
         selectedBrokerMachineId?: string;
     }>,
 ): Promise<
@@ -428,14 +433,27 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
     if (!resource) return { ok: false, reason: "resource_missing" };
     const placement = readTeamCredentialBrokerPlacement(resource);
     if (!placement.ok) return { ok: false, reason: "resource_corrupt" };
-    // Current ceiling: this pre-Session producer holds no broker presence or
-    // source-eligibility reader, so it cannot select a Pool member itself. A
-    // Pool-placed resource therefore answers the typed broker refusal until the
-    // Runner selection route supplies those readers to the placement resolver.
-    if (placement.placement?.kind !== "machine") return { ok: false, reason: "broker_unavailable" };
-    const brokerMachineId = placement.placement.machineId;
-    if (input.selectedBrokerMachineId !== undefined && input.selectedBrokerMachineId !== brokerMachineId) {
-        return { ok: false, reason: "broker_unavailable" };
+    if (placement.placement === null) return { ok: false, reason: "broker_unavailable" };
+    let brokerMachineId: string;
+    if (placement.placement.kind === "machine") {
+        brokerMachineId = placement.placement.machineId;
+        if (input.selectedBrokerMachineId !== undefined && input.selectedBrokerMachineId !== brokerMachineId) {
+            return { ok: false, reason: "broker_unavailable" };
+        }
+    } else {
+        // A Pool placement names no single Machine of its own. The exact member
+        // was selected once by the placement owner before review and travels in
+        // this activation's binding; here it is revalidated as a current member,
+        // never reranked, so membership edits after the freeze cannot move a
+        // reviewed activation onto a different Machine.
+        if (input.selectedBrokerMachineId === undefined) return { ok: false, reason: "broker_unavailable" };
+        if (!await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
+            resource,
+            machineId: input.selectedBrokerMachineId,
+        })) {
+            return { ok: false, reason: "broker_unavailable" };
+        }
+        brokerMachineId = input.selectedBrokerMachineId;
     }
     const admitted = await validatePlannedSessionTeamCredentialResourceInTx(tx, {
         ...input,
@@ -486,35 +504,51 @@ export async function validateExistingSessionTeamCredentialResourceInTx(
     });
 }
 
-export type SessionTeamCredentialBindingConsequence = Readonly<{
-    resourceId: string;
-    displayName: string;
-    teamId: string;
-}>;
+export type SessionTeamCredentialBindingConsequence = SessionTeamCredentialBindingConsequenceV1;
+
+/** The two session-use policies a Session-level access edit can invalidate. */
+const CONDITIONAL_SESSION_USE_POLICIES = ["team_visibility_required", "team_context_required"] as const;
 
 /**
- * Read-only preview for the Session access editor: the Team-visibility-bound
- * credential selections this Session would lose if its `teamId` visibility
- * grant were removed. It names resources only through their display names and
- * never guards the removal itself; the later admission fails closed on its own.
+ * Read-only preview for the Session access editor: the credential selections
+ * this Session keeps only while one of the named Teams still holds the standing
+ * it currently has.
+ *
+ * Both conditional policies travel because the editor offers both edits that can
+ * invalidate them: removing a Team's grant ends `team_visibility_required`, and
+ * moving the Session's context off a Team ends that Team's
+ * `team_context_required`. The row carries which policy it depends on so the
+ * confirmation names only what the edit in hand actually breaks. It names
+ * resources through their display names alone and guards nothing; the later
+ * admission repeats every decision and still fails closed.
+ *
+ * The editor asks about every Team in one call, so the preview costs one query
+ * rather than one per grant row.
  */
 export async function listSessionTeamCredentialBindingConsequencesInTx(
     tx: Tx,
-    input: Readonly<{ sessionId: string; teamId: string }>,
+    input: Readonly<{ sessionId: string; teamIds: readonly string[] }>,
 ): Promise<readonly SessionTeamCredentialBindingConsequence[]> {
+    if (input.teamIds.length === 0) return [];
     const rows = await tx.sessionTeamCredentialBinding.findMany({
         where: {
             sessionId: input.sessionId,
-            resource: { teamId: input.teamId, sessionUsePolicy: "team_visibility_required" },
+            resource: {
+                teamId: { in: [...input.teamIds] },
+                sessionUsePolicy: { in: [...CONDITIONAL_SESSION_USE_POLICIES] },
+            },
         },
-        select: { resource: { select: { id: true, displayName: true, teamId: true } } },
+        select: { resource: { select: { id: true, displayName: true, teamId: true, sessionUsePolicy: true } } },
         orderBy: [{ resourceId: "asc" }],
     });
     const seen = new Set<string>();
     return rows.flatMap(({ resource }) => {
         if (seen.has(resource.id)) return [];
         seen.add(resource.id);
-        return [{ resourceId: resource.id, displayName: resource.displayName, teamId: resource.teamId }];
+        const policy = CONDITIONAL_SESSION_USE_POLICIES
+            .find((candidate) => candidate === resource.sessionUsePolicy);
+        if (!policy) return [];
+        return [{ resourceId: resource.id, displayName: resource.displayName, teamId: resource.teamId, policy }];
     });
 }
 

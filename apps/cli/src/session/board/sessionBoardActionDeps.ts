@@ -1,7 +1,9 @@
 import axios from 'axios';
 import {
   applySessionBoardItemPlacementV1, applySessionBoardLayoutOperationV1, removeSessionBoardItemPlacementsV1, isSessionSurfaceItemSourceCompatible,
+  bindSessionBoardMutationRequestV1,
   classifySessionBoardMutationTransportResultV1,
+  createSessionBoardFailureV1,
   createSessionBoardOutcomeUnknownFailureV1,
   projectSessionBoardActionFailureV1, projectSessionBoardFeatureDecisionFailureV1,
   projectSessionBoardAdapterFailureV1,
@@ -9,8 +11,6 @@ import {
   SessionBoardItemRemoveInputV1Schema, SessionBoardLayoutUpdateInputV1Schema,
   SessionBoardItemUpsertInputV1Schema, SessionBoardLayoutV1Schema, SessionBoardMutationV1Schema,
   SessionBoardMutationActionResultV1Schema, SessionSurfaceItemV1Schema,
-  SessionBoardActionFailureV1Schema,
-  SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1,
   projectSessionBoardGetResultV1,
   type SessionBoardItemPlacementParticipantV1, type SessionBoardLayoutV1,
   type SessionBoardReadProjectionEntryV1, type SessionBoardActionIdV1,
@@ -37,8 +37,6 @@ import { openSessionSystemRecord, sealSessionSystemRecordContent, validateSessio
 import { resolveSessionEncryptionContextFromCredentials, resolveSessionStoredContentEncryptionMode } from '@/session/transport/encryption/sessionEncryptionContext';
 import type { SessionStoredContentCryptoContext } from '@/session/transport/encryption/sessionStoredContentCodec';
 import { resolveExternalActionServerRequestHeaders, type ExternalActionHomeBinding } from '@/api/externalActionExecutionAuthorization';
-
-function failure(code: string) { return { ok: false as const, errorCode: code, error: code }; }
 
 function readTransportErrorCode(error: unknown): string | null {
   if (!error || typeof error !== 'object') return null;
@@ -79,18 +77,18 @@ export function createSessionBoardActionDeps(options: Readonly<{
     context: Parameters<NonNullable<ActionExecutorDeps['sessionBoardAction']>>[0]['context'],
     signal?: AbortSignal,
   ) {
-    if (actionId === 'session.board.get') return failure('unsupported_action');
-    const declared = SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1;
-    const mutation = SessionBoardMutationV1Schema.parse(input);
+    if (actionId === 'session.board.get') return createSessionBoardFailureV1('unsupported_action');
+    const declared = bindSessionBoardMutationRequestV1({ sessionId, mutation: SessionBoardMutationV1Schema.parse(input) });
+    const mutation = declared.body;
     const body = JSON.stringify(mutation);
-    const path = declared.path.replace(':sessionId', encodeURIComponent(sessionId));
+    const path = declared.path;
     const authorization = resolveExternalActionServerRequestHeaders({ context, effectActionId: actionId,
       method: declared.method, path, body: mutation, daemonToken: options.credentials.token, serverIdentityId: options.serverIdentityId,
       ...(options.externalActionMachineRequestPrivateKey ? { privateKey: options.externalActionMachineRequestPrivateKey } : {}),
       ...(options.externalActionMachineInstallationId ? { installationId: options.externalActionMachineInstallationId } : {}),
     });
-    if (!authorization.ok) return failure('not_authenticated');
-    if (signal?.aborted) return failure('cancelled');
+    if (!authorization.ok) return createSessionBoardFailureV1('not_authenticated');
+    if (signal?.aborted) return createSessionBoardFailureV1('cancelled');
     let response;
     try { response = await axios.request<unknown>({ url: `${serverUrl}${path}`, method: declared.method,
       data: body, headers: { ...buildCurrentAccountStoredContentCompatibilityHttpHeaders(), ...authorization.headers, 'Content-Type': 'application/json' },
@@ -126,16 +124,16 @@ export function createSessionBoardActionDeps(options: Readonly<{
     });
     return settlement.kind === 'applied'
       ? { ok: true as const, result: settlement.result }
-      : SessionBoardActionFailureV1Schema.parse(settlement.result);
+      : settlement.result;
   }
   const sessionBoardAction: NonNullable<ActionExecutorDeps['sessionBoardAction']> = async ({ actionId, input, context, signal }) => {
-    if (context.serverId && context.serverId !== serverId) return failure('server_target_mismatch');
-    if (signal?.aborted) return failure('cancelled');
+    if (context.serverId && context.serverId !== serverId) return createSessionBoardFailureV1('server_target_mismatch');
+    if (signal?.aborted) return createSessionBoardFailureV1('cancelled');
     const parsed = SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1[actionId].safeParse(input);
-    if (!parsed.success) return failure('session_board_invalid');
+    if (!parsed.success) return createSessionBoardFailureV1('session_board_invalid');
     const common = parsed.data;
     const sessionId = common.sessionId ?? context.defaultSessionId;
-    if (!sessionId) return failure('session_board_invalid');
+    if (!sessionId) return createSessionBoardFailureV1('session_board_invalid');
     const resolveAuthorizationHeaders = (request: Readonly<{ method: 'GET'; path: string }>) => {
       const authorization = resolveExternalActionServerRequestHeaders({ context, effectActionId: actionId,
         method: request.method, path: request.path, daemonToken: options.credentials.token, serverIdentityId: options.serverIdentityId,
@@ -180,12 +178,12 @@ export function createSessionBoardActionDeps(options: Readonly<{
       resolveAuthorizationHeaders,
       signal,
     });
-    if (!rawSession || rawSession.id !== sessionId) return failure('session_board_forbidden');
+    if (!rawSession || rawSession.id !== sessionId) return createSessionBoardFailureV1('session_board_forbidden');
     const capabilities = rawSession.effectiveAccess?.capabilities;
-    if (!capabilities?.readTranscript || (actionId !== 'session.board.get' && !capabilities.editSessionRecords)) return failure('session_board_forbidden');
+    if (!capabilities?.readTranscript || (actionId !== 'session.board.get' && !capabilities.editSessionRecords)) return createSessionBoardFailureV1('session_board_forbidden');
     const mode = resolveSessionStoredContentEncryptionMode(rawSession);
     const ctx = mode === 'e2ee' ? resolveSessionEncryptionContextFromCredentials(options.credentials, rawSession) : null;
-    if (mode === 'e2ee' && !ctx) return failure('encryption_material_unavailable');
+    if (mode === 'e2ee' && !ctx) return createSessionBoardFailureV1('encryption_material_unavailable');
     const crypto: SessionStoredContentCryptoContext = ctx ? { mode: 'e2ee', ctx } : { mode: 'plain', ctx: null };
     const transport = { token: options.credentials.token, serverUrl, sessionId, signal, resolveAuthorizationHeaders };
     const layoutAddress = { owner: 'host' as const, namespace: 'surface' as const, kind: 'layout.v1' as const, localId: 'layout' };
@@ -228,14 +226,14 @@ export function createSessionBoardActionDeps(options: Readonly<{
       }
       const layout = current?.document ?? { v: 1 as const, tabs: [] };
       const edit = 'operation' in args ? applySessionBoardLayoutOperationV1(layout, args.operation) : removeSessionBoardItemPlacementsV1(layout, args.itemId);
-      if (!edit.ok) return failure(edit.error);
+      if (!edit.ok) return createSessionBoardFailureV1(edit.error);
       let itemPlacementParticipant: SessionBoardItemPlacementParticipantV1 | undefined;
       if ('operation' in args && args.operation.op === 'item.place') {
         const participant = await readSessionSystemRecordV1({
           ...transport,
           address: { owner: 'host', namespace: 'surface', kind: 'item.v1', localId: args.operation.itemId },
         });
-        if (!participant) return failure('session_board_item_not_found');
+        if (!participant) return createSessionBoardFailureV1('session_board_item_not_found');
         itemPlacementParticipant = {
           itemId: args.operation.itemId,
           expectedItemRevision: participant.revision,
@@ -260,7 +258,7 @@ export function createSessionBoardActionDeps(options: Readonly<{
     }
     if (current) {
       const previous = SessionSurfaceItemV1Schema.parse(openSessionSystemRecord(crypto, current).content);
-      if (!isSessionSurfaceItemSourceCompatible(previous, args.item)) return failure('session_board_source_conflict');
+      if (!isSessionSurfaceItemSourceCompatible(previous, args.item)) return createSessionBoardFailureV1('session_board_source_conflict');
     }
     if (args.item.source.kind === 'installedSurface' && !current) {
       const owner = resolveSessionOwningMachineId({ credentials: options.credentials, rawSession });
@@ -269,11 +267,11 @@ export function createSessionBoardActionDeps(options: Readonly<{
       // distinct message. Collapsing them into `unsupported_action` told the author
       // "that isn't supported" whether the plugin was absent, declared twice, unable
       // to render here, or simply unreachable for a moment.
-      if (!owner.ok || !owner.machineId) return failure('not_found');
+      if (!owner.ok || !owner.machineId) return createSessionBoardFailureV1('not_found');
       if (
         context.externalActionExecutionAuthorization
         && (!options.externalActionMachineInstallationId || !options.externalActionMachineRequestPrivateKey)
-      ) return failure('not_authenticated');
+      ) return createSessionBoardFailureV1('not_authenticated');
       const response = DaemonContributionRegistryProjectionDescribeResponseSchema.safeParse(await callExactMachineRpc({
         credentials: options.credentials, serverUrl, machineId: owner.machineId,
         method: RPC_METHODS.DAEMON_MERGED_CONTRIBUTION_REGISTRY_PROJECTION_DESCRIBE,
@@ -291,18 +289,18 @@ export function createSessionBoardActionDeps(options: Readonly<{
             }
           : {}),
       }));
-      if (!response.success) return failure('invalid_response');
-      if (response.data.projection.v !== 2) return failure('unsupported_version');
+      if (!response.success) return createSessionBoardFailureV1('invalid_response');
+      if (response.data.projection.v !== 2) return createSessionBoardFailureV1('unsupported_version');
       const surface = args.item.source.surface;
       const placements = Object.values(response.data.projection.familiesById.pluginUi?.entriesById ?? {}).filter((entry) => {
         if (!entry || typeof entry !== 'object' || !('binding' in entry) || !entry.binding || entry.contributionKind !== 'surfacePlacement') return false;
         return isPluginUiInlineSurfaceBindingForSurfaceV1(entry.binding, surface, 'sessionWidget');
       });
       const placement = placements[0];
-      if (placements.length !== 1 || !placement || placement.contributionKind !== 'surfacePlacement') return failure('session_board_invalid');
+      if (placements.length !== 1 || !placement || placement.contributionKind !== 'surfacePlacement') return createSessionBoardFailureV1('session_board_invalid');
       const availability = DaemonPluginUiTargetedSurfaceRendererAvailabilityV1Schema.safeParse(placement.availability);
-      if (!availability.success) return failure('invalid_response');
-      if (availability.data.state !== 'available') return failure('unsupported_action');
+      if (!availability.success) return createSessionBoardFailureV1('invalid_response');
+      if (availability.data.state !== 'available') return createSessionBoardFailureV1('unsupported_action');
       const latest = await fetchSessionById({
         token: options.credentials.token,
         serverUrl,
@@ -312,7 +310,7 @@ export function createSessionBoardActionDeps(options: Readonly<{
         signal,
       });
       const latestOwner = latest?.id === sessionId ? resolveSessionOwningMachineId({ credentials: options.credentials, rawSession: latest }) : null;
-      if (!latestOwner?.ok || latestOwner.machineId !== owner.machineId) return failure('server_target_mismatch');
+      if (!latestOwner?.ok || latestOwner.machineId !== owner.machineId) return createSessionBoardFailureV1('server_target_mismatch');
     }
     let layout: SessionBoardLayoutV1 | null = null;
     let expectedLayoutRevision: string | null = null;
@@ -321,7 +319,7 @@ export function createSessionBoardActionDeps(options: Readonly<{
       const document = currentLayout?.document ?? { v: 1 as const, tabs: [] };
       expectedLayoutRevision = currentLayout?.revision ?? null;
       const edited = applySessionBoardItemPlacementV1(document, { itemId: args.itemId, placement: args.placement });
-      if (!edited.ok) return failure(edited.error);
+      if (!edited.ok) return createSessionBoardFailureV1(edited.error);
       layout = edited.layout;
     }
     const itemContent = sealSessionSystemRecordContent(crypto, validateSessionSystemRecordOpenedContent(itemAddress, args.item, 'plugin_session_record_invalid_request'));

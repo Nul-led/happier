@@ -3,7 +3,12 @@ import { WorkflowActionIdV1Schema } from './actionIds.js';
 import { isSessionBoardActionIdV1 } from '../sessions/board/actionIds.js';
 import { isSessionDiscussionActionIdV1 } from '../sessions/discussions/actionIds.js';
 import { TeamCredentialActionIdV1Schema } from '../teams/credentials/actionsV1.js';
+import { TeamActionIdV1Schema } from '../teams/actionsV1.js';
 import { SharedSavedSecretActionIdV1Schema } from '../account/settings/savedSecretResourceActionsV1.js';
+import { isSessionFollowActionIdV1 } from '../sessions/follow/actions.js';
+import { isSessionAccessActionIdV1 } from './sessionAccessActionFamily.js';
+import { MachinePoolActionIdV1Schema } from '../machines/pools/actionsV1.js';
+import { EphemeralRunnerActionIdV1Schema } from '../ephemeralRunner/actionIdsV1.js';
 
 /**
  * The canonical server feature each gated Action family depends on.
@@ -27,8 +32,19 @@ export function getActionRequiredServerFeatureId(actionId: string): FeatureId | 
       ? 'teams.credentialResources.externalApi'
       : 'teams.credentialResources';
   }
-  if (SharedSavedSecretActionIdV1Schema.safeParse(actionId).success) {
-    return 'teams.credentialResources';
+  // Every Team family beyond credentials is served by `createTeamRouteApp`,
+  // whose one decision is `teams`. Shared Saved Secrets are registered on that
+  // same app, so they depend on `teams` and not on either credential bit.
+  if (TeamActionIdV1Schema.safeParse(actionId).success) return 'teams';
+  if (SharedSavedSecretActionIdV1Schema.safeParse(actionId).success) return 'teams';
+  if (isSessionFollowActionIdV1(actionId)) return 'sessions.following';
+  if (isSessionAccessActionIdV1(actionId)) {
+    // The public-link intents are served by the public-share routes, whose
+    // availability owner is `sharing.public`; the grant, context and
+    // responsibility intents are the collaboration routes.
+    return actionId.startsWith('session.public_link.') ? 'sharing.public' : 'sessions.collaboration';
   }
+  if (MachinePoolActionIdV1Schema.safeParse(actionId).success) return 'machines.pools';
+  if (EphemeralRunnerActionIdV1Schema.safeParse(actionId).success) return 'sessions.ephemeralRunner';
   return null;
 }

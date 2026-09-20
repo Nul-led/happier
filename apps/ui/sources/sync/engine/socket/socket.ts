@@ -1329,7 +1329,7 @@ export async function handleUpdateContainer(params: {
 
         socketMessageApplyHandlers = {
             applyMessages,
-            onNormalizedMessagesApplied: ingestWorkspaceMutationMessages,
+            onNormalizedMessagesApplied: (sessionId, messages) => ingestWorkspaceMutationMessages(sessionId, messages, sourceServerId),
             markSessionMaterializedMaxSeq,
         };
         await trackSessionMessageMaterialization(updateData.body.sid, handleNewMessageSocketUpdate({
@@ -1379,7 +1379,7 @@ export async function handleUpdateContainer(params: {
             }),
             rawMessageNormalizationState: getSocketRawMessageNormalizationState(updateData.body.sid, sourceServerId),
             isMutableToolCall: (sessionId, toolUseId) => storage.getState().isMutableToolCall(sessionId, toolUseId),
-            invalidateScmStatus: (sessionId) => scmStatusSync.invalidateFromMutation(sessionId),
+            invalidateScmStatus: (sessionId) => scmStatusSync.invalidateFromMutation(sessionId, sourceServerId),
             isSessionMessagesLoaded,
             isSessionActivelyViewed: (sessionId) => isSessionSurfaceVisible(sessionId, sourceServerId),
             isSessionFullContentConsumerActive: (sessionId) => isSessionFullContentConsumerActiveForRealtime(sessionId, sourceServerId),
@@ -1393,6 +1393,7 @@ export async function handleUpdateContainer(params: {
                 if (!shouldContinue()) return;
                 void deliverHiddenSessionScmMutationSignal({
                     sessionId,
+                    serverId: sourceServerId,
                     rawMessage,
                     getSessionEncryption: (targetSessionId) => encryption?.getSessionEncryption(targetSessionId) ?? null,
                 });
@@ -1468,10 +1469,10 @@ export async function handleUpdateContainer(params: {
                 applyMessages(sessionId, messages);
             },
             sessionReceivedMessages,
-            onNormalizedMessagesApplied: ingestWorkspaceMutationMessages,
+            onNormalizedMessagesApplied: (sessionId, messages) => ingestWorkspaceMutationMessages(sessionId, messages, sourceServerId),
             rawMessageNormalizationState: getSocketRawMessageNormalizationState(updateData.body.sid, sourceServerId),
             isMutableToolCall: (sessionId, toolUseId) => storage.getState().isMutableToolCall(sessionId, toolUseId),
-            invalidateScmStatus: (sessionId) => scmStatusSync.invalidateFromMutation(sessionId),
+            invalidateScmStatus: (sessionId) => scmStatusSync.invalidateFromMutation(sessionId, sourceServerId),
             isSessionMessagesLoaded,
             isSessionActivelyViewed: (sessionId) => isSessionSurfaceVisible(sessionId, sourceServerId),
             isSessionFullContentConsumerActive: (sessionId) => isSessionFullContentConsumerActiveForRealtime(sessionId, sourceServerId),
@@ -1485,6 +1486,7 @@ export async function handleUpdateContainer(params: {
                 if (!shouldContinue()) return;
                 void deliverHiddenSessionScmMutationSignal({
                     sessionId,
+                    serverId: sourceServerId,
                     rawMessage,
                     getSessionEncryption: (targetSessionId) => encryption?.getSessionEncryption(targetSessionId) ?? null,
                 });

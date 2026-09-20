@@ -353,8 +353,9 @@ describe('SessionFollowSourcesEditor', () => {
             replacementMachinePreparation.resolve({ kind: 'waiting', reason: 'source_key_unavailable' });
             await replacementMachinePreparation.promise;
         });
+        // An unavailable source key is a settled answer, not the transient "waiting" copy.
         expect(findSourceRow(screen, 'source-a')?.props.subtitle)
-            .toBe('session.follow.sources.sourceKeyWaiting');
+            .toBe('session.follow.sources.sourceSessionKeyUnavailable');
         await screen.unmount();
     });
 
@@ -458,7 +459,7 @@ describe('SessionFollowSourcesEditor', () => {
             await firstPreparation.promise;
         });
         expect(findSourceRow(screen, 'source-a')?.props.subtitle)
-            .toBe('session.follow.sources.sourceKeyWaiting');
+            .toBe('session.follow.sources.sourceSessionKeyUnavailable');
         await screen.unmount();
     });
 

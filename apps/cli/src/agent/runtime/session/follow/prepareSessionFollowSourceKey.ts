@@ -1,8 +1,6 @@
 import {
-  SESSION_FOLLOW_SOURCE_KEY_PREPARE_AUTHORIZATION_KIND_V1,
-  SessionFollowSourceKeyPrepareAuthorizationV1Schema,
-  SessionFollowSourceKeyPrepareRequestV1Schema,
   SessionFollowSourceKeyPrepareResponseV1Schema,
+  buildSessionFollowSourceKeyPrepareRequestV1,
   resolveSessionFollowSourceKeyPreparationFailureV1,
   type SessionFollowSourceKeyPreparationResultV1,
 } from '@happier-dev/protocol';
@@ -36,17 +34,9 @@ export async function prepareSessionFollowSourceKey(input: Readonly<{
     privateKey: ExternalActionMachineRequestSigningKey;
   }>;
 }>): Promise<SessionFollowSourceKeyPreparationResultV1> {
-  const relation = {
+  const { authorization, request } = buildSessionFollowSourceKeyPrepareRequestV1({
     sourceSessionId: input.sourceSessionId,
     destinationSessionId: input.destinationSessionId,
-  };
-  const authorization = SessionFollowSourceKeyPrepareAuthorizationV1Schema.parse({
-    kind: SESSION_FOLLOW_SOURCE_KEY_PREPARE_AUTHORIZATION_KIND_V1,
-    ...relation,
-  });
-  const request = SessionFollowSourceKeyPrepareRequestV1Schema.parse({
-    v: 1,
-    ...relation,
     sourceDataEncryptionKeyBase64: encodeBase64(input.sourceDataEncryptionKey),
   });
   const expectedRunnerMachineContentKeyBinding = resolveExpectedRunnerMachineContentKeyBindingScope({

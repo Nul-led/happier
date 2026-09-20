@@ -22,7 +22,6 @@ import {
     TeamCredentialResourceTestAdmissionResponseV1Schema,
     TeamCredentialResourceTestAdmissionV1Schema,
 } from '@happier-dev/protocol/teams';
-import { DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema } from '@happier-dev/protocol/rpc';
 
 import type { Fastify } from '@/app/api/types';
 import { getMachineDaemonPresenceInventory } from '@/app/machines/machineDaemonPresence';
@@ -33,6 +32,7 @@ import { readSessionAccessAuthenticationFromRequest } from '@/app/session/access
 import { inTx } from '@/storage/inTx';
 import { getOrCreateServerIdentityId } from '@/app/serverIdentity/serverIdentity';
 import { createExecutionRunBrokerCurrentnessResolver } from './executionRunBrokerAuthorityResolver';
+import { createTeamCredentialPoolSourceEligibilityReader } from './poolSourceEligibility';
 import {
     admitTeamCredentialProviderBrokerRequest,
     authorizeTeamCredentialProviderModelCatalog,
@@ -159,7 +159,13 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
     });
     app.post(PROVIDER_BROKER_OPEN_HTTP_PATH_V1, {
         preHandler: app.authenticate,
-        config: { ephemeralSessionRunnerOperation: 'provider_broker_open' },
+        config: {
+            ephemeralSessionRunnerBinding: {
+                scope: 'session',
+                session: 'body.consumer.sessionId',
+                machine: 'body.initiatorMachineId',
+            },
+        },
         attachValidation: true,
         schema: {
             body: ProviderBrokerOpenRequestV1Schema,
@@ -218,37 +224,7 @@ export function registerTeamCredentialProviderBrokerRoutes(app: Fastify): void {
                 nowMs: Date.now(),
             }),
             signal: eligibilityAbort.signal,
-            readPoolSourceEligibility: async eligibility => {
-                const entries = await Promise.all(eligibility.machineIds.map(async machineId => {
-                    if (eligibility.signal.aborted) return [machineId, 'source_unavailable'] as const;
-                    const rpcResult = await app.forwardRpcForUser({
-                        userId: eligibility.custodianAccountId,
-                        method: `${machineId}:${RPC_METHODS.DAEMON_PROVIDERS_TEAM_CREDENTIAL_BROKER_ELIGIBILITY}`,
-                        params: {
-                            machineId,
-                            teamId: eligibility.teamId,
-                            resourceId: eligibility.resourceId,
-                            expectedResourceRevision: eligibility.resourceRevision,
-                            source: eligibility.source,
-                            application: eligibility.application,
-                            modelId: eligibility.modelId,
-                            sourceRevision: eligibility.sourceRevision,
-                        },
-                    });
-                    if (!rpcResult.ok) {
-                        return [machineId, 'source_unavailable'] as const;
-                    }
-                    const result = DaemonProviderTeamCredentialBrokerEligibilityResponseV1Schema.safeParse(rpcResult.result);
-                    if (!result.success) return [machineId, 'source_unavailable'] as const;
-                    return result.data.status === 'eligible'
-                        ? [machineId, null] as const
-                        : [machineId, result.data.reason] as const;
-                }));
-                return {
-                    eligibleMachineIds: new Set(entries.flatMap(([machineId, reason]) => reason === null ? [machineId] : [])),
-                    reasons: new Map(entries.flatMap(([machineId, reason]) => reason === null ? [] : [[machineId, reason] as const])),
-                };
-            },
+            readPoolSourceEligibility: createTeamCredentialPoolSourceEligibilityReader(app.forwardRpcForUser),
             resolveExecutionRunCurrentness,
             readProviderProjection: async projection => {
                 const rpcResult = await app.forwardRpcForUser({

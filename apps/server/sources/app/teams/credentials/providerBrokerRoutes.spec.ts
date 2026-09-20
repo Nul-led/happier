@@ -18,7 +18,7 @@ import { registerTeamCredentialProviderBrokerRoutes } from './providerBrokerRout
 describe('Team credential Provider broker HTTP routes', () => {
     let harness: LightSqliteHarness;
     let app: ReturnType<typeof createAuthenticatedTestApp>;
-    let openRouteRunnerOperation: unknown;
+    let openRouteRunnerBinding: unknown;
 
     beforeAll(async () => {
         harness = await createLightSqliteHarness({
@@ -28,7 +28,7 @@ describe('Team credential Provider broker HTTP routes', () => {
         app = createAuthenticatedTestApp();
         app.addHook('onRoute', (route: RouteOptions) => {
             if (route.url === PROVIDER_BROKER_OPEN_HTTP_PATH_V1) {
-                openRouteRunnerOperation = route.config?.ephemeralSessionRunnerOperation;
+                openRouteRunnerBinding = route.config?.ephemeralSessionRunnerBinding;
             }
         });
         registerTeamCredentialProviderBrokerRoutes(app);
@@ -41,7 +41,11 @@ describe('Team credential Provider broker HTTP routes', () => {
     });
 
     it('mounts both authenticated routes and fails closed when the Home signing root is unavailable', async () => {
-        expect(openRouteRunnerOperation).toBe('provider_broker_open');
+        expect(openRouteRunnerBinding).toEqual({
+            scope: 'session',
+            session: 'body.consumer.sessionId',
+            machine: 'body.initiatorMachineId',
+        });
         const headers = { 'x-test-user-id': 'account-1' };
         const open = await app.inject({
             method: 'POST',

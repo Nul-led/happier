@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Crea un servidor, importa JSON de l’amfitrió o instal·la un preajust recomanat.',
@@ -651,8 +653,9 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * Must match the exact structure of the English translations
  */
 export const ca = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.ca,
     actionConfirmations: actionConfirmationTranslations.ca,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ca, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ca.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ca.resolve } },
+    workspaceSync: workspaceSyncTranslations.ca,
     sessionDrafts: sessionDraftTranslations.ca,
     transferRecovery: {
         title: 'Finalitza la pujada preparada',
@@ -1602,6 +1605,7 @@ export const ca = {
         awaitingUpdates: "Esperant actualitzacions",
         queuedInput: "Entrada en cua",
         unread: "No llegit",
+        mentioned: "T’ha mencionat",
         connected: 'connectat',
         connecting: 'connectant',
         disconnected: 'desconnectat',
@@ -5665,6 +5669,7 @@ deps: {
                     },
                                         panel: {
                       title: "Subagents",
+                      tabWithRunningCount: ({ count }: { count: number }) => `Subagents, ${count} en execució`,
                       active: "Actius",
                       recent: "Recents",
                       emptyActive: "No hi ha agents actius.",
@@ -12281,6 +12286,11 @@ settingsSession: {
             actions: {
                 manageAccess: 'Gestiona l’accés',
             },
+            provenance: {
+                sharedBy: ({ owner }: { owner: string }) => `Compartit per ${owner}`,
+                via: ({ source }: { source: string }) => `mitjançant ${source}`,
+                direct: 'Compartit directament amb tu',
+            },
             relationship: {
                 owner: 'Els teus',
                 recipient: 'Compartits amb tu',
@@ -12744,11 +12754,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.ca.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.ca,
+        auth: {
+            signupClosed: 'La teva Llar personal només accepta comptes existents. Inicia sessió amb un compte que ja estigui connectat a aquesta Llar.',
+        },
         bootstrap: {
             title: 'S’està preparant la teva Llar personal',
+            checkingStatus: 'S’està comprovant la teva Llar personal…',
             ensuringHomeStatus: 'S’està preparant la teva Llar local.',
             preparingComputerStatus: 'La teva Llar està preparada. S’està preparant aquest ordinador en segon pla.',
-            blockedStatus: 'La configuració necessita la teva atenció abans de continuar.',
+            blockedStatus: 'No hem pogut acabar de configurar la teva Llar personal.',
             readyStatus: 'La teva Llar està preparada.',
             failureBody: 'No hem pogut completar aquest pas. La configuració ja completada està segura; torna-ho a provar o obre’n els detalls.',
             profileRecoveryBody: 'La teva Llar personal està preparada. Happier encara ha d’acabar de connectar-s’hi.',
@@ -12758,15 +12772,7 @@ settingsSession: {
             useExistingDetail: 'Verifica’n l’accés i protegeix el registre sense canviar la Llar seleccionada.',
             useAnother: 'Fes servir una altra Llar',
             useAnotherDetail: 'Deixa intacta aquesta Llar local i tria entre les teves Llars.',
-            blocked: {
-                runtime_unhealthy: 'El teu Home local necessita atenció abans de poder iniciar-se.',
-                home_auth_invalid: 'L’autenticació del Home necessita atenció.',
-                existing_runtime: 'Un Home local existent necessita una decisió abans de continuar la configuració.',
-                personal_home_erased: 'El teu Personal Home s’ha esborrat. Torna-ho a provar per crear-ne un de nou.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Les dades del teu Home s’han esborrat. Aquí no queda res per recuperar: crea un Personal Home nou o fes servir un altre Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.ca,
         },
     },
     settingsSearch: {

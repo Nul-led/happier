@@ -857,6 +857,61 @@ describe("Session access HTTP and initial creation (SQLite integration)", () => 
         });
     });
 
+    it("previews the Team credential selections a grant removal or context move would break", async () => {
+        const { owner, recipient, team } = await fixture();
+        const other = await db.team.create({ data: { name: "Design" } });
+        await db.teamMembership.create({ data: { teamId: other.id, accountId: owner.id, role: "owner" } });
+        const session = await db.session.create({ data: {
+            accountId: owner.id, tag: "credential-consequences", encryptionMode: "plain", metadata: "{}",
+            currentStorageState: "hosted", primaryTeamId: team.id,
+        } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id, teamId: team.id, accessLevel: "view", canApprovePermissions: false,
+            effectiveAt: new Date(),
+        } });
+        const resourceOf = async (input: { teamId: string; displayName: string; sessionUsePolicy: string }) =>
+            await db.teamCredentialResource.create({ data: {
+                teamId: input.teamId, custodianAccountId: owner.id, displayName: input.displayName,
+                disclosureCeiling: "brokered_only", sessionUsePolicy: input.sessionUsePolicy,
+                sourceBindingJson: JSON.stringify({ kind: "saved_secret", savedSecretId: "s" }),
+            } });
+        const bound = await resourceOf({ teamId: team.id, displayName: "Prod deploy key", sessionUsePolicy: "team_visibility_required" });
+        const contextual = await resourceOf({ teamId: team.id, displayName: "Prod registry", sessionUsePolicy: "team_context_required" });
+        const personal = await resourceOf({ teamId: team.id, displayName: "Personal key", sessionUsePolicy: "personal_allowed" });
+        const ungranted = await resourceOf({ teamId: other.id, displayName: "Design key", sessionUsePolicy: "team_visibility_required" });
+        let slot = 0;
+        for (const resource of [bound, contextual, personal, ungranted]) {
+            await db.sessionTeamCredentialBinding.create({ data: {
+                sessionId: session.id, slotKind: "agent_provider", slotKey: Buffer.from(`slot-${slot++}`),
+                resourceId: resource.id, resourceRevision: resource.revision,
+            } });
+        }
+        await withAuthenticatedTestApp(sessionRoutes, async (app) => {
+            const manager = await app.inject({
+                method: "POST", url: "/v2/sessions/access-grants/list", headers: headers(owner.id),
+                payload: { sessionId: session.id },
+            });
+            expect(manager.statusCode, manager.body).toBe(200);
+            const projection = SessionAccessGrantsListResponseV1Schema.parse(manager.json());
+            expect(projection.visibility).toBe("complete");
+            expect(projection.visibility === "complete" ? projection.credentialBindingConsequences : undefined)
+                .toEqual(expect.arrayContaining([
+                    { resourceId: bound.id, teamId: team.id, displayName: "Prod deploy key", policy: "team_visibility_required" },
+                    { resourceId: contextual.id, teamId: team.id, displayName: "Prod registry", policy: "team_context_required" },
+                ]));
+            expect(projection.visibility === "complete" ? projection.credentialBindingConsequences?.length : 0).toBe(2);
+            expect(JSON.stringify(projection)).not.toContain(personal.id);
+            expect(JSON.stringify(projection)).not.toContain(ungranted.id);
+
+            const viewer = await app.inject({
+                method: "POST", url: "/v2/sessions/access-grants/list", headers: headers(recipient.id),
+                payload: { sessionId: session.id },
+            });
+            expect(viewer.statusCode, viewer.body).toBe(200);
+            expect(viewer.json()).not.toHaveProperty("credentialBindingConsequences");
+        });
+    });
+
     it("returns forbidden when a primary Team disables an external grant increase", async () => {
         const { owner, team } = await fixture();
         const outsider = await db.account.create({

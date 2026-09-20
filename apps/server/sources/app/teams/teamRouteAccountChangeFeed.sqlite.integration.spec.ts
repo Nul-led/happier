@@ -46,6 +46,7 @@ describe("Team route AccountChange feed (SQLite integration)", () => {
                 serverId: "home-1",
                 displayName: "Acme Home",
                 storageMode: "plain",
+                hosting: null,
             }),
             email: {
                 isDeliveryReady: () => true,

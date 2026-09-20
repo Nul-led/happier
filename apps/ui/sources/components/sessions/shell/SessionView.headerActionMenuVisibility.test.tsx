@@ -1443,22 +1443,26 @@ describe('SessionView header action menu visibility', () => {
       windowDimensionsState.width = 1200;
     });
 
-    it('hides every Companion entry point when the exact Home does not enable sessions.board', async () => {
+    it('keeps every Companion entry point when the exact Home does not enable sessions.board', async () => {
+      // Companion is not a Board placement gate: its first-party Session Summary
+      // is composed from Session facts alone. Only the Board entry point follows
+      // the exact Home's `sessions.board` decision.
       boardFeatureState.enabled = false;
       const screen = await renderSessionView();
 
       const props = headerActionMenuSpy.mock.calls.at(-1)?.[0] as any;
-      expect(props?.companionHeaderActionPlacement ?? null).toBeNull();
-      expect(props?.companionHeaderIntent ?? null).toBeNull();
+      expect(props?.companionHeaderActionPlacement).not.toBeNull();
+      expect(props?.companionHeaderIntent).not.toBeNull();
+      expect(props?.boardHeaderAction ?? null).toBeNull();
       const mounts = findCompanionMounts(screen);
-      expect(mounts.hosts).toHaveLength(0);
-      expect(mounts.bridges).toHaveLength(0);
-      expect(mounts.revealAddress).toBeNull();
-      // Disabled is not a reason to rewrite this device's saved choices.
+      expect(mounts.hosts).toHaveLength(1);
+      expect(mounts.bridges).toHaveLength(1);
+      expect(mounts.revealAddress).toEqual({ serverId: 'server-1', sessionId: 's1' });
+      // Admission is not a reason to rewrite this device's saved choices.
       expect(companionPreferenceMutateSpy).not.toHaveBeenCalled();
     });
 
-    it('restores the Companion header entry, rail host and presentation bridge when that Home enables Board', async () => {
+    it('keeps the Companion header entry, rail host and presentation bridge when that Home enables Board', async () => {
       boardFeatureState.enabled = true;
       const screen = await renderSessionView();
 
@@ -1471,18 +1475,22 @@ describe('SessionView header action menu visibility', () => {
       expect(mounts.revealAddress).toEqual({ serverId: 'server-1', sessionId: 's1' });
     });
 
-    it('never lets a same-id Session on another Home borrow this Home\'s Companion decision', async () => {
+    it('binds the Companion host to the exact Session address of the Home being viewed', async () => {
       boardFeatureState.enabledServerIds = ['server-1'];
 
       const enabledHome = await renderSessionView('server-1');
       expect(findCompanionMounts(enabledHome).hosts).toHaveLength(1);
+      expect(findCompanionMounts(enabledHome).revealAddress)
+        .toEqual({ serverId: 'server-1', sessionId: 's1' });
 
       standardCleanup();
       headerActionMenuSpy.mockClear();
       const otherHome = await renderSessionView('server-2');
-      expect(findCompanionMounts(otherHome).hosts).toHaveLength(0);
-      expect((headerActionMenuSpy.mock.calls.at(-1)?.[0] as any)?.companionHeaderActionPlacement ?? null)
-        .toBeNull();
+      // Another Home's route never borrows this Home's Companion binding.
+      expect(findCompanionMounts(otherHome).hosts.map((host) => host.props.address))
+        .not.toContainEqual({ serverId: 'server-1', sessionId: 's1' });
+      expect(findCompanionMounts(otherHome).revealAddress)
+        .not.toEqual({ serverId: 'server-1', sessionId: 's1' });
     });
 
   });

@@ -47,8 +47,8 @@ vi.mock('@/sync/api/auth/nativeAuthEmail', () => ({
     previewNativeEmailVerification: boundary.preview,
     previewNativePasswordReset: boundary.resetPreview,
     submitNativePasswordReset: boundary.submitReset,
-    readNativeInvitationEmailVerificationContinuation: boundary.readInvitationContinuation,
-    clearNativeInvitationEmailVerificationContinuation: boundary.clearInvitationContinuation,
+    readNativeEmailVerificationContinuation: boundary.readInvitationContinuation,
+    clearNativeEmailVerificationContinuation: boundary.clearInvitationContinuation,
 }));
 vi.mock('@/sync/api/auth/accountSecurity', () => ({
     changeAccountSignInEmail: boundary.changeEmail,
@@ -233,7 +233,27 @@ it('resumes transferable invitation provision with the unchanged admission and e
             credentials: { token: 'created' },
         });
     });
-    expect(boundary.clearInvitationContinuation).toHaveBeenCalledWith(admission);
+    expect(boundary.clearInvitationContinuation).toHaveBeenCalledWith({
+        homeServerIdentityId: SAVED_HOME_IDENTITY,
+        normalizedEmail: 'person@example.test',
+        admission,
+    });
+});
+
+it('brings the mailbox it just verified back to self-service Account creation', async () => {
+    // Same running client, no invitation: the landing proved this address, so the panel
+    // must not ask for it again.
+    boundary.readInvitationContinuation.mockReturnValue({
+        homeServerIdentityId: SAVED_HOME_IDENTITY,
+        normalizedEmail: 'person@example.test',
+    });
+    screen = await renderScreen(<NativeAuthEmailVerifyScreen token="verification-bearer" homeTarget={SAVED_HOME_IDENTITY} />);
+    await screen.pressByTestIdAsync('native-auth-verify-create-account');
+
+    expect(boundary.flowProps).toMatchObject({
+        nativeAdmission: { kind: 'native_email_verification', token: 'verification-bearer' },
+        initialEmail: 'person@example.test',
+    });
 });
 
 it('uses invitation-scoped admission actions when the ordinary Home is invitation-only', async () => {

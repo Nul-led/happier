@@ -8,6 +8,12 @@ import { readStoredTeamLogo } from "./projections";
 export type TeamAuthEntryContext = Readonly<{
     team: Extract<AuthEntryProjectionV1, { scope: { kind: "team" }; state: "admission_required" }>["team"];
     authenticationPolicy: unknown;
+    /**
+     * How this Team admits people. A `provisioned` Team's membership arrives
+     * from its directory, which is why a signed-in non-member is told to wait
+     * rather than to try a different sign-in.
+     */
+    admissionMode: "invite_only" | "provisioned" | "jit";
 }>;
 
 /**
@@ -21,7 +27,7 @@ export async function resolveTeamAuthEntryContextInTx(
 ): Promise<TeamAuthEntryContext | null> {
     const row = await tx.team.findUnique({
         where: { id: input.teamId },
-        select: { id: true, name: true, logo: true, authenticationPolicy: true, archivedAt: true },
+        select: { id: true, name: true, logo: true, authenticationPolicy: true, admissionMode: true, archivedAt: true },
     });
     if (!row || row.archivedAt !== null) return null;
     const logo = readStoredTeamLogo(row.logo, row.id);
@@ -32,5 +38,6 @@ export async function resolveTeamAuthEntryContextInTx(
             logo: logo === null ? null : { ...logo, url: getPublicUrl(logo.path) },
         },
         authenticationPolicy: row.authenticationPolicy,
+        admissionMode: row.admissionMode,
     };
 }

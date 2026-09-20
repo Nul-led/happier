@@ -8,6 +8,8 @@ one and you can share a session with everybody in it instead of naming people on
 at a time, hand out shared credentials once, and set what new sessions do by
 default for the whole group.
 
+> **Availability:** Teams are in the current unreleased 0.3 checkout. Stable 0.2 has no Teams — check the version of the server binary you are running.
+
 ## Availability
 
 Teams are a per-Home capability, offered unless the Home's operator turns them
@@ -17,8 +19,11 @@ rather than half a feature, and everything else on that Home keeps working.
 
 A Team belongs to the Home it was created on and stays there. If you use more
 than one Home, each one has its own Teams, and the Teams list tells you which
-Home each Team came from. When a Home cannot be reached, its Teams are missing
-from the list and Happier says so instead of pretending the list is complete.
+Home each Team came from. When a Home stops being reachable, the Teams it has
+already shown you stay in the list, marked **Showing the last known data for this
+Home** — losing them would throw away real information. It is a Home whose Teams
+have never loaded on this device that contributes no rows; Happier names that Home
+as unavailable instead of pretending the list is complete.
 
 ## Create a Team
 

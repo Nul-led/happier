@@ -4,9 +4,15 @@ import { mapUnknownErrorToControlError } from '@/cli/control/controlErrorMapping
 import { printJsonEnvelope, wantsJson, writeJsonStdout } from '@/cli/output/jsonEnvelope';
 import { resolveAbsolutePathFromWorkingDirectory } from '@/utils/path/expandHomeDirPath';
 import { isInteractiveTerminal, promptInput } from '@/terminal/prompts/promptInput';
+import { promptConfirmYesNo } from '@/terminal/prompts/promptConfirmYesNo';
 import { configuration } from '@/configuration';
 import { randomUUID } from 'node:crypto';
-import { errorFrame } from '@happier-dev/cli-common/output';
+import {
+  createOutputBuilder,
+  errorFrame,
+  renderHelpPage,
+  type HelpPageOptions,
+} from '@happier-dev/cli-common/output';
 import {
   PERSONAL_HOME_SYSTEM_TASK_KINDS,
   parseRemotePersonalHomeApprovalInput,
@@ -30,6 +36,11 @@ import {
   type HomeConnectionDescriptorV1,
 } from '@happier-dev/protocol';
 
+import {
+  answerSshHostTrustPrompt,
+  isSshHostTrustPromptKind,
+  normalizeTrustedHostKeyFlag,
+} from './sshHostTrustPrompt';
 import { type CliSystemTasksRunnerAdapter, runSystemTaskToCompletion } from './systemTaskCliRunner';
 import { createLocalPersonalHome, reconcileCreatedPersonalHome } from './home/createLocalPersonalHome';
 import {
@@ -117,6 +128,9 @@ export type HomeCommandDeps = Readonly<{
   createPersonalHome?: (runtime: Readonly<{
     channel: 'stable' | 'preview' | 'dev';
     mode: 'user' | 'system';
+  }>, options?: Readonly<{
+    allowErasedRuntimeRecreate?: boolean;
+    signal?: AbortSignal;
   }>) => Promise<Readonly<{
     profileId: string;
     homeServerIdentityId: string;
@@ -124,7 +138,12 @@ export type HomeCommandDeps = Readonly<{
     accountCreated: boolean;
     descriptor?: HomeConnectionDescriptorV1;
   }>>;
-  reconcileCreatedHome?: (profileId: string, options?: Readonly<{ quiet: boolean }>) => Promise<void>;
+  reconcileCreatedHome?: (profileId: string, options?: Readonly<{
+    quiet: boolean;
+    signal?: AbortSignal;
+    replaceServices?: boolean;
+    switchChannel?: boolean;
+  }>) => Promise<void>;
   pairDevice?: (input: Readonly<{
     profileRef?: string;
     copyLink: boolean;
@@ -272,39 +291,61 @@ async function showHomeHelp(): Promise<void> {
   // under this root. Their rows come from the same descriptor dispatch and
   // completion use, so this page cannot hide or misstate them.
   const { listCompiledActionCliUsageLinesForRoot } = await import('@/cli/actions/commandHelp');
-  const compiled = listCompiledActionCliUsageLinesForRoot(['home']).map((row) => `  ${row}`);
-  console.log([
-    'Usage:',
-    '  happier home create [--ssh user@host] [--channel stable|preview|dev] [--mode user|system] [--link-account auto|never] [--yes] [--json]',
-    '  happier home pair-device [--home PROFILE] [--copy-link]',
-    '  happier home link-account [--home PROFILE] [--relink]',
-    '  happier home unlink-account [--home PROFILE]',
-    '  happier home status [--ssh user@host]',
-    '  happier home backup [--output PATH] [--ssh user@host]',
-    '  happier home verify-backup PATH [--ssh user@host]',
-    '  happier home restore PATH [--ssh user@host] [--yes]',
-    '  happier home recover-restore [--ssh user@host] [--yes]',
-    '  happier home relocate --target user@host [--recovery-action finish_move|return_to_source] [--yes]',
-    '  happier home erase [--ssh user@host] [--backup-first --backup-output PATH] [--yes]',
-    ...(compiled.length > 0 ? ['', 'Home administration:', ...compiled] : []),
-    '',
-    'Runtime targeting options:',
-    '  --channel stable|preview|dev',
-    '  --mode user|system',
-    '',
-    'Home creation:',
-    '  create installs or reuses the managed runtime and atomically creates a Personal Home.',
-    '  Use --ssh user@host to create it on a trusted remote host; public ingress is not required for Iroh reachability.',
-    '  pair-device starts a new short-lived QR/link session. link-account publishes the Home for Account Service discovery.',
-    '  unlink-account stops the selected Account Service from signing in to this Home; credentials it already issued stay valid until revoked on the Home.',
-    '  status, backup, verify-backup, restore, recover-restore, and erase accept --ssh for the same managed Home on a remote host.',
-    '  relocate moves this computer\'s Personal Home to the explicit SSH destination in --target.',
-    '',
-    'Erase safety:',
-    '  erase offers a verified backup before its single destructive confirmation.',
-    '  --backup-first --backup-output PATH takes that verified backup without a prompt; PATH must be outside the erased Home data.',
-    '  --yes alone confirms the deletion and never creates a backup implicitly.',
-  ].join('\n'));
+  const compiled = listCompiledActionCliUsageLinesForRoot(['home']);
+  const page: HelpPageOptions = {
+    title: 'home',
+    subtitle: 'Create, connect, and administer Personal Homes',
+    usage: [
+      { label: 'happier home create [--ssh user@host] [--channel stable|preview|dev] [--mode user|system] [--link-account auto|never] [--replace-services] [--switch-channel] [--yes] [--json]', description: '' },
+      { label: 'happier home pair-device [--home PROFILE] [--copy-link]', description: '' },
+      { label: 'happier home link-account [--home PROFILE] [--relink]', description: '' },
+      { label: 'happier home unlink-account [--home PROFILE]', description: '' },
+      { label: 'happier home status [--ssh user@host]', description: '' },
+      { label: 'happier home backup [--output PATH] [--ssh user@host]', description: '' },
+      { label: 'happier home verify-backup PATH [--ssh user@host]', description: '' },
+      { label: 'happier home restore PATH [--ssh user@host] [--yes]', description: '' },
+      { label: 'happier home recover-restore [--ssh user@host] [--yes]', description: '' },
+      { label: 'happier home relocate --target user@host [--recovery-action finish_move|return_to_source] [--yes]', description: '' },
+      { label: 'happier home erase [--ssh user@host] [--backup-first --backup-output PATH] [--yes]', description: '' },
+    ],
+    sections: [
+      ...(compiled.length > 0 ? [{
+        title: 'Home administration:',
+        rows: compiled.map((row) => ({ label: row, description: '' })),
+      }] : []),
+      {
+        title: 'Runtime targeting options:',
+        rows: [
+          { label: '--channel stable|preview|dev', description: '' },
+          { label: '--mode user|system', description: '' },
+        ],
+      },
+      {
+        title: 'Home creation:',
+        rows: [
+          { label: 'create', description: 'Installs or reuses the managed runtime and atomically creates a Personal Home.' },
+          { label: '--ssh user@host', description: 'Creates on a trusted remote host; public ingress is not required for Iroh reachability.' },
+          { label: '--replace-services', description: 'Explicitly replaces conflicting managed services while creating this Home.' },
+          { label: '--switch-channel', description: 'Explicitly changes the default managed release channel when creation requires it.' },
+          { label: 'pair-device', description: 'Starts a new short-lived QR/link session.' },
+          { label: 'link-account', description: 'Publishes the Home for Account Service discovery.' },
+          { label: 'unlink-account', description: 'Stops new Account Service sign-in; already-issued credentials remain valid until revoked on the Home.' },
+          { label: 'remote administration', description: 'status, backup, verify-backup, restore, recover-restore, and erase accept --ssh.' },
+          { label: '--trusted-host-key LINE', description: '--yes trusts an unknown host on first use but never a changed key; this pins the exact new known_hosts line instead.' },
+          { label: 'relocate', description: 'Moves this computer\'s Personal Home to the explicit SSH destination in --target.' },
+        ],
+      },
+      {
+        title: 'Erase safety:',
+        rows: [
+          { label: 'backup offer', description: 'erase offers a verified backup before its single destructive confirmation.' },
+          { label: '--backup-first --backup-output PATH', description: 'Takes that verified backup without a prompt; PATH must be outside the erased Home data.' },
+          { label: '--yes', description: 'Confirms deletion and never creates a backup implicitly.' },
+        ],
+      },
+    ],
+  };
+  console.log(renderHelpPage(page));
 }
 
 function parseRuntimeChannel(value: string | null, defaultChannel: 'stable' | 'preview' | 'dev'): 'stable' | 'preview' | 'dev' {
@@ -483,10 +524,16 @@ type PersonalHomeOperationLabel = 'Backup' | 'Restore' | 'Erase';
 
 function printSafeFacts(data: SystemTaskJsonValue, operation?: PersonalHomeOperationLabel): void {
   if (!isRecord(data)) return;
-  const facts: string[] = [];
+  const output = createOutputBuilder();
+  let factCount = 0;
   const add = (label: string, value: unknown): void => {
-    if (typeof value === 'string' && value.trim()) facts.push(`${label}: ${value}`);
-    else if (typeof value === 'number' || typeof value === 'boolean') facts.push(`${label}: ${String(value)}`);
+    if (typeof value === 'string' && value.trim()) {
+      output.line(`${label}: ${value}`);
+      factCount += 1;
+    } else if (typeof value === 'number' || typeof value === 'boolean') {
+      output.line(`${label}: ${String(value)}`);
+      factCount += 1;
+    }
   };
   add('Path', data.path);
   add('SHA-256', data.sha256);
@@ -545,7 +592,20 @@ function printSafeFacts(data: SystemTaskJsonValue, operation?: PersonalHomeOpera
       for (const path of data.storage.ownedErasePaths) add('Owned erase path', path);
     }
   }
-  if (facts.length > 0) console.log(facts.join('\n'));
+  if (factCount > 0) console.log(output.render());
+}
+
+async function confirmYesNo(params: Readonly<{
+  message: string;
+  deps: HomeCommandDeps;
+  signal?: AbortSignal;
+}>): Promise<boolean> {
+  return await promptConfirmYesNo(params.message, {
+    default: 'no',
+    maxAttempts: 3,
+    promptInputFn: params.deps.promptInput,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
 }
 
 function readRestoreRecoveryFacts(inspection: SystemTaskJsonValue): Readonly<{
@@ -573,11 +633,12 @@ async function confirmDestructive(params: Readonly<{
 }>): Promise<void> {
   if (params.yes) return;
   if (!params.interactive) throw Object.assign(new Error(params.nonInteractiveMessage), { code: 'confirmation_required' });
-  const prompt = `${params.prompt} [y/N]: `;
-  const answer = params.signal
-    ? await params.deps.promptInput(prompt, { signal: params.signal })
-    : await params.deps.promptInput(prompt);
-  if (!/^y(?:es)?$/i.test(answer.trim())) throw Object.assign(new Error('Destructive operation was not confirmed; no mutation task was started.'), { code: 'confirmation_declined' });
+  const confirmed = await confirmYesNo({
+    message: params.prompt,
+    deps: params.deps,
+    ...(params.signal ? { signal: params.signal } : {}),
+  });
+  if (!confirmed) throw Object.assign(new Error('Destructive operation was not confirmed; no mutation task was started.'), { code: 'confirmation_declined' });
 }
 
 export async function handleHomeCommand(
@@ -599,13 +660,16 @@ export async function handleHomeCommand(
   const targetFlag = takeFlagValue(linkAccountModeFlag.rest, '--target');
   const recoveryActionFlag = takeFlagValue(targetFlag.rest, '--recovery-action');
   const sshFlag = takeFlagValue(recoveryActionFlag.rest, '--ssh');
-  const backupFirstFlag = takeFlag(sshFlag.rest, '--backup-first');
+  const trustedHostKeyFlag = takeFlagValue(sshFlag.rest, '--trusted-host-key');
+  const backupFirstFlag = takeFlag(trustedHostKeyFlag.rest, '--backup-first');
   const backupOutputFlag = takeFlagValue(backupFirstFlag.rest, '--backup-output');
+  const replaceServicesFlag = takeFlag(backupOutputFlag.rest, '--replace-services');
+  const switchChannelFlag = takeFlag(replaceServicesFlag.rest, '--switch-channel');
   const runtime = {
     channel: parseRuntimeChannel(channelFlag.value, deps.resolveDefaultChannel()),
     mode: parseRuntimeMode(modeFlag.value),
   } as const;
-  let args = backupOutputFlag.rest;
+  let args = switchChannelFlag.rest;
   const json = jsonFlag.present;
   const interactive = deps.isInteractiveTerminal() && !json;
   const promptUser = async (prompt: string): Promise<string> => signal
@@ -620,6 +684,16 @@ export async function handleHomeCommand(
   if (recoveryActionFlag.value !== null && subcommand !== 'relocate') {
     throw Object.assign(new Error('--recovery-action is supported only by `happier home relocate`.'), { code: 'invalid_params' });
   }
+  /** The exact known_hosts line to accept without a prompt, for an unattended run
+   * against a host whose key legitimately changed. */
+  const trustedHostKey = normalizeTrustedHostKeyFlag(trustedHostKeyFlag.value);
+  if (trustedHostKey && !sshFlag.value && subcommand !== 'relocate') {
+    throw Object.assign(
+      new Error('--trusted-host-key applies to a Personal Home reached over SSH.'),
+      { code: 'invalid_params' },
+    );
+  }
+  const sshHostTrust: SystemTaskJsonObject = trustedHostKey ? { trustedHostKey } : {};
   if ((backupFirstFlag.present || backupOutputFlag.value !== null) && subcommand !== 'erase') {
     throw Object.assign(new Error('--backup-first and --backup-output are supported only by `happier home erase`.'), { code: 'invalid_params' });
   }
@@ -632,12 +706,22 @@ export async function handleHomeCommand(
       { code: 'invalid_params' },
     );
   }
+  if ((replaceServicesFlag.present || switchChannelFlag.present) && subcommand !== 'create') {
+    throw Object.assign(
+      new Error('--replace-services and --switch-channel are supported only by `happier home create`.'),
+      { code: 'invalid_params' },
+    );
+  }
   /** Resolves the plan-required pre-erase verified-backup offer into an explicit
    * destination outside the erased data, or `null` when no backup was chosen. */
   const resolvePreEraseBackupOutputPath = async (): Promise<string | null> => {
     const chosen = backupFirstFlag.present
       || (interactive && !yesFlag.present && !approvalStdinFlag.present
-        && /^y(?:es)?$/i.test((await promptUser('Create and verify a Personal Home backup before erasing data? [y/N]: ')).trim()));
+        && await confirmYesNo({
+          message: 'Create and verify a Personal Home backup before erasing data?',
+          deps,
+          ...(signal ? { signal } : {}),
+        }));
     if (!chosen) return null;
     const requested = backupOutputFlag.value
       ?? (interactive ? (await promptUser('Destination for the verified pre-erase backup: ')).trim() : '');
@@ -740,24 +824,27 @@ export async function handleHomeCommand(
         ? await deps.resolveSelectedAccountServicePresentation?.({ signal, timeoutMs: 6_000 })
         : null;
     if (!yesFlag.present) {
-      const answer = await promptUser([
-        sshFlag.value
-          ? `Create a Personal Home on remote SSH host ${sshFlag.value} with the fixed managed preset?`
-          : 'Create a Personal Home on this computer with the fixed managed preset?',
-        `Mode: ${runtime.mode}`,
-        `Channel: ${runtime.channel}`,
-        sshFlag.value
-          ? `Storage: plaintext at rest on ${sshFlag.value}; continue only if you trust that remote host.`
-          : 'Storage: plaintext on this computer; use only a machine you trust.',
-        linkAccountMode === 'never'
-          ? 'Account Service publication: disabled.'
-          : confirmedAccountService
-            ? `Account Service publication: ${confirmedAccountService.displayName} (${confirmedAccountService.endpoint}).`
-            : 'Account Service publication: automatic only when the selected service can be verified.',
-        'This installs or reuses the managed server, creates the initial account, closes signup, and configures the local service.',
-        '[y/N]: ',
-      ].join('\n'));
-      if (!/^y(?:es)?$/iu.test(answer.trim())) {
+      const confirmed = await confirmYesNo({
+        message: [
+          sshFlag.value
+            ? `Create a Personal Home on remote SSH host ${sshFlag.value} with the fixed managed preset?`
+            : 'Create a Personal Home on this computer with the fixed managed preset?',
+          `Mode: ${runtime.mode}`,
+          `Channel: ${runtime.channel}`,
+          sshFlag.value
+            ? `Storage: plaintext at rest on ${sshFlag.value}; continue only if you trust that remote host.`
+            : 'Storage: plaintext on this computer; use only a machine you trust.',
+          linkAccountMode === 'never'
+            ? 'Account Service publication: disabled.'
+            : confirmedAccountService
+              ? `Account Service publication: ${confirmedAccountService.displayName} (${confirmedAccountService.endpoint}).`
+              : 'Account Service publication: automatic only when the selected service can be verified.',
+          'This installs or reuses the managed server, creates the initial account, closes signup, and configures the local service.',
+        ].join('\n'),
+        deps,
+        ...(signal ? { signal } : {}),
+      });
+      if (!confirmed) {
         throw Object.assign(
           new Error('Personal Home creation was cancelled before any changes were made.'),
           { code: 'confirmation_declined' },
@@ -779,7 +866,9 @@ export async function handleHomeCommand(
             // controls the separate Account Service publication performed after
             // creation succeeds.
             enrollInvokingClient: true,
-            ssh: { target: sshFlag.value, auth: 'agent' },
+            ...(replaceServicesFlag.present ? { replaceServices: true } : {}),
+            ...(switchChannelFlag.present ? { switchChannel: true } : {}),
+            ssh: { target: sshFlag.value, auth: 'agent', ...sshHostTrust },
           },
         },
         json,
@@ -787,12 +876,52 @@ export async function handleHomeCommand(
         signal,
         sleep: deps.sleep,
         onPrompt: async (prompt, message) => {
-          if (prompt.kind !== 'ssh.trustHost' && prompt.kind !== 'ssh.replaceHostKey') {
+          if (prompt.kind === 'daemon.replaceRemoteBackgroundServices') {
+            if (yesFlag.present) return { replaceExistingServices: false };
+            if (!interactive) {
+              throw Object.assign(
+                new Error('Remote background-service replacement requires an interactive terminal or explicit --replace-services.'),
+                { code: 'prompt_required' },
+              );
+            }
+            return {
+              replaceExistingServices: await confirmYesNo({
+                message: message || 'Replace the conflicting remote Happier background services?',
+                deps,
+                ...(signal ? { signal } : {}),
+              }),
+            };
+          }
+          if (prompt.kind === 'releaseChannel.switchDefaultForSetup') {
+            if (yesFlag.present) return { switchDefaultReleaseChannel: false };
+            if (!interactive) {
+              throw Object.assign(
+                new Error('Changing the remote default release channel requires an interactive terminal or explicit --switch-channel.'),
+                { code: 'prompt_required' },
+              );
+            }
+            return {
+              switchDefaultReleaseChannel: await confirmYesNo({
+                message: message || `Switch the remote default release channel to ${runtime.channel}?`,
+                deps,
+                ...(signal ? { signal } : {}),
+              }),
+            };
+          }
+          if (!isSshHostTrustPromptKind(prompt.kind)) {
             throw Object.assign(new Error(`Remote Personal Home creation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
           }
-          if (yesFlag.present) return { trusted: true };
-          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
-          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+          return await answerSshHostTrustPrompt({
+            prompt: { kind: prompt.kind, data: prompt.data },
+            assumeYes: yesFlag.present,
+            interactive,
+            message,
+            confirm: async (promptMessage) => await confirmYesNo({
+              message: `${promptMessage}\nTrust this host key?`,
+              deps,
+              ...(signal ? { signal } : {}),
+            }),
+          });
         },
       });
       const created = parseRemotePersonalHomeCreateTaskData(remoteData);
@@ -845,8 +974,16 @@ export async function handleHomeCommand(
     if (!deps.createPersonalHome || !deps.reconcileCreatedHome) {
       throw Object.assign(new Error('Local Personal Home creation is unavailable in this build.'), { code: 'personal_home_create_unavailable' });
     }
-    const created = await deps.createPersonalHome(runtime);
-    await deps.reconcileCreatedHome(created.profileId, { quiet: json });
+    const created = await deps.createPersonalHome(runtime, {
+      allowErasedRuntimeRecreate: true,
+      signal,
+    });
+    await deps.reconcileCreatedHome(created.profileId, {
+      quiet: json,
+      signal,
+      ...(replaceServicesFlag.present ? { replaceServices: true } : {}),
+      ...(switchChannelFlag.present ? { switchChannel: true } : {}),
+    });
     if (interactive && deps.pairDevice) {
       const paired = await deps.pairDevice({ profileRef: created.profileId, copyLink: false, signal });
       if (paired.kind === 'update_required') {
@@ -1083,7 +1220,7 @@ export async function handleHomeCommand(
             sourceDescriptorRevision,
             ...(recoveryAction ? { recoveryAction } : {}),
           },
-          ssh: { target, auth: 'agent' },
+          ssh: { target, auth: 'agent', ...sshHostTrust },
         },
       },
       json: false,
@@ -1091,10 +1228,18 @@ export async function handleHomeCommand(
       signal,
       sleep: deps.sleep,
       onPrompt: async (prompt, message) => {
-        if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
-          if (yesFlag.present) return { trusted: true };
-          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
-          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+        if (isSshHostTrustPromptKind(prompt.kind)) {
+          return await answerSshHostTrustPrompt({
+            prompt: { kind: prompt.kind, data: prompt.data },
+            assumeYes: yesFlag.present,
+            interactive,
+            message,
+            confirm: async (promptMessage) => await confirmYesNo({
+              message: `${promptMessage}\nTrust this host key?`,
+              deps,
+              ...(signal ? { signal } : {}),
+            }),
+          });
         }
         if (prompt.data.operationId !== operationId || prompt.data.homeServerIdentityId !== sourceDescriptor.homeServerIdentityId) {
           throw Object.assign(new Error('Personal Home relocation prompt did not match the requested operation.'), { code: 'prompt_mismatch' });
@@ -1188,7 +1333,7 @@ export async function handleHomeCommand(
           action: remoteAction,
           channel: runtime.channel,
           relayRuntime: runtime,
-          ssh: { target: sshFlag.value, auth: 'agent' },
+          ssh: { target: sshFlag.value, auth: 'agent', ...sshHostTrust },
           ...(operation ? { personalHomeOperation: operation } : {}),
         },
       },
@@ -1197,14 +1342,24 @@ export async function handleHomeCommand(
       signal,
       sleep: deps.sleep,
       onPrompt: async (prompt, message) => {
+        // A pre-erase backup already bound this erase to the previous host
+        // identity, so a replacement key ends the operation outright — not even
+        // an interactive confirmation can re-point it at another host.
         if (prompt.kind === 'ssh.replaceHostKey' && remotePreEraseTarget !== null) {
           return { trusted: false };
         }
-        if (prompt.kind === 'ssh.trustHost' || prompt.kind === 'ssh.replaceHostKey') {
-          if (yesFlag.present) return { trusted: true };
-          if (!interactive) return { trusted: false };
-          const answer = await promptUser(`${message || 'Trust this SSH host key?'}\nTrust this host key? [y/N]: `);
-          return { trusted: /^y(?:es)?$/iu.test(answer.trim()) };
+        if (isSshHostTrustPromptKind(prompt.kind)) {
+          return await answerSshHostTrustPrompt({
+            prompt: { kind: prompt.kind, data: prompt.data },
+            assumeYes: yesFlag.present,
+            interactive,
+            message,
+            confirm: async (promptMessage) => await confirmYesNo({
+              message: `${promptMessage}\nTrust this host key?`,
+              deps,
+              ...(signal ? { signal } : {}),
+            }),
+          });
         }
         if (prompt.kind.startsWith('personal_home.confirm_remote_')) {
           const data = prompt.data;
@@ -1233,15 +1388,17 @@ export async function handleHomeCommand(
           }
           if (yesFlag.present) return { confirmed: true };
           if (!interactive) return { confirmed: false };
-          const answer = await promptUser([
-            `Confirm ${subcommand} on remote SSH host ${sshFlag.value}?`,
-            `Home: ${data.canonicalServerUrl}`,
-            `Home identity: ${data.homeServerIdentityId}`,
-            ...paths.map((path) => `- ${path}`),
-            `Estimated owned bytes: ${data.estimatedBytes === null ? 'unknown' : String(data.estimatedBytes)}`,
-            '[y/N]: ',
-          ].join('\n'));
-          return { confirmed: /^y(?:es)?$/iu.test(answer.trim()) };
+          return { confirmed: await confirmYesNo({
+            message: [
+              `Confirm ${subcommand} on remote SSH host ${sshFlag.value}?`,
+              `Home: ${data.canonicalServerUrl}`,
+              `Home identity: ${data.homeServerIdentityId}`,
+              ...paths.map((path) => `- ${path}`),
+              `Estimated owned bytes: ${data.estimatedBytes === null ? 'unknown' : String(data.estimatedBytes)}`,
+            ].join('\n'),
+            deps,
+            ...(signal ? { signal } : {}),
+          }) };
         }
         throw Object.assign(new Error(`Remote Personal Home operation requires unsupported input: ${prompt.kind}`), { code: 'prompt_required' });
       },
@@ -1390,15 +1547,17 @@ export async function handleHomeCommand(
     }
     if (yesFlag.present) return { confirmed: true };
     if (!interactive) return { confirmed: false };
-    const answer = await promptUser([
-      'Permanently erase the owner-validated Personal Home paths below?',
-      `Home: ${canonicalServerUrl}`,
-      `Home identity: ${homeServerIdentityId ?? 'unavailable'}`,
-      ...paths.map((path) => `- ${path}`),
-      `Estimated owned bytes: ${estimatedBytes === null ? 'unknown' : String(estimatedBytes)}`,
-      '[y/N]: ',
-    ].join('\n'));
-    return { confirmed: /^y(?:es)?$/i.test(answer.trim()) };
+    return { confirmed: await confirmYesNo({
+      message: [
+        'Permanently erase the owner-validated Personal Home paths below?',
+        `Home: ${canonicalServerUrl}`,
+        `Home identity: ${homeServerIdentityId ?? 'unavailable'}`,
+        ...paths.map((path) => `- ${path}`),
+        `Estimated owned bytes: ${estimatedBytes === null ? 'unknown' : String(estimatedBytes)}`,
+      ].join('\n'),
+      deps,
+      ...(signal ? { signal } : {}),
+    }) };
   };
   const purpose = await readPersonalHomePurpose({ runner, signal, sleep: deps.sleep, runtime });
   const run = async (

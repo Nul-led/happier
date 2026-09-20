@@ -5,6 +5,7 @@ import { useRouter } from 'expo-router';
 import { Text } from '@/components/ui/text/Text';
 import { t } from '@/text';
 import { TranscriptSeparatorRow } from '@/components/sessions/transcript/separators/TranscriptSeparatorRow';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { useSession } from '@/sync/domains/state/storage';
 import { getSessionName } from '@/utils/sessions/sessionUtils';
 
@@ -12,6 +13,8 @@ export function ForkDividerRow(props: Readonly<{
   parentSessionId: string;
   childSessionId: string;
   parentCutoffSeqInclusive: number;
+  /** Home this transcript is mounted for; the parent lives on the same one. */
+  serverId?: string | null;
 }>): React.ReactElement {
   const { theme } = useUnistyles();
   const router = useRouter();
@@ -23,10 +26,15 @@ export function ForkDividerRow(props: Readonly<{
       ? t('session.forking.dividerTitleWithParent', { parent: parentName })
       : t('session.forking.dividerTitle');
 
+  const parentServerId = props.serverId ?? parentSession?.serverId ?? null;
   const handleOpenParent = React.useCallback(() => {
     const seq = Math.max(0, Math.trunc(props.parentCutoffSeqInclusive));
-    router.push((`/session/${props.parentSessionId}?jumpSeq=${seq}`) as any);
-  }, [props.parentCutoffSeqInclusive, props.parentSessionId, router]);
+    router.push(buildScopedSessionRouteHref({
+      sessionId: props.parentSessionId,
+      serverId: parentServerId,
+      query: { jumpSeq: seq },
+    }) as any);
+  }, [parentServerId, props.parentCutoffSeqInclusive, props.parentSessionId, router]);
 
   return (
     <TranscriptSeparatorRow

@@ -19,8 +19,20 @@ describe('getActionRequiredServerFeatureId', () => {
       .toBe('teams.credentialResources.externalApi');
     expect(getActionRequiredServerFeatureId('teams.credentials.externalKeys.create'))
       .toBe('teams.credentialResources.externalApi');
-    expect(getActionRequiredServerFeatureId('secrets.shared.list')).toBe('teams.credentialResources');
-    expect(getActionRequiredServerFeatureId('secrets.shared.update')).toBe('teams.credentialResources');
+    // Shared Saved Secrets are registered on the Team route app, whose one
+    // decision is `teams` — not either credential-resource bit.
+    expect(getActionRequiredServerFeatureId('secrets.shared.list')).toBe('teams');
+    expect(getActionRequiredServerFeatureId('secrets.shared.update')).toBe('teams');
+    expect(getActionRequiredServerFeatureId('teams.list')).toBe('teams');
+    expect(getActionRequiredServerFeatureId('teams.invitations.create')).toBe('teams');
+    expect(getActionRequiredServerFeatureId('session.follow.set')).toBe('sessions.following');
+    expect(getActionRequiredServerFeatureId('session.follow.sources.list')).toBe('sessions.following');
+    expect(getActionRequiredServerFeatureId('session.access.grant.set')).toBe('sessions.collaboration');
+    expect(getActionRequiredServerFeatureId('session.responsibility.set')).toBe('sessions.collaboration');
+    expect(getActionRequiredServerFeatureId('session.public_link.create')).toBe('sharing.public');
+    expect(getActionRequiredServerFeatureId('machines.pools.create')).toBe('machines.pools');
+    expect(getActionRequiredServerFeatureId('sessions.runner.activation.create'))
+      .toBe('sessions.ephemeralRunner');
     expect(getActionRequiredServerFeatureId('account.apiTokens.create')).toBeNull();
     expect(getActionRequiredServerFeatureId('session.title.set')).toBeNull();
   });

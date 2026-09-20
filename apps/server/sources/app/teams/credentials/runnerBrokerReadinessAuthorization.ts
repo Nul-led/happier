@@ -16,7 +16,7 @@ import { qualifyTeamCredentialOperationInTx } from "./resourceRead";
 import { readRunnerActivationAuthentication } from "@/app/ephemeralRunner/activationAuthentication";
 import { readRunnerCreatorCurrentnessInTx } from "@/app/ephemeralRunner/activationCurrentness";
 import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
-import { teamCredentialBrokerPlacementPinsMachine } from "./brokerPlacementResolver";
+import { isTeamCredentialBrokerPlacementBoundToMachineInTx } from "./brokerPlacementResolver";
 
 export type RunnerBrokerReadinessAuthorization = Readonly<{
     ok: true;
@@ -44,7 +44,10 @@ export async function readRunnerBrokerReadinessProjectionInTx(
         select: { id: true, teamId: true, custodianAccountId: true, revision: true, sourceBindingJson: true, brokerMachineId: true, brokerPoolId: true },
     });
     if (!resource || resource.revision !== input.selection.revision
-        || !teamCredentialBrokerPlacementPinsMachine(resource, input.selection.brokerMachineId)) return null;
+        || !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
+            resource,
+            machineId: input.selection.brokerMachineId,
+        })) return null;
     const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
         resourceId: resource.id, accountId: activation.creatorAccountId,
     });
@@ -66,9 +69,11 @@ export async function readRunnerBrokerReadinessProjectionInTx(
     if ((await resolveTeamCredentialResourceSourceInTx(tx, {
         custodianAccountId: resource.custodianAccountId, source,
     })).status !== "current") return null;
+    // The broker is the exact Machine frozen into this activation's binding, not
+    // the resource's placement column: a Pool placement has no column of its own.
     const eligibleBroker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
         custodianAccountId: resource.custodianAccountId,
-        brokerMachineId: resource.brokerMachineId,
+        brokerMachineId: input.selection.brokerMachineId,
     });
     if (!eligibleBroker.ok) return null;
     const machine = await tx.machine.findUnique({
@@ -117,7 +122,10 @@ export async function authorizeRunnerBrokerReadiness(input: Readonly<{
         );
         if (!qualification.ok) return qualification;
         if (resource.revision !== activation.resourceRevision
-            || !teamCredentialBrokerPlacementPinsMachine(resource, activation.brokerMachineId)) {
+            || !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
+                resource,
+                machineId: activation.brokerMachineId,
+            })) {
             return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "resource_unavailable" } };
         }
         const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
@@ -135,7 +143,7 @@ export async function authorizeRunnerBrokerReadiness(input: Readonly<{
         })).status !== "current") return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "source_unavailable" } };
         const eligibleBroker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
             custodianAccountId: input.custodianAccountId,
-            brokerMachineId: resource.brokerMachineId,
+            brokerMachineId: activation.brokerMachineId,
         });
         if (!eligibleBroker.ok) return {
             ok: true,

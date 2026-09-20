@@ -30,6 +30,7 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
@@ -504,6 +505,7 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * - New translation keys must be added to ALL language files
  */
 export const en = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.en,
     actionConfirmations: actionConfirmationTranslations.en,
     sessionDrafts: sessionDraftTranslations.en,
     transferRecovery: {
@@ -1680,6 +1682,7 @@ export const en = {
         awaitingUpdates: "Awaiting updates",
         queuedInput: "Queued input",
         unread: 'Unread',
+        mentioned: 'Mentioned you',
         connected: 'connected',
         connecting: 'connecting',
         disconnected: 'disconnected',
@@ -6816,6 +6819,7 @@ export const en = {
             },
             panel: {
                 title: 'Agents',
+                tabWithRunningCount: ({ count }: { count: number }) => `Agents, ${count} running`,
                 active: 'Active',
                 recent: 'Recent',
                 emptyActive: 'No active agents.',
@@ -14010,6 +14014,11 @@ settingsSession: {
             actions: {
                 manageAccess: 'Manage access',
             },
+            provenance: {
+                sharedBy: ({ owner }: { owner: string }) => `Shared by ${owner}`,
+                via: ({ source }: { source: string }) => `via ${source}`,
+                direct: 'Shared directly with you',
+            },
             relationship: {
                 owner: 'Yours',
                 recipient: 'Shared with you',
@@ -14774,11 +14783,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.en.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.en,
+        auth: {
+            signupClosed: 'Your Personal Home accepts existing accounts only. Sign in with an account already connected to this Home.',
+        },
         bootstrap: {
             title: 'Preparing your Personal Home',
+            checkingStatus: 'Checking your Personal Home…',
             ensuringHomeStatus: 'Getting your local Home ready.',
             preparingComputerStatus: 'Your Home is ready. Preparing this computer in the background.',
-            blockedStatus: 'Setup needs your attention before we continue.',
+            blockedStatus: 'We couldn’t finish setting up your Personal Home.',
             readyStatus: 'Your Home is ready.',
             failureBody: 'We couldn’t finish this step. Your completed setup work is safe; try again or open details.',
             profileRecoveryBody: 'Your Personal Home is ready. Happier still needs to finish connecting it.',

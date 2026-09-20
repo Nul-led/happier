@@ -41,6 +41,37 @@ export const SessionFollowSourceKeyPrepareRequestV1Schema = z.object({
 });
 export type SessionFollowSourceKeyPrepareRequestV1 = z.infer<typeof SessionFollowSourceKeyPrepareRequestV1Schema>;
 
+/**
+ * The one construction of a Follow source-key preparation call, shared by every
+ * host that sends the DEK (UI and CLI alike). The authorization literal and the
+ * encrypted body carry the same source/destination tuple, and building them in
+ * two places is how they drift.
+ */
+export function buildSessionFollowSourceKeyPrepareRequestV1(params: Readonly<{
+  sourceSessionId: string;
+  destinationSessionId: string;
+  sourceDataEncryptionKeyBase64: string;
+}>): Readonly<{
+  authorization: SessionFollowSourceKeyPrepareAuthorizationV1;
+  request: SessionFollowSourceKeyPrepareRequestV1;
+}> {
+  const relation = {
+    sourceSessionId: params.sourceSessionId,
+    destinationSessionId: params.destinationSessionId,
+  };
+  return {
+    authorization: SessionFollowSourceKeyPrepareAuthorizationV1Schema.parse({
+      kind: SESSION_FOLLOW_SOURCE_KEY_PREPARE_AUTHORIZATION_KIND_V1,
+      ...relation,
+    }),
+    request: SessionFollowSourceKeyPrepareRequestV1Schema.parse({
+      v: 1,
+      ...relation,
+      sourceDataEncryptionKeyBase64: params.sourceDataEncryptionKeyBase64,
+    }),
+  };
+}
+
 export const SessionFollowSourceKeyPrepareResponseV1Schema = z.object({
   v: z.literal(1),
   outcome: z.literal('installed'),

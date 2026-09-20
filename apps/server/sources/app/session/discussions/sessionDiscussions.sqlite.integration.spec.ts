@@ -1018,6 +1018,79 @@ describe("Session discussions service (SQLite)", () => {
         expect(facts.get(collaborator.id)?.get(session.id)?.unreadMentionCount).toBe(1);
     });
 
+    it("never counts a viewer's own human mention as their unread attention", async () => {
+        const { owner, collaborator, session } = await fixture();
+        await db.accountSessionFollow.create({
+            data: { accountId: collaborator.id, sessionId: session.id, following: true, notificationLevel: "important" },
+        });
+        await db.accountSessionReadState.create({
+            data: { accountId: collaborator.id, sessionId: session.id, lastViewedSessionSeq: 0 },
+        });
+        const created = await createSessionDiscussion({
+            authentication,
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            request: createRequest({
+                creationLocalId: "c-self-mention", title: "Self", text: "Kickoff", localId: "m-self-mention",
+            }),
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+        const discussionId = created.value.discussion.id;
+        await db.sessionDiscussionReadState.update({
+            where: { discussionId_accountId: { discussionId, accountId: collaborator.id } },
+            data: { lastReadSeq: 1 },
+        });
+
+        const unreadMentions = async () => (await loadSessionDiscussionAttentionForAccounts({
+            accountIds: [collaborator.id], sessionIds: [session.id],
+        })).get(collaborator.id)?.get(session.id)?.unreadMentionCount ?? 0;
+
+        // The viewer's own directly authored mention is not their attention.
+        expect((await postSessionDiscussionMessage({
+            authentication,
+            actorAccountId: collaborator.id,
+            sessionId: session.id,
+            discussionId,
+            request: {
+                localId: "p-self-mention",
+                content: plainBody("cc me"),
+                mentionedAccountIds: [collaborator.id],
+            },
+        })).ok).toBe(true);
+        expect(await unreadMentions()).toBe(0);
+
+        // Someone else's mention of the same viewer still counts.
+        expect((await postSessionDiscussionMessage({
+            authentication,
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            discussionId,
+            request: {
+                localId: "p-other-mention",
+                content: plainBody("cc you"),
+                mentionedAccountIds: [collaborator.id],
+            },
+        })).ok).toBe(true);
+        expect(await unreadMentions()).toBe(1);
+
+        // An Agent-produced post that mentions the execution Account stays the
+        // same attention it is for everyone else.
+        expect((await postSessionDiscussionMessage({
+            authentication,
+            actorAccountId: collaborator.id,
+            sessionId: session.id,
+            discussionId,
+            producer: { v: 1, kind: "agent", sessionId: session.id } satisfies SessionDiscussionProducerV1,
+            request: {
+                localId: "p-agent-self-mention",
+                content: plainBody("agent cc"),
+                mentionedAccountIds: [collaborator.id],
+            },
+        })).ok).toBe(true);
+        expect(await unreadMentions()).toBe(2);
+    });
+
     it("keeps retained cursors inert after Unfollow for summaries, attention and cursor writes", async () => {
         const { owner, collaborator, session } = await fixture();
         const created = await createSessionDiscussion({

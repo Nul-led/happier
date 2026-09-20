@@ -4,6 +4,8 @@ import { extractWorkspaceMutationsFromNormalizedMessages } from './workspaceMuta
 
 export type WorkspaceMutationInvalidation = Readonly<{
     sessionId: string;
+    /** Exact Home the mutating messages arrived on, when the producer knows it. */
+    serverId: string | null;
     changedPaths: readonly string[];
     hasUnknownMutations: boolean;
 }>;
@@ -17,8 +19,20 @@ export type WorkspaceMutationInvalidatorOptions = Readonly<{
     onInvalidate: (event: WorkspaceMutationInvalidation) => void;
 }>;
 
+function normalizeServerId(serverId: string | null | undefined): string | null {
+    const trimmed = typeof serverId === 'string' ? serverId.trim() : '';
+    return trimmed.length > 0 ? trimmed : null;
+}
+
+/** Two Homes can host the same Session id; their pending mutations must never merge. */
+function pendingKey(sessionId: string, serverId: string | null): string {
+    return serverId ? `${serverId}\u0000${sessionId}` : sessionId;
+}
+
 export class WorkspaceMutationInvalidator {
     private readonly pendingBySession = new Map<string, {
+        sessionId: string;
+        serverId: string | null;
         paths: Set<string>;
         hasUnknownMutations: boolean;
         timer: unknown | null;
@@ -27,16 +41,20 @@ export class WorkspaceMutationInvalidator {
 
     constructor(private readonly options: WorkspaceMutationInvalidatorOptions) {}
 
-    ingest(sessionId: string, messages: readonly NormalizedMessage[]): void {
+    ingest(sessionId: string, messages: readonly NormalizedMessage[], serverId?: string | null): void {
         if (typeof sessionId !== 'string' || sessionId.trim().length === 0) return;
         if (!Array.isArray(messages) || messages.length === 0) return;
+        const normalizedServerId = normalizeServerId(serverId);
+        const key = pendingKey(sessionId, normalizedServerId);
 
         const extracted = extractWorkspaceMutationsFromNormalizedMessages({ messages });
         if (extracted.paths.size === 0 && extracted.hasUnknownMutations !== true) {
             return;
         }
 
-        const existing = this.pendingBySession.get(sessionId) ?? {
+        const existing = this.pendingBySession.get(key) ?? {
+            sessionId,
+            serverId: normalizedServerId,
             paths: new Set<string>(),
             hasUnknownMutations: false,
             timer: null,
@@ -56,7 +74,7 @@ export class WorkspaceMutationInvalidator {
             const nowMs = this.options.now();
             if (existing.lastUnknownOnlyEmitAtMs > 0 && nowMs - existing.lastUnknownOnlyEmitAtMs < this.options.minUnknownOnlyIntervalMs) {
                 // Too soon to emit another unknown-only invalidation. Keep pending state but don't schedule.
-                this.pendingBySession.set(sessionId, existing);
+                this.pendingBySession.set(key, existing);
                 return;
             }
         }
@@ -67,14 +85,14 @@ export class WorkspaceMutationInvalidator {
         }
 
         existing.timer = this.options.setTimer(() => {
-            this.flush(sessionId);
+            this.flush(key);
         }, this.options.debounceMs);
 
-        this.pendingBySession.set(sessionId, existing);
+        this.pendingBySession.set(key, existing);
     }
 
-    private flush(sessionId: string): void {
-        const pending = this.pendingBySession.get(sessionId);
+    private flush(key: string): void {
+        const pending = this.pendingBySession.get(key);
         if (!pending) return;
 
         if (pending.timer != null) {
@@ -90,15 +108,16 @@ export class WorkspaceMutationInvalidator {
         if (changedPaths.length === 0 && hasUnknownMutations) {
             const nowMs = this.options.now();
             if (pending.lastUnknownOnlyEmitAtMs > 0 && nowMs - pending.lastUnknownOnlyEmitAtMs < this.options.minUnknownOnlyIntervalMs) {
-                this.pendingBySession.set(sessionId, pending);
+                this.pendingBySession.set(key, pending);
                 return;
             }
             pending.lastUnknownOnlyEmitAtMs = nowMs;
         }
 
-        this.pendingBySession.set(sessionId, pending);
+        this.pendingBySession.set(key, pending);
         this.options.onInvalidate({
-            sessionId,
+            sessionId: pending.sessionId,
+            serverId: pending.serverId,
             changedPaths,
             hasUnknownMutations,
         });

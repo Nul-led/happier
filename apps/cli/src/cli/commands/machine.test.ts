@@ -895,6 +895,61 @@ describe('handleMachineCommand', () => {
     expect(stdoutChunks).toContain(`${JSON.stringify(result)}\n`);
   });
 
+  it('declines a changed SSH host key under --yes', async () => {
+    const respond = vi.fn(async () => undefined);
+    const result: SystemTaskResult = {
+      protocolVersion: SYSTEM_TASK_PROTOCOL_VERSION,
+      taskId: 'task-1',
+      ok: false,
+      error: { code: 'host_trust_declined', message: 'SSH host trust was declined.' },
+    };
+    const poll = vi.fn()
+      .mockResolvedValueOnce({
+        events: [],
+        nextCursor: 0,
+        result: null,
+        pendingPrompt: {
+          kind: 'ssh.replaceHostKey',
+          data: {
+            host: 'dev.example.test',
+            keyType: 'ssh-ed25519',
+            fingerprint: 'SHA256:replacement',
+            existingFingerprint: 'SHA256:pinned',
+          },
+        },
+      })
+      .mockResolvedValueOnce({ events: [], nextCursor: 0, result, pendingPrompt: null });
+
+    await handleMachineCommand(
+      ['setup', '--ssh', 'dev@example.test', '--yes'],
+      {
+        createRunner: () => ({
+          start: vi.fn(async () => ({ taskId: 'task-1' })),
+          poll,
+          respond,
+        }),
+        readRelaySelection: () => ({
+          relayUrl: 'https://relay.example.test',
+          webappUrl: 'https://app.example.test',
+        }),
+        promptInput: async () => {
+          throw new Error('prompt should not be used');
+        },
+        promptSecret: async () => {
+          throw new Error('promptSecret should not be used');
+        },
+        isInteractiveTerminal: () => false,
+        sleep: async () => undefined,
+      },
+    );
+
+    expect(respond).toHaveBeenCalledWith({
+      taskId: 'task-1',
+      answer: { trusted: false },
+    });
+    expect(errorSpy.mock.calls.flat().join('\n')).toContain('SHA256:pinned');
+  });
+
   it('fails closed in non-interactive mode without --yes when a prompt is required', async () => {
     const respond = vi.fn(async () => undefined);
     await handleMachineCommand(

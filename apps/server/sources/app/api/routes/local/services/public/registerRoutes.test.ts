@@ -202,15 +202,27 @@ describe("local service public exposure routes", () => {
 
         expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "POST", "/v1/local-services/public").opts.config).toMatchObject({
-            ephemeralSessionRunnerOperation: "session_machine_runtime",
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
         });
         expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "POST", "/v1/local-services/public/status").opts.config).toMatchObject({
-            ephemeralSessionRunnerOperation: "session_machine_runtime",
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
         });
         expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.preHandler).toBe(app.authenticate);
         expect(getRouteEntry(app, "DELETE", "/v1/local-services/public/:exposureId").opts.config).toMatchObject({
-            ephemeralSessionRunnerOperation: "session_machine_runtime",
+            ephemeralSessionRunnerBinding: {
+                scope: "session",
+                session: "body.sessionId",
+                machine: "body.machineId",
+            },
         });
         const rootReadRoute = getRouteEntry(app, "GET", "/v1/local-services/public/:exposureId");
         expect(rootReadRoute.opts.preHandler).toBeUndefined();

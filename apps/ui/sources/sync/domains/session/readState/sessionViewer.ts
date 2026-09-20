@@ -1,5 +1,6 @@
 import {
     SessionViewerProjectionV1Schema,
+    isSessionPersonallyTrackedForViewerV1,
     type SessionPersonalAttentionReasonV1,
     type SessionViewerProjectionV1,
 } from '@happier-dev/protocol';
@@ -45,8 +46,11 @@ export function normalizeSessionViewerCompatibility(
 }
 
 /**
- * Current Homes normalize inert retained cursors to `not_started`. Keep that
- * private projection authoritative, including when old metadata says unread.
+ * Tracking is owner-or-active-Follow, decided by the one Protocol predicate the
+ * Home itself uses. A retained read cursor is the cursor fact and never
+ * authority: seeding one for an explicit mark used to enroll a non-Follower in
+ * another Account's unread state, personal Activity and local notifications
+ * while the Home's own attention projection said otherwise.
  *
  * The 0.2.11 list/detail wire has no viewer projection and identifies shared
  * recipients through `share`, normalized here as owner/accessLevel. Preserve
@@ -55,8 +59,12 @@ export function normalizeSessionViewerCompatibility(
  */
 export function isSessionPersonallyTrackedForViewer(session: SessionViewerTrackingInput): boolean {
     const normalized = normalizeSessionViewerCompatibility(session);
-    return normalized.kind === 'legacy_owner'
-        || (normalized.kind === 'current' && normalized.viewer.readState.state === 'tracking');
+    if (normalized.kind === 'legacy_owner') return true;
+    if (normalized.kind !== 'current') return false;
+    return isSessionPersonallyTrackedForViewerV1({
+        isSessionOwner: isSessionAccessOwner(session.access, session.accessLevel),
+        followFacts: normalized.viewer.follow,
+    });
 }
 
 /**

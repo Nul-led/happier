@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 /**
  * Japanese translations for the Happier app
@@ -644,8 +646,9 @@ const settingsSessionHandoffTranslationExtensions = {
 } as const;
 
 export const ja = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.ja,
     actionConfirmations: actionConfirmationTranslations.ja,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.ja, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.ja.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.ja.resolve } },
+    workspaceSync: workspaceSyncTranslations.ja,
     sessionDrafts: sessionDraftTranslations.ja,
     transferRecovery: {
         title: '一時アップロードを完了',
@@ -1945,6 +1948,7 @@ export const ja = {
     awaitingUpdates: "更新を待機中",
     queuedInput: "入力待ち",
     unread: "未読",
+    mentioned: "あなたへのメンション",
     connected: "接続済み",
     connecting: "接続中",
     disconnected: "切断済み",
@@ -6715,6 +6719,7 @@ localTailscale: {
           },
                     panel: {
             title: "エージェント",
+            tabWithRunningCount: ({ count }: { count: number }) => `エージェント、${count} 件稼働中`,
             active: "稼働中",
             recent: "最近",
             emptyActive: "稼働中のエージェントはありません。",
@@ -13438,6 +13443,11 @@ settingsSession: {
       actions: {
         manageAccess: "アクセスを管理",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `${owner} が共有`,
+          via: ({ source }: { source: string }) => `${source} 経由`,
+          direct: 'あなたに直接共有されています',
+      },
       relationship: {
         owner: "自分のもの",
         recipient: "共有されたもの",
@@ -13910,11 +13920,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.ja.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.ja,
+        auth: {
+            signupClosed: 'パーソナルホームでは既存のアカウントのみ使用できます。このホームに接続済みのアカウントでサインインしてください。',
+        },
         bootstrap: {
             title: 'パーソナルホームを準備しています',
+            checkingStatus: 'パーソナルホームを確認しています…',
             ensuringHomeStatus: 'ローカルホームを準備しています。',
             preparingComputerStatus: 'ホームの準備ができました。バックグラウンドでこのコンピューターを準備しています。',
-            blockedStatus: '続行するには、セットアップを確認してください。',
+            blockedStatus: 'パーソナルホームのセットアップを完了できませんでした。',
             readyStatus: 'ホームの準備ができました。',
             failureBody: 'この手順を完了できませんでした。完了済みのセットアップは保持されています。再試行するか、詳細を開いてください。',
             profileRecoveryBody: 'パーソナルホームの準備ができました。Happier はまだ接続を完了する必要があります。',
@@ -13924,15 +13938,7 @@ settingsSession: {
             useExistingDetail: '現在選択中のホームを変更せずに、アクセスを確認して登録を保護します。',
             useAnother: '別のホームを使用',
             useAnotherDetail: 'このローカルホームを変更せず、ホームの一覧から選択します。',
-            blocked: {
-                runtime_unhealthy: 'ローカル Home は起動する前に対応が必要です。',
-                home_auth_invalid: 'Home の認証に対応が必要です。',
-                existing_runtime: 'セットアップを続ける前に、既存のローカル Home についての選択が必要です。',
-                personal_home_erased: 'Personal Home は削除されました。もう一度試して新しく作成してください。',
-            },
-            blockedBody: {
-                personal_home_erased: 'Home のデータは削除されました。ここに復元できるものはありません。新しい Personal Home を作成するか、別の Home を使ってください。',
-            },
+            ...personalHomeBootstrapBlockedTranslations.ja,
         },
     },
     settingsSearch: {

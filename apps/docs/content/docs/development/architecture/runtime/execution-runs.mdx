@@ -65,8 +65,10 @@ for runs.
 
 ### Temporary-computer readiness happens before Session creation
 
-The default-off Temporary computer implementation can review a Team credential before its Session
-exists. The reviewed binding fixes the resource, exact broker Machine, resource revision, Provider
+The Temporary computer implementation can review a Team credential before its Session
+exists. Its `sessions.ephemeralRunner` bit is default-on with
+`HAPPIER_FEATURE_SESSIONS_EPHEMERAL_RUNNER__ENABLED=0` as the operator opt-out
+([feature flags](/extras/feature-flags)); the flow is unreleased, not off. The reviewed binding fixes the resource, exact broker Machine, resource revision, Provider
 application, and source/catalog revision. The chosen model, prompt, attachments, permission mode,
 and other authoring remain in the creator-reviewed sealed launch manifest; the readiness exchange
 cannot replace them.
@@ -81,9 +83,10 @@ endpoint before forwarding the content-free check.
 Materialization then rereads the reviewed selection and current resource, source revision, broker
 Machine/endpoint, Agent installation, and consent before it creates the real Machine and Session.
 A changed fact fails with a typed unavailable or conflict state instead of silently choosing another
-source, model, or Machine. This is current development architecture, not released availability; the
-Temporary computer and Team credential features remain explicitly gated while composed live and
-compatibility validation is open.
+source, model, or Machine. This is current development architecture, not released availability. The
+Temporary computer and Team credential bits are server-represented capability switches an operator
+can turn off; they are not a validation hold, and composed live and compatibility journeys are
+release checks owned by release automation.
 
 ### Retained interaction uses Session input admission
 

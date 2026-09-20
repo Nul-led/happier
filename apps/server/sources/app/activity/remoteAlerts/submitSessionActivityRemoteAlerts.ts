@@ -113,6 +113,7 @@ export async function submitSessionActivityRemoteAlerts(
     const richOwnerSenderOwnsDelivery = await resolveRichOwnerSenderResponsibility({
         sessionId: params.sessionId,
         sessionOwnerAccountId: session.accountId,
+        alertEventType: alertEvent.type,
         runtimeComposition: params.runtimeComposition,
     });
     const excluded = new Set(params.excludeAccountIds ?? []);
@@ -220,11 +221,29 @@ export async function submitSessionActivityRemoteAlerts(
     return [...alerted];
 }
 
+/**
+ * The alert categories the rich owner sender can actually deliver.
+ *
+ * `ownerActivityDelivery: "rich_sender"` says the runtime host has a push
+ * sender, not that its notification vocabulary covers this event. The rich
+ * union publishes `ready`, permission and user-action topics (plus its
+ * connected-service and workflow topics); it carries no terminal-turn topic, so
+ * delegating a `failed`/`cancelled` alert to it drops the owner's alert
+ * entirely. Any category outside this set stays the Home's to deliver.
+ */
+const RICH_OWNER_SENDER_ALERT_EVENTS: ReadonlySet<ActivityRemoteAlertEventV2["type"]> = new Set([
+    "ready",
+    "permission_request",
+    "user_action_request",
+]);
+
 async function resolveRichOwnerSenderResponsibility(params: Readonly<{
     sessionId: string;
     sessionOwnerAccountId: string;
+    alertEventType: ActivityRemoteAlertEventV2["type"];
     runtimeComposition?: SubmitSessionActivityRemoteAlertsParams["runtimeComposition"];
 }>): Promise<boolean> {
+    if (!RICH_OWNER_SENDER_ALERT_EVENTS.has(params.alertEventType)) return false;
     const composition = params.runtimeComposition;
     if (!composition || composition.ownerActivityDelivery !== "rich_sender") return false;
     const authority = composition.publisherAuthority;

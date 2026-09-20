@@ -162,7 +162,7 @@ describe('SessionAccessEditor', () => {
         await screen.pressByTestIdAsync('session-access-remove:account:alice');
         expect(intent.requestRemove).toHaveBeenCalledWith(alice.grant);
         expect(intent.confirmRemove).not.toHaveBeenCalled();
-        await screen.update(<SessionAccessEditor model={model({ revision: 2, grants: [{ ...alice, removal: { kind: 'confirming' } }, team] })} actions={intent} presentation="compact" />);
+        await screen.update(<SessionAccessEditor model={model({ revision: 2, grants: [{ ...alice, removal: { kind: 'confirming', consequences: [] } }, team] })} actions={intent} presentation="compact" />);
         await screen.pressByTestIdAsync('session-access-remove-confirm:account:alice');
         expect(intent.confirmRemove).toHaveBeenCalledWith(alice.grant);
     });

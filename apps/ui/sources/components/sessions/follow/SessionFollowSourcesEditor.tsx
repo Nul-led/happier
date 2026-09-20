@@ -334,7 +334,10 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                 const preparing = preparingFlightKeys.has(currentFlightKey);
                 const preparationWaitingReason = preparationWaitingReasons.get(preparationSourceKey);
                 const presentedRuntimeState = refineSessionFollowSourceStateWithPreparationReason(runtimeState, preparationWaitingReason);
+                // An unavailable SOURCE key can still become available (the Session is unlocked
+                // in this client), so it keeps its retry; only an unavailable Runner key cannot.
                 const canRetryPreparation = presentedRuntimeState === 'waiting_for_source_key'
+                    || presentedRuntimeState === 'source_key_unavailable'
                     || preparationWaitingReason === 'runner_unreachable';
                 const canChooseWake = supportsMachineSessionFollowWakeOnHumanChangeV1(
                     destinationMachine?.operationProtocolCapabilities,
@@ -425,7 +428,15 @@ export function SessionFollowSourcesEditor(props: Readonly<{
                             next.delete(preparationSourceKey);
                             return next;
                         });
-                        setPreparationWaitingReasons((current) => new Map(current).set(preparationSourceKey, 'source_key_unavailable'));
+                        // Store the reason the preparation actually returned. Inventing
+                        // `source_key_unavailable` here made an unreachable Runner and an
+                        // unsupported destination read as a source-key problem.
+                        setPreparationWaitingReasons((current) => {
+                            const next = new Map(current);
+                            if (change.reason === undefined) next.delete(preparationSourceKey);
+                            else next.set(preparationSourceKey, change.reason);
+                            return next;
+                        });
                     }
                     await refresh();
                 })}

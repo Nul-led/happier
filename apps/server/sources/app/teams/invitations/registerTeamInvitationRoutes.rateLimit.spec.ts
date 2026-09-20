@@ -13,6 +13,7 @@ describe("Team invitation route rate limits", () => {
                 serverId: "home-1",
                 displayName: "Home",
                 storageMode: "plain",
+                hosting: null,
             }),
             email: {
                 delivery: { isReady: false, deliver: async () => ({ status: "sent" }) },

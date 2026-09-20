@@ -45,7 +45,7 @@ export function registerSessionPatchRoute(app: Fastify) {
     app.patch('/v2/sessions/:sessionId', {
         preHandler: app.authenticate,
         attachValidation: true,
-        config: { ephemeralSessionRunnerOperation: "session_shared_editor" },
+        config: { ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } },
         schema: {
             params: z.object({ sessionId: z.string() }),
             body: z.union([
@@ -100,6 +100,17 @@ export function registerSessionPatchRoute(app: Fastify) {
     }, async (request, reply) => {
         if (request.validationError) {
             return reply.code(400).send({ error: "Invalid parameters" });
+        }
+        // A restricted Runner credential is issued for its own Session's shared
+        // editor tuple. The owner metadata modes this endpoint also carries —
+        // model intent and Team credential binding — remain present-user writes,
+        // so the Runner is refused here rather than at the credential boundary,
+        // which knows only the Session this request names.
+        if (
+            request.authTokenKind === "ephemeral_session_runner"
+            && !("mode" in request.body && request.body.mode === "shared_editor")
+        ) {
+            return reply.code(403).send({ error: "Forbidden" });
         }
         const userId = request.userId;
         const { sessionId } = request.params;

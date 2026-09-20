@@ -27,9 +27,11 @@ import {
   SessionBoardErrorCodeSchema,
   SessionBoardErrorV1Schema,
   SessionBoardFeatureGateErrorV1Schema,
-  projectSessionBoardActionFailureV1,
   projectSessionBoardFeatureGateFailureV1,
+  type SessionBoardErrorCode,
+  type SessionBoardErrorV1,
 } from './errors.js';
+import { bindHomeDomainHttpRequestV1 } from '../../actions/homeDomainHttpBinding.js';
 import {
   SESSION_BOARD_DEFAULT_ITEM_WIDTH_V1,
   SessionBoardItemPlacementV1Schema,
@@ -447,6 +449,40 @@ export const SessionBoardActionFailureV1Schema = z.union([
 ]);
 export type SessionBoardActionFailureV1 = Readonly<z.infer<typeof SessionBoardActionFailureV1Schema>>;
 
+/** Every Board failure code whose strict envelope carries no details. */
+export type SessionBoardSimpleFailureCodeV1 = SessionBoardErrorCode | SessionBoardDefiniteFailureCodeV1;
+
+/**
+ * Build the detail-free Board failure envelope every host adapter returns. The
+ * strict union discriminates on `errorCode` and `error` together, which no
+ * widened `{ errorCode: TCode; error: TCode }` object type satisfies, so the one
+ * owner of the union settles the pair here instead of each host inventing a
+ * local helper that the port boundary then has to re-validate.
+ */
+export function createSessionBoardFailureV1(code: SessionBoardSimpleFailureCodeV1): SessionBoardActionFailureV1 {
+  return SessionBoardActionFailureV1Schema.parse({ ok: false, errorCode: code, error: code });
+}
+
+/**
+ * Project the Board route's closed error document through the strict Action
+ * failure union without losing readable conflict revisions. Keeping this beside
+ * the union prevents UI and daemon adapters from growing similar-but-different
+ * failure mappings.
+ */
+export function projectSessionBoardActionFailureV1(error: SessionBoardErrorV1): SessionBoardActionFailureV1 {
+  if (error.error !== 'session_board_revision_conflict') return createSessionBoardFailureV1(error.error);
+  const details = {
+    ...(error.currentItemRevision !== undefined ? { currentItemRevision: error.currentItemRevision } : {}),
+    ...(error.currentLayoutRevision !== undefined ? { currentLayoutRevision: error.currentLayoutRevision } : {}),
+  };
+  return SessionBoardActionFailureV1Schema.parse({
+    ok: false,
+    errorCode: error.error,
+    error: error.error,
+    ...(Object.keys(details).length > 0 ? { details } : {}),
+  });
+}
+
 const SESSION_BOARD_ADAPTER_ERROR_CODE_ALIASES = Object.freeze({
   plugin_session_records_unavailable: 'protocol_unavailable',
   plugin_session_record_forbidden: 'forbidden',
@@ -521,7 +557,32 @@ export function createSessionBoardOutcomeUnknownFailureV1(input: Readonly<{
 
 export type SessionBoardMutationTransportResultV1 =
   | Readonly<{ kind: 'applied'; result: SessionBoardMutationResultV1 }>
-  | Readonly<{ kind: 'failure'; result: unknown }>;
+  | Readonly<{ kind: 'failure'; result: SessionBoardActionFailureV1 }>;
+
+const SessionBoardMutationRequestPathV1Schema = z.object({
+  sessionId: z.string().trim().min(1),
+}).strict();
+
+/**
+ * Bind one Board mutation to its exact Home HTTP request through the generic
+ * Home-domain binder. Both host adapters consume this instead of pairing the
+ * declared method, the `:sessionId` placeholder and the body themselves.
+ */
+export function bindSessionBoardMutationRequestV1(input: Readonly<{
+  sessionId: string;
+  mutation: SessionBoardMutationV1;
+}>): Readonly<{ method: typeof SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1.method; path: string; body: SessionBoardMutationV1 }> {
+  const bound = bindHomeDomainHttpRequestV1({
+    transport: SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1,
+    inputSchema: SessionBoardMutationRequestPathV1Schema,
+    input: { sessionId: input.sessionId },
+  });
+  return Object.freeze({
+    method: SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1.method,
+    path: bound.path,
+    body: SessionBoardMutationV1Schema.parse(input.mutation),
+  });
+}
 
 /**
  * Canonical post-dispatch HTTP classifier shared by UI and CLI adapters.

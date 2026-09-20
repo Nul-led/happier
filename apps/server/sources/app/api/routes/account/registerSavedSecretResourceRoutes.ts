@@ -36,6 +36,7 @@ import {
 } from "@/app/account/savedSecrets/savedSecretResourceService";
 import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
 import { createTeamRouteApp } from "@/app/teams/teamRouteApp";
+import { readTeamOperationAuthenticationFromRequest } from "@/app/teams/actorContext";
 
 function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
     const copy = new Uint8Array(bytes.byteLength);
@@ -93,7 +94,12 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         schema: { response: { 200: SharedSavedSecretListOutputV1Schema, 403: SavedSecretResourceActionErrorV1Schema, 500: SavedSecretResourceActionErrorV1Schema } },
     }, async (request, reply) => {
         try {
-            const resources = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, request.userId));
+            const authentication = readTeamOperationAuthenticationFromRequest(request);
+            const resources = await inTx((tx) => listSavedSecretResourcesForAccountInTx(
+                tx,
+                request.userId,
+                authentication,
+            ));
             return reply.send({ resources: [...resources] });
         } catch {
             return reply.code(500).send({ error: "internal" });
@@ -105,7 +111,12 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         schema: { response: { 200: SavedSecretResourceMaterialsResponseV1Schema, 403: SavedSecretResourceActionErrorV1Schema, 500: SavedSecretResourceActionErrorV1Schema } },
     }, async (request, reply) => {
         try {
-            const rows = await inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(tx, request.userId));
+            const authentication = readTeamOperationAuthenticationFromRequest(request);
+            const rows = await inTx((tx) => listSavedSecretResourceMaterialsForAccountInTx(
+                tx,
+                request.userId,
+                authentication,
+            ));
             return reply.send({
                 resources: rows.map((row) => {
                     if (!("resourceId" in row)) return { entry: row.entry };
@@ -212,8 +223,10 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         const body = parsed.data;
         const keyEnvelopes = decodeEnvelopes(body.keyEnvelopes);
         if (!keyEnvelopes) return reply.code(400).send({ error: "invalid_resource" });
+        const authentication = readTeamOperationAuthenticationFromRequest(request);
         const result = await inTx((tx) => createSavedSecretResourceInTx(tx, {
             accountId: request.userId,
+            authentication,
             resourceId: body.resourceId,
             displayName: body.displayName,
             kind: body.kind,
@@ -330,8 +343,10 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         const keyEnvelopes = decodeEnvelopes(parsed.data.keyEnvelopes);
         if (!keyEnvelopes) return reply.code(400).send({ error: "invalid_resource" });
         const { keyEnvelopes: _encodedEnvelopes, ...body } = parsed.data;
+        const authentication = readTeamOperationAuthenticationFromRequest(request);
         const result = await inTx((tx) => setSavedSecretResourceGrantsInTx(tx, {
             accountId: request.userId,
+            authentication,
             ...body,
             keyEnvelopes,
         }));

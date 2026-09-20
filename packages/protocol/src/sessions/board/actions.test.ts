@@ -18,9 +18,12 @@ import {
   SessionBoardActionFailureV1Schema,
   SessionBoardActionRecoveryEvidenceV1Schema,
   SessionBoardApprovalRequestCreatedResultV1Schema,
+  bindSessionBoardMutationRequestV1,
   classifySessionBoardMutationTransportResultV1,
   SessionBoardMutationActionResultV1Schema,
+  createSessionBoardFailureV1,
   createSessionBoardOutcomeUnknownFailureV1,
+  projectSessionBoardActionFailureV1,
   parseSessionBoardActionExecuteOutcomeV1,
   parseSessionBoardActionPortResultV1,
   projectSessionBoardAdapterFailureV1,
@@ -29,7 +32,6 @@ import {
 import { SessionBoardMutationV1Schema } from './mutations.js';
 import {
   SessionBoardErrorV1Schema,
-  projectSessionBoardActionFailureV1,
   projectSessionBoardFeatureDecisionFailureV1,
 } from './errors.js';
 
@@ -43,6 +45,28 @@ const item = {
 } as const;
 
 describe('Session Board Action contracts', () => {
+  it('binds one Board mutation to its exact Home request through the shared binder', () => {
+    const mutation = SessionBoardMutationV1Schema.parse({
+      operation: 'update_layout',
+      expectedLayoutRevision: null,
+      layoutContent: { t: 'plain', v: { v: 1, tabs: [] } },
+    });
+    const bound = bindSessionBoardMutationRequestV1({ sessionId: 'a/b c', mutation });
+    expect(bound).toEqual({
+      method: SESSION_BOARD_MUTATION_SERVER_TRANSPORT_V1.method,
+      path: '/v2/sessions/a%2Fb%20c/board',
+      body: mutation,
+    });
+    expect(Object.keys(bound.body)).not.toContain('sessionId');
+    expect(() => bindSessionBoardMutationRequestV1({ sessionId: '   ', mutation })).toThrow();
+  });
+  it('keeps every detail-free host refusal inside the strict Board failure union', () => {
+    for (const code of ['session_board_forbidden', 'session_board_revision_conflict', 'offline', 'cancelled'] as const) {
+      const failure = createSessionBoardFailureV1(code);
+      expect(failure).toEqual({ ok: false, errorCode: code, error: code });
+      expect(SessionBoardActionFailureV1Schema.safeParse(failure).success).toBe(true);
+    }
+  });
   it('normalizes incumbent record and encryption exceptions into the strict Board vocabulary', () => {
     expect(projectSessionBoardAdapterFailureV1({ code: 'plugin_session_records_unavailable' }))
       .toEqual({ ok: false, errorCode: 'protocol_unavailable', error: 'protocol_unavailable' });

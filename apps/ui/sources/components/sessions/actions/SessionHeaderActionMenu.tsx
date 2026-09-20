@@ -793,7 +793,11 @@ function SessionHeaderActionMenuInner(props: SessionHeaderActionMenuProps) {
           return;
         }
         if (actionId === 'header.openAutomations') {
-          navigateWithBlurOnWeb(() => router.push((`/session/${props.sessionId}/automations`) as any));
+          navigateWithBlurOnWeb(() => router.push(buildScopedSessionRouteHref({
+            sessionId: props.sessionId,
+            serverId: sessionServerId,
+            suffix: '/automations',
+          }) as any));
           return;
         }
         if (actionId === 'voice.teleport') {

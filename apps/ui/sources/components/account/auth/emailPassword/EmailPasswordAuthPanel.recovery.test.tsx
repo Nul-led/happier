@@ -18,7 +18,7 @@ vi.mock('@/auth/password/loginEmailPassword', () => ({ loginEmailPassword: passw
 vi.mock('@/auth/password/provisionEmailPasswordAccount', () => ({ provisionEmailPasswordAccount: provision.account }));
 vi.mock('@/sync/api/auth/nativeAuthEmail', () => ({
     requestNativeEmailVerification: nativeEmail.requestVerification,
-    rememberNativeInvitationEmailVerificationContinuation: nativeEmail.rememberInvitation,
+    rememberNativeEmailVerificationContinuation: nativeEmail.rememberInvitation,
     requestNativePasswordReset: vi.fn(),
 }));
 vi.mock('react-native-unistyles', async () => (await import('@/dev/testkit/mocks/unistyles')).createUnistylesMock());

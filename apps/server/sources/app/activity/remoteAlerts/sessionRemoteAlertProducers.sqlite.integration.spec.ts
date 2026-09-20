@@ -492,9 +492,12 @@ describe("committed session mutations produce Home remote alerts", () => {
         },
     );
 
+    // The rich owner sender publishes only `ready`, permission and user-action
+    // topics, so a terminal turn is always the Home's alert to deliver — on a
+    // persistent daemon exactly as on a Runner.
     it.each([
-        { action: "fail", machineKind: "persistent", expectedOwnerAlert: false },
-        { action: "cancel", machineKind: "persistent", expectedOwnerAlert: false },
+        { action: "fail", machineKind: "persistent", expectedOwnerAlert: true },
+        { action: "cancel", machineKind: "persistent", expectedOwnerAlert: true },
         { action: "fail", machineKind: "ephemeral_session_runner", expectedOwnerAlert: true },
         { action: "cancel", machineKind: "ephemeral_session_runner", expectedOwnerAlert: true },
     ] as const)(
@@ -753,6 +756,40 @@ describe("committed session mutations produce Home remote alerts", () => {
         expect(denied).toEqual({ ok: false, error: "session_discussion_invalid_mention" });
         await new Promise((resolve) => setTimeout(resolve, 100));
         expect(sendPushNotificationsAsyncSpy.mock.calls).toEqual([]);
+    });
+
+    it("never alerts a human author about their own Discussion mention", async () => {
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const mentioned = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const session = await db.session.create({ data: {
+            accountId: owner.id, tag: randomUUID(), metadata: "{}", encryptionMode: "plain",
+        } });
+        await db.sessionShare.create({ data: {
+            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: mentioned.id, accessLevel: "view",
+        } });
+        await enrollRemoteAlerts(owner.id);
+        const mentionedToken = await enrollRemoteAlerts(mentioned.id);
+
+        const created = await createSessionDiscussion({
+            authentication: discussionAuthentication,
+            actorAccountId: owner.id,
+            sessionId: session.id,
+            request: {
+                creationLocalId: `discussion-${randomUUID()}`,
+                titleContent: plainDiscussionTitle("Self mention"),
+                firstMessage: {
+                    localId: `message-${randomUUID()}`,
+                    content: plainDiscussionBody("cc me"),
+                    mentionedAccountIds: [owner.id, mentioned.id],
+                },
+            },
+        });
+        expect(created.ok).toBe(true);
+        if (!created.ok) return;
+
+        const alerts = await submittedAlerts();
+        expect(alerts.map((alert) => alert.accountId)).toEqual([mentioned.id]);
+        expect(submittedTokens()).toEqual([mentionedToken]);
     });
 
     it("alerts important followers for a committed human Discussion post without duplicating mention recipients", async () => {

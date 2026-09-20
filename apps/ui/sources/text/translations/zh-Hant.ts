@@ -37,11 +37,13 @@ import { actionOperationInboxTranslations } from './actionOperationInboxTranslat
 import { actionConfirmationTranslations } from './actionConfirmationTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 /**
  * Chinese (Traditional) translations for the Happier app
@@ -683,8 +685,9 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
 }
 
 const zhHantOverrides: DeepPartial<typeof zhHans> = {
+    homeDeviceApproval: homeDeviceApprovalTranslations['zh-Hant'],
     actionConfirmations: actionConfirmationTranslations['zh-Hant'],
-    workspaceSync: workspaceSyncDiagnosticTranslations['zh-Hant'],
+    workspaceSync: workspaceSyncTranslations['zh-Hant'],
     transferRecovery: {
         title: '完成暫存上傳',
         message: '上傳已到達裝置，但最終儲存需要處理。只重試最終儲存，或丟棄暫存上傳。',
@@ -720,6 +723,11 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
             },
             actions: {
                 manageAccess: '管理存取權',
+            },
+            provenance: {
+                sharedBy: ({ owner }: { owner: string }) => `由 ${owner} 共用`,
+                via: ({ source }: { source: string }) => `透過 ${source}`,
+                direct: '直接共用給你',
             },
             relationship: {
                 owner: '你的',
@@ -2376,6 +2384,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
         awaitingUpdates: "等待更新",
         queuedInput: "佇列中的輸入",
         unread: "未讀",
+        mentioned: "提到了你",
         connected: '已連線',
         connecting: '連線中',
         disconnected: '已中斷連線',
@@ -5425,6 +5434,7 @@ const zhHantOverrides: DeepPartial<typeof zhHans> = {
                 },
                                 panel: {
                   title: "代理",
+                  tabWithRunningCount: ({ count }: { count: number }) => `代理，${count} 個執行中`,
                   active: "活躍",
                   recent: "最近",
                   emptyActive: "沒有活躍代理。",
@@ -11223,11 +11233,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.zhHant.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.zhHant,
+      auth: {
+          signupClosed: '你的個人之家僅接受現有帳號。請使用已連接到此之家的帳號登入。',
+      },
       bootstrap: {
           title: '正在準備你的個人之家',
+          checkingStatus: '正在檢查你的個人之家…',
           ensuringHomeStatus: '正在準備你的本地之家。',
           preparingComputerStatus: '你的之家已準備就緒。正在背景準備此電腦。',
-          blockedStatus: '繼續之前，設定需要你處理。',
+          blockedStatus: '無法完成你的個人之家設定。',
           readyStatus: '你的之家已準備就緒。',
           failureBody: '無法完成此步驟。已完成的設定內容不會遺失；請再試一次或開啟詳細資料。',
           profileRecoveryBody: '你的個人之家已準備就緒。Happier 仍需完成與它的連接。',
@@ -11237,15 +11251,7 @@ settingsSession: {
           useExistingDetail: '驗證其存取權並保護註冊流程，同時不變更目前選取的之家。',
           useAnother: '使用另一個之家',
           useAnotherDetail: '保持此本地之家不變，並從你的之家中選擇。',
-          blocked: {
-              runtime_unhealthy: '本機 Home 需要處理後才能啟動。',
-              home_auth_invalid: 'Home 驗證需要處理。',
-              existing_runtime: '繼續設定前，需要先對已存在的本機 Home 做出選擇。',
-              personal_home_erased: '你的 Personal Home 已被刪除。重試以建立新的。',
-          },
-          blockedBody: {
-              personal_home_erased: 'Home 資料已被刪除。這裡沒有可復原的內容——請建立新的 Personal Home，或使用其他 Home。',
-          },
+          ...personalHomeBootstrapBlockedTranslations['zh-Hant'],
       },
   },
   settingsSearch: {

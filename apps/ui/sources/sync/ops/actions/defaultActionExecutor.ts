@@ -34,10 +34,10 @@ import {
 } from '@happier-dev/protocol';
 import {
   SESSION_BOARD_ACTION_INPUT_SCHEMAS_V1,
-  parseSessionBoardActionExecuteOutcomeV1,
   projectSessionBoardAdapterFailureV1,
   projectSessionBoardFeatureDecisionFailureV1,
-  type SessionBoardActionIdV1,
+  type SessionBoardActionFailureV1,
+  type SessionBoardOutcomeUnknownDetailsV1,
 } from '@happier-dev/protocol/sessions/board';
 import {
     resolveAmbientProviderConnectionForModelIntent,
@@ -179,37 +179,26 @@ import {
   submitAccountPasswordRemove,
 } from '@/sync/api/auth/accountSecurity';
 
+/**
+ * Scope retirement discards Account-owned result content but cannot undo a sent
+ * write, so the invocation reports back the exact packet the adapter froze for
+ * this Home and Session before dispatch. Nothing else can be an `outcome_unknown`
+ * answer: without that packet there is no ambiguous write to reconcile, and the
+ * retirement stays a definite refusal.
+ */
 export function projectRetiredSessionBoardActionFailure(input: Readonly<{
-  actionId: SessionBoardActionIdV1;
-  actionInput: unknown;
-  serverId: string;
-  sessionId: string;
   mutationDispatched: boolean;
   retirementStatus: string;
-  recoveryDetails: unknown;
-}>) {
-  if (!input.mutationDispatched) {
+  recoveryDetails: SessionBoardOutcomeUnknownDetailsV1 | null;
+}>): SessionBoardActionFailureV1 {
+  if (!input.mutationDispatched || !input.recoveryDetails) {
     return projectSessionBoardAdapterFailureV1({ code: input.retirementStatus }, 'forbidden');
   }
-  const projected = {
-    ok: false as const,
-    errorCode: 'outcome_unknown' as const,
-    error: 'outcome_unknown' as const,
-    details: input.recoveryDetails,
-  };
-  const recovery = parseSessionBoardActionExecuteOutcomeV1(
-    input.actionId,
-    input.actionInput,
-    projected,
-    { expectedServerId: input.serverId, expectedSessionId: input.sessionId },
-  );
   return {
-    ok: false as const,
-    errorCode: 'outcome_unknown' as const,
-    error: 'outcome_unknown' as const,
-    ...(recovery.success && recovery.kind === 'failure' && recovery.data.errorCode === 'outcome_unknown'
-      ? { details: recovery.data.details }
-      : {}),
+    ok: false,
+    errorCode: 'outcome_unknown',
+    error: 'outcome_unknown',
+    details: input.recoveryDetails,
   };
 }
 
@@ -479,7 +468,7 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
       }
       const address = { serverId, sessionId };
       let mutationDispatched = false;
-      let recoveryDetails: unknown = null;
+      let recoveryDetails: SessionBoardOutcomeUnknownDetailsV1 | null = null;
       const executed = await sync.withSessionSystemRecordRuntime(address, async (runtime) => {
         // The store row publishes the already-normalized projection; re-normalizing a raw
         // `effectiveAccess` field the row never carries refused every Board mutation.
@@ -514,33 +503,11 @@ export async function replayApprovedApprovalRequestAtExactDaemon(input: Readonly
           },
           capabilities: { readTranscript: access.capabilities.readTranscript, editSessionRecords: access.capabilities.editSessionRecords },
         })(args);
-        // A Board port answers with either a strict Board failure or the Action's
-        // canonical output; only the failure arm carries `ok`/`errorCode`.
-        if ('ok' in result && result.ok === false && result.errorCode === 'outcome_unknown') {
-          // Retain only the strict canonical recovery packet in this original
-          // invocation closure. Scope retirement still discards every ordinary
-          // Account-owned result and exposes nothing to the newly active scope.
-          const parsed = parseSessionBoardActionExecuteOutcomeV1(
-            args.actionId,
-            input,
-            result,
-            { expectedServerId: serverId, expectedSessionId: sessionId },
-          );
-          recoveryDetails = parsed.success
-            && parsed.kind === 'failure'
-            && parsed.data.errorCode === 'outcome_unknown'
-            ? parsed.data.details
-            : null;
-        }
         return result;
       });
       if (executed.status === 'ok') return executed.value;
       // Retirement discards Account-owned result content, but cannot undo a sent write.
       return projectRetiredSessionBoardActionFailure({
-        actionId: args.actionId,
-        actionInput: input,
-        serverId,
-        sessionId,
         mutationDispatched,
         retirementStatus: executed.status,
         recoveryDetails,

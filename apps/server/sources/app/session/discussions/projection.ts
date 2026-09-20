@@ -300,6 +300,16 @@ export async function countUnreadMentionsInTx(tx: Tx, params: Readonly<{
             AND: [
                 { OR: buildBeyondCursorPredicates(params.cursors) },
                 { mentions: { some: { accountId: params.viewerAccountId } } },
+                // The viewer's own directly authored post is never their own
+                // unread attention — the same exclusion the unread message
+                // count applies, so a self-mention cannot raise a badge.
+                {
+                    OR: [
+                        { authorAccountId: { not: params.viewerAccountId } },
+                        { authorAccountId: null },
+                        { producerV1: { not: getActivePrismaRuntime().DbNull } },
+                    ],
+                },
             ],
         },
         _count: { _all: true },

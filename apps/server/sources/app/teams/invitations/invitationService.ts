@@ -502,6 +502,8 @@ export type JoinScreenHomeIdentity = Readonly<{
     displayName: string | null;
     /** `null` until the Homes storage/method policy projection publishes one. */
     storageMode: "plain" | "encrypted" | null;
+    /** `null` until this runtime publishes a purpose of its own; never inferred. */
+    hosting: "personal" | "shared" | null;
 }>;
 
 export type TeamInvitationAuthEntryContext = Readonly<{

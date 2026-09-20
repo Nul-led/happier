@@ -203,7 +203,7 @@ function mountRepoScmConsumerScope(scmConsumerSessionId: string, repoRoot: strin
   storage.getState().updateSessionProjectScmSnapshot(scmConsumerSessionId, snapshot);
   const mountedScope = buildSessionRealtimeScmScopeFromSnapshot(
     storage.getState(),
-    scmConsumerSessionId,
+    { sessionId: scmConsumerSessionId },
     snapshot,
   );
   if (!mountedScope) throw new Error('Expected mounted SCM scope fixture');
@@ -254,6 +254,7 @@ describe('socket realtime SCM transcript consumers', () => {
         applyMessages,
         markSessionTranscriptDeferred,
       }),
+      sourceServerId: 'home-a',
       updateData: buildPlainEditToolNewMessageUpdate(hiddenSessionId, '/repo/packages/app/src/index.ts'),
     });
 
@@ -266,7 +267,8 @@ describe('socket realtime SCM transcript consumers', () => {
 
     // The side channel feeds the existing debounced workspace-mutation ingestion.
     await vi.advanceTimersByTimeAsync(300);
-    expect(invalidateFromMutation).toHaveBeenCalledWith(hiddenSessionId);
+    // The Home the realtime update arrived on travels into the exact invalidation branch.
+    expect(invalidateFromMutation).toHaveBeenCalledWith(hiddenSessionId, 'home-a');
     expect(invalidateFromAutoRefresh).not.toHaveBeenCalled();
     expect(storage.getState().sessionMessages[hiddenSessionId]).toBeUndefined();
   });

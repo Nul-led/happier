@@ -25,6 +25,17 @@ describe('sessionNeedsLiveTranscript', () => {
         expect(sameSession.active).toBe(true);
     });
 
+    it('does not make the same Session id on another Home a live transcript consumer', () => {
+        const otherHome = sessionNeedsLiveTranscript({
+            sessionId: 's1',
+            serverId: 'home-b',
+            scmMountedScopes: [{ serverId: 'home-a', sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+        });
+
+        expect(otherHome.reasons).not.toContain('scmSameSession');
+        expect(otherHome.active).toBe(false);
+    });
+
     it('does not promote hidden same-project sessions to full transcript consumers', () => {
         const hiddenSameProject = sessionNeedsLiveTranscript({
             sessionId: 's1',
@@ -66,6 +77,24 @@ describe('sessionScmMutationSignalWanted', () => {
             sessionId: 's1',
             sessionScmScope: { canonicalProjectKey: 'project-a' },
             scmMountedScopes: [{ sessionId: 's2', canonicalProjectKey: 'project-a' }],
+        })).toBe(false);
+    });
+
+    it('does not want the signal from a mounted consumer on another Home', () => {
+        expect(sessionScmMutationSignalWanted({
+            sessionId: 's1',
+            serverId: 'home-b',
+            sessionScmScope: { serverId: 'home-b', sessionId: 's1', canonicalProjectKey: 'project-a' },
+            scmMountedScopes: [{ serverId: 'home-a', sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+        })).toBe(false);
+    });
+
+    it('does not treat an identical canonical project key on another Home as the same scope', () => {
+        expect(sessionScmMutationSignalWanted({
+            sessionId: 's1',
+            serverId: 'home-b',
+            sessionScmScope: { serverId: 'home-b', sessionId: 's1', canonicalProjectKey: 'project-a' },
+            scmMountedScopes: [{ serverId: 'home-a', sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         })).toBe(false);
     });
 

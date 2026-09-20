@@ -32,39 +32,6 @@ export const SessionBoardFeatureGateErrorV1Schema = z.object({
   error: z.literal('not_found'),
 }).strict();
 
-/**
- * Project the Board route's closed error document through the generic Action
- * failure envelope without losing readable conflict revisions. Keeping this
- * projection beside the Board error schema prevents UI and daemon adapters
- * from growing similar-but-different failure mappings.
- */
-export function projectSessionBoardActionFailureV1(error: SessionBoardErrorV1): Readonly<{
-  ok: false;
-  errorCode: SessionBoardErrorCode;
-  error: SessionBoardErrorCode;
-  details?: Readonly<{
-    currentItemRevision?: string | null;
-    currentLayoutRevision?: string | null;
-  }>;
-}> {
-  const details = error.error === 'session_board_revision_conflict'
-    ? {
-        ...(error.currentItemRevision !== undefined
-          ? { currentItemRevision: error.currentItemRevision }
-          : {}),
-        ...(error.currentLayoutRevision !== undefined
-          ? { currentLayoutRevision: error.currentLayoutRevision }
-          : {}),
-      }
-    : {};
-  return {
-    ok: false,
-    errorCode: error.error,
-    error: error.error,
-    ...(Object.keys(details).length > 0 ? { details } : {}),
-  };
-}
-
 export type SessionBoardFeatureDecisionActionFailureV1 =
   | Readonly<{
       ok: false;

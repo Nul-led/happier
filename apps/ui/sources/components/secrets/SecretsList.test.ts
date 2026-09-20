@@ -16,7 +16,10 @@ import { SecretsList } from './SecretsList';
 
 vi.mock('@/text', async () => {
     const { createTextModuleMock } = await import('@/dev/testkit/mocks/text');
-    return createTextModuleMock({ translate: (key: string) => key });
+    // The testkit default serializes parameters as `key(name=value)`, which is
+    // what lets a row assert that the projected owner and access source reach
+    // the copy rather than only that some key was used.
+    return createTextModuleMock();
 });
 
 vi.mock('@expo/vector-icons', () => ({
@@ -179,6 +182,33 @@ describe('SecretsList', () => {
 
         expect(actions.props.actions.map((action: { id: string }) => action.id))
             .toEqual(['rename', 'rotate', 'manageAccess', 'delete']);
+    });
+
+    it('states who shared a recipient row and which access carries it', async () => {
+        // Picking a shared secret is a decision about whose credential a Session
+        // will spend. The Home already projects the recipient-safe owner and the
+        // access that grants the row; a row that shows only "Ready" makes two
+        // identically named secrets from two different Teams indistinguishable.
+        const viaTeam = {
+            ref: 'happier:shared-secret:v1:shared-team', source: 'shared_resource', relationship: 'recipient',
+            name: 'Deploy key', kind: 'apiKey', encryptionMode: null,
+            owner: { kind: 'account', accountId: 'owner-a', firstName: 'Ada', lastName: null, username: null, avatarUrl: null },
+            accessSources: [{ kind: 'team', teamId: 'team-1', name: 'Platform' }],
+            audience: null, ownerAccountId: null, revision: 2, materialStatus: 'ready',
+            capabilities: { use: true, rename: false, rotate: false, manageAccess: false, delete: false },
+        } as const satisfies SavedSecretCatalogEntryV1;
+        const direct = {
+            ...viaTeam,
+            ref: 'happier:shared-secret:v1:shared-direct',
+            accessSources: [{ kind: 'account' }],
+        } as const satisfies SavedSecretCatalogEntryV1;
+
+        const { screen } = await renderSecretsList({ sharedEntries: [viaTeam, direct] });
+
+        const rendered = screen.getTextContent();
+        expect(rendered).toContain('secrets.catalog.provenance.sharedBy(owner=Ada)');
+        expect(rendered).toContain('secrets.catalog.provenance.via(source=Platform)');
+        expect(rendered).toContain('secrets.catalog.provenance.direct');
     });
 
     it('offers a working refresh action when the shared catalog is stale', async () => {

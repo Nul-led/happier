@@ -15,6 +15,6 @@ describe("featuresRoutes rate limits", () => {
         const authenticated = getRouteEntry(app, "GET", "/v1/features/authenticated");
         expect(authenticated.opts.preHandler).toBe(app.authenticate);
         expect(authenticated.opts.config?.rateLimit).toEqual(publicRateLimit);
-        expect(authenticated.opts.config?.ephemeralSessionRunnerOperation).toBe("runtime_features");
+        expect(authenticated.opts.config?.ephemeralSessionRunnerBinding).toEqual({ scope: "account" });
     });
 });

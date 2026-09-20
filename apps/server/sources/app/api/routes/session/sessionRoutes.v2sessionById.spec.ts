@@ -124,7 +124,7 @@ describe("sessionRoutes v2 session by id", () => {
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId");
         const entry = route.app.routes.get("GET /v2/sessions/:sessionId");
         expect(entry?.opts.config)
-            .toMatchObject({ ephemeralSessionRunnerOperation: "session_detail" });
+            .toMatchObject({ ephemeralSessionRunnerBinding: { scope: "session", session: "params.sessionId" } });
         expect(entry?.opts.config?.allowApiToken).toBeUndefined();
         expect(entry?.opts.preHandler).toBe(route.app.authenticate);
     });
@@ -245,13 +245,15 @@ describe("sessionRoutes v2 session by id", () => {
         });
         const route = await createSessionRouteTestBuilder("GET", "/v2/sessions/:sessionId");
         const { response } = await route.invoke({ params: { sessionId: "private-read" } });
+        // The read frontier is this viewer's own cursor, Follow or not: a cursor row
+        // exists because they read the Session, and hiding it would replay what they
+        // already saw. Attention stays owner-or-Follow, so a cursor alone never
+        // produces a badge.
         expect(response).toMatchObject({ session: {
-            lastViewedSessionSeq: following ? 3 : 9,
-            unreadSince: following ? 1_000 : null,
+            lastViewedSessionSeq: 3,
+            unreadSince: 1_000,
             viewer: {
-                readState: following
-                    ? { state: "tracking", lastViewedSessionSeq: 3, unreadSince: 1_000 }
-                    : { state: "not_started" },
+                readState: { state: "tracking", lastViewedSessionSeq: 3, unreadSince: 1_000 },
                 attention: { needsAttention: following, reasons: following ? ["unread"] : [] },
                 relevance: { relevant: true, reasons: following
                     ? ["shared_directly_with_me", "followed_by_me"]

@@ -9,7 +9,10 @@ import { sync } from '@/sync/sync';
 
 const initialStorageState = storage.getState();
 
-type ExplicitScmConsumerHook = (sessionId: string | null, snapshot: ScmWorkingSnapshot | null) => void;
+type ExplicitScmConsumerHook = (
+  address: Readonly<{ serverId?: string | null; sessionId: string | null }>,
+  snapshot: ScmWorkingSnapshot | null,
+) => void;
 
 function buildSession(sessionId: string): Session {
   return {
@@ -92,7 +95,7 @@ describe('session realtime SCM consumer hooks', () => {
 
     const hook = await renderHook(() => {
       const snapshot = hooks.useSessionProjectScmSnapshot(sessionId);
-      useSessionRealtimeScmTranscriptConsumer(sessionId, snapshot);
+      useSessionRealtimeScmTranscriptConsumer({ serverId: 'home-a', sessionId }, snapshot);
       return snapshot;
     });
 
@@ -100,6 +103,7 @@ describe('session realtime SCM consumer hooks', () => {
       expect(hook.getCurrent()).toBeNull();
       expect(readMountedSessionRealtimeScmConsumerScopes()).toEqual([
         {
+          serverId: 'home-a',
           sessionId,
           needsMutationTranscript: true,
         },
@@ -121,13 +125,14 @@ describe('session realtime SCM consumer hooks', () => {
 
     const hook = await renderHook(() => {
       const snapshot = hooks.useSessionProjectScmSnapshot(sessionId);
-      useSessionRealtimeScmTranscriptConsumer(sessionId, snapshot);
+      useSessionRealtimeScmTranscriptConsumer({ serverId: 'home-a', sessionId }, snapshot);
       return snapshot;
     });
 
     try {
       expect(readMountedSessionRealtimeScmConsumerScopes()).toEqual([
         {
+          serverId: 'home-a',
           sessionId,
           needsMutationTranscript: true,
         },
@@ -140,6 +145,7 @@ describe('session realtime SCM consumer hooks', () => {
       expect(hook.getCurrent()).toBeNull();
       expect(readMountedSessionRealtimeScmConsumerScopes()).toEqual([
         {
+          serverId: 'home-a',
           sessionId,
           needsMutationTranscript: true,
         },

@@ -35,12 +35,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 const mcpServersUxTranslationExtension = {
   mcpServersConfiguredEmptySubtitle: 'Erstelle einen Server, importiere Host-JSON oder installiere ein empfohlenes Preset.',
@@ -508,8 +510,9 @@ function plural({ count, singular, plural }: { count: number; singular: string; 
  * - New translation keys must be added to ALL language files
  */
 export const de: TranslationStructure = {
+    homeDeviceApproval: homeDeviceApprovalTranslations.de,
     actionConfirmations: actionConfirmationTranslations.de,
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations.de, error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations.de.error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations.de.resolve } },
+    workspaceSync: workspaceSyncTranslations.de,
     sessionDrafts: sessionDraftTranslations.de,
     transferRecovery: {
         title: 'Vorgemerkten Upload abschließen',
@@ -1607,6 +1610,7 @@ export const de: TranslationStructure = {
         awaitingUpdates: "Warten auf Aktualisierungen",
         queuedInput: "Eingabe in Warteschlange",
         unread: "Ungelesen",
+        mentioned: "Hat dich erwähnt",
         connected: 'verbunden',
         connecting: 'verbindet',
         disconnected: 'getrennt',
@@ -6737,6 +6741,7 @@ export const de: TranslationStructure = {
             },
             panel: {
                 title: 'Agents',
+                tabWithRunningCount: ({ count }: { count: number }) => `Agents, ${count} laufen`,
                 active: 'Aktiv',
                 recent: 'Zuletzt',
                 emptyActive: 'Keine aktiven Agents.',
@@ -13720,6 +13725,11 @@ settingsSession: {
             actions: {
                 manageAccess: 'Zugriff verwalten',
             },
+            provenance: {
+                sharedBy: ({ owner }: { owner: string }) => `Geteilt von ${owner}`,
+                via: ({ source }: { source: string }) => `über ${source}`,
+                direct: 'Direkt mit dir geteilt',
+            },
             relationship: {
                 owner: 'Deine',
                 recipient: 'Mit dir geteilt',
@@ -14481,11 +14491,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.de.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.de,
+        auth: {
+            signupClosed: 'Dein persönliches Zuhause akzeptiert nur vorhandene Konten. Melde dich mit einem Konto an, das bereits mit diesem Zuhause verbunden ist.',
+        },
         bootstrap: {
             title: 'Dein persönliches Zuhause wird vorbereitet',
+            checkingStatus: 'Dein persönliches Zuhause wird überprüft…',
             ensuringHomeStatus: 'Dein lokales Zuhause wird eingerichtet.',
             preparingComputerStatus: 'Dein Zuhause ist bereit. Dieser Computer wird im Hintergrund vorbereitet.',
-            blockedStatus: 'Die Einrichtung benötigt deine Aufmerksamkeit, bevor wir fortfahren können.',
+            blockedStatus: 'Dein persönliches Zuhause konnte nicht vollständig eingerichtet werden.',
             readyStatus: 'Dein Zuhause ist bereit.',
             failureBody: 'Dieser Schritt konnte nicht abgeschlossen werden. Deine bereits abgeschlossene Einrichtung ist sicher. Versuch es erneut oder öffne die Details.',
             profileRecoveryBody: 'Dein persönliches Zuhause ist bereit. Happier muss die Verbindung noch fertigstellen.',
@@ -14495,15 +14509,7 @@ settingsSession: {
             useExistingDetail: 'Überprüfe den Zugriff und sichere die Registrierung, ohne dein ausgewähltes Zuhause zu ändern.',
             useAnother: 'Ein anderes Zuhause verwenden',
             useAnotherDetail: 'Lass dieses lokale Zuhause unverändert und wähle eines deiner Zuhause aus.',
-            blocked: {
-                runtime_unhealthy: 'Dein lokales Home braucht Aufmerksamkeit, bevor es starten kann.',
-                home_auth_invalid: 'Die Home-Anmeldung braucht Aufmerksamkeit.',
-                existing_runtime: 'Ein vorhandenes lokales Home braucht eine Entscheidung, bevor die Einrichtung weitergeht.',
-                personal_home_erased: 'Dein Personal Home wurde gelöscht. Versuche es erneut, um ein neues zu erstellen.',
-            },
-            blockedBody: {
-                personal_home_erased: 'Deine Home-Daten wurden gelöscht. Hier gibt es nichts wiederherzustellen — erstelle ein neues Personal Home oder nutze ein anderes Home.',
-            },
+            ...personalHomeBootstrapBlockedTranslations.de,
         },
     },
     settingsSearch: {

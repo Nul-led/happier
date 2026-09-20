@@ -76,6 +76,20 @@ describe("Key Challenge password mutation (real database)", () => {
         expect(await prepared.consume()).toBe(false);
     });
 
+    it("claims exactly one of two simultaneous valid proofs over the same credential revision", async () => {
+        const prepared = await prepare();
+        // Two concurrent transactions present the same valid proof for the same
+        // revision. The claim is once-only, so exactly one commits the mutation
+        // and the loser is refused rather than silently applying twice.
+        const outcomes = await Promise.allSettled([prepared.consume(), prepared.consume()]);
+        const claims = outcomes.map((outcome) => outcome.status === "fulfilled" ? outcome.value : "rejected");
+        expect(claims.filter((claim) => claim === true)).toHaveLength(1);
+        expect(claims.filter((claim) => claim === true || claim === false || claim === "rejected")).toHaveLength(2);
+        expect(await db.keyChallengeV2.findUnique({ where: { id: prepared.challenge.challengeId } }))
+            .toMatchObject({ consumedAt: expect.any(Date) });
+        expect(await prepared.consume()).toBe(false);
+    });
+
     it("reads persisted Home identity within the caller transaction and rejects a changed Home", async () => {
         const prepared = await prepare();
         const wrongHome = { ...process.env, HAPPIER_SERVER_IDENTITY_ID: "srv_different_home" };

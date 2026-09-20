@@ -140,6 +140,7 @@ describe('WorkspaceMutationInvalidator', () => {
 
         expect(onInvalidate).toHaveBeenCalledWith({
             sessionId: 's1',
+            serverId: null,
             changedPaths: ['src/native.ts'],
             hasUnknownMutations: false,
         });

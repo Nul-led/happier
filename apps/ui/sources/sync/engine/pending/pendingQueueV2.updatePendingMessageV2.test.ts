@@ -2260,7 +2260,7 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         ]);
     });
 
-    it('does not settle or mutate an exact pending projection when its Account retires while PATCH is in flight', async () => {
+    it('settles the accepted admission without local projection when its Account retires while PATCH is in flight', async () => {
         const sessionId = 's_exact_patch_retired';
         const localId = 'exact-pending';
         const exactScope = { serverId: 'server-b', accountId: 'account-b' } as const;
@@ -2296,6 +2296,8 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
             sessionId,
             pendingId: localId,
             text: 'edited',
+            structuredInput: { v: 1 },
+            preparedComposerAdmission: { stagedMediaHandles: [] },
             encryption: null,
             request,
             outboxScope: exactScope,
@@ -2306,7 +2308,14 @@ describe('pendingQueueV2 updatePendingMessageV2', () => {
         current = false;
         releasePatch();
 
-        await expect(update).rejects.toThrow('Pending owner server-account scope changed');
+        // The 204 IS the acceptance. A retired owner scope may only stop the
+        // local projection; turning the accepted write into a rejection loses
+        // the Composer's one post-accept settlement.
+        await expect(update).resolves.toMatchObject({
+            sessionId,
+            localId,
+            stagedMediaHandles: [],
+        });
         expect(request).toHaveBeenCalledTimes(1);
         expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([original]);
     });

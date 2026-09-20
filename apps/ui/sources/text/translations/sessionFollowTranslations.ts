@@ -3,6 +3,8 @@ const en = {
     "unfollow": "Unfollow",
     "following": "Following",
     "notifications": "Notifications",
+    "unavailableTitle": "Following is not available",
+    "unavailableDescription": "This Home does not offer session following.",
     "editor": {
         "title": "Follow this session",
         "subtitle": "Get the updates that matter to you.",
@@ -46,6 +48,7 @@ const en = {
         "sourceKeyPreparing": "Preparing encrypted access…",
         "sourceKeyWaiting": "Waiting for encrypted access.",
         "sourceKeyUnavailable": "This computer can't provide encrypted access.",
+        "sourceSessionKeyUnavailable": "This session's encrypted access is not available here.",
         "catchUpPending": "Catch-up pending"
     },
     "preferences": {
@@ -70,6 +73,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Deixa de seguir",
         "following": "Seguint",
         "notifications": "Notificacions",
+        "unavailableTitle": "El seguiment no està disponible",
+        "unavailableDescription": "Aquesta Home no ofereix el seguiment de sessions.",
         "editor": {
             "title": "Segueix aquesta sessió",
             "subtitle": "Rep les actualitzacions que t’importen.",
@@ -113,6 +118,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Preparant l’accés xifrat…",
             "sourceKeyWaiting": "Esperant l’accés xifrat.",
             "sourceKeyUnavailable": "Aquest ordinador no pot proporcionar accés xifrat.",
+            "sourceSessionKeyUnavailable": "L’accés xifrat d’aquesta sessió no està disponible aquí.",
             "catchUpPending": "Actualitzacions pendents"
         },
         "preferences": {
@@ -129,6 +135,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Nicht mehr folgen",
         "following": "Gefolgt",
         "notifications": "Benachrichtigungen",
+        "unavailableTitle": "Folgen ist nicht verfügbar",
+        "unavailableDescription": "Dieses Home bietet kein Session-Following an.",
         "editor": {
             "title": "Dieser Sitzung folgen",
             "subtitle": "Erhalte die Updates, die dir wichtig sind.",
@@ -172,6 +180,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Verschlüsselten Zugriff vorbereiten…",
             "sourceKeyWaiting": "Warten auf verschlüsselten Zugriff.",
             "sourceKeyUnavailable": "Dieser Computer kann keinen verschlüsselten Zugriff bereitstellen.",
+            "sourceSessionKeyUnavailable": "Der verschlüsselte Zugriff dieser Session ist hier nicht verfügbar.",
             "catchUpPending": "Nachholen ausstehend"
         },
         "preferences": {
@@ -188,6 +197,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Dejar de seguir",
         "following": "Siguiendo",
         "notifications": "Notificaciones",
+        "unavailableTitle": "El seguimiento no está disponible",
+        "unavailableDescription": "Este Home no ofrece el seguimiento de sesiones.",
         "editor": {
             "title": "Seguir esta sesión",
             "subtitle": "Recibe las novedades que te importan.",
@@ -231,6 +242,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Preparando el acceso cifrado…",
             "sourceKeyWaiting": "Esperando el acceso cifrado.",
             "sourceKeyUnavailable": "Este equipo no puede proporcionar acceso cifrado.",
+            "sourceSessionKeyUnavailable": "El acceso cifrado de esta sesión no está disponible aquí.",
             "catchUpPending": "Actualización pendiente"
         },
         "preferences": {
@@ -247,6 +259,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Ne plus suivre",
         "following": "Suivi",
         "notifications": "Notifications",
+        "unavailableTitle": "Le suivi n’est pas disponible",
+        "unavailableDescription": "Ce Home ne propose pas le suivi de sessions.",
         "editor": {
             "title": "Suivre cette session",
             "subtitle": "Recevez les nouvelles qui comptent pour vous.",
@@ -290,6 +304,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Préparation de l’accès chiffré…",
             "sourceKeyWaiting": "En attente de l’accès chiffré.",
             "sourceKeyUnavailable": "Cet ordinateur ne peut pas fournir d’accès chiffré.",
+            "sourceSessionKeyUnavailable": "L’accès chiffré de cette session n’est pas disponible ici.",
             "catchUpPending": "Rattrapage en attente"
         },
         "preferences": {
@@ -306,6 +321,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Smetti di seguire",
         "following": "Seguita",
         "notifications": "Notifiche",
+        "unavailableTitle": "Il following non è disponibile",
+        "unavailableDescription": "Questo Home non offre il following delle sessioni.",
         "editor": {
             "title": "Segui questa sessione",
             "subtitle": "Ricevi gli aggiornamenti che ti interessano.",
@@ -349,6 +366,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Preparazione dell’accesso crittografato…",
             "sourceKeyWaiting": "In attesa dell’accesso crittografato.",
             "sourceKeyUnavailable": "Questo computer non può fornire l’accesso crittografato.",
+            "sourceSessionKeyUnavailable": "L’accesso crittografato di questa sessione non è disponibile qui.",
             "catchUpPending": "Recupero in sospeso"
         },
         "preferences": {
@@ -365,6 +383,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "フォローを解除",
         "following": "フォロー中",
         "notifications": "通知",
+        "unavailableTitle": "フォローは利用できません",
+        "unavailableDescription": "この Home はセッションのフォローに対応していません。",
         "editor": {
             "title": "このセッションをフォロー",
             "subtitle": "大切な更新を受け取ります。",
@@ -408,6 +428,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "暗号化アクセスを準備しています…",
             "sourceKeyWaiting": "暗号化アクセスを待っています。",
             "sourceKeyUnavailable": "このコンピューターでは暗号化アクセスを提供できません。",
+            "sourceSessionKeyUnavailable": "このセッションの暗号化アクセスはここでは利用できません。",
             "catchUpPending": "追いつき処理を待機中"
         },
         "preferences": {
@@ -424,6 +445,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Przestań obserwować",
         "following": "Obserwowana",
         "notifications": "Powiadomienia",
+        "unavailableTitle": "Obserwowanie jest niedostępne",
+        "unavailableDescription": "Ten Home nie obsługuje obserwowania sesji.",
         "editor": {
             "title": "Obserwuj tę sesję",
             "subtitle": "Otrzymuj aktualizacje, które są dla Ciebie ważne.",
@@ -467,6 +490,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Przygotowywanie szyfrowanego dostępu…",
             "sourceKeyWaiting": "Oczekiwanie na szyfrowany dostęp.",
             "sourceKeyUnavailable": "Ten komputer nie może zapewnić szyfrowanego dostępu.",
+            "sourceSessionKeyUnavailable": "Szyfrowany dostęp do tej sesji jest tu niedostępny.",
             "catchUpPending": "Oczekuje na nadrobienie"
         },
         "preferences": {
@@ -483,6 +507,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Deixar de seguir",
         "following": "A seguir",
         "notifications": "Notificações",
+        "unavailableTitle": "Seguir não está disponível",
+        "unavailableDescription": "Esta Home não oferece o seguimento de sessões.",
         "editor": {
             "title": "Seguir esta sessão",
             "subtitle": "Recebe as atualizações que te interessam.",
@@ -526,6 +552,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "A preparar o acesso encriptado…",
             "sourceKeyWaiting": "A aguardar acesso encriptado.",
             "sourceKeyUnavailable": "Este computador não consegue fornecer acesso encriptado.",
+            "sourceSessionKeyUnavailable": "O acesso encriptado desta sessão não está disponível aqui.",
             "catchUpPending": "Atualização pendente"
         },
         "preferences": {
@@ -542,6 +569,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "Отписаться",
         "following": "Вы подписаны",
         "notifications": "Уведомления",
+        "unavailableTitle": "Отслеживание недоступно",
+        "unavailableDescription": "Этот Home не поддерживает отслеживание сессий.",
         "editor": {
             "title": "Подписаться на эту сессию",
             "subtitle": "Получайте важные для вас обновления.",
@@ -585,6 +614,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "Подготовка зашифрованного доступа…",
             "sourceKeyWaiting": "Ожидание зашифрованного доступа.",
             "sourceKeyUnavailable": "Этот компьютер не может предоставить зашифрованный доступ.",
+            "sourceSessionKeyUnavailable": "Зашифрованный доступ к этой сессии здесь недоступен.",
             "catchUpPending": "Ожидается синхронизация"
         },
         "preferences": {
@@ -601,6 +631,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "取消关注",
         "following": "已关注",
         "notifications": "通知",
+        "unavailableTitle": "无法关注",
+        "unavailableDescription": "此 Home 不支持关注会话。",
         "editor": {
             "title": "关注此会话",
             "subtitle": "接收对你重要的更新。",
@@ -644,6 +676,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "正在准备加密访问…",
             "sourceKeyWaiting": "正在等待加密访问。",
             "sourceKeyUnavailable": "此计算机无法提供加密访问。",
+            "sourceSessionKeyUnavailable": "此会话的加密访问在此处不可用。",
             "catchUpPending": "待补充更新"
         },
         "preferences": {
@@ -660,6 +693,8 @@ export const sessionFollowTranslations: Record<
         "unfollow": "取消關注",
         "following": "已關注",
         "notifications": "通知",
+        "unavailableTitle": "無法追蹤",
+        "unavailableDescription": "此 Home 不支援追蹤工作階段。",
         "editor": {
             "title": "關注此工作階段",
             "subtitle": "接收對你重要的更新。",
@@ -703,6 +738,7 @@ export const sessionFollowTranslations: Record<
             "sourceKeyPreparing": "正在準備加密存取…",
             "sourceKeyWaiting": "正在等待加密存取。",
             "sourceKeyUnavailable": "此電腦無法提供加密存取。",
+            "sourceSessionKeyUnavailable": "此工作階段的加密存取在此無法使用。",
             "catchUpPending": "待補充更新"
         },
         "preferences": {

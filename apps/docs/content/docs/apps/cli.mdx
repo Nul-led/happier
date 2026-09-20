@@ -618,6 +618,14 @@ SSH auth modes:
 - `keyfile` uses a private key path
 - `password` prompts for a password in the terminal when supported
 
+SSH host identity:
+
+`--yes` behaves like OpenSSH's `accept-new`. It trusts an unknown host on first use, and it refuses a host whose stored key has *changed* — that prompt is the one case where the key on the wire may not belong to the host you meant. Confirm a legitimate key change in an interactive terminal, or pass the exact new `known_hosts` line with `--trusted-host-key <line>` for an unattended run. The same rule applies to every `happier home` command that reaches a host over SSH, including `home create`, `home relocate`, and `home restore`.
+
+<Callout type="warn">
+Changed in 0.3: `--yes` no longer accepts a changed SSH host key. Unattended runs against a rebuilt host now need `--trusted-host-key <line>`.
+</Callout>
+
 Tip: if you want to save the host for later reuse in the app, use the desktop Remote Hosts screen instead of a one-off inline SSH bootstrap. The inline SSH bootstrap is intentionally one-off; reusable SSH profiles live in the app.
 
 ### Generic/operator server runtime

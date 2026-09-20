@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { ScrollView, View, type LayoutChangeEvent } from 'react-native';
+import { ScrollView, useWindowDimensions, View, type LayoutChangeEvent } from 'react-native';
 import { useSharedValue } from 'react-native-reanimated';
 import { StyleSheet, useUnistyles } from 'react-native-unistyles';
 
@@ -437,6 +437,9 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     const continuity = useMountedSessionBoardContinuity();
     const heightBounds = props.heightBounds ?? DEFAULT_HEIGHT_BOUNDS;
     const [gridWidth, setGridWidth] = React.useState(0);
+    const windowHeight = useWindowDimensions().height;
+    const [measuredViewportHeight, setMeasuredViewportHeight] = React.useState(0);
+    const [bodyWindowTopOffset, setBodyWindowTopOffset] = React.useState(0);
     const [renamingViewId, setRenamingViewId] = React.useState<string | null>(null);
     const [mobileQuery, setMobileQuery] = React.useState('');
     const placementRects = React.useRef(new Map<string, SessionBoardItemRect>());
@@ -550,6 +553,34 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
         });
     };
 
+    /**
+     * Which cards build their body.
+     *
+     * Opening a Board must not instantiate every document, hosted surface and
+     * plugin frame it holds, so a card outside a near-viewport window draws its
+     * chrome and waits. Nothing here is an invented budget: the window is one
+     * measured viewport of overscan either side of the scroll position, and an
+     * item that has not been laid out yet is placed by the surface's own
+     * minimum card height (`heightBounds.min`), which is a sound lower bound on
+     * where ordinal `n` can start. Before the ScrollView reports its height the
+     * platform window height stands in for it, so the very first frame is
+     * bounded too.
+     *
+     * Card chrome always renders, so an offscreen card keeps its title, menu and
+     * accessibility identity; only the expensive content waits.
+     */
+    const bodyWindowQuantum = Math.max(1, heightBounds.min);
+    const bodyWindowViewport = measuredViewportHeight > 0 ? measuredViewportHeight : windowHeight;
+    const bodyWindowTop = bodyWindowTopOffset - bodyWindowViewport;
+    const bodyWindowBottom = bodyWindowTopOffset + bodyWindowQuantum + (bodyWindowViewport * 2);
+    const isItemBodyNearViewport = (itemId: string, ordinal: number): boolean => {
+        if (bodyWindowViewport <= 0) return true;
+        const rect = placementRects.current.get(itemId);
+        if (!rect) return ordinal * bodyWindowQuantum <= bodyWindowBottom;
+        const top = gridContentY.current + rect.y;
+        return top + rect.height >= bodyWindowTop && top <= bodyWindowBottom;
+    };
+
     // Item recovery navigation comes from the same controller that answers for the
     // Board-level card above, so an item and its Board can never disagree about
     // whether a way out of a locked or retired source exists.
@@ -558,6 +589,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
         width: SessionBoardItemWidth,
         expanded = false,
         projectedOverride?: SessionBoardItemProjection,
+        deferBody = false,
     ) => {
         const projected = projectedOverride ?? snapshot.itemsById.get(itemId);
         if (!projected) return null;
@@ -602,6 +634,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                 )}
                 width={width}
                 heightBounds={heightBounds}
+                {...(deferBody ? { deferBody: true } : {})}
                 {...(controller.headingFocusRequest?.itemId === itemId
                     ? {
                         focusHeadingRequestId: controller.headingFocusRequest.requestId,
@@ -825,6 +858,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                         scrollViewportY.current = event.nativeEvent.layout.y;
                         scrollViewportTop.value = 0;
                         scrollViewportHeight.value = event.nativeEvent.layout.height;
+                        setMeasuredViewportHeight(event.nativeEvent.layout.height);
                     }}
                     onContentSizeChange={(_width, height) => {
                         scrollContentHeight.value = height;
@@ -834,6 +868,12 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                         scrollOffsetY.current = event.nativeEvent.contentOffset.y;
                         scrollOffset.value = event.nativeEvent.contentOffset.y;
                         capturePresentationPosition(event.nativeEvent.contentOffset.y);
+                        // Quantized by one minimum card height so a flick advances the
+                        // body window once per card rather than once per frame.
+                        const nextWindowTop = Math.max(0, Math.floor(
+                            event.nativeEvent.contentOffset.y / bodyWindowQuantum,
+                        ) * bodyWindowQuantum);
+                        setBodyWindowTopOffset((current) => (current === nextWindowTop ? current : nextWindowTop));
                     }}
                 >
                     {props.navigationOnly && props.onOpenBoardDetails ? (
@@ -906,11 +946,13 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                     style={props.layout === 'grid' ? styles.grid : styles.single}
                                     onLayout={onGridLayout}
                                 >
-                                    {visiblePlacements.map((placement) => {
+                                                    {visiblePlacements.map((placement, ordinal) => {
                                         const width = itemWidthFor(placement.width);
+                                        const deferBody = !isItemBodyNearViewport(placement.itemId, ordinal);
                                         return (
                                             <View
                                                 key={placement.itemId}
+                                                testID={`${testID}-placement-${placement.itemId}`}
                                                 style={width === null ? undefined : { width, minWidth: 0 }}
                                                 onLayout={(event) => {
                                                     const { x, y, width: measuredWidth, height } = event.nativeEvent.layout;
@@ -922,7 +964,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                                     });
                                                 }}
                                             >
-                                                {renderItem(placement.itemId, placement.width)}
+                                                {renderItem(placement.itemId, placement.width, false, undefined, deferBody)}
                                             </View>
                                         );
                                     })}

@@ -7,7 +7,6 @@ import { presentSessionAccessFailure, presentSessionAccessReason } from './prese
 describe('session access failure presentation', () => {
     it.each([
         ['session_access_subject_ineligible', 'This person, group, or team can no longer receive access.'],
-        ['session_access_transcript_not_shareable', 'This session cannot be shared until its transcript is available.'],
         ['session_access_team_policy_required', 'Team policy requires this access.'],
     ] as const)('keeps %s distinct for locked manager controls', (code, message) => {
         expect(presentSessionAccessReason(code)).toEqual({ code, message });
@@ -27,6 +26,16 @@ describe('session access failure presentation', () => {
         );
         expect(unsupported.message).not.toBe(
             presentSessionAccessFailure(new SessionAccessApiError('data_key_not_required')).message,
+        );
+    });
+
+    it('states that a Plain Session needs no encrypted-access preparation', () => {
+        // `data_key_not_required` is the Home answering "this Session is not
+        // encrypted", so it must never read as unreadable encrypted content.
+        const notRequired = presentSessionAccessFailure(new SessionAccessApiError('data_key_not_required'));
+        expect(notRequired.message).toBe('This session isn’t encrypted, so there’s nothing to prepare.');
+        expect(notRequired.message).not.toBe(
+            presentSessionAccessFailure(new SessionAccessApiError('session_access_invalid_recipient_envelope')).message,
         );
     });
 

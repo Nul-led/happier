@@ -774,6 +774,51 @@ describe('SessionAutomationsScreen', () => {
         expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/automations/new');
     });
 
+    it('keeps the exact Home on the add-automation route when the screen is scoped to one', async () => {
+        sessionState.value = {
+            id: 's1',
+            active: false,
+            encryptionMode: 'plain',
+            metadata: {
+                path: '/tmp/project',
+                flavor: 'claude',
+                claudeSessionId: 'claude-session-1',
+                claudeTranscriptPath: '/tmp/claude-session-1.jsonl',
+            },
+        };
+        setStorageStateForSession({
+            session: sessionState.value,
+            machines: {
+                'm-target': {
+                    id: 'm-target',
+                    active: true,
+                    activeAt: 10,
+                    metadata: { host: 'mbp-host' },
+                },
+            },
+            getProjectForSession: (sessionId: string) => sessionId === 's1'
+                ? { key: { machineId: 'm-target', rootPath: '/tmp/project' } }
+                : null,
+        });
+
+        const { SessionAutomationsScreen } = await import('./SessionAutomationsScreen');
+
+        const screen = await renderScreen(React.createElement(SessionAutomationsScreen, {
+            sessionId: 's1',
+            hydrationOptions: { serverId: 'home-b' },
+        }));
+
+        const add = findTestInstanceByTypeContainingText(screen.tree, 'Pressable', 'Add automation');
+        if (!add) {
+            throw new Error('Add automation pressable was not found');
+        }
+        await act(async () => {
+            pressTestInstance(add, 'Add automation');
+        });
+
+        expect(routerPushSpy).toHaveBeenCalledWith('/session/s1/automations/new?serverId=home-b');
+    });
+
     it('uses the machine-control target when explaining why a scoped session cannot add automations', async () => {
         sessionState.value = {
             id: 's1',

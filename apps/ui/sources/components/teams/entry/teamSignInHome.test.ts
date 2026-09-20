@@ -6,6 +6,9 @@ const profileState = vi.hoisted(() => ({
 }));
 
 vi.mock('@/sync/domains/server/serverProfiles', () => ({
+    adoptHomeProfile: vi.fn(),
+    getServerProfilesGeneration: () => 0,
+    subscribeServerProfiles: () => () => {},
     getServerProfileById: (id: string) => profileState.byId.get(id) ?? null,
     resolveServerProfileForPortableIdentity: (identity: string) => {
         const profile = profileState.portable.get(identity);
@@ -37,29 +40,49 @@ describe('resolveTeamSignInHome', () => {
         profileState.portable.clear();
     });
 
-    it('defers an unadopted descriptor to the Homes acquisition owner', () => {
-        const home = resolveTeamSignInHome({ carrier: descriptorCarrier('srv_acme') });
+    it('carries the Homes acquisition states for a descriptor carrier instead of downgrading them', () => {
+        const carrier = descriptorCarrier('srv_acme');
 
-        // The descriptor identifies the intended Home but cannot, by itself,
-        // prove that the endpoint presenting that identity is trustworthy. The
-        // existing Homes acquisition flow must observe and adopt it before this
-        // Team consumer may send authentication or invitation authority there.
-        expect(home).toEqual({
-            kind: 'unknown_home',
-            homeServerIdentityId: 'srv_acme',
-        });
+        // The descriptor names a Home this device has not adopted, which is the
+        // ordinary first-device case. The acquisition owner observes and adopts
+        // it in place, exactly as the join screen does, so Team sign-in must
+        // render that lifecycle rather than dropping the descriptor and sending
+        // the person to a manual Add Home flow that never sees it.
+        expect(resolveTeamSignInHome({ carrier, linkTarget: { kind: 'acquiring' } }))
+            .toEqual({ kind: 'acquiring' });
+
+        const retry = () => {};
+        expect(resolveTeamSignInHome({
+            carrier,
+            linkTarget: { kind: 'acquisition_failed', reason: 'unreachable', retry },
+        })).toEqual({ kind: 'acquisition_failed', reason: 'unreachable', retry });
     });
 
     it('prefers the adopted profile when the carrier names a Home this device already has', () => {
         profileState.portable.set('srv_acme', { id: 'profile-acme' });
+        const carrier = descriptorCarrier('srv_acme');
 
-        const home = resolveTeamSignInHome({ carrier: descriptorCarrier('srv_acme') });
+        const home = resolveTeamSignInHome({
+            carrier,
+            linkTarget: {
+                kind: 'resolved',
+                serverId: 'profile-acme',
+                target: { kind: 'saved_profile', profileRef: 'profile-acme' },
+            },
+        });
 
         expect(home).toEqual({
             kind: 'resolved',
             target: { kind: 'saved_profile', profileRef: 'profile-acme' },
             savedProfileId: 'profile-acme',
         });
+    });
+
+    it('keeps an identity-only carrier on the manual Add Home remedy', () => {
+        expect(resolveTeamSignInHome({
+            carrier: 'srv_legacy',
+            linkTarget: { kind: 'unknown_home', homeServerIdentityId: 'srv_legacy' },
+        })).toEqual({ kind: 'unknown_home', homeServerIdentityId: 'srv_legacy' });
     });
 
     it('still accepts the device-local reference used by in-app navigation and OAuth return', () => {

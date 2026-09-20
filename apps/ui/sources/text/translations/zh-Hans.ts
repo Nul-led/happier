@@ -39,12 +39,14 @@ import { actionConfirmationTranslations } from './actionConfirmationTranslations
 import { sessionDraftTranslations } from './sessionDraftTranslations';
 import { accountServiceOAuthTranslations } from './accountServiceOAuthTranslations';
 import { personalHomeSettingsTranslations } from './personalHomeSettingsTranslations';
+import { homeDeviceApprovalTranslations } from './homeDeviceApprovalTranslations';
 import { homeGovernanceTranslations } from './homeGovernanceTranslations';
 import { workflowTranslations } from './workflowTranslations';
 import { teamsTranslations } from './teamsTranslations';
 import { identityAdministrationTranslations } from './identityAdministrationTranslations';
 import { en } from './en';
-import { workspaceSyncDiagnosticTranslations } from './workspaceSyncDiagnosticTranslations';
+import { workspaceSyncTranslations } from './workspaceSyncDiagnosticTranslations';
+import { personalHomeBootstrapBlockedTranslations } from './personalHomeBootstrapBlockedTranslations';
 
 /**
  * Chinese (Simplified) translations for the Happier app
@@ -659,8 +661,9 @@ function plural({
 }
 
 export const zhHans = {
+    homeDeviceApproval: homeDeviceApprovalTranslations['zh-Hans'],
     actionConfirmations: actionConfirmationTranslations['zh-Hans'],
-    workspaceSync: { ...en.workspaceSync, ...workspaceSyncDiagnosticTranslations['zh-Hans'], error: { ...en.workspaceSync.error, ...workspaceSyncDiagnosticTranslations['zh-Hans'].error }, resolve: { ...en.workspaceSync.resolve, ...workspaceSyncDiagnosticTranslations['zh-Hans'].resolve } },
+    workspaceSync: workspaceSyncTranslations['zh-Hans'],
     sessionDrafts: sessionDraftTranslations.zhHans,
     transferRecovery: {
         title: '完成暂存上传',
@@ -1602,6 +1605,7 @@ export const zhHans = {
     awaitingUpdates: "等待更新",
     queuedInput: "排队中的输入",
     unread: "未读",
+    mentioned: "提到了你",
     connected: "已连接",
     connecting: "连接中",
     disconnected: "已断开",
@@ -6252,6 +6256,7 @@ export const zhHans = {
         },
                 panel: {
           title: "代理",
+          tabWithRunningCount: ({ count }: { count: number }) => `代理，${count} 个运行中`,
           active: "活跃",
           recent: "最近",
           emptyActive: "没有活跃代理。",
@@ -13112,6 +13117,11 @@ settingsSession: {
       actions: {
         manageAccess: "管理访问权限",
       },
+      provenance: {
+          sharedBy: ({ owner }: { owner: string }) => `由 ${owner} 共享`,
+          via: ({ source }: { source: string }) => `通过 ${source}`,
+          direct: '直接共享给你',
+      },
       relationship: {
         owner: "你的",
         recipient: "共享给你的",
@@ -13581,11 +13591,15 @@ settingsSession: {
     identityAdministration: identityAdministrationTranslations.zhHans.identityAdministration,
     personalHome: {
         settings: personalHomeSettingsTranslations.zhHans,
+        auth: {
+            signupClosed: '你的个人之家仅接受现有账户。请使用已连接到此之家的账户登录。',
+        },
         bootstrap: {
             title: '正在准备你的个人之家',
+            checkingStatus: '正在检查你的个人之家…',
             ensuringHomeStatus: '正在准备你的本地之家。',
             preparingComputerStatus: '你的之家已准备就绪。正在后台准备此计算机。',
-            blockedStatus: '继续之前，设置需要你处理。',
+            blockedStatus: '无法完成你的个人之家设置。',
             readyStatus: '你的之家已准备就绪。',
             failureBody: '无法完成此步骤。已完成的设置内容不会丢失；请重试或打开详情。',
             profileRecoveryBody: '你的个人之家已准备就绪。Happier 仍需完成与它的连接。',
@@ -13595,15 +13609,7 @@ settingsSession: {
             useExistingDetail: '验证其访问权限并保护注册流程，同时不更改当前选中的之家。',
             useAnother: '使用另一个之家',
             useAnotherDetail: '保持此本地之家不变，并从你的之家中选择。',
-            blocked: {
-                runtime_unhealthy: '本地 Home 需要处理后才能启动。',
-                home_auth_invalid: 'Home 认证需要处理。',
-                existing_runtime: '继续设置前，需要先对已存在的本地 Home 做出选择。',
-                personal_home_erased: '你的 Personal Home 已被删除。重试以创建一个新的。',
-            },
-            blockedBody: {
-                personal_home_erased: 'Home 数据已被删除。这里没有可恢复的内容——请创建新的 Personal Home，或使用其他 Home。',
-            },
+            ...personalHomeBootstrapBlockedTranslations['zh-Hans'],
         },
     },
     settingsSearch: {

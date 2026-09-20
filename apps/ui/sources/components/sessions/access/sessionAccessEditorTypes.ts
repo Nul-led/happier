@@ -34,7 +34,14 @@ export type SessionAccessDelegationControlModel =
     | Readonly<{ kind: 'editable'; value: boolean }>
     | Readonly<{ kind: 'locked'; value: boolean; reason: SessionAccessUiReason }>;
 export type SessionAccessRemovalModel =
-    | Readonly<{ kind: 'allowed' | 'confirming' }>
+    | Readonly<{ kind: 'allowed' }>
+    /**
+     * `consequences` are the Home's own preview of what this removal breaks —
+     * today the Team credential selections that survive only while this subject
+     * can read the Session. Empty when the Home publishes no preview, so the
+     * confirmation reads exactly as it did before.
+     */
+    | Readonly<{ kind: 'confirming'; consequences: readonly string[] }>
     | Readonly<{ kind: 'blocked'; reason: SessionAccessUiReason }>;
 export type SessionAccessGrantOperationModel =
     | Readonly<{ kind: 'idle' | 'saving' | 'removing' }>

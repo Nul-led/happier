@@ -8,6 +8,7 @@ import {
 } from "./sessionAccess";
 import type { SessionAccessAuthentication } from "./sessionAccessAuthentication";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
+import { readRunnerActivationAuthenticationInTx } from "@/app/ephemeralRunner/activationAuthentication";
 
 export type SessionContextInjectionDecision =
     | Readonly<{ ok: true; destinationRuntimeAccountId: string }>
@@ -214,15 +215,29 @@ export async function assertSessionFollowSourceReadInTx(
     if (destination.accountId !== destinationRuntimeAccountId) {
         return { ok: false, reason: "destination_runtime_not_allowed" };
     }
-    const authentication = input.principal.kind === "destination_runtime"
-        ? input.principal.authentication
-        : {
-            env: process.env,
-            authority: "account_automation" as const,
-            authenticationEvidence: undefined,
-        };
+    const authentication = await resolveSessionFollowRuntimePrincipalAuthenticationInTx(tx, input.principal);
     return await evaluateSessionContextPairInTx(tx, source.id, destination, {
         kind: "runtime_principal",
         authentication,
     });
+}
+
+/**
+ * The credential a runtime Follow principal actually holds.
+ *
+ * A destination runtime carries the credential its request was admitted with.
+ * A Runner holds no request credential of its own: its authority is the
+ * activation the creator authorized, so the server-owned activation snapshot is
+ * the only honest evidence for it. Synthesizing an evidence-free automation
+ * credential here silently denies every restricted-Team source the activation
+ * was explicitly authorized to read.
+ */
+export async function resolveSessionFollowRuntimePrincipalAuthenticationInTx(
+    tx: Tx,
+    principal: SessionFollowRuntimePrincipalV1,
+    env: NodeJS.ProcessEnv = process.env,
+): Promise<SessionAccessAuthentication> {
+    return principal.kind === "destination_runtime"
+        ? principal.authentication
+        : await readRunnerActivationAuthenticationInTx(tx, principal, env);
 }

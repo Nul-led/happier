@@ -4,6 +4,7 @@ import type { SessionListSecondaryLineMode } from '../../../../sync/domains/sess
 export type SessionRowAttentionState =
     | 'quiet'
     | 'attention'
+    | 'mentioned'
     | 'unread'
     | 'pending'
     | 'working'
@@ -36,6 +37,7 @@ export type SessionRowStatusTextKey =
 export type SessionRowAccessibilityStatusTextKey =
     | SessionRowStatusTextKey
     | 'status.unread'
+    | 'status.mentioned'
     | 'status.queuedInput'
     | 'sessionsList.attentionSectionTitle';
 
@@ -145,6 +147,10 @@ function resolveAccessibilityStatusTextKey(input: Readonly<{
             return 'status.error';
         case 'ready':
             return 'status.readyForReview';
+        // A mention shares the unread marker but never its words: a row that
+        // only says "unread" cannot tell a reader somebody asked them something.
+        case 'mentioned':
+            return 'status.mentioned';
         case 'unread':
             return 'status.unread';
         case 'pending':
@@ -181,6 +187,7 @@ function resolveAttentionIndicator(
             return 'failed';
         case 'attention':
             return 'attention';
+        case 'mentioned':
         case 'unread':
             return 'unread';
         case 'pending':

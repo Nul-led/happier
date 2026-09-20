@@ -72,7 +72,7 @@ describe('materializeSavedSecretResources', () => {
         } satisfies SavedSecretResourceMaterialV1;
         const encrypted = {
             resourceId: 'resource-b', encryptionMode: 'e2ee',
-            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b' },
+            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b', name: 'Encrypted key', kind: 'token' },
             storedContent: sealSavedSecretResourceStoredContentV1({
                 resourceId: 'resource-b', mode: 'e2ee', resourceDataKey: dataKey,
                 content: { v: 1, name: 'Encrypted key', kind: 'token', value: 'encrypted-value' },
@@ -94,7 +94,7 @@ describe('materializeSavedSecretResources', () => {
     it('fails one corrupt row closed without hiding independently usable resources', async () => {
         const plain = {
             resourceId: 'resource-b', encryptionMode: 'plain',
-            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b' },
+            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b', name: 'Usable key' },
             storedContent: sealSavedSecretResourceStoredContentV1({
                 resourceId: 'resource-b', mode: 'plain',
                 content: { v: 1, name: 'Usable key', kind: 'apiKey', value: 'usable-value' },
@@ -115,5 +115,50 @@ describe('materializeSavedSecretResources', () => {
         expect(result.materializedSecrets.map((secret) => secret.id)).toEqual([plain.entry.ref]);
         expect(result.entries.find((candidate) => candidate.ref === entry.ref)?.materialStatus)
             .toBe('temporarily_unavailable');
+    });
+
+    it('refuses material whose opened identity contradicts the catalog entry', async () => {
+        // The content is authenticated, so this is not forgery: it is a catalog
+        // row and a material snapshot that no longer describe the same secret.
+        // Handing the picker that pair would let a Session be bound to a secret
+        // the person did not choose, so the row fails closed like any other
+        // unusable material instead of silently renaming itself.
+        const mismatchedName = {
+            resourceId: 'resource-a', encryptionMode: 'plain', entry,
+            storedContent: sealSavedSecretResourceStoredContentV1({
+                resourceId: 'resource-a', mode: 'plain',
+                content: { v: 1, name: 'Other key', kind: 'apiKey', value: 'plain-value' },
+            }),
+            recipientEnvelope: null,
+        } satisfies SavedSecretResourceMaterialV1;
+        const mismatchedKind = {
+            resourceId: 'resource-b', encryptionMode: 'plain',
+            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-b' },
+            storedContent: sealSavedSecretResourceStoredContentV1({
+                resourceId: 'resource-b', mode: 'plain',
+                content: { v: 1, name: 'Team key', kind: 'token', value: 'plain-value' },
+            }),
+            recipientEnvelope: null,
+        } satisfies SavedSecretResourceMaterialV1;
+        const agreeing = {
+            resourceId: 'resource-c', encryptionMode: 'plain',
+            entry: { ...entry, ref: 'happier:shared-secret:v1:resource-c' },
+            storedContent: sealSavedSecretResourceStoredContentV1({
+                resourceId: 'resource-c', mode: 'plain',
+                content: { v: 1, name: 'Team key', kind: 'apiKey', value: 'plain-value' },
+            }),
+            recipientEnvelope: null,
+        } satisfies SavedSecretResourceMaterialV1;
+
+        const result = await materializeSavedSecretResources({
+            resources: [mismatchedName, mismatchedKind, agreeing],
+            decryptDataKeyEnvelope: async () => null,
+        });
+
+        expect(result.materializedSecrets.map((secret) => secret.id)).toEqual([agreeing.entry.ref]);
+        expect(result.entries.find((candidate) => candidate.ref === entry.ref)?.materialStatus)
+            .toBe('temporarily_unavailable');
+        expect(result.entries.find((candidate) => candidate.ref === mismatchedKind.entry.ref)?.capabilities.use)
+            .toBe(false);
     });
 });

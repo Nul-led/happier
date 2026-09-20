@@ -18,15 +18,44 @@ import type { AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
 import type { VerifiedEphemeralSessionRunnerPrincipal } from "@happier-dev/protocol/ephemeralRunner/principal";
 import type { ExternalActionTargetV1 } from "@happier-dev/protocol/actions";
 
-export type EphemeralSessionRunnerHttpOperation =
-    | "runtime_features"
-    | "session_detail"
-    | "session_shared_editor"
-    | "session_runtime"
-    | "session_follow_destination_runtime"
-    | "session_machine_runtime"
-    | "session_usage_event"
-    | "provider_broker_open";
+/**
+ * Exact request field that names the Session an HTTP route acts on. A route
+ * declares the one it reads; admission never searches the request for a
+ * Session, so a route that names none is simply not Runner-reachable.
+ */
+export type EphemeralSessionRunnerRouteSessionField =
+    | "params.sessionId"
+    | "params.destinationSessionId"
+    | "body.sessionId"
+    | "body.consumer.sessionId";
+
+/** Exact request field that names the Machine an HTTP route acts on. */
+export type EphemeralSessionRunnerRouteMachineField =
+    | "body.machineId"
+    | "body.initiatorMachineId";
+
+/**
+ * How a route binds a restricted Runner credential to the Session and Machine
+ * that credential was issued for.
+ *
+ * Under the 2026-09-05 ruling the Runner is an ordinary daemon runtime under a
+ * Session+Machine-scoped principal: there is no server-local list of Runner
+ * "operations". A route states where its request names the Session (and, when
+ * it acts on a Machine, where it names that), and HTTP admission binds those
+ * exact values to the principal. Which Session capability the operation then
+ * requires stays with the domain owner that already resolves Session access;
+ * this boundary never duplicates that decision.
+ */
+export type EphemeralSessionRunnerRouteBinding =
+    /** Account-scoped: the route reads nothing Session-specific. */
+    | Readonly<{ scope: "account" }>
+    | Readonly<{
+        scope: "session";
+        session: EphemeralSessionRunnerRouteSessionField;
+        machine?: EphemeralSessionRunnerRouteMachineField;
+        /** The Machine field is optional in this route's body; absent means Session-only. */
+        machineOptional?: true;
+    }>;
 
 export type Fastify = FastifyInstance<
     Server<typeof IncomingMessage, typeof ServerResponse>,
@@ -44,8 +73,8 @@ declare module 'fastify' {
         allowAccountDirectoryToken?: true;
         /** Released pre-provenance Home credentials are denied when a route family opts out. */
         allowLegacyHomeToken?: false;
-        /** Runner credentials are denied unless the route names one closed, exact-scope operation. */
-        ephemeralSessionRunnerOperation?: EphemeralSessionRunnerHttpOperation;
+        /** Runner credentials are denied unless the route binds them to their exact Session/Machine. */
+        ephemeralSessionRunnerBinding?: EphemeralSessionRunnerRouteBinding;
         /** Keeps connection authentication rejection distinct from an authenticated subject failure. */
         connectionAuthFailureError?: "authentication_failed" | "invalid_token";
         /** Route-family error whose declared response schema represents a denied restricted credential. */

@@ -61,13 +61,6 @@ type ResourceAudience = Readonly<{
     memberGrants: readonly { teamMembershipId: string; deliveryMode: string }[];
 }>;
 
-/**
- * Bounded overfetch for the external-API administration filter: five candidate
- * windows is far more than any real Team needs to fill one page, and it keeps
- * a pathological keyset from turning one listing into an unbounded scan.
- */
-const EXTERNAL_API_FILTER_MAX_CANDIDATE_WINDOWS = 5;
-
 const NO_AUDIENCE: ResourceAudience = { groupGrants: [], memberGrants: [] };
 
 async function readAudiencesInTx(tx: Tx, resourceIds: readonly string[]): Promise<Map<string, ResourceAudience>> {
@@ -608,8 +601,12 @@ async function readCurrentDirectMaterialReferencesInTx(
             }
         }
     }
+    // The custodian publishes a source version per member the moment direct
+    // delivery is configured, so a published set with no envelope for this
+    // recipient yet is "preparing", not "never delivered".
+    const publishedForDirect = published !== null && Object.keys(published).length > 0;
     if (recipientBinding?.status !== 'ready' || published === null) {
-        return { current: [], materialCount: materials.length };
+        return { current: [], materialCount: materials.length, publishedForDirect };
     }
     const recipientCurrentness = recipientBinding.currentness;
     const current = materials.filter((material) => (
@@ -635,7 +632,7 @@ async function readCurrentDirectMaterialReferencesInTx(
                 ? [{ sourceMemberKey, sourceVersion }]
                 : [];
     });
-    return { current, materialCount: materials.length };
+    return { current, materialCount: materials.length, publishedForDirect };
 }
 
 function projectCurrentDirectMaterialReferences(input: Readonly<{
@@ -646,9 +643,10 @@ function projectCurrentDirectMaterialReferences(input: Readonly<{
     recipientBinding: ReturnType<typeof deriveAccountEncryptionCurrentnessFromRow> | null;
 }>) {
     const published = parsePublishedTeamCredentialSourceVersions(input.row.directSourceVersionsJson);
+    const publishedForDirect = published !== null && Object.keys(published).length > 0;
     const recipientBinding = input.recipientBinding;
     if (recipientBinding?.status !== 'ready' || published === null || input.source === null) {
-        return { current: [], materialCount: input.materials.length };
+        return { current: [], materialCount: input.materials.length, publishedForDirect };
     }
     const currentByKey = new Map(projectTeamCredentialDirectSourceCurrentnesses(input.source, input.sourceResolution).map(current => [
         computeTeamCredentialSourceMemberKeyV1(current.sourceMember), current,
@@ -665,6 +663,7 @@ function projectCurrentDirectMaterialReferences(input: Readonly<{
                 } } : {}) }];
         }),
         materialCount: input.materials.length,
+        publishedForDirect,
     };
 }
 
@@ -748,18 +747,29 @@ async function projectCatalogEntryInTx(
         custodianAccountId: row.custodianAccountId,
         source,
     });
+    // A reached allowance is the recipient-visible readiness for this route, not
+    // a silent `available`: the limit owner already resolved the exact metric and
+    // reset, and the picker renders both. It stays behind the structural reasons
+    // above, which no retry can clear.
     const readiness = !policy.success || (sourceResolution?.status === "unavailable" && sourceResolution.reason === "invalid_source_binding")
         ? { kind: "resource_corrupt" as const }
         : sourceResolution?.status === "unavailable"
             ? { kind: "source_unavailable" as const }
             : source?.kind === 'provider_connection'
                 ? { kind: "source_unavailable" as const }
-                : { kind: "available" as const };
+                : usageLimit
+                    ? {
+                        kind: "limit_reached" as const,
+                        metric: usageLimit.metric,
+                        resetsAtUtc: usageLimit.resetsAtUtc,
+                    }
+                    : { kind: "available" as const };
     const recoveryAction = readiness.kind === "available" ? null
         : readiness.kind === "source_unavailable" ? "source_owner_action" as const
             : readiness.kind === "resource_corrupt" ? "source_owner_action" as const
-                : "choose_another_resource" as const;
-    let directMaterialState: "revoked" | "never_delivered" | "current" | "stale" = "revoked";
+                : readiness.kind === "limit_reached" ? "retry" as const
+                    : "choose_another_resource" as const;
+    let directMaterialState: "revoked" | "never_delivered" | "preparing" | "current" | "stale" = "revoked";
     let currentDirectReferences: readonly Readonly<{
         sourceMemberKey: string;
         sourceVersion: string;
@@ -783,7 +793,12 @@ async function projectCatalogEntryInTx(
             ? "current"
             : material.materialCount > 0 || wasDirectlyDelivered
                 ? "stale"
-                : "never_delivered";
+                // The custodian has published this resource's direct source
+                // versions, so envelopes for this recipient are owed and on the
+                // way: "preparing", not "never delivered".
+                : material.publishedForDirect
+                    ? "preparing"
+                    : "never_delivered";
     }
     const placementRead = readTeamCredentialBrokerPlacement(row);
     const hasBrokerPlacement = placementRead.ok && placementRead.placement !== null;
@@ -804,7 +819,10 @@ async function projectCatalogEntryInTx(
         directMaterialState,
         sessionUsePolicy: policy.success ? policy.data : null,
         providerModels: [],
-        connectedServiceSelections: readiness.kind === "available"
+        // A reached allowance does not unselect the route: the recipient keeps the
+        // row, sees when it resets, and the next request is refused by the one
+        // admission owner rather than by a hidden catalog.
+        connectedServiceSelections: readiness.kind === "available" || readiness.kind === "limit_reached"
             ? [
                 ...(entitlement.mayBroker && hasBrokerPlacement ? [{
                     source: "team_resource" as const,
@@ -1106,7 +1124,11 @@ export async function readTeamCredentialResourcePageInTx(tx: Tx, input: Credenti
         let windowAfter = after;
         let moreCandidates = false;
         let lastCandidate: ResourceRow | null = null;
-        for (let pass = 0; pass < EXTERNAL_API_FILTER_MAX_CANDIDATE_WINDOWS; pass += 1) {
+        // The keyset is the bound: the walk stops when the page fills or the
+        // Team's own resources are exhausted, the same storage boundary the
+        // unfiltered listing already scans. A local window budget would answer
+        // an empty page beside a cursor that still points at matching rows.
+        while (true) {
             const candidates = await readAdministrationCandidates(windowAfter);
             moreCandidates = candidates.length > limit;
             const processed = candidates.slice(0, limit);

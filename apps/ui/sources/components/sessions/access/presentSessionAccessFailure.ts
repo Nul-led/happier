@@ -21,8 +21,6 @@ function sessionAccessFailureMessage(code: string, status?: number): string {
             return t('session.access.subjectNotFound');
         case 'session_access_subject_ineligible':
             return t('session.access.subjectIneligible');
-        case 'session_access_transcript_not_shareable':
-            return t('session.access.transcriptNotShareable');
         case 'session_access_authentication_required':
             return t('session.access.authenticationRequired');
         case 'session_access_authentication_unavailable':
@@ -32,8 +30,11 @@ function sessionAccessFailureMessage(code: string, status?: number): string {
             return t('session.access.setup');
         case 'session_access_invalid_recipient_envelope':
             return t('session.access.repair');
+        // The Home saying this Session needs no data key is the Plain answer, not
+        // an encryption failure: the collection reader already treats it as
+        // "nothing to prepare", so the copy must not assert the opposite.
         case 'data_key_not_required':
-            return t('session.access.unavailable');
+            return t('session.access.notRequired');
         // The Home, not the content, is the missing capability here: this Session
         // is otherwise usable and the person needs an update/availability reason.
         case 'unsupported_action':
@@ -71,7 +72,6 @@ export function presentSessionAccessFailure(
             || error.code === 'session_access_permission_delegation_forbidden'
             || error.code === 'session_access_permission_delegation_requires_edit'
             || error.code === 'session_access_team_policy_required'
-            || error.code === 'session_access_transcript_not_shareable'
             || error.code === 'session_access_authentication_required'
             || error.code === 'session_access_authentication_unavailable'
             || error.code === 'session_access_external_sharing_requires_team_admin'
