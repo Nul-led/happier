@@ -18,6 +18,7 @@ import {
     useAccountServiceEntryOptions,
     type AccountServiceEntryTargetContext,
 } from '@/components/account/auth/useAccountServiceEntryOptions';
+import { describeHomeAuthenticationAction } from '@/components/account/auth/homeAuthenticationActionPresentation';
 import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
 import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
@@ -25,6 +26,7 @@ import {
     WelcomeActionList,
     type WelcomeActionAdmission,
 } from '@/components/onboarding/preAuth/WelcomeActionList';
+import { projectTeamAuthAction } from '@/components/teams/entry/teamAuthAction';
 import { presentTeamEntryUnavailableReason } from '@/components/teams/entry/teamAuthenticationFailure';
 import { resolveTeamJoinPresentation } from '@/components/teams/join/teamJoinOutcome';
 import { TeamInvitationPreviewDetails } from '@/components/teams/join/TeamInvitationPreviewDetails';
@@ -530,6 +532,14 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
         }
     }, [accountServiceContext, accountServiceDiscovery, accountServiceReturnTo, resolvedTarget]);
 
+    /**
+     * A definite negative answer from the service the Home named. `loading` is
+     * deliberately excluded: the actions below render immediately, so flashing a
+     * failure while the probe is still open would be untrue.
+     */
+    const accountServiceUnreachable = accountServiceContext.kind === 'home'
+        && (accountServiceEntry.status === 'unavailable' || accountServiceEntry.status === 'unsupported');
+
     let content: React.ReactNode;
     if (loadState.kind === 'ready') {
         const { projection } = loadState;
@@ -752,25 +762,63 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                         subtitle={t('settingsAccount.accountServiceSignInService')}
                                         onPress={() => { router.push(accountServiceHref); }}
                                     />
-                                ) : null}
-                                {projection.actions.map((action, index) => action.kind === 'authenticate' ? (
+                                ) : accountServiceUnreachable ? (
+                                    /*
+                                     * The Home says sign-in happens at a service this device
+                                     * cannot reach. Dropping the handoff silently would leave the
+                                     * page claiming the Home's own methods are all there is, which
+                                     * is not what the Home published. The account-entry surfaces
+                                     * answer this exact state the same way — name it and offer the
+                                     * same probe again — so this reuses their copy and the hook's
+                                     * own `retry` rather than inventing a second recovery.
+                                     */
                                     <WelcomeActionCard
-                                        key={`${action.origin}:${action.methodId}:${action.action}:${action.mode}`}
-                                        testID={`team-auth-entry-action:${action.methodId}`}
-                                        primary={index === 0 && accountServiceHref === null}
-                                        title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
-                                        onPress={() => props.onSelectAction({
-                                            action,
-                                            teamId: projection.team.teamId,
-                                            teamName: projection.team.name,
-                                            target: props.target,
-                                            ...(invitation ? {
-                                                invitationEmailVerificationRequired:
-                                                    invitationProjection?.invitationEmailVerificationRequired === true,
-                                            } : {}),
-                                        })}
+                                        testID="team-auth-entry-account-service-unavailable"
+                                        primary={false}
+                                        iconName="cloud-slash"
+                                        title={accountServiceEntry.status === 'unsupported'
+                                            ? t('welcome.signInServiceUnsupportedTitle')
+                                            : t('welcome.signInServiceUnavailableTitle')}
+                                        subtitle={t('welcome.signInServiceUnavailableHomeBody')}
+                                        onPress={accountServiceEntry.retry}
                                     />
-                                ) : null)}
+                                ) : null}
+                                {projection.actions.map((action, index) => {
+                                    if (action.kind !== 'authenticate') return null;
+                                    /*
+                                     * The card says which journey it starts with the same glyph
+                                     * Welcome and the shared auth host use, because one owner
+                                     * answers that per execution and this page already converts a
+                                     * Team action into exactly that execution before running it.
+                                     */
+                                    const execution = projectTeamAuthAction(action)?.execution ?? null;
+                                    return (
+                                        <WelcomeActionCard
+                                            key={`${action.origin}:${action.methodId}:${action.action}:${action.mode}`}
+                                            testID={`team-auth-entry-action:${action.methodId}`}
+                                            primary={index === 0 && accountServiceHref === null}
+                                            title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
+                                            {...(execution
+                                                ? {
+                                                    iconName: describeHomeAuthenticationAction({
+                                                        execution,
+                                                        providerName: action.presentation.displayName,
+                                                    }).iconName,
+                                                }
+                                                : {})}
+                                            onPress={() => props.onSelectAction({
+                                                action,
+                                                teamId: projection.team.teamId,
+                                                teamName: projection.team.name,
+                                                target: props.target,
+                                                ...(invitation ? {
+                                                    invitationEmailVerificationRequired:
+                                                        invitationProjection?.invitationEmailVerificationRequired === true,
+                                                } : {}),
+                                            })}
+                                        />
+                                    );
+                                })}
                                 {switchAccountOffered && props.onRecoverIdentity ? (
                                     <WelcomeActionCard
                                         testID="team-auth-entry-use-another-account"

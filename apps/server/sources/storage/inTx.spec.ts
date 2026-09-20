@@ -21,6 +21,16 @@ vi.mock("@/app/monitoring/metrics/sessionWriteMetrics", () => ({
     recordDatabaseTransactionRetry: (...args: any[]) => recordDatabaseTransactionRetry(...args),
 }));
 
+// `installDbModuleMock` uses `vi.doMock`, which is not hoisted, so `./inTx`
+// has to load after the mocks above — but it must not load inside a case
+// either. Paying the file's first transform inside a case's 20 s test budget
+// is what made the first case time out under host load and leave its still
+// running `inTx` to land an extra `$transaction` call in the next case. The
+// module reads the environment per call (`inTx.ts:115-116`), so one load here,
+// during collection, serves every case.
+const inTxModule = await import("./inTx");
+const { inTx, afterTx } = inTxModule;
+
 describe("inTx", () => {
     const envSnapshot = snapshotEnv();
 
@@ -35,7 +45,6 @@ describe("inTx", () => {
     });
 
     it("reports a failed after-commit callback instead of discarding it", async () => {
-        const { inTx, afterTx } = await import("./inTx");
         const later = vi.fn();
         const failure = new Error("eviction publication failed");
 
@@ -62,7 +71,6 @@ describe("inTx", () => {
             HAPPIER_DB_PROVIDER: undefined,
         });
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 123);
 
         expect(result).toBe(123);
@@ -79,7 +87,6 @@ describe("inTx", () => {
             HAPPIER_DB_TX_MAX_WAIT_MS: "7000",
         });
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 456);
 
         expect(result).toBe(456);
@@ -103,7 +110,6 @@ describe("inTx", () => {
             HAPPIER_DB_PROVIDER: undefined,
         });
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 321, { isolationLevel: "ReadCommitted" });
 
         expect(result).toBe(321);
@@ -123,7 +129,6 @@ describe("inTx", () => {
         });
         vi.spyOn(Date, "now").mockReturnValue(1_000);
 
-        const { inTx } = await import("./inTx");
         await expect(inTx(async () => 123, { deadlineAtMs: 10_000 })).resolves.toBe(123);
 
         expect(transaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
@@ -144,7 +149,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(Object.assign(new Error("retry me"), { code: "P2034" }))
             .mockImplementationOnce(async (fn: any, _opts?: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 789);
 
         expect(result).toBe(789);
@@ -171,7 +175,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(Object.assign(new Error("retry me 8"), { code: "P2034" }))
             .mockImplementationOnce(async (fn: any, _opts?: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 1337);
 
         expect(result).toBe(1337);
@@ -195,7 +198,6 @@ describe("inTx", () => {
             .mockImplementationOnce(async (fn: any, _opts?: any) => fn({} as any));
         const transactionBody = vi.fn(async () => 790);
 
-        const { inTx } = await import("./inTx");
         await expect(inTx(transactionBody)).resolves.toBe(790);
 
         expect(transaction).toHaveBeenCalledTimes(2);
@@ -217,7 +219,6 @@ describe("inTx", () => {
         transaction.mockRejectedValue(acquisitionError);
         const transactionBody = vi.fn(async () => 791);
 
-        const inTxModule = await import("./inTx");
         const rejection = await inTxModule.inTx(transactionBody).catch((error: unknown) => error);
 
         expect(rejection).toBeInstanceOf(inTxModule.TransactionAcquisitionUnavailableError);
@@ -239,7 +240,6 @@ describe("inTx", () => {
             throw operationError;
         });
 
-        const { inTx } = await import("./inTx");
         await expect(inTx(transactionBody)).rejects.toBe(operationError);
 
         expect(transaction).toHaveBeenCalledTimes(1);
@@ -257,7 +257,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(new Error("could not serialize access due to read/write dependencies among transactions"))
             .mockImplementationOnce(async (fn: any, _opts?: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 4242);
 
         expect(result).toBe(4242);
@@ -273,7 +272,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(Object.assign(new Error("Socket timeout"), { code: "P1008" }))
             .mockImplementationOnce(async (fn: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 9001);
 
         expect(result).toBe(9001);
@@ -288,7 +286,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(Object.assign(new Error("Timed out fetching a new connection"), { code: "P2024" }))
             .mockImplementationOnce(async (fn: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
         const result = await inTx(async () => 9002);
 
         expect(result).toBe(9002);
@@ -312,7 +309,6 @@ describe("inTx", () => {
             .mockRejectedValueOnce(timeoutError)
             .mockImplementationOnce(async (fn: any) => fn({} as any));
 
-        const { inTx } = await import("./inTx");
 
         await expect(inTx(async () => 9003)).rejects.toBe(timeoutError);
         expect(transaction).toHaveBeenCalledTimes(1);

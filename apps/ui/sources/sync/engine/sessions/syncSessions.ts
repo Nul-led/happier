@@ -174,9 +174,20 @@ function readNewSessionId(body: NewSessionSocketUpdateBody): string | null {
     return id || null;
 }
 
+/**
+ * Session mode is parsed explicitly, never inferred from key presence
+ * (`docs/encryption.md`, "Session System Records in the UI"). A body that states a
+ * mode must state one this client understands: anything else is inconsistent
+ * material and fails closed as `null` rather than being reinterpreted as either
+ * representation. Only a body that omits the field falls back to the envelope,
+ * because the released predecessor server emits `new-session` without
+ * `encryptionMode` at all (`../0.2/apps/server/sources/app/events/eventPayloadBuilders.ts`).
+ */
 function resolveNewSessionEncryptionMode(body: NewSessionSocketUpdateBody): 'e2ee' | 'plain' | null {
-    if (body.encryptionMode === 'plain') return 'plain';
-    if (body.encryptionMode === 'e2ee') return 'e2ee';
+    if (body.encryptionMode !== undefined && body.encryptionMode !== null) {
+        if (body.encryptionMode === 'plain') return 'plain';
+        return body.encryptionMode === 'e2ee' ? 'e2ee' : null;
+    }
     if (typeof body.dataEncryptionKey === 'string' && body.dataEncryptionKey.length > 0) return 'e2ee';
     return null;
 }

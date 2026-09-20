@@ -4,12 +4,14 @@ import { sessionNeedsLiveTranscript, sessionScmMutationSignalWanted } from './se
 
 describe('sessionNeedsLiveTranscript', () => {
     it('activates for visible, explicit, and voice-tracked sessions', () => {
-        expect(sessionNeedsLiveTranscript({ sessionId: 's1', isVisible: true }).reasons).toContain('visible');
+        expect(sessionNeedsLiveTranscript({ serverId: null, sessionId: 's1', isVisible: true }).reasons).toContain('visible');
         expect(sessionNeedsLiveTranscript({
+            serverId: null,
             sessionId: 's1',
             explicitTranscriptConsumerSessionIds: ['s1'],
         }).reasons).toContain('explicitTranscriptConsumer');
         expect(sessionNeedsLiveTranscript({
+            serverId: null,
             sessionId: 's1',
             voiceTrackedSessionIds: ['s1'],
         }).reasons).toContain('voiceTracked');
@@ -17,8 +19,9 @@ describe('sessionNeedsLiveTranscript', () => {
 
     it('keeps the mounted SCM consumer session itself a live transcript consumer', () => {
         const sameSession = sessionNeedsLiveTranscript({
+            serverId: null,
             sessionId: 's1',
-            scmMountedScopes: [{ sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+            scmMountedScopes: [{ serverId: null, sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         });
 
         expect(sameSession.reasons).toContain('scmSameSession');
@@ -38,8 +41,9 @@ describe('sessionNeedsLiveTranscript', () => {
 
     it('does not promote hidden same-project sessions to full transcript consumers', () => {
         const hiddenSameProject = sessionNeedsLiveTranscript({
+            serverId: null,
             sessionId: 's1',
-            scmMountedScopes: [{ sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+            scmMountedScopes: [{ serverId: null, sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         });
 
         expect(hiddenSameProject.active).toBe(false);
@@ -50,33 +54,37 @@ describe('sessionNeedsLiveTranscript', () => {
 describe('sessionScmMutationSignalWanted', () => {
     it('wants the signal for hidden sessions in the same canonical project scope', () => {
         expect(sessionScmMutationSignalWanted({
+            serverId: null,
             sessionId: 's1',
-            sessionScmScope: { canonicalProjectKey: 'project-a' },
-            scmMountedScopes: [{ sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+            sessionScmScope: { serverId: null, canonicalProjectKey: 'project-a' },
+            scmMountedScopes: [{ serverId: null, sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         })).toBe(true);
     });
 
     it('wants the signal for the mounted consumer session itself', () => {
         expect(sessionScmMutationSignalWanted({
+            serverId: null,
             sessionId: 's1',
             sessionScmScope: null,
-            scmMountedScopes: [{ sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+            scmMountedScopes: [{ serverId: null, sessionId: 's1', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         })).toBe(true);
     });
 
     it('does not want the signal outside the mounted project scope', () => {
         expect(sessionScmMutationSignalWanted({
+            serverId: null,
             sessionId: 's1',
-            sessionScmScope: { canonicalProjectKey: 'project-b' },
-            scmMountedScopes: [{ sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
+            sessionScmScope: { serverId: null, canonicalProjectKey: 'project-b' },
+            scmMountedScopes: [{ serverId: null, sessionId: 's2', canonicalProjectKey: 'project-a', needsMutationTranscript: true }],
         })).toBe(false);
     });
 
     it('ignores scopes without needsMutationTranscript', () => {
         expect(sessionScmMutationSignalWanted({
+            serverId: null,
             sessionId: 's1',
-            sessionScmScope: { canonicalProjectKey: 'project-a' },
-            scmMountedScopes: [{ sessionId: 's2', canonicalProjectKey: 'project-a' }],
+            sessionScmScope: { serverId: null, canonicalProjectKey: 'project-a' },
+            scmMountedScopes: [{ serverId: null, sessionId: 's2', canonicalProjectKey: 'project-a' }],
         })).toBe(false);
     });
 
@@ -100,8 +108,9 @@ describe('sessionScmMutationSignalWanted', () => {
 
     it('does not want the signal without mounted scopes', () => {
         expect(sessionScmMutationSignalWanted({
+            serverId: null,
             sessionId: 's1',
-            sessionScmScope: { canonicalProjectKey: 'project-a' },
+            sessionScmScope: { serverId: null, canonicalProjectKey: 'project-a' },
             scmMountedScopes: [],
         })).toBe(false);
     });

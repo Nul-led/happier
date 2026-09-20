@@ -1227,7 +1227,10 @@ describe("sessionRoutes v2 sessions snapshot", () => {
                     meaningfulActivityAt: 2,
                     encryptionMode: "e2ee",
                     dataEncryptionKey: "BAU=",
-                    lastViewedSessionSeq: 2,
+                    // The viewer's own cursor row is the viewer's frontier, with or
+                    // without Follow (projection.ts `tracked || readRow !== undefined`),
+                    // so a recipient holding `lastViewedSessionSeq: 1` reads 1, not seq.
+                    lastViewedSessionSeq: 1,
                     pendingPermissionRequestCount: 0,
                     pendingUserActionRequestCount: 2,
                     effectiveAccess: expect.objectContaining({

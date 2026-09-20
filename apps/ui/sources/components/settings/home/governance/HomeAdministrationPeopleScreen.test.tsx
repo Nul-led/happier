@@ -21,6 +21,7 @@ import {
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -111,7 +112,7 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(virtualizedBoundary.props?.data.length).toBe(10);
         });
 
@@ -137,7 +138,7 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:grace');
         });
 
@@ -155,13 +156,13 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
         screen.changeTextByTestId('home-people-search:input', 'grace');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-row:grace');
         });
         // The scope is stated explicitly, so managing one Team could never widen
@@ -183,13 +184,13 @@ describe('HomeAdministrationPeopleScreen', () => {
         // No answer registered for the search path: this Home does not serve it.
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
         screen.changeTextByTestId('home-people-search:input', 'grace');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-unsupported');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-people-search-empty');
@@ -205,13 +206,13 @@ describe('HomeAdministrationPeopleScreen', () => {
         harness.answer(home, SEARCH_PATH, { body: { accounts: [] } });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
         screen.changeTextByTestId('home-people-search:input', 'nobody');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-search-empty');
         });
     });
@@ -233,7 +234,7 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-forbidden');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-people-search');
@@ -247,14 +248,14 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-load-more');
         });
 
         harness.answer(home, LIST_PATH, { status: 503, body: { error: 'unavailable' } });
         await screen.pressByTestIdAsync('home-people-load-more');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-retry');
         });
         // The page already read stays on screen instead of blanking.
@@ -269,7 +270,7 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
 
         const screen = await renderPeople(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:ada');
         });
 
@@ -278,7 +279,7 @@ describe('HomeAdministrationPeopleScreen', () => {
         });
         publishHomeAccountChange(home, ['self']);
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-people-row:grace');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-people-row:ada');

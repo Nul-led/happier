@@ -17,6 +17,7 @@ import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGove
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -72,7 +73,7 @@ describe('HomeAdministrationHomesScreen', () => {
         harness.answer(homeB, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${homeB}`);
         });
 
@@ -100,7 +101,7 @@ describe('HomeAdministrationHomesScreen', () => {
         harness.answer(homeB, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${homeB}`);
         });
         const ids = collectRenderedTestIds(screen.tree.toJSON());
@@ -124,7 +125,7 @@ describe('HomeAdministrationHomesScreen', () => {
         });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${home}`);
         });
         expect(collectRenderedTestIds(screen.tree.toJSON()).some((id) => id.includes('claim'))).toBe(false);
@@ -139,7 +140,7 @@ describe('HomeAdministrationHomesScreen', () => {
         await harness.selectHomes([home]);
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON()))
                 .toContain(`home-admin-home-unresolved:${home}`);
         });
@@ -158,7 +159,7 @@ describe('HomeAdministrationHomesScreen', () => {
         harness.answer(home, GOVERNANCE_PATH, { status: 502, body: { error: 'bad gateway' } });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON()))
                 .toContain(`home-admin-home-unresolved:${home}`);
         });
@@ -174,7 +175,7 @@ describe('HomeAdministrationHomesScreen', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: homeGovernanceProjectionFixture() });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`home-admin-home:${home}`);
         });
 
@@ -191,7 +192,7 @@ describe('HomeAdministrationHomesScreen', () => {
 
         // Retention keeps an offline Home readable; it must not outlive the Home
         // saying this account may not administer it.
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON()))
                 .not.toContain(`home-admin-home:${home}`);
         });
@@ -211,7 +212,7 @@ describe('HomeAdministrationHomesScreen', () => {
         });
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-homes-none');
         });
     });
@@ -223,7 +224,7 @@ describe('HomeAdministrationHomesScreen', () => {
         await harness.selectHomes(['home-that-was-removed']);
 
         const screen = await renderHomes();
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             const ids = collectRenderedTestIds(screen.tree.toJSON());
             expect(ids.some((id) => id.startsWith('home-admin-home'))).toBe(true);
         });

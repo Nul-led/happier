@@ -9,6 +9,13 @@ import { createEnvKeyScope } from '@/testkit/env/envScope';
 import { createTempDir, removeTempDir } from '@/testkit/fs/tempDir';
 import { captureConsoleLogAndMuteStdout } from '@/testkit/logger/captureOutput';
 import { addServerProfile, getActiveServerProfile } from '@/server/serverProfiles';
+// `commandRegistry.relay` is a lazy handler loader (`commandRegistry.ts:95`), so
+// the first dispatch transforms and evaluates the whole relay command graph.
+// Paying that inside a case's 30 s test budget is what timed the first cases out
+// on a loaded host — and a timed-out case keeps running, writing its output into
+// the next case's console capture. Evaluating the graph here takes it off every
+// case's budget; `commandRegistry` still owns dispatch.
+import './relay';
 
 function createFakeSsh(scenario: Readonly<{
     outputs?: readonly Readonly<{ status?: number; stdout?: string; stderr?: string }>[];

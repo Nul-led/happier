@@ -433,6 +433,54 @@ describe('resolveSessionViewHeaderProps owner metadata', () => {
         ]));
     });
 
+    it('recomputes the Companion header intent when only its placement facts change', () => {
+        // The header props are memoised on a derived cache key. `placement` and
+        // `isPhone` are the only inputs of `resolveSessionCompanionHeaderIntent`
+        // that no other header fact repeats, so a key that omits them serves a
+        // stale intent for the whole Session.
+        const session = createSessionFixture({ id: 'companion-placement-cache-key' });
+        const input = {
+            isDataReady: true,
+            session,
+            sessionId: session.id,
+            sessionInfoHref: '/session/companion-placement-cache-key/info',
+            sessionRunsHref: '/session/companion-placement-cache-key/runs',
+            sessionAutomationsHref: '/session/companion-placement-cache-key/automations',
+            paneScopeId: 'pane-1',
+            windowWidth: 800,
+            sessionAutomationsEnabledCount: 0,
+            sessionExecutionRunsSupported: false,
+            showAutomations: false,
+            shouldShowSubagentsButton: false,
+            subagentActiveCount: 0,
+            navigateWithBlurOnWeb: (action: () => void) => action(),
+            handleHeaderExtraItemSelect: () => false,
+            router: { push: () => {}, navigate: () => {} },
+            actionIconColor: '#000',
+            headerTintColor: '#000',
+            statusErrorColor: '#f00',
+            externalSessionRuntime: null,
+            boardHeaderAction: { onPress: () => {}, preferDirect: false },
+            companionHeaderAction: {
+                availability: 'ready' as const,
+                preferenceExists: true,
+                visible: true,
+                itemCount: 2,
+                placement: { kind: 'reserved_rail' as const, edge: 'trailing' as const, widthPx: 280 },
+                isPhone: false,
+            },
+        };
+
+        const rail = findHeaderActionMenu(resolveSessionViewHeaderProps(input));
+        const phone = findHeaderActionMenu(resolveSessionViewHeaderProps({
+            ...input,
+            companionHeaderAction: { ...input.companionHeaderAction, isPhone: true },
+        }));
+
+        expect(rail.props.companionHeaderIntent).toMatchObject({ operation: 'hide', expanded: true });
+        expect(phone.props.companionHeaderIntent).toMatchObject({ operation: 'open_full', expanded: false });
+    });
+
     it('forwards retained projection currentness through the shared direct and overflow header-action presentation', () => {
         const session = createSessionFixture({ id: 'plugin-header-currentness' });
         const input = {

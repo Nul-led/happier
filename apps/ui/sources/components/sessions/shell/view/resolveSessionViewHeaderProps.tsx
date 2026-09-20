@@ -6,7 +6,6 @@ import { resolvePluginSessionHeaderActionPresentations } from '@/components/sess
 import { SessionHeaderBrowserButton } from '@/components/sessions/actions/SessionHeaderBrowserButton';
 import { SessionHeaderIconWithCount } from '@/components/sessions/actions/SessionHeaderIconWithCount';
 import { SessionHeaderInfoButton } from '@/components/sessions/actions/SessionHeaderInfoButton';
-import { SessionHeaderRightSidebarButton } from '@/components/sessions/actions/SessionHeaderRightSidebarButton';
 import {
     SESSION_HEADER_ACTION_TAP_TARGET_PX,
     SESSION_HEADER_ICON_SIZE_PX,
@@ -232,6 +231,10 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
     companionPreferenceExists: boolean;
     companionVisible: boolean;
     companionItemCount: number;
+    // The Companion header intent reads both of these, so a key without them
+    // serves a stale intent when only the placement facts move.
+    companionPlacement: SessionCompanionPlacement | null;
+    companionIsPhone: boolean;
     hasCollaborationHeader: boolean;
 }>): string {
     return JSON.stringify([
@@ -274,6 +277,8 @@ function buildSessionViewHeaderPropsCacheKey(input: Readonly<{
         input.companionPreferenceExists,
         input.companionVisible,
         input.companionItemCount,
+        input.companionPlacement,
+        input.companionIsPhone,
         input.hasCollaborationHeader,
     ]);
 }
@@ -494,9 +499,7 @@ export function resolveSessionViewHeaderProps(input: ResolveSessionViewHeaderPro
         subtitleEllipsizeMode,
         avatarId,
         agentId,
-        gutterElement: shouldFoldHeaderIconActions
-            ? undefined
-            : <SessionHeaderRightSidebarButton scopeId={input.paneScopeId} />,
+        gutterElement: undefined,
         rightElement: (
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                 <ActionOperationActivityButton

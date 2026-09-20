@@ -39,6 +39,7 @@ function buildSession(params: Readonly<{ id: string; path: string; machineId: st
 
 function registerRepoScmScope(): () => void {
     return registerSessionRealtimeScmConsumerScope({
+        serverId: null,
         sessionId: 'scm-consumer',
         canonicalProjectKey: 'machine-a:/repo',
         machineScopeId: 'machine-a',

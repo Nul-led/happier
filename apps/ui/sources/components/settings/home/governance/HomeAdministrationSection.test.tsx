@@ -19,6 +19,7 @@ import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGove
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -102,10 +103,10 @@ describe('HomeAdministrationSection', () => {
                 )}
             </HomeAdministrationSection>,
         );
-        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('request-home-approval'));
+        await waitForHomeGovernance(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('request-home-approval'));
 
         screen.pressByTestId('request-home-approval');
-        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-approval'));
+        await waitForHomeGovernance(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-approval'));
         expect(screen.findByTestId('request-home-approval')?.props.accessibilityState?.disabled).toBe(true);
         screen.pressByTestId('home-admin-approval');
 
@@ -118,7 +119,7 @@ describe('HomeAdministrationSection', () => {
         const home = await harness.addHome({ name: 'Home A', serverUrl: 'https://home-a.example', accountId: null });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-signed-out');
         });
         // Nothing is asked of a Home this device holds no credential for.
@@ -127,7 +128,7 @@ describe('HomeAdministrationSection', () => {
 
     it('reports a Home this device has never saved as unknown', async () => {
         const screen = await renderOverview('home-never-added');
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unknown-home');
         });
     });
@@ -141,7 +142,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
 
@@ -157,7 +158,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { status: 500, body: { error: 'boom' } });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable');
         });
         expect(screen.findByTestId('home-admin-unavailable')?.props.accessibilityLiveRegion).toBe('assertive');
@@ -167,7 +168,7 @@ describe('HomeAdministrationSection', () => {
         const before = harness.requestsFor(GOVERNANCE_PATH).length;
         await screen.pressByTestIdAsync('home-admin-retry');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(harness.requestsFor(GOVERNANCE_PATH).length).toBeGreaterThan(before);
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
@@ -181,7 +182,7 @@ describe('HomeAdministrationSection', () => {
         });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-retry');
@@ -195,7 +196,7 @@ describe('HomeAdministrationSection', () => {
         });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-required');
         });
         const ids = collectRenderedTestIds(screen.tree.toJSON());
@@ -211,7 +212,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: { viewer: { accountId: '' } } });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-unavailable');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-viewer-role');
@@ -226,7 +227,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
 
@@ -240,7 +241,7 @@ describe('HomeAdministrationSection', () => {
             });
         });
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-stale');
         });
         expect(screen.findByTestId('home-admin-stale')?.props.accessibilityLiveRegion).toBe('polite');
@@ -262,7 +263,7 @@ describe('HomeAdministrationSection', () => {
         });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-required');
         });
         const ids = collectRenderedTestIds(screen.tree.toJSON());
@@ -275,13 +276,13 @@ describe('HomeAdministrationSection', () => {
         });
         expect(getActiveServerSnapshot().serverId).toBe(otherHome);
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-setup-refresh');
         });
         const before = harness.requestsFor(GOVERNANCE_PATH).length;
         await screen.pressByTestIdAsync('home-admin-setup-refresh');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-setup-required');
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
@@ -295,7 +296,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: projection() });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams');
         });
 
@@ -310,7 +311,7 @@ describe('HomeAdministrationSection', () => {
         harness.answer(home, GOVERNANCE_PATH, { body: projection({ teamsEnabled: false }) });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-teams');
         });
 
@@ -328,7 +329,7 @@ describe('HomeAdministrationSection', () => {
         });
 
         const screen = await renderOverview(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-admin-viewer-role');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-admin-teams');

@@ -1,0 +1,97 @@
+import { describe, expect, it } from 'vitest';
+
+import { buildOrdinarySessionListHomeState, type OrdinarySessionListLifecycle } from './ordinarySessionListHomeState';
+
+function lifecycle(overrides?: Partial<OrdinarySessionListLifecycle>): OrdinarySessionListLifecycle {
+    return {
+        serverId: 'home-a',
+        hasFetchedSnapshot: true,
+        fetchInFlight: false,
+        fetchMoreInFlight: false,
+        frontier: {
+            nextCursor: 'cursor-2',
+            hasNext: true,
+            attentionNextCursor: null,
+            attentionHasNext: false,
+        },
+        ...overrides,
+    };
+}
+
+describe('buildOrdinarySessionListHomeState', () => {
+    it('publishes Sync membership and Sync cursors as the applied ordinary corpus', () => {
+        const state = buildOrdinarySessionListHomeState({
+            serverId: 'home-a',
+            requestedQueryKey: 'query:home-a',
+            sessionIds: ['s1', 's2', 's3'],
+            observation: { phase: 'ready', lastSuccessAt: 1_700 },
+            lifecycle: lifecycle(),
+            online: true,
+        });
+
+        expect(state.addresses).toEqual([
+            { serverId: 'home-a', sessionId: 's1' },
+            { serverId: 'home-a', sessionId: 's2' },
+            { serverId: 'home-a', sessionId: 's3' },
+        ]);
+        expect(state.appliedQueryKey).toBe('query:home-a');
+        expect(state.nextCursor).toBe('cursor-2');
+        expect(state.hasNext).toBe(true);
+        expect(state.phase).toBe('ready');
+        expect(state.freshnessAt).toBe(1_700);
+        // A released GET cannot answer the strict query's structural selection.
+        expect(state.appliedSourceKind).toBe('ordinary');
+        expect(state.failureReason).toBeNull();
+    });
+
+    it('stays refreshing with its retained rows while Sync replaces the corpus', () => {
+        const state = buildOrdinarySessionListHomeState({
+            serverId: 'home-a',
+            requestedQueryKey: 'query:home-a',
+            sessionIds: ['s1', 's2'],
+            observation: { phase: 'refreshing', lastSuccessAt: 1_700 },
+            lifecycle: lifecycle({ fetchInFlight: true }),
+            online: true,
+        });
+
+        expect(state.phase).toBe('refreshing');
+        expect(state.addresses.map((address) => address.sessionId)).toEqual(['s1', 's2']);
+    });
+
+    it('loads rather than refreshes before this Home has produced a list', () => {
+        const state = buildOrdinarySessionListHomeState({
+            serverId: 'home-a',
+            requestedQueryKey: 'query:home-a',
+            sessionIds: [],
+            observation: { phase: 'loading', lastSuccessAt: null },
+            lifecycle: lifecycle({ hasFetchedSnapshot: false, fetchInFlight: true }),
+            online: true,
+        });
+
+        expect(state.phase).toBe('loading');
+        expect(state.appliedQueryKey).toBeNull();
+    });
+
+    it('reports the Home offline only from its own transport, never from an aborted page', () => {
+        const offline = buildOrdinarySessionListHomeState({
+            serverId: 'home-a',
+            requestedQueryKey: 'query:home-a',
+            sessionIds: ['s1'],
+            observation: { phase: 'ready', lastSuccessAt: 1_700 },
+            lifecycle: lifecycle(),
+            online: false,
+        });
+        expect(offline.phase).toBe('offline');
+
+        const failed = buildOrdinarySessionListHomeState({
+            serverId: 'home-a',
+            requestedQueryKey: 'query:home-a',
+            sessionIds: ['s1'],
+            observation: { phase: 'error', lastSuccessAt: 1_700 },
+            lifecycle: lifecycle(),
+            online: true,
+        });
+        expect(failed.phase).toBe('error');
+        expect(failed.failureReason).toBe('network');
+    });
+});

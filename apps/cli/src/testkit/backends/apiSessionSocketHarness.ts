@@ -1,6 +1,17 @@
 import { vi } from 'vitest';
 import {
     MACHINE_PLAIN_DATA_KEY_MARKER,
+    SESSION_PUBLISHER_AUTHORITY_CHECK_EVENT,
+    SESSION_RUNTIME_ACTIVITY_CLOSE_EVENT,
+    SESSION_RUNTIME_ACTIVITY_SNAPSHOT_EVENT,
+    SessionPublisherAuthorityCheckAckSchema,
+    SessionPublisherAuthorityCheckRequestSchema,
+    SessionRuntimeActivityCloseAckSchema,
+    SessionRuntimeActivityCloseRequestSchema,
+    SessionRuntimeActivityProjectionSchema,
+    SessionRuntimeActivitySnapshotAckSchema,
+    SessionRuntimeActivitySnapshotRequestSchema,
+    type SessionRuntimeActivityProjection,
     type SessionTurnMutationV1,
 } from '@happier-dev/protocol';
 import { RPC_METHODS } from '@happier-dev/protocol/rpc';
@@ -125,6 +136,92 @@ export function createSessionTurnMutationAppliedHttpResponse(mutation: SessionTu
             receipt: createSessionTurnMutationAppliedReceipt(mutation),
         },
     };
+}
+
+/**
+ * Answers the Home side of the registered Runtime Activity publisher transport
+ * the way the Home's session socket handler does: one monotonic projection
+ * revision per Session, `unchanged` when a snapshot repeats, the current
+ * publisher fence, and a clean close.
+ *
+ * A Home always advertises `capabilities.session.runtimeActivity` and
+ * `publisherAuthority` (server `resolveSessionProtocolCapabilitiesFeature`), so
+ * a fixture that answers those capabilities must also answer these three
+ * events: the host Session runtime awaits this settlement before it enters its
+ * Session loop, and the durable mutation outbox parks an unanswered Runtime
+ * Activity mutation instead of retrying it.
+ */
+export function createSessionRuntimeActivityHomeStub(options: Readonly<{
+    machineId: string;
+    committedFenceMs?: number;
+    now?: () => number;
+}>): Readonly<{ answer(event: string, payload: unknown): unknown | null }> {
+    const projections = new Map<string, SessionRuntimeActivityProjection>();
+    const now = options.now ?? (() => Date.now());
+    return Object.freeze({
+        answer(event: string, payload: unknown): unknown | null {
+            if (event === SESSION_RUNTIME_ACTIVITY_SNAPSHOT_EVENT) {
+                const request = SessionRuntimeActivitySnapshotRequestSchema.safeParse(payload);
+                if (!request.success) {
+                    return SessionRuntimeActivitySnapshotAckSchema.parse({
+                        status: 'rejected',
+                        reason: 'invalid_request',
+                    });
+                }
+                const current = projections.get(request.data.sessionId);
+                const unchanged = current !== undefined
+                    && current.state === request.data.snapshot.state
+                    && current.activeCount === request.data.snapshot.activeCount;
+                const projection = unchanged && current
+                    ? current
+                    : SessionRuntimeActivityProjectionSchema.parse({
+                        state: request.data.snapshot.state,
+                        activeCount: request.data.snapshot.activeCount,
+                        observedAt: now(),
+                        revision: (current?.revision ?? 0) + 1,
+                    });
+                projections.set(request.data.sessionId, projection);
+                return SessionRuntimeActivitySnapshotAckSchema.parse({
+                    status: unchanged ? 'unchanged' : 'applied',
+                    sessionId: request.data.sessionId,
+                    mutationId: request.data.mutationId,
+                    projection,
+                });
+            }
+            if (event === SESSION_RUNTIME_ACTIVITY_CLOSE_EVENT) {
+                const request = SessionRuntimeActivityCloseRequestSchema.safeParse(payload);
+                if (!request.success) {
+                    return SessionRuntimeActivityCloseAckSchema.parse({
+                        status: 'rejected',
+                        reason: 'invalid_request',
+                    });
+                }
+                const closed = projections.delete(request.data.sessionId);
+                return SessionRuntimeActivityCloseAckSchema.parse({
+                    status: closed ? 'closed' : 'already_inactive',
+                    sessionId: request.data.sessionId,
+                });
+            }
+            if (event === SESSION_PUBLISHER_AUTHORITY_CHECK_EVENT) {
+                const request = SessionPublisherAuthorityCheckRequestSchema.safeParse(payload);
+                if (!request.success) {
+                    return SessionPublisherAuthorityCheckAckSchema.parse({
+                        status: 'rejected',
+                        reason: 'invalid_request',
+                    });
+                }
+                return SessionPublisherAuthorityCheckAckSchema.parse({
+                    status: 'current',
+                    sessionId: request.data.sessionId,
+                    publisherPrecondition: {
+                        machineId: options.machineId,
+                        committedFenceMs: options.committedFenceMs ?? 1,
+                    },
+                });
+            }
+            return null;
+        },
+    });
 }
 
 export type ApiSessionSocketStub = {

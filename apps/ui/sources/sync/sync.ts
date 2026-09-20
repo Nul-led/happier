@@ -99,6 +99,7 @@ import {
 import { buildSessionListRenderableFromSession } from '@/sync/domains/session/listing/sessionListRenderable';
 import { sessionAddressKey, normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import type { SessionListRenderableSession } from '@/sync/domains/session/listing/sessionListRenderable';
+import type { OrdinarySessionListLifecycle } from '@/sync/domains/session/listing/ordinarySessionListHomeState';
 import {
     resolveOrdinarySessionListCoverage,
     type SessionListHomeObservationPhase,
@@ -405,7 +406,6 @@ import {
 } from './api/plugins/availability/pluginAvailabilityProjection';
 import {
     clearPluginAccountAvailabilityProjection,
-    invalidatePluginAccountAvailabilityProjection,
     replacePluginAccountAvailabilityProjection,
 } from './domains/plugins/availability/projection';
 import {
@@ -1004,6 +1004,19 @@ function resolveMessageRouteHydrationServerId(
     }
 
     return activeServerId;
+}
+
+/**
+ * The locally known Session row for one exact Home, or `null`.
+ *
+ * Exact equality is required rather than profile-identifier equivalence because
+ * the pending owner uses this row as the Home's own Session facts: a row that
+ * does not name this exact Home cannot stand in for it.
+ */
+function readExactServerScopedSession(sessionId: string, serverId: string): Session | null {
+    const session = storage.getState().sessions[sessionId];
+    if (!session || session.id !== sessionId) return null;
+    return session.serverId && session.serverId === serverId ? session : null;
 }
 
 export type SendPendingMessageNowResult =
@@ -1709,6 +1722,16 @@ class Sync {
 	      public getSyncTuning(): SyncTuning {
 	          return this.syncTuning;
 	      }
+
+      private getInitialSessionMessagesPageSize(): number {
+          if (Platform.OS === 'web') return SESSION_MESSAGES_PAGE_SIZE;
+          // A first native viewport and a native history prepend have the same
+          // bounded rendering job. Reuse the transcript page owner while
+          // catch-up keeps its larger correctness page.
+          return resolveSessionMessagesPageSize({
+              limit: this.syncTuning.transcriptNativeOlderMessagesPageSize,
+          });
+      }
 
       private resolveSessionListScrollIdleWaiters(): void {
           const waiters = this.sessionListScrollIdleResolvers.splice(0, this.sessionListScrollIdleResolvers.length);
@@ -5257,8 +5280,14 @@ class Sync {
         const durableLocalId = readPendingLocalId(options?.localId) ?? undefined;
         const targetRecipient = options?.recipient?.kind === 'execution_run' ? options.recipient : undefined;
         if (!targetRecipient) this.markSessionLiveTailIntent(sessionId);
+        // The unqualified enqueue serves the exact Home its owner context resolved,
+        // not only the mounted active one: hand the pending owner the Session facts
+        // for that Home when the local row already carries them, so a non-active
+        // owner Home is served instead of failing with `Session … not found`.
+        const exactHomeSession = readExactServerScopedSession(sessionId, outboxScope.serverId);
         const result = await enqueuePendingMessageV2({
             sessionId,
+            ...(exactHomeSession ? { session: exactHomeSession } : {}),
             recipient: options?.recipient,
             targetMachineId: targetRecipient ? readMachineControlTargetForSession({ sessionId, ...outboxScope })?.machineId : undefined,
             text,
@@ -5285,7 +5314,11 @@ class Sync {
         ) {
             this.schedulePendingOutboxOperationRetry({ sessionId, localId: result.localId, outboxScope });
         }
-        if (!await isCurrent()) throw new Error('Pending owner server-account scope changed');
+        // No post-operation fence: the Home has already committed an accepted
+        // enqueue, and a scope that retires while the request is in flight cannot
+        // unsend it. `submitSessionUserMessage` owns the typed retirement result
+        // for the caller; rethrowing here would report a generic `send_failed`
+        // for a message the Home delivered.
         return result;
         }, undefined, options?.serverId, options?.accountLifetime);
     }
@@ -5993,12 +6026,7 @@ class Sync {
             || explicitPrioritizedHydrationIds.includes(sessionId)
         ));
         const isAppend = options?.mode === 'append';
-        const previousFrontier: OrdinarySessionListFrontier = {
-            nextCursor: this.sessionListNextCursor,
-            hasNext: this.sessionListHasMore,
-            attentionNextCursor: this.sessionListAttentionNextCursor,
-            attentionHasNext: this.sessionListAttentionHasMore,
-        };
+        const previousFrontier = this.readOrdinarySessionListFrontier();
         const sessionRequest = this.createAppliedTransportRequest(appliedTransportTarget);
         const continuation = isAppend
             ? resolveOrdinarySessionListContinuation(previousFrontier)
@@ -6242,13 +6270,22 @@ class Sync {
         });
     }
 
+    /**
+     * The active Home's ordinary Session-list frontier.
+     *
+     * Sync is its single owner: the filter's ordinary corpus on this Home reads
+     * this rather than opening a second paginator over `/v2/sessions`.
+     */
+    public readOrdinarySessionListFrontier = (): OrdinarySessionListFrontier => ({
+        nextCursor: this.sessionListNextCursor,
+        hasNext: this.sessionListHasMore,
+        attentionNextCursor: this.sessionListAttentionNextCursor,
+        attentionHasNext: this.sessionListAttentionHasMore,
+    });
+
     public fetchMoreSessions = async (): Promise<void> => {
-        if (!this.credentials || !resolveOrdinarySessionListContinuation({
-            nextCursor: this.sessionListNextCursor,
-            hasNext: this.sessionListHasMore,
-            attentionNextCursor: this.sessionListAttentionNextCursor,
-            attentionHasNext: this.sessionListAttentionHasMore,
-        })) return;
+        if (!this.credentials
+            || !resolveOrdinarySessionListContinuation(this.readOrdinarySessionListFrontier())) return;
         if (this.fetchMoreSessionsInFlight) return this.fetchMoreSessionsInFlight;
         const promise = this.fetchSessions({ mode: 'append' }).then(() => undefined).finally(() => {
             if (this.fetchMoreSessionsInFlight === promise) {
@@ -6259,25 +6296,40 @@ class Sync {
         return promise;
     }
 
+    /**
+     * The active Home's ordinary Session-list lifecycle facts.
+     *
+     * Every reader of "where has this Home's ordinary list got to" — coverage,
+     * the filter's ordinary corpus on this Home, Voice — goes through this one
+     * reader rather than re-deriving the frontier or the in-flight fact.
+     */
+    public readOrdinarySessionListLifecycle = (): OrdinarySessionListLifecycle => ({
+        serverId: this.getAppliedTransportTarget()?.serverId ?? null,
+        hasFetchedSnapshot: this.hasFetchedSessionsSnapshotForActiveServer,
+        fetchInFlight: this.fetchSessionsInFlight !== null,
+        fetchMoreInFlight: this.fetchMoreSessionsInFlight !== null,
+        frontier: this.readOrdinarySessionListFrontier(),
+    });
+
     /** Completeness owned by the current active Home's ordinary list lifecycle. */
     public readOrdinarySessionListCoverage = (): Readonly<{
         serverId: string | null;
         coverage: 'complete' | 'incomplete';
     }> => {
-        const serverId = this.getAppliedTransportTarget()?.serverId ?? null;
-        const observation = serverId
-            ? storage.getState().concurrentSessionListCacheByServerId[serverId]?.listObservation
+        const lifecycle = this.readOrdinarySessionListLifecycle();
+        const observation = lifecycle.serverId
+            ? storage.getState().concurrentSessionListCacheByServerId[lifecycle.serverId]?.listObservation
             : null;
         return {
-            serverId,
+            serverId: lifecycle.serverId,
             coverage: resolveOrdinarySessionListCoverage({
-                serverId,
-                hasFetchedSnapshot: this.hasFetchedSessionsSnapshotForActiveServer,
+                serverId: lifecycle.serverId,
+                hasFetchedSnapshot: lifecycle.hasFetchedSnapshot,
                 phase: observation?.phase,
-                fetchInFlight: this.fetchSessionsInFlight !== null,
-                fetchMoreInFlight: this.fetchMoreSessionsInFlight !== null,
-                hasNext: this.sessionListHasMore,
-                attentionHasNext: this.sessionListAttentionHasMore,
+                fetchInFlight: lifecycle.fetchInFlight,
+                fetchMoreInFlight: lifecycle.fetchMoreInFlight,
+                hasNext: lifecycle.frontier.hasNext,
+                attentionHasNext: lifecycle.frontier.attentionHasNext,
             }),
         };
     };
@@ -6686,8 +6738,6 @@ class Sync {
           if (!this.credentials) {
               return;
           }
-          this.pluginAvailabilityProjectionHydrator.reset();
-          clearPluginAccountAvailabilityProjection();
           const refreshedServerId = this.getAppliedTransportTarget()?.serverId ?? '';
           if (refreshedServerId) publishHomeAccountChange(refreshedServerId);
 
@@ -6750,8 +6800,6 @@ class Sync {
           if (!this.credentials) {
               return;
           }
-          this.pluginAvailabilityProjectionHydrator.reset();
-          clearPluginAccountAvailabilityProjection();
           const refreshedServerId = this.getAppliedTransportTarget()?.serverId ?? '';
           if (refreshedServerId) publishHomeAccountChange(refreshedServerId);
 
@@ -8122,6 +8170,7 @@ class Sync {
                   sessionId,
                   serverId: resolvePreferredServerIdForSessionId(sessionId),
                   sessionEncryptionMode,
+                  limit: this.getInitialSessionMessagesPageSize(),
                   getSessionEncryption: (id) => this.encryption?.getSessionEncryption(id) ?? null,
                   isSessionKnown: (id) => this.isSessionKnownOnResolvedOwnerServer(id),
                   request: requestMessages,
@@ -10237,10 +10286,9 @@ class Sync {
                             }
                             const changedAvailabilityPluginIds = this.pluginAvailabilityProjectionHydrator.invalidate(changes);
                             if (changedAvailabilityPluginIds.length > 0) {
-                                // A level-triggered hint retires only the named
-                                // plugins. Unrelated verified facts remain usable
-                                // until the coherent replacement is ready.
-                                invalidatePluginAccountAvailabilityProjection(changedAvailabilityPluginIds);
+                                // AccountChange is a freshness observation, not
+                                // withdrawal authority. Retain confirmed facts
+                                // until each named plugin read replaces them.
                                 this.pluginAvailabilitySync.invalidateCoalesced();
                             }
                         },

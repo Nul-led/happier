@@ -6,6 +6,10 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 // These are the same canonical testkit owners re-exported by `@/dev/testkit`.
 import { standardCleanup } from '@/dev/testkit/cleanup/standardCleanup';
 import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGovernanceFixtures';
+// The wait budget the rest of this family already inherits from the runner
+// instead of `vi.waitFor`'s 1 s default, which is a shorter competing cutoff
+// inside a case the runner already bounds.
+import { waitForHomeGovernance } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { HomeAdministrationBinding } from '@/hooks/home/useHomeAdministration';
 import type { DecryptedArtifact } from '@/sync/domains/artifacts/artifactTypes';
@@ -179,7 +183,7 @@ describe('HomeAdministrationSection Account binding', () => {
                 onExecuted: vi.fn(async () => 'consumed' as const),
                 onTerminal,
             }));
-            await vi.waitFor(() => expect(screen.findByTestId('home-admin-approval')).not.toBeNull());
+            await waitForHomeGovernance(() => expect(screen.findByTestId('home-admin-approval')).not.toBeNull());
             expect(renderedContexts.at(-1)!.mutationsAvailable).toBe(false);
 
             // The approval is decided in the Inbox rather than here, so the shell
@@ -194,7 +198,7 @@ describe('HomeAdministrationSection Account binding', () => {
                 screen.tree.update(renderSection());
             });
 
-            await vi.waitFor(() => expect(screen.findByTestId('home-admin-approval')).toBeNull());
+            await waitForHomeGovernance(() => expect(screen.findByTestId('home-admin-approval')).toBeNull());
             expect(onTerminal).toHaveBeenCalledOnce();
             expect(onTerminal).toHaveBeenCalledWith(status, expect.objectContaining({ id: 'approval-home-1' }));
             expect(renderedContexts.at(-1)!.approvalPending).toBe(false);
@@ -217,7 +221,7 @@ describe('HomeAdministrationSection Account binding', () => {
             artifactId: 'approval-home-result',
             onExecuted,
         }));
-        await vi.waitFor(() => expect(screen.findByTestId('home-admin-approval')).not.toBeNull());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-admin-approval')).not.toBeNull());
         expect(renderedContexts.at(-1)!.mutationsAvailable).toBe(false);
 
         useApprovalArtifact.mockReturnValue({
@@ -230,7 +234,7 @@ describe('HomeAdministrationSection Account binding', () => {
             screen.tree.update(renderSection());
         });
 
-        await vi.waitFor(() => expect(onExecuted).toHaveBeenCalledTimes(1));
+        await waitForHomeGovernance(() => expect(onExecuted).toHaveBeenCalledTimes(1));
         expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledOnce();
         expect(refreshHomeGovernanceSnapshot).toHaveBeenCalledWith({ serverId: 'home-1', accountId: 'account-a' });
         expect(screen.findByTestId('home-admin-approval')).toBeNull();

@@ -4,6 +4,7 @@ import { featureRequiresServerSnapshot, type FeatureId, type SessionListQueryV1 
 import {
     useMachineListByServerId,
     useMachineListStatusByServerId,
+    useOrdinarySessionListMembershipByServerId,
     useSessionListRowsByServerId,
     useSettings,
     useSocketStatus,
@@ -33,7 +34,12 @@ import {
 } from './sessionListQueryController';
 import {
     fetchSessionListQueryPageForHome,
-    isSessionListQueryHomeOnline,
+    getSessionListQueryHomeAvailability,
+    isSyncOwnedOrdinarySessionListHome,
+    loadNextSyncOrdinarySessionListPage,
+    readSyncOrdinarySessionListHomeState,
+    refreshSyncOrdinarySessionList,
+    retrySessionListQueryHome,
 } from './sessionListQueryRuntime';
 import { buildSessionListQueryKey } from './sessionListQueryKey';
 import { subscribeSessionListQueryHomeInvalidation } from './sessionListQueryInvalidation';
@@ -280,11 +286,29 @@ export function useSessionListQuerySourceState(input: Readonly<{
         input.enabled && followingHomeServerIds.length > 0,
     );
     const rowsByServerId = useSessionListRowsByServerId();
+    const ordinaryMembershipByServerId = useOrdinarySessionListMembershipByServerId();
     const machineListsByServerId = useMachineListByServerId();
     const machineStatusesByServerId = useMachineListStatusByServerId();
     const socketStatus = useSocketStatus();
     const settings = useSettings();
     const accountScopesByServerId = useServerCredentialAccountScopes(homeServerIds);
+    // Homes whose ordinary corpus Sync already owns. Sync's bootstrap/reconnect
+    // replace, append continuation and cursors are the only ones for `/v2/sessions`
+    // on the applied Home, so the filter reads that frontier here instead of
+    // mounting a controller that would paginate the same corpus behind a shared
+    // abort key — two owners that could orphan each other's pages.
+    const syncOwnedOrdinaryHomeKey = homes
+        .filter((home) => (
+            home.ordinaryAdapter?.membership === 'ordinary'
+            && supportByServerId[home.serverId] === false
+            && isSyncOwnedOrdinarySessionListHome(home.serverId)
+        ))
+        .map((home) => home.serverId)
+        .join('\u0000');
+    const syncOwnedOrdinaryHomes = React.useMemo(
+        () => new Set(syncOwnedOrdinaryHomeKey ? syncOwnedOrdinaryHomeKey.split('\u0000') : []),
+        [syncOwnedOrdinaryHomeKey],
+    );
     const controllersRef = React.useRef(new Map<string, SessionListQueryHomeController>());
     const controllerAccountScopesRef = React.useRef(new Map<string, ServerCredentialAccountScopeBinding>());
     const controllerRetirementsRef = React.useRef(new Map<string, Readonly<{ dispose(): void }>>());
@@ -310,6 +334,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         // React may abandon a concurrent render after it has observed different
         // Homes, and that render must not dispose the still-committed controllers.
         const selectedServerIds = new Set(homes.flatMap((home) => {
+            if (syncOwnedOrdinaryHomes.has(home.serverId)) return [];
             const binding = accountScopesByServerId.get(home.serverId);
             return binding?.isCurrent() === true ? [home.serverId] : [];
         }));
@@ -325,6 +350,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         }
         const selectedControllers: SessionListQueryHomeController[] = [];
         for (const home of homes) {
+            if (syncOwnedOrdinaryHomes.has(home.serverId)) continue;
             const binding = accountScopesByServerId.get(home.serverId);
             if (!binding?.isCurrent()) continue;
             let controller = controllersRef.current.get(home.serverId);
@@ -353,7 +379,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         return () => {
             for (const unsubscribe of unsubscribes) unsubscribe();
         };
-    }, [accountScopesByServerId, disposeController, homes]);
+    }, [accountScopesByServerId, disposeController, homes, syncOwnedOrdinaryHomes]);
 
     React.useEffect(() => (
         subscribeSessionListQueryHomeInvalidation(() => controllersRef.current)
@@ -363,10 +389,11 @@ export function useSessionListQuerySourceState(input: Readonly<{
         for (const home of homes) {
             const controller = controllersRef.current.get(home.serverId);
             if (!controller) continue;
+            const availability = getSessionListQueryHomeAvailability(home.serverId);
             void controller.update({
                 query: home.query,
                 selected: input.enabled,
-                online: isSessionListQueryHomeOnline(home.serverId),
+                online: availability === 'pending' ? null : availability === 'online',
                 supported: resolveSessionListQueryHomeAdmissionSupport(
                     supportByServerId[home.serverId],
                     home.query.scope === 'following'
@@ -385,16 +412,43 @@ export function useSessionListQuerySourceState(input: Readonly<{
         }
     }, [disposeController]);
 
+    const readHomeState = React.useCallback((home: NormalizedQueryHome): SessionListQueryHomeState | undefined => {
+        if (!syncOwnedOrdinaryHomes.has(home.serverId)) {
+            return controllersRef.current.get(home.serverId)?.getSnapshot();
+        }
+        const availability = getSessionListQueryHomeAvailability(home.serverId);
+        return readSyncOrdinarySessionListHomeState({
+            serverId: home.serverId,
+            requestedQueryKey: home.queryKey,
+            online: availability === 'pending' ? null : availability === 'online',
+        });
+    }, [syncOwnedOrdinaryHomes]);
     const loadNext = React.useCallback(async () => {
         await Promise.all(homes.map((home) => (
-            controllersRef.current.get(home.serverId)?.loadNext()
+            syncOwnedOrdinaryHomes.has(home.serverId)
+                ? loadNextSyncOrdinarySessionListPage()
+                : controllersRef.current.get(home.serverId)?.loadNext()
         )));
-    }, [homes]);
+    }, [homes, syncOwnedOrdinaryHomes]);
     const refresh = React.useCallback(async () => {
-        await Promise.all(homes.map((home) => (
-            controllersRef.current.get(home.serverId)?.refresh()
+        const retryableHomes = homes.filter((home) => {
+            const state = readHomeState(home);
+            return state?.phase === 'offline'
+                || (state?.phase === 'error' && state.failureReason === 'network');
+        });
+        // Re-arm every unavailable Home through its transport owner before
+        // asking query controllers for their next page. A failed reconnect is
+        // still followed by refresh so the controller remains the one source
+        // of query state and error presentation.
+        await Promise.allSettled(retryableHomes.map((home) => (
+            retrySessionListQueryHome(home.serverId)
         )));
-    }, [homes]);
+        await Promise.all(homes.map((home) => (
+            syncOwnedOrdinaryHomes.has(home.serverId)
+                ? refreshSyncOrdinarySessionList()
+                : controllersRef.current.get(home.serverId)?.refresh()
+        )));
+    }, [homes, readHomeState, syncOwnedOrdinaryHomes]);
 
     return React.useMemo(() => {
         const statesByServerId: Record<string, SessionListQueryHomeState | undefined> = {};
@@ -404,7 +458,7 @@ export function useSessionListQuerySourceState(input: Readonly<{
         let hasPendingSource = false;
         let coverageComplete = true;
         for (const home of homes) {
-            const state = controllersRef.current.get(home.serverId)?.getSnapshot();
+            const state = readHomeState(home);
             statesByServerId[home.serverId] = state;
             if (!state || state.appliedQueryKey !== home.queryKey) {
                 if (state?.phase === 'error' && state.failureReason === 'unsupported') {
@@ -460,10 +514,14 @@ export function useSessionListQuerySourceState(input: Readonly<{
         input.emptySelectionComplete,
         loadNext,
         machineListsByServerId,
+        machineStatusesByServerId,
+        ordinaryMembershipByServerId,
+        readHomeState,
         refresh,
         rowsByServerId,
         settings.sessionListActiveGroupingV1,
         settings.sessionListInactiveGroupingV1,
         settings.sessionListSectionModeV1,
+        socketStatus,
     ]);
 }

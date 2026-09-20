@@ -191,6 +191,15 @@ function activePreview(overrides: Record<string, unknown> = {}) {
     };
 }
 
+function actionIconNames(
+    screen: Awaited<ReturnType<typeof renderScreen>>,
+    actionTestId: string,
+): readonly string[] {
+    return screen.findAllByTestId(`${actionTestId}-icon`)
+        .map((node) => node.props.name)
+        .filter((name): name is string => typeof name === 'string');
+}
+
 async function waitForTestId(
     screen: Awaited<ReturnType<typeof renderScreen>>,
     testID: string,
@@ -356,6 +365,26 @@ describe('TeamAuthEntrySurface', () => {
             action: expect.objectContaining({ methodId: 'mtls' }),
             teamId: 'team-1',
         }));
+        // A certificate login wears the certificate glyph here for the same
+        // reason it does on Welcome and the shared auth host: one owner answers
+        // per execution, so the same journey never looks like two.
+        expect(actionIconNames(screen, 'team-auth-entry-action:mtls')).toContain('shield-check');
+    });
+
+    it('renders each admitted authentication action with the shared entry icon', async () => {
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                teamId="team-1"
+                target={target}
+                onSelectAction={vi.fn()}
+                onBack={() => {}}
+            />,
+        );
+
+        await waitForTestId(screen, 'team-auth-entry-ready');
+
+        expect(actionIconNames(screen, 'team-auth-entry-action:team-oidc')).toContain('sign-in');
+        expect(actionIconNames(screen, 'team-auth-entry-action:home-password')).toContain('sign-in');
     });
 
     it('admits only one action at a time and marks the selected action busy', async () => {
@@ -1240,6 +1269,38 @@ describe('TeamAuthEntrySurface', () => {
             // The Home's own methods stay available; the handoff is an addition,
             // never a narrowing of what this page offers.
             expect(screen.findByTestId('team-auth-entry-action:home-password')).toBeTruthy();
+        });
+
+        it('says the Home-named account service is unreachable instead of silently offering nothing, and retries it', async () => {
+            entrySignInService = {
+                v: 1,
+                mode: 'external',
+                endpoint: 'https://accounts.example.test',
+                expectedServerIdentityId: 'srv_accounts',
+            };
+            // The Home still names the service; only the service's own probe fails.
+            accountServiceDiscovery.value = {
+                kind: 'endpoint_unavailable',
+                endpointUrl: 'https://accounts.example.test',
+                reason: 'probe_failed',
+            };
+            const screen = await renderScreen(
+                <TeamAuthEntrySurface target={target} teamId="team-1" onSelectAction={vi.fn()} />,
+            );
+            await waitForTestId(screen, 'team-auth-entry-account-service-unavailable');
+            // The Home's own methods stay available beside the statement.
+            expect(screen.findByTestId('team-auth-entry-action:home-password')).toBeTruthy();
+
+            const notice = screen.tree.root.findAll(
+                (node) => (node.props as { testID?: unknown }).testID === 'team-auth-entry-account-service-unavailable'
+                    && typeof (node.props as { onPress?: unknown }).onPress === 'function',
+                { deep: true },
+            ).at(0)?.props as { title: string; onPress: () => void };
+            expect(notice.title).toBe(t('welcome.signInServiceUnavailableTitle'));
+
+            accountServiceDiscovery.value = service;
+            await act(async () => { notice.onPress(); });
+            await waitForTestId(screen, 'team-auth-entry-account-service');
         });
 
         it('offers no handoff when the Home signs Accounts in itself', async () => {

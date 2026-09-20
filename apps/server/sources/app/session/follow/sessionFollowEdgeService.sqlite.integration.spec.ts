@@ -152,6 +152,22 @@ describe('SessionFollowEdge service', () => {
             sessionId: unrelated.id,
             socket: { id: 'runner-wrong-session', data: { authAuthority: 'present_user' }, emit: wrongSessionEmit },
         };
+        // The destination broadcast is scheduled fire-and-forget
+        // (`void eventRouter.emitSessionBroadcast(...)` in an after-commit
+        // callback `inTx` invokes synchronously), so `vi.waitFor` resolving on
+        // the first delivery does not mean the commit's fan-out has finished.
+        // Settle the emitter's own promises to a fixpoint rather than waiting a
+        // guessed interval: anything still in flight would otherwise land after
+        // `mockClear()` and read as an emission from the rolled-back commit.
+        const broadcast = vi.spyOn(eventRouter, 'emitSessionBroadcast');
+        const settleBroadcasts = async () => {
+            for (let settled = -1; settled !== broadcast.mock.results.length;) {
+                settled = broadcast.mock.results.length;
+                await Promise.all(broadcast.mock.results.map(
+                    (result) => result.type === 'return' ? result.value : undefined,
+                ));
+            }
+        };
         eventRouter.addConnection(owner.id, exact as never);
         eventRouter.addConnection(owner.id, wrongSession as never);
         try {
@@ -161,6 +177,7 @@ describe('SessionFollowEdge service', () => {
             await vi.waitFor(() => expect(exactEmit).toHaveBeenCalledWith('session', expect.objectContaining({
                 body: { t: 'session-changed', sessionId: destination.id },
             })));
+            await settleBroadcasts();
             expect(wrongSessionEmit).not.toHaveBeenCalled();
 
             exactEmit.mockClear();
@@ -168,8 +185,10 @@ describe('SessionFollowEdge service', () => {
                 await markSessionProjectionRecipientsChanged({ tx, sessionId: source.id });
                 throw new Error('rollback');
             })).rejects.toThrow('rollback');
+            await settleBroadcasts();
             expect(exactEmit).not.toHaveBeenCalled();
         } finally {
+            broadcast.mockRestore();
             eventRouter.removeConnection(owner.id, exact as never);
             eventRouter.removeConnection(owner.id, wrongSession as never);
         }

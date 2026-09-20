@@ -6,6 +6,7 @@ import {
   FeaturesResponseSchema,
   MACHINE_UPDATE_OPERATION_PROTOCOL_CAPABILITIES_EVENT_V1,
   PENDING_INPUT_PROTOCOL_VERSION_V3,
+  SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
   signMachineInstallationProof,
 } from '@happier-dev/protocol';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
@@ -23,6 +24,7 @@ import { createProductionEphemeralRunnerApplication } from './runtimeIntegration
 import packageJson from '../../package.json';
 import {
   createApiSessionSocketStub,
+  createSessionRuntimeActivityHomeStub,
   createSessionTurnMutationAppliedSocketAck,
 } from '@/testkit/backends/apiSessionSocketHarness';
 import { createSessionRecordFixture } from '@/testkit/backends/sessionFixtures';
@@ -356,6 +358,12 @@ describe('production Ephemeral Runner composition', () => {
     });
 
     const machineSocket = connectableSocket();
+    // The Home's registered Runtime Activity publisher transport. The
+    // capabilities below advertise it, so the Session socket must answer it the
+    // way a Home does.
+    const homeRuntimeActivity = createSessionRuntimeActivityHomeStub({
+      machineId: 'machine-1',
+    });
     const sessionSocket = connectableSocket({
       onConnect: (connectedSocket) => {
         queueMicrotask(() => connectedSocket.trigger('update', {
@@ -373,6 +381,8 @@ describe('production Ephemeral Runner composition', () => {
         }));
       },
       emitWithAck: async (event, payload) => {
+        const homeAnswer = homeRuntimeActivity.answer(event, payload);
+        if (homeAnswer !== null) return homeAnswer;
         if (event === 'session-turn-mutation') {
           return createSessionTurnMutationAppliedSocketAck(payload as never);
         }
@@ -419,8 +429,18 @@ describe('production Ephemeral Runner composition', () => {
             serverIdentity: { serverIdentityId: 'srv_runner_home' },
             // A current Home: the Runner's target-admission leaf is derived
             // from this snapshot, so the fixture must state the Home contract
-            // the composition is asserted against.
-            session: { pendingInput: { protocolVersion: PENDING_INPUT_PROTOCOL_VERSION_V3 } },
+            // the composition is asserted against. A Home publishes the
+            // Runtime Activity and publisher-authority protocols beside
+            // pending input (server `resolveSessionProtocolCapabilitiesFeature`),
+            // and the host runtime's startup Activity publication waits for
+            // that settlement before it enters its Session loop.
+            session: {
+              runtimeActivity: {
+                protocolVersion: SESSION_SYNC_PROTOCOL_VERSION_RUNTIME_ACTIVITY,
+              },
+              pendingInput: { protocolVersion: PENDING_INPUT_PROTOCOL_VERSION_V3 },
+              publisherAuthority: { protocolVersion: 1 },
+            },
             machines: {
               peerMediation: {
                 grantSigningKeys: [{

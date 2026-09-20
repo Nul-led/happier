@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
-import type { SessionOrganizationSnapshot } from '@happier-dev/protocol';
+import { FeaturesResponseSchema, type SessionOrganizationSnapshot } from '@happier-dev/protocol';
 
 type FetchChanges = typeof import('./api/session/apiChanges').fetchChanges;
 type FetchCurrentChangesCursor = typeof import('./api/session/apiChanges').fetchCurrentChangesCursor;
@@ -34,6 +34,7 @@ const apiSocketRequestMock = vi.hoisted(() =>
     { status: 200, headers: { 'Content-Type': 'application/json' } },
   )),
 );
+const apiSocketPreparedRequestMock = vi.hoisted(() => vi.fn());
 const fetchChangesMock = vi.hoisted(() =>
   vi.fn<FetchChanges>(async () => ({
     status: 'ok' as const,
@@ -72,12 +73,15 @@ vi.mock('@/sync/ops/machineExternalSessions', () => ({
 }));
 
 const appStateAddListener = vi.hoisted(() => vi.fn(() => ({ remove: vi.fn() })));
+const platformOS = vi.hoisted(() => ({ current: 'web' as 'web' | 'ios' }));
 vi.mock('react-native', async () => {
     const { createReactNativeWebMock } = await import('@/dev/testkit/mocks/reactNative');
     return createReactNativeWebMock(
         {
                                             Platform: {
-                                                OS: 'web',
+                                                get OS() {
+                                                    return platformOS.current;
+                                                },
                                             },
                                             AppState: {
                                                 currentState: 'active',
@@ -97,6 +101,7 @@ vi.mock('@/sync/api/session/apiSocket', () => {
       disconnect: vi.fn(),
       initialize: vi.fn(),
       request: apiSocketRequestMock,
+      createRequestForPreparedTarget: (...args: unknown[]) => apiSocketPreparedRequestMock(...args),
       onStatusChange: (listener: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void) => {
         statusListeners.add(listener);
         // Match ApiSocket behavior: immediately notify with current status.
@@ -122,13 +127,16 @@ vi.mock('@/voice/context/voiceHooks', () => ({
     },
 }));
 
-import { sync } from './sync';
+import { sync, type SyncServerTarget } from './sync';
 import { storage } from './domains/state/storage';
 import type { Machine, Session } from './domains/state/storageTypes';
 import { loadChangesCursor, loadExternalSessionTailCursor, saveProfile } from './domains/state/persistence';
 import { profileDefaults } from './domains/profiles/profile';
 import { getActiveServerSnapshot, setActiveServer, upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { setServerProfileIdentityForUrl } from '@/sync/domains/server/serverProfiles';
+import { primeServerFeaturesSnapshot, resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
+import type { HomeCarrier } from '@/sync/runtime/homeCarrier';
+import { createRootLayoutFeaturesResponse } from '@/dev/testkit';
 import {
   readMountedSessionRealtimeScmConsumerScopes,
   registerSessionRealtimeScmConsumerScope,
@@ -214,6 +222,26 @@ function stubSnapshotRefreshFetch(): ReturnType<typeof vi.fn> {
   return fetchMock;
 }
 
+function expectApiSocketInitialMessageRequest(params: {
+  sessionId: string;
+  limit: string;
+}): void {
+  const requestPath = '/v1/sessions/' + encodeURIComponent(params.sessionId) + '/messages';
+  const calls = apiSocketRequestMock.mock.calls as Array<[string, RequestInit | undefined]>;
+  const call = calls.find(([path]) => String(path).startsWith(requestPath + '?'));
+  expect(call).toBeDefined();
+  if (!call) throw new Error('Expected apiSocket request for ' + requestPath);
+  const [path, init] = call;
+  expect(init).toEqual({ method: 'GET' });
+  const [, query = ''] = String(path).split('?');
+  const searchParams = new URLSearchParams(query);
+  expect(searchParams.get('scope')).toBe('main');
+  expect(searchParams.get('limit')).toBe(params.limit);
+  expect(searchParams.has('afterSeq')).toBe(false);
+  expect(searchParams.has('beforeSeq')).toBe(false);
+  expect(searchParams.has('sidechainId')).toBe(false);
+}
+
 function expectApiSocketMessageRequest(params: {
   sessionId: string;
   afterSeq: string;
@@ -275,6 +303,7 @@ describe('sync socket offline tracking', () => {
   const initialStorageState = storage.getState();
 
   beforeEach(() => {
+    platformOS.current = 'web';
     // `sync` is a shared singleton, so clear server-scoped private state before
     // restoring this test's storage fixture.
     sync.disconnectServer();
@@ -298,6 +327,7 @@ describe('sync socket offline tracking', () => {
     (sync as any).safeCursorLagState = null;
     resetSessionSurfaceVisibilityForTests();
     syncReliabilityTelemetry.reset();
+    resetServerFeaturesClientForTests();
     fetchChangesMock.mockReset();
     fetchChangesMock.mockResolvedValue({
       status: 'ok' as const,
@@ -325,6 +355,8 @@ describe('sync socket offline tracking', () => {
       JSON.stringify({ messages: [], nextAfterSeq: null }),
       { status: 200, headers: { 'Content-Type': 'application/json' } },
     ));
+    apiSocketPreparedRequestMock.mockReset();
+    apiSocketPreparedRequestMock.mockImplementation(() => apiSocketRequestMock);
     appStateAddListener.mockClear();
     vi.unstubAllGlobals();
   });
@@ -401,6 +433,44 @@ describe('sync socket offline tracking', () => {
     await (sync as any).fetchMessages('s_reconnect_gap');
 
     expectApiSocketMessageRequest({ sessionId: 's_reconnect_gap', afterSeq: '20', limit: '150' });
+  }, 60_000);
+
+  it('uses the native history-page size for the first viewport without shrinking catch-up pages', async () => {
+    platformOS.current = 'ios';
+    (sync as any).syncTuning = {
+      ...loadSyncTuning(),
+      transcriptNativeOlderMessagesPageSize: 37,
+    };
+    storage.setState((state) => ({
+      ...state,
+      sessions: {
+        ...state.sessions,
+        s_native_initial_page: {
+          id: 's_native_initial_page',
+          seq: 20,
+          encryptionMode: 'plain',
+          metadata: {},
+          agentState: null,
+        } as any,
+        s_native_catchup_page: {
+          id: 's_native_catchup_page',
+          seq: 21,
+          encryptionMode: 'plain',
+          metadata: {},
+          agentState: null,
+        } as any,
+      },
+    }), true);
+    storage.getState().applyMessagesLoaded('s_native_catchup_page');
+    (sync as any).sessionMaterializedMaxSeqById = { s_native_catchup_page: 20 };
+    (sync as any).isForeground = true;
+    markSessionSurfaceVisible('s_native_catchup_page');
+
+    await (sync as any).fetchMessages('s_native_initial_page');
+    await (sync as any).fetchMessages('s_native_catchup_page');
+
+    expectApiSocketInitialMessageRequest({ sessionId: 's_native_initial_page', limit: '37' });
+    expectApiSocketMessageRequest({ sessionId: 's_native_catchup_page', afterSeq: '20', limit: '150' });
   }, 60_000);
 
   it('uses deferred durable transcript seq for visible catch-up when the stored session seq is stale', async () => {
@@ -618,11 +688,12 @@ describe('sync socket offline tracking', () => {
   });
 
   it('clears mounted SCM transcript consumers during server-scoped runtime reset', () => {
-    const unregister = registerSessionRealtimeScmConsumerScope({ sessionId: 'stale-scm-session' });
+    const unregister = registerSessionRealtimeScmConsumerScope({ serverId: null, sessionId: 'stale-scm-session' });
 
     try {
       expect(readMountedSessionRealtimeScmConsumerScopes()).toEqual([
         {
+          serverId: null,
           sessionId: 'stale-scm-session',
           needsMutationTranscript: true,
         },
@@ -2278,5 +2349,340 @@ describe('sync socket offline tracking', () => {
 
     expect(storage.getState().concurrentSessionListCacheByServerId[serverId]?.listObservation)
       .toMatchObject({ phase: 'ready', lastSuccessAt: expect.any(Number) });
+  });
+
+  it('keeps the ordinary Sync list fetch on the applied Home while another Home is staged', async () => {
+    const appliedProfile = await upsertAndActivateServer({
+      serverUrl: 'http://applied-ordinary-home.example.test',
+      scope: 'tab',
+    });
+    const appliedSnapshot = getActiveServerSnapshot();
+    await upsertAndActivateServer({
+      serverUrl: 'http://staged-ordinary-home.example.test',
+      scope: 'tab',
+    });
+
+    stubSnapshotRefreshFetch();
+    apiSocketRequestMock.mockImplementation(async (path) => {
+      const requestPath = String(path);
+      const sessionMatch = /\/v2\/sessions\/([^?]+)/.exec(requestPath);
+      if (sessionMatch && sessionMatch[1] !== 'active') {
+        return Response.json({
+          session: {
+            id: decodeURIComponent(sessionMatch[1]!),
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 0,
+            active: false,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            dataEncryptionKey: null,
+            metadataVersion: 0,
+            metadata: null,
+            agentStateVersion: 0,
+            agentState: null,
+            share: null,
+          },
+        });
+      }
+      return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+    });
+    Reflect.set(sync, 'credentials', { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' });
+    Reflect.set(sync, 'encryption', null);
+    Reflect.set(sync, 'appliedServerTarget', {
+      serverId: appliedProfile.id,
+      serverUrl: appliedSnapshot.serverUrl,
+      generation: appliedSnapshot.generation,
+    });
+
+    await (sync as any).fetchSessions();
+
+    expect(storage.getState().concurrentSessionListCacheByServerId[appliedProfile.id]?.listObservation)
+      .toMatchObject({ phase: 'ready', lastSuccessAt: expect.any(Number) });
+    const stagedServerId = getActiveServerSnapshot().serverId;
+    expect(storage.getState().concurrentSessionListCacheByServerId[stagedServerId]?.listObservation?.phase)
+      .not.toBe('ready');
+  });
+
+  it('keeps prepared Iroh HTTP work on the applied Home while another Home is staged', async () => {
+    const appliedProfile = await upsertAndActivateServer({
+      serverUrl: 'https://applied-iroh-home.example.test',
+      scope: 'device',
+    });
+    const appliedSnapshot = getActiveServerSnapshot();
+    await upsertAndActivateServer({
+      serverUrl: 'https://staged-home.example.test',
+      scope: 'device',
+    });
+
+    const carrierRequest = vi.fn(async (url: string, _init: RequestInit) => {
+      const requestUrl = new URL(url);
+      if (requestUrl.pathname === '/v1/machines') {
+        return Response.json([]);
+      }
+      if (requestUrl.pathname === '/v1/account/encryption/currentness') {
+        return Response.json({
+          mode: 'plain',
+          version: 1,
+          signingKeyFingerprint: null,
+          contentKeyFingerprint: null,
+          updatedAt: 1,
+        });
+      }
+      if (requestUrl.pathname === '/v1/account/pets') {
+        return Response.json({ ok: true, pets: [] });
+      }
+      if (requestUrl.pathname === '/v1/friends') {
+        return Response.json({ friends: [] });
+      }
+      if (requestUrl.pathname === '/v1/feed') {
+        return Response.json({ items: [], hasMore: false });
+      }
+      if (requestUrl.pathname === '/v1/account/profile') {
+        return Response.json({ ...profileDefaults, id: 'test-account' });
+      }
+      if (requestUrl.pathname === '/v1/kv') {
+        return Response.json({ items: [] });
+      }
+      if (requestUrl.pathname === '/v2/session-organization') {
+        return Response.json({ error: 'Not found', path: '/v2/session-organization' }, { status: 404 });
+      }
+      if (requestUrl.pathname === '/v2/sessions' || requestUrl.pathname === '/v2/sessions/active') {
+        return Response.json({ sessions: [], nextCursor: null, hasNext: false });
+      }
+      if (requestUrl.pathname.startsWith('/v2/sessions/')) {
+        return Response.json({
+          session: {
+            id: decodeURIComponent(requestUrl.pathname.split('/').at(-1) ?? 'active'),
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 0,
+            active: false,
+            activeAt: 2,
+            encryptionMode: 'plain',
+            dataEncryptionKey: null,
+            metadataVersion: 0,
+            metadata: null,
+            agentStateVersion: 0,
+            agentState: null,
+            share: null,
+          },
+        });
+      }
+      throw new Error(`Unexpected applied-carrier request: ${requestUrl.pathname}`);
+    });
+    const appliedCarrier: HomeCarrier = {
+      endpointId: 'iroh-applied-home',
+      readObservedPath: () => 'relay',
+      request: carrierRequest,
+      createWebSocket: () => ({}),
+    };
+    apiSocketPreparedRequestMock.mockImplementation((target: {
+      endpoint: string;
+      runtimeOrigin?: string;
+      carrier?: string;
+      homeCarrier?: HomeCarrier;
+    }) => {
+      expect(target).toMatchObject({
+        endpoint: appliedSnapshot.serverUrl,
+        runtimeOrigin: appliedSnapshot.serverUrl,
+        carrier: 'iroh',
+        homeCarrier: appliedCarrier,
+      });
+      return async (path: string, init?: RequestInit) => await appliedCarrier.request(
+        new URL(path, target.runtimeOrigin ?? target.endpoint).toString(),
+        init ?? {},
+      );
+    });
+    const stagedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      // Let the global reachability owner complete its probe so the failing
+      // request reaches the staged transport rather than timing out in setup.
+      if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+        return Response.json({ status: 'ok' });
+      }
+      throw new Error(`Staged global HTTP was used: ${url}`);
+    });
+    vi.stubGlobal('fetch', stagedFetch);
+    apiSocketRequestMock.mockImplementation(async () => {
+      throw new Error('Staged apiSocket HTTP shortcut was used');
+    });
+    primeServerFeaturesSnapshot({
+      serverId: appliedProfile.id,
+      snapshot: {
+        status: 'ready',
+        features: createRootLayoutFeaturesResponse({
+          features: {
+            pets: { sync: { enabled: true } },
+            social: { friends: { enabled: true } },
+          },
+          capabilities: {
+            social: { friends: { allowUsername: false, requiredIdentityProviderId: 'github' } },
+            oauth: { providers: { github: { enabled: true, configured: true } } },
+          },
+        }),
+      },
+    });
+    storage.getState().applySettingsLocal({
+      experiments: true,
+      featureToggles: { 'social.friends': true },
+    });
+
+    Reflect.set(sync, 'credentials', { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' });
+    Reflect.set(sync, 'encryption', null);
+    const preparedTarget = {
+      serverId: appliedProfile.id,
+      serverUrl: appliedSnapshot.serverUrl,
+      generation: appliedSnapshot.generation,
+      runtimeOrigin: appliedSnapshot.serverUrl,
+      carrier: 'iroh',
+      homeCarrier: appliedCarrier,
+    } satisfies SyncServerTarget;
+    const captureAppliedServerTarget = Reflect.get(sync, 'captureAppliedServerTarget') as (
+      target: SyncServerTarget,
+    ) => SyncServerTarget;
+    const capturedTarget = captureAppliedServerTarget.call(sync, preparedTarget);
+    expect(capturedTarget).toMatchObject({
+      runtimeOrigin: appliedSnapshot.serverUrl,
+      carrier: 'iroh',
+      homeCarrier: appliedCarrier,
+    });
+    Reflect.set(sync, 'appliedServerTarget', capturedTarget);
+
+    await (sync as any).fetchMachines();
+    await (sync as any).fetchAccountPets();
+    await (sync as any).fetchSessions();
+    await (sync as any).fetchFriends();
+    await (sync as any).fetchTodos();
+    await (sync as any).fetchFeed();
+    await (sync as any).fetchProfile();
+
+    expect(stagedFetch).not.toHaveBeenCalled();
+    expect(apiSocketRequestMock).not.toHaveBeenCalled();
+    expect(carrierRequest.mock.calls.map(([url]) => new URL(url).origin)).toEqual(
+      expect.arrayContaining([
+        'https://applied-iroh-home.example.test',
+      ]),
+    );
+    expect(carrierRequest.mock.calls.map(([url]) => new URL(url).pathname)).toEqual(
+      expect.arrayContaining([
+        '/v1/machines',
+        '/v1/account/encryption/currentness',
+        '/v1/account/pets',
+        '/v1/friends',
+        '/v1/kv',
+        '/v1/feed',
+        '/v1/account/profile',
+        '/v2/session-organization',
+        '/v2/sessions',
+      ]),
+    );
+  });
+
+  it('keeps direct Automation settings on the applied Home while another Home is staged', async () => {
+    const appliedProfile = await upsertAndActivateServer({
+      serverUrl: 'https://applied-automation-home.example.test',
+      scope: 'device',
+    });
+    const appliedSnapshot = getActiveServerSnapshot();
+    const stagedProfile = await upsertAndActivateServer({
+      serverUrl: 'https://staged-automation-home.example.test',
+      scope: 'device',
+    });
+    const appliedCarrierRequest = vi.fn(async (url: string, init: RequestInit) => {
+      const requestUrl = new URL(url);
+      if (requestUrl.pathname === '/v3/automations/settings') {
+        expect(new Headers(init.headers).get('Authorization')).toBe('Bearer hdr.eyJzdWIiOiJ0ZXN0In0.sig');
+        return Response.json({
+          maxActiveRunsPerMachine: 4,
+          runRetention: 'thirtyDays',
+        });
+      }
+      throw new Error(`Unexpected applied Automation carrier request: ${requestUrl.pathname}`);
+    });
+    const appliedCarrier: HomeCarrier = {
+      endpointId: 'iroh-applied-automation-home',
+      readObservedPath: () => 'relay',
+      request: appliedCarrierRequest,
+      createWebSocket: () => ({}),
+    };
+    const stagedFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/health') || url.endsWith('/v1/auth/ping')) {
+        return Response.json({ status: 'ok' });
+      }
+      throw new Error(`Staged global Automation HTTP was used: ${url}`);
+    });
+    vi.stubGlobal('fetch', stagedFetch);
+    const automationFeatures = FeaturesResponseSchema.parse({
+      features: {},
+      capabilities: { automations: { apiEpoch: 3 } },
+    });
+    primeServerFeaturesSnapshot({
+      serverId: appliedProfile.id,
+      snapshot: { status: 'ready', features: automationFeatures },
+    });
+    // The old staged-read implementation reaches this cache before its
+    // hard-coded global fetch. Keeping it ready makes the RED prove the actual
+    // bearer transport leak, not an unavailable feature fixture.
+    primeServerFeaturesSnapshot({
+      serverId: stagedProfile.id,
+      snapshot: { status: 'ready', features: automationFeatures },
+    });
+    Reflect.set(sync, 'credentials', { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' });
+    Reflect.set(sync, 'appliedServerTarget', {
+      serverId: appliedProfile.id,
+      serverUrl: appliedSnapshot.serverUrl,
+      generation: appliedSnapshot.generation,
+      runtimeOrigin: appliedSnapshot.serverUrl,
+      carrier: 'iroh',
+      homeCarrier: appliedCarrier,
+    } satisfies SyncServerTarget);
+
+    await expect(sync.getAutomationSettings()).resolves.toEqual({
+      maxActiveRunsPerMachine: 4,
+      runRetention: 'thirtyDays',
+    });
+
+    expect(stagedFetch).not.toHaveBeenCalled();
+    expect(appliedCarrierRequest).toHaveBeenCalledWith(
+      'https://applied-automation-home.example.test/v3/automations/settings',
+      expect.any(Object),
+    );
+  });
+
+  it('keeps the selected Home query transport on the applied Home while another Home is staged', async () => {
+    const appliedProfile = await upsertAndActivateServer({
+      serverUrl: 'http://applied-home.example.test',
+      scope: 'tab',
+    });
+    const appliedSnapshot = getActiveServerSnapshot();
+    await upsertAndActivateServer({
+      serverUrl: 'http://staged-home.example.test',
+      scope: 'tab',
+    });
+
+    apiSocketRequestMock.mockResolvedValue(new Response(JSON.stringify({
+      sessions: [],
+      nextCursor: null,
+      hasNext: false,
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    Reflect.set(sync, 'credentials', { token: 'hdr.eyJzdWIiOiJ0ZXN0In0.sig', secret: 'secret' });
+    Reflect.set(sync, 'encryption', null);
+    Reflect.set(sync, 'appliedServerTarget', {
+      serverId: appliedProfile.id,
+      serverUrl: appliedSnapshot.serverUrl,
+      generation: appliedSnapshot.generation,
+    });
+
+    await expect(sync.fetchSessionListQueryPage(appliedProfile.id, {
+      source: { kind: 'ordinary', path: '/v2/sessions', allowV1Fallback: false },
+      membership: 'ordinary',
+      signal: new AbortController().signal,
+    })).resolves.toEqual(expect.objectContaining({
+      current: true,
+      sessionIds: [],
+    }));
+    expect(apiSocketRequestMock).toHaveBeenCalled();
   });
 });

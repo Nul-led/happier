@@ -22,6 +22,7 @@ import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGove
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -141,7 +142,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             // Create + 10 row segments + archived toggle.
             expect(virtualizedBoundary.props?.data.length).toBe(12);
         });
@@ -177,7 +178,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
 
         const screen = await renderHomeTeams(homeA);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`teams-row:${homeA}:team-1`);
         });
 
@@ -202,7 +203,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`teams-row:${home}:team-1`);
         });
 
@@ -221,7 +222,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-create');
         });
 
@@ -242,13 +243,13 @@ describe('HomeAdministrationTeamsScreen', () => {
         harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty'));
+        await waitForHomeGovernance(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty'));
         harness.answer(home, TEAMS_LIST_PATH, {
             body: { items: [teamSummary('archived-team', 'Archived', 1_700_000_000_000)], nextCursor: null },
         });
         await screen.pressByTestIdAsync('home-teams-toggle-archived');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain(`teams-row:${home}:archived-team`);
         });
         screen.pressByTestId(`teams-row:${home}:archived-team`);
@@ -266,7 +267,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty'));
+        await waitForHomeGovernance(() => expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty'));
 
         let finishArchivedRead: (() => void) | null = null;
         const archivedResponse = new Promise<void>((resolve) => { finishArchivedRead = resolve; });
@@ -277,7 +278,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
         await screen.pressByTestIdAsync('home-teams-toggle-archived');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-archived-loading');
         });
         expect(screen.findByTestId('home-teams-toggle-archived')?.props.accessibilityState?.expanded).toBe(true);
@@ -286,14 +287,14 @@ describe('HomeAdministrationTeamsScreen', () => {
             finishArchivedRead?.();
             await archivedResponse;
         });
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-archived-retry');
         });
         expect(screen.findByTestId('home-teams-archived-retry')?.props.accessibilityLiveRegion).toBe('assertive');
 
         const before = harness.requestsFor(TEAMS_LIST_PATH).length;
         await screen.pressByTestIdAsync('home-teams-archived-retry');
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(harness.requestsFor(TEAMS_LIST_PATH).length).toBeGreaterThan(before);
         });
         expect(harness.requestsFor(TEAMS_LIST_PATH).at(-1)?.input).toMatchObject({
@@ -315,7 +316,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         harness.answer(home, TEAMS_LIST_PATH, { body: { items: [], nextCursor: null } });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-empty');
         });
     });
@@ -332,7 +333,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-disabled');
         });
         expect(harness.requestsFor(TEAMS_LIST_PATH)).toHaveLength(0);
@@ -355,7 +356,7 @@ describe('HomeAdministrationTeamsScreen', () => {
         });
 
         const screen = await renderHomeTeams(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-teams-forbidden');
         });
         expect(harness.requestsFor(TEAMS_LIST_PATH)).toHaveLength(0);

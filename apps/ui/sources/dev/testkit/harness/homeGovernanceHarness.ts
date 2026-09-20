@@ -504,3 +504,37 @@ export function installHomeGovernanceBoundaries(harness: HomeGovernanceHarness):
         return token ? { token } : null;
     });
 }
+
+/**
+ * Waits for a Home Administration render the way the runner already decided
+ * these waits should be bounded.
+ *
+ * `vi.waitFor` applies a 1 s cutoff — a default meant for a quick synchronous
+ * poll. What these suites wait on is a React render behind this harness's real
+ * request boundary, on a fork-capped runner whose `testTimeout`
+ * (`apps/ui/vitest.config.ts`) was deliberately raised so "unrelated load
+ * doesn't cause spurious failures". The 1 s poll silently overrode that
+ * decision, which is why this family reads red on a busy host and green on a
+ * quiet one while the bytes never changed. A subordinate wait must not impose a
+ * shorter competing cutoff than the case containing it, so the budget is read
+ * from the runner's own resolved configuration rather than chosen here.
+ */
+export function waitForHomeGovernance<T>(assertion: () => T | Promise<T>): Promise<T> {
+    return vi.waitFor(assertion, { timeout: resolveRunnerTestTimeoutMs() });
+}
+
+function resolveRunnerTestTimeoutMs(): number {
+    // Vitest keeps the resolved project config on the worker that runs the
+    // case, and bounds the case with `config.testTimeout` from it. Reading the
+    // same field is what makes this an inherited deadline instead of a second
+    // copy of the number.
+    const configured = (globalThis as {
+        __vitest_worker__?: { config?: { testTimeout?: unknown } };
+    }).__vitest_worker__?.config?.testTimeout;
+    if (typeof configured !== 'number' || !Number.isFinite(configured) || configured <= 0) {
+        // Failing here is deliberate: a local default would reintroduce exactly
+        // the second, shorter deadline this helper exists to remove.
+        throw new Error('home governance harness: the runner exposed no test timeout to inherit');
+    }
+    return configured;
+}

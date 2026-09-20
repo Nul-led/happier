@@ -14,9 +14,13 @@ export type SessionLiveTranscriptReason =
  * and the same machine/root tuple, so a scope that carries a Home only matches a subject that
  * carries the same one; an unqualified side still matches by id alone, exactly as
  * `isSessionSurfaceVisible` resolves an unscoped visible surface.
+ *
+ * The key is required even though the value may be `null`: every mounted producer resolves a Home
+ * today, and the leniency below widens the match, so omitting the Home must be a stated decision a
+ * reader can see rather than a silently missing field.
  */
 export type SessionRealtimeScmScope = Readonly<{
-    serverId?: string | null;
+    serverId: string | null;
     sessionId?: string | null;
     canonicalProjectKey?: string | null;
     machineScopeId?: string | null;
@@ -26,8 +30,12 @@ export type SessionRealtimeScmScope = Readonly<{
 
 export type SessionNeedsLiveTranscriptInput = Readonly<{
     sessionId: string;
-    /** Exact Home of the subject Session, when the caller holds one. */
-    serverId?: string | null;
+    /**
+     * Exact Home of the subject Session. Required for the same reason as
+     * `SessionRealtimeScmScope['serverId']`: a subject with no Home widens the SCM
+     * match, so `null` has to be a stated answer rather than an omitted field.
+     */
+    serverId: string | null;
     isVisible?: boolean;
     explicitTranscriptConsumerSessionIds?: ReadonlyArray<string>;
     voicePrimaryActionSessionId?: string | null;
@@ -114,8 +122,8 @@ export function isSessionFullContentConsumerActive(input: SessionNeedsLiveTransc
 
 export type SessionScmMutationSignalInput = Readonly<{
     sessionId: string;
-    /** Exact Home of the subject Session, when the caller holds one. */
-    serverId?: string | null;
+    /** Exact Home of the subject Session; `null` is a stated answer, never an omission. */
+    serverId: string | null;
     sessionScmScope?: SessionRealtimeScmScope | null;
     scmMountedScopes?: ReadonlyArray<SessionRealtimeScmScope>;
 }>;

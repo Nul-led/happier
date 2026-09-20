@@ -3134,6 +3134,50 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         ]);
     });
 
+    it('settles an accepted enqueue when the owner scope retires while its request is in flight', async () => {
+        const sessionId = 'active_pending_postflight_accepted';
+        const localId = 'postflight-accepted-local';
+        const server = await upsertServerProfile({
+            serverUrl: 'https://active-postflight-accepted.example',
+            name: 'Active postflight accepted',
+        });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' } as Session]);
+        storage.getState().activateProfileScope({ serverId: server.id, accountId: 'captured-account' });
+        const { sync } = await import('./sync');
+        const appliedSnapshot = getActiveServerSnapshot();
+        appliedServerSnapshotOverride.current = {
+            serverId: appliedSnapshot.serverId,
+            serverUrl: appliedSnapshot.serverUrl,
+            generation: appliedSnapshot.generation,
+        };
+        Reflect.set(sync, 'appliedServerTarget', appliedServerSnapshotOverride.current);
+        Reflect.set(sync, 'serverID', 'captured-account');
+        getCredentialsForServerUrlMock.mockResolvedValue({
+            token: buildTokenWithSub('captured-account'),
+            secret: 'captured-secret',
+        });
+        runtimeFetchMock.mockImplementation(async (input: RequestInfo | URL) => (
+            String(input).endsWith('/v1/features')
+                ? currentPendingInputFeaturesResponse()
+                : new Response(null, { status: 404 })
+        ));
+        requestMock.mockImplementation(async () => {
+            // The Home commits the message, and only then does the owning Account
+            // scope retire. An accepted write cannot be unsent by that retirement.
+            storage.getState().activateProfileScope({ serverId: server.id, accountId: 'switched-account' });
+            return Response.json({ pending: { localId }, requestedAction: { v: 1, kind: 'enqueue' } });
+        });
+
+        await expect((sync as any).enqueuePendingMessage(
+            sessionId,
+            'accepted before retirement',
+            undefined,
+            undefined,
+            { localId },
+        )).resolves.toEqual({ localId, accepted: true });
+    });
+
     it('routes a pending update through the preferred owner server when it is not active', async () => {
         const sessionId = 'persisted_session_remote_pending_update';
         const pendingId = 'remote-pending-update';

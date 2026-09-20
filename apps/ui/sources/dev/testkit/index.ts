@@ -1,6 +1,17 @@
+// The barrel is imported for its first render by suites that render nothing
+// agent-shaped, so it must stay free of modules that value-import runtime
+// singletons. `fixtures/agentCatalogFixtures` was the only such re-export: it
+// reaches `@/sync/domains/scope/activeServerAccountScope` through
+// `agentCatalogProjection` -> `registryUiBehavior` -> `agentUiBehaviorProjection`,
+// which captures an ambient active-Home snapshot at module evaluation and made
+// unrelated Teams/ops suites render against the real sync runtime. Import that
+// fixture from '@/dev/testkit/fixtures/agentCatalogFixtures' directly.
+//
+// Rule: re-export a module here only when it pulls in fixtures, mocks and
+// render helpers. A module that value-imports `@/sync/**`, `@/agents/registry/**`
+// or any other runtime singleton stays behind its own deep path.
 export * from './cleanup/standardCleanup';
 export * from './fixtures/featureFixtures';
-export * from './fixtures/agentCatalogFixtures';
 export * from './fixtures/accountEncryptionCurrentness';
 export * from './fixtures/releasedServerV021Compatibility';
 export * from './fixtures/localServices';

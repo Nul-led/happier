@@ -21,6 +21,7 @@ import {
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { collectRenderedTestIds } from '@/dev/testkit/render/collectRenderedTestIds';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
@@ -94,7 +95,7 @@ async function renderAccount(serverId: string, accountId = 'ada') {
     const screen = await renderScreen(
         <HomeAdministrationAccountScreen serverId={serverId} accountId={accountId} />,
     );
-    await vi.waitFor(() => {
+    await waitForHomeGovernance(() => {
         expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-status');
     });
     return screen;
@@ -158,7 +159,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(announceAccessibilityMessage).toHaveBeenCalledOnce();
         });
         expect(announceAccessibilityMessage).toHaveBeenLastCalledWith(
@@ -238,7 +239,7 @@ describe('HomeAdministrationAccountScreen', () => {
         });
 
         const screen = await renderAccountLookup(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-roster-error');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-unavailable');
@@ -247,7 +248,7 @@ describe('HomeAdministrationAccountScreen', () => {
             body: { items: [homeAccountRowFixture('ada')], nextCursor: null },
         });
         await screen.pressByTestIdAsync('home-account-roster-retry');
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-status');
         });
     });
@@ -260,7 +261,7 @@ describe('HomeAdministrationAccountScreen', () => {
         });
 
         const screen = await renderAccountLookup(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-roster-unsupported');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-unavailable');
@@ -270,7 +271,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const home = await addAdministeredHome({ rows: [] });
 
         const screen = await renderAccountLookup(home);
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(collectRenderedTestIds(screen.tree.toJSON())).toContain('home-account-unavailable');
         });
         expect(collectRenderedTestIds(screen.tree.toJSON())).not.toContain('home-account-roster-error');
@@ -284,7 +285,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
         });
         const [request] = harness.requestsFor(DISABLE_PATH);
@@ -301,7 +302,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1));
         const pending = screen.findByTestId('home-account-disable');
         expect(pending?.props.accessibilityState).toMatchObject({ busy: true, disabled: true });
         // The canonical Item primitive removes activation while busy, so the
@@ -313,7 +314,7 @@ describe('HomeAdministrationAccountScreen', () => {
             finishDisable?.();
             await disableResponse;
         });
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             const settled = screen.findByTestId('home-account-disable');
             expect(settled?.props.accessibilityState?.busy).not.toBe(true);
             expect(settled?.props.onPress ?? settled?.props.onClick).toBeTypeOf('function');
@@ -338,7 +339,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(administered);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(harness.requestsFor(DISABLE_PATH)).toHaveLength(1);
         });
         expect(harness.requestsFor(DISABLE_PATH)[0]?.serverId).toBe(administered);
@@ -403,7 +404,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-delete');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(modalState.alerts).toHaveLength(1);
             expect(harness.requestsFor(LIST_PATH)).toHaveLength(2);
         });
@@ -419,7 +420,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-delete');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(routerBack).toHaveBeenCalled();
         });
     });
@@ -435,14 +436,14 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(modalState.alerts).toHaveLength(1);
         });
         const alert = modalState.alerts[0]!;
         expect(`${alert.title} ${alert.body}`).toContain('errorOutcomeUnknown');
         expect(`${alert.title} ${alert.body}`).not.toContain('errorGeneric');
         // The roster is re-read so the person can see what the Home actually holds.
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(harness.requestsFor(LIST_PATH).length).toBeGreaterThan(1);
         });
     });
@@ -457,7 +458,7 @@ describe('HomeAdministrationAccountScreen', () => {
         const screen = await renderAccount(home);
         await screen.pressByTestIdAsync('home-account-disable');
 
-        await vi.waitFor(() => {
+        await waitForHomeGovernance(() => {
             expect(modalState.alerts).toHaveLength(1);
             expect(harness.requestsFor(LIST_PATH)).toHaveLength(2);
         });

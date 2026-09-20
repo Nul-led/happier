@@ -18,6 +18,7 @@ import { homeGovernanceProjectionFixture } from '@/dev/testkit/fixtures/homeGove
 import {
     createHomeGovernanceHarness,
     installHomeGovernanceBoundaries,
+    waitForHomeGovernance,
 } from '@/dev/testkit/harness/homeGovernanceHarness';
 import { renderScreen } from '@/dev/testkit/render/renderScreen';
 import type { HomeAdministrationContext } from './homeAdministrationContext';
@@ -194,7 +195,7 @@ describe('HomeAuthenticationPolicySections', () => {
         await screen.pressByTestIdAsync('home-policy-auth-service-disabled');
         await screen.pressByTestIdAsync('home-policy-auth-save');
 
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
             serverId,
             input: {
@@ -264,7 +265,7 @@ describe('HomeAuthenticationPolicySections', () => {
         await screen.pressByTestIdAsync('home-policy-auth-admission:closed');
         await screen.pressByTestIdAsync('home-policy-auth-save');
 
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]?.input).toEqual({
             expectedRevision: projection.policy.revision,
             authenticationPolicy: {
@@ -323,7 +324,7 @@ describe('HomeAuthenticationPolicySections', () => {
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(false);
         await screen.pressByTestIdAsync('home-policy-auth-save');
 
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]?.input).toMatchObject({
             authenticationPolicy: {
                 enabledMethodIds: ['key_challenge'],
@@ -376,7 +377,7 @@ describe('HomeAuthenticationPolicySections', () => {
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
         await screen.pressByTestIdAsync('home-policy-auth-method:github');
         await screen.pressByTestIdAsync('home-policy-auth-save');
-        await vi.waitFor(() => expect(refresh).toHaveBeenCalled());
+        await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalled());
 
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-auth-method:github'))).toBe(true);
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-auth-save'))).toBe(false);
@@ -416,7 +417,7 @@ describe('HomeAuthenticationPolicySections', () => {
         expect(screen.findByTestId('home-policy-team-provider:github_app_identity')).toBeTruthy();
 
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
             serverId,
             input: {
@@ -463,8 +464,8 @@ describe('HomeAuthenticationPolicySections', () => {
 
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(
             renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso')),
         ).toBe(false));
 
@@ -472,7 +473,7 @@ describe('HomeAuthenticationPolicySections', () => {
             body: { ...projection.policy, revision: 6 },
         });
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
         expect(harness.requestsFor('/v1/home/policy/set')[1]?.input).toMatchObject({
             expectedRevision: 5,
             teamProviderPolicy: {
@@ -513,8 +514,8 @@ describe('HomeAuthenticationPolicySections', () => {
 
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-jit');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(
             renderedControlIsChecked(screen.findByTestId('home-policy-team-jit')),
         ).toBe(false));
     });
@@ -553,14 +554,14 @@ describe('HomeAuthenticationPolicySections', () => {
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
 
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
-        await vi.waitFor(() => expect(requestApproval).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+        await waitForHomeGovernance(() => expect(requestApproval).toHaveBeenCalledTimes(1));
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso'))).toBe(true);
 
         await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: true }} />);
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso'))).toBe(true);
 
         await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: false }} />);
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(
             renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso')),
         ).toBe(false));
     });
@@ -598,7 +599,7 @@ describe('HomeAuthenticationPolicySections', () => {
         };
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-provider:workos_sso');
-        await vi.waitFor(() => expect(requestApproval).toHaveBeenCalledTimes(1), { timeout: 10_000 });
+        await waitForHomeGovernance(() => expect(requestApproval).toHaveBeenCalledTimes(1));
         await screen.update(<HomeAuthenticationPolicySections context={{ ...context, approvalPending: true }} />);
 
         const refreshedProjection = homeGovernanceProjectionFixture();
@@ -620,7 +621,7 @@ describe('HomeAuthenticationPolicySections', () => {
                 context={{ ...context, projection: refreshedProjection, approvalPending: false }}
             />,
         );
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(
             renderedControlIsChecked(screen.findByTestId('home-policy-team-provider:workos_sso')),
         ).toBe(true));
     });
@@ -658,12 +659,12 @@ describe('HomeAuthenticationPolicySections', () => {
             'home-policy-team-provider-origins',
             'https://github.first.example\n\nhttps://github.second.example:8443\n',
         );
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(
             renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save')),
         ).toBe(false));
         await screen.pressByTestIdAsync('home-policy-team-provider-origins-save');
 
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
             serverId,
             input: {
@@ -713,7 +714,7 @@ describe('HomeAuthenticationPolicySections', () => {
             'https://github.company.example/path',
         );
 
-        await vi.waitFor(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save'))).toBe(true);
         expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(0);
 
@@ -721,7 +722,7 @@ describe('HomeAuthenticationPolicySections', () => {
             'home-policy-team-provider-origins',
             'https://github.company.example\nhttps://github.company.example',
         );
-        await vi.waitFor(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-provider-origins-invalid')).toBeTruthy());
         expect(renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save'))).toBe(true);
         expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(0);
     });
@@ -759,11 +760,11 @@ describe('HomeAuthenticationPolicySections', () => {
 
         const screen = await renderScreen(<HomeAuthenticationPolicySections context={context} />);
         screen.changeTextByTestId('home-policy-team-provider-origins', 'https://github.mine.example');
-        await vi.waitFor(() => expect(
+        await waitForHomeGovernance(() => expect(
             renderedControlIsDisabled(screen.findByTestId('home-policy-team-provider-origins-save')),
         ).toBe(false));
         await screen.pressByTestIdAsync('home-policy-team-provider-origins-save');
-        await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+        await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalledTimes(1));
 
         const refreshedProjection = homeGovernanceProjectionFixture();
         refreshedProjection.policy = {
@@ -788,7 +789,7 @@ describe('HomeAuthenticationPolicySections', () => {
             body: { ...refreshedProjection.policy, revision: 22 },
         });
         await screen.pressByTestIdAsync('home-policy-team-provider-origins-save');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
         expect(harness.requestsFor('/v1/home/policy/set')[1]).toMatchObject({
             serverId,
             input: {
@@ -849,7 +850,7 @@ describe('HomeAuthenticationPolicySections', () => {
         screen.changeTextByTestId('home-policy-identity-network-ports', '443\n8443');
         await screen.pressByTestIdAsync('home-policy-identity-network-save');
 
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
         expect(harness.requestsFor('/v1/home/policy/set')[0]).toMatchObject({
             serverId,
             input: {
@@ -899,7 +900,7 @@ describe('HomeAuthenticationPolicySections', () => {
         screen.changeTextByTestId('home-policy-identity-network-cidrs', '10.0.0.0/8');
         screen.changeTextByTestId('home-policy-identity-network-ports', '443\n8443');
         await screen.pressByTestIdAsync('home-policy-identity-network-save');
-        await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(1));
+        await waitForHomeGovernance(() => expect(refresh).toHaveBeenCalledTimes(1));
 
         const refreshedProjection = homeGovernanceProjectionFixture({
             identityServices: { workos: 'configured', privateIdentityNetworkAllowed: true },
@@ -928,7 +929,7 @@ describe('HomeAuthenticationPolicySections', () => {
             body: { ...refreshedProjection.policy, revision: 9 },
         });
         await screen.pressByTestIdAsync('home-policy-identity-network-save');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
         expect(harness.requestsFor('/v1/home/policy/set')[1]).toMatchObject({
             serverId,
             input: {
@@ -973,7 +974,7 @@ describe('TeamCreationPolicyEditor', () => {
 
         const screen = await renderScreen(<TeamCreationPolicyEditor context={contextA} />);
         await screen.pressByTestIdAsync('home-policy-team-creation:self_service');
-        await vi.waitFor(() => expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-creation:self_service'))).toBe(true));
+        await waitForHomeGovernance(() => expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-creation:self_service'))).toBe(true));
 
         await act(async () => {
             screen.tree.update(<TeamCreationPolicyEditor context={contextB} />);
@@ -1008,7 +1009,7 @@ describe('TeamCreationPolicyEditor', () => {
             activate?.();
             activate?.();
         });
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(1));
 
         await act(async () => {
             finishSave?.();
@@ -1035,14 +1036,14 @@ describe('TeamCreationPolicyEditor', () => {
 
         const screen = await renderScreen(<TeamCreationPolicyEditor context={context} />);
         await screen.pressByTestIdAsync('home-policy-team-creation:self_service');
-        await vi.waitFor(() => expect(screen.findByTestId('home-policy-team-creation-retry')).toBeTruthy());
+        await waitForHomeGovernance(() => expect(screen.findByTestId('home-policy-team-creation-retry')).toBeTruthy());
         expect(renderedControlIsChecked(screen.findByTestId('home-policy-team-creation:self_service'))).toBe(true);
 
         harness.answer(serverId, '/v1/home/policy/set', {
             body: { ...projection.policy, revision: projection.policy.revision + 1, teamCreationPolicy: 'self_service' },
         });
         await screen.pressByTestIdAsync('home-policy-team-creation-retry');
-        await vi.waitFor(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
+        await waitForHomeGovernance(() => expect(harness.requestsFor('/v1/home/policy/set')).toHaveLength(2));
         expect(screen.findByTestId('home-policy-team-creation-retry')).toBeNull();
     });
 });

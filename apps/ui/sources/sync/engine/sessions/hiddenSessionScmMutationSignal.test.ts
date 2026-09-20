@@ -76,6 +76,7 @@ function buildPlainEditToolMessage(filePath: string): ApiMessage {
 
 function registerRepoScmScope(): () => void {
     return registerSessionRealtimeScmConsumerScope({
+        serverId: null,
         sessionId: 'scm-consumer',
         canonicalProjectKey: 'machine-a:/repo',
         machineScopeId: 'machine-a',

@@ -3,6 +3,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
     AIBackendProfileSchema,
     DEFAULT_PROVIDER_SETTINGS_V1,
+    type FeaturesResponse,
+    FeaturesResponseSchema,
     formatSharedSavedSecretRefV1,
     promotePersonalSavedSecretReference,
     ProviderSettingsV1Schema,
@@ -286,7 +288,10 @@ describe("Saved Secret material route (SQLite integration)", () => {
                 runWithServerHttpBaseUrl<T>(baseUrl: string, operation: () => Promise<T>): Promise<T>;
             }>("../../../../../../cli/src/api/client/serverHttpBaseUrl");
             const { hydrateSavedSecretCatalog } = await importCliTestModule<{
-                hydrateSavedSecretCatalog(input: Readonly<{ token: string }>): Promise<void>;
+                hydrateSavedSecretCatalog(input: Readonly<{
+                    token: string;
+                    serverFeatures: FeaturesResponse | null;
+                }>): Promise<void>;
             }>("../../../../../../cli/src/settings/secrets/hydrateSavedSecretCatalog");
 
             activeSnapshot.setActiveAccountSettingsSnapshot({
@@ -298,7 +303,15 @@ describe("Saved Secret material route (SQLite integration)", () => {
                 settings: promotedSettings,
             });
             await runWithServerHttpBaseUrl(`http://127.0.0.1:${address.port}`, async () => {
-                await hydrateSavedSecretCatalog({ token });
+                await hydrateSavedSecretCatalog({
+                    token,
+                    // The catalog is Teams-gated at its own owner; the harness runs
+                    // with HAPPIER_FEATURE_TEAMS__ENABLED so the Home answers the same bit.
+                    serverFeatures: FeaturesResponseSchema.parse({
+                        features: { teams: { enabled: true } },
+                        capabilities: {},
+                    }),
+                });
             });
             const snapshot = activeSnapshot.getActiveAccountSettingsSnapshot();
             expect(snapshot?.savedSecretResources).toHaveLength(1);
@@ -343,7 +356,7 @@ describe("Saved Secret material route (SQLite integration)", () => {
             })).toEqual({ SHARED_API_KEY: "shared-provider-secret" });
 
             const { resolveMcpValueRefPlaintext } = await importCliTestModule<{
-                resolveMcpValueRefPlaintext(input: unknown): string | null;
+                resolveMcpValueRefPlaintext(input: unknown): Readonly<{ status: string; value?: string }>;
             }>("../../../../../../cli/src/mcp/servers/resolveMcpValueRefPlaintext");
             expect(resolveMcpValueRefPlaintext({
                 valueRef: { t: "savedSecret", secretId: sharedRef },
@@ -351,7 +364,7 @@ describe("Saved Secret material route (SQLite integration)", () => {
                 savedSecretMaterializer: materializer,
                 settingsSecretsKey: null,
                 processEnv: {},
-            })).toBe("shared-provider-secret");
+            })).toEqual({ status: "ready", value: "shared-provider-secret" });
 
             const { materializeConfiguredAcpEnvironment } = await importCliTestModule<{
                 materializeConfiguredAcpEnvironment(input: unknown): Record<string, string>;

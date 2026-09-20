@@ -2836,11 +2836,15 @@ function SessionViewLoaded({
         subscribeToSession: false,
         subscribeToTranscript: false,
     });
-    const activeServerId = getActiveServerSnapshot().serverId;
-    const capabilityServerId = (routeServerId ?? '').trim() || activeServerId;
+    // One derivation of this Session's Home, used for routing and for every
+    // capability/feature scope below. `routeServerId` is already the outer view's
+    // resolved `currentSessionRouteServerId` (explicit route > local cache >
+    // active Home); the fallbacks here only cover a caller that renders this
+    // component without one. A second, shorter derivation beside this one could
+    // only disagree about which Home a Session belongs to.
     const sessionRouteServerId = (routeServerId ?? '').trim()
         || resolveServerIdForSessionIdFromLocalCache(sessionId)
-        || activeServerId;
+        || getActiveServerSnapshot().serverId;
     const sessionComposerAddress = React.useMemo(() => ({
         serverId: sessionRouteServerId,
         sessionId,
@@ -2849,7 +2853,7 @@ function SessionViewLoaded({
         composerFocusRequestRef.current = request;
         if (request) flushPendingRegisteredSessionComposerFocus(sessionComposerAddress);
     }, [sessionComposerAddress]);
-    const providersFeatureEnabled = useFeatureEnabled('providers', { scopeKind: 'spawn', serverId: capabilityServerId });
+    const providersFeatureEnabled = useFeatureEnabled('providers', { scopeKind: 'spawn', serverId: sessionRouteServerId });
     const teamCredentialResourcesEnabled = useFeatureEnabled('teams.credentialResources', {
         scopeKind: 'spawn',
         serverId: sessionRouteServerId,
@@ -3104,7 +3108,7 @@ function SessionViewLoaded({
     const settings = useSettings();
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
         machineId,
-        serverId: capabilityServerId,
+        serverId: sessionRouteServerId,
         enabled: Boolean(machineId),
         staleMs: 60_000,
     });
@@ -3141,7 +3145,7 @@ function SessionViewLoaded({
         let host!: ComposerReferenceSearchHost;
         host = {
             machineId,
-            serverId: capabilityServerId,
+            serverId: sessionRouteServerId,
             projection,
             isCurrent: () => (
                 composerReferenceHostRef.current === host
@@ -3150,7 +3154,7 @@ function SessionViewLoaded({
         };
         return host;
     }, [
-        capabilityServerId,
+        sessionRouteServerId,
         composerReferenceAccountLifetime,
         daemonMergedProjection.inputs?.pluginProjectionV2,
         daemonMergedProjection.phase,
@@ -3200,7 +3204,7 @@ function SessionViewLoaded({
         physicalTarget: { kind: 'session', sessionId },
         resourceContext: { kind: 'session', sessionId },
         machineId: machineId ?? null,
-        serverId: capabilityServerId,
+        serverId: sessionRouteServerId,
         projectionPhase: daemonMergedProjection.phase,
         projectionInputs: daemonMergedProjection.inputs,
         accountLifetime: composerPresentationAccountLifetime,
@@ -3247,10 +3251,10 @@ function SessionViewLoaded({
     const voiceEnabled = useFeatureEnabled('voice');
     const reviewCommentsEnabled = useFeatureEnabled('files.reviewComments');
     const attachmentsUploadsFeatureEnabled = useFeatureEnabled('attachments.uploads');
-    const usageLimitRecoveryFeatureEnabled = useFeatureEnabled('sessions.usageLimitRecovery', { scopeKind: 'spawn', serverId: capabilityServerId });
+    const usageLimitRecoveryFeatureEnabled = useFeatureEnabled('sessions.usageLimitRecovery', { scopeKind: 'spawn', serverId: sessionRouteServerId });
     const connectedServiceQuotasEnabled = useFeatureEnabled('connectedServices.quotas');
     const poolQuotaLimitSelectionEnabled = useFeatureEnabled('connectedServices.poolQuotaLimitSelection');
-    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(sessionId, capabilityServerId);
+    const attachmentsUploadsTransferAvailable = useSessionFileUploadAvailability(sessionId, sessionRouteServerId);
     const attachmentsUploadsEnabled = attachmentsUploadsFeatureEnabled && attachmentsUploadsTransferAvailable;
     // Generalized goal umbrella gate (provider-agnostic). The provider-specific discriminator is the
     // capability gate `supportsEditableSessionGoals` (Codex: app-server mode; Claude: live runner
@@ -3387,10 +3391,12 @@ function SessionViewLoaded({
     // target are the models it would actually run with here.
     const agentContinuationTargetDetail = React.useMemo(() => ({
         settings,
-        capabilityServerId,
+        // The picker's detail contract names this `capabilityServerId`; this
+        // Session's Home is the value it takes.
+        capabilityServerId: sessionRouteServerId,
         machineId: typeof machineId === 'string' && machineId.length > 0 ? machineId : null,
         cwd: ownerMetadata?.path ?? null,
-    }), [capabilityServerId, machineId, ownerMetadata?.path, settings]);
+    }), [sessionRouteServerId, machineId, ownerMetadata?.path, settings]);
     const currentAgentLabel = agentInputCore
         ? t(agentInputCore.displayNameKey)
         : formatAgentLikeIdForDisplay(agentInputAgentType);
@@ -3406,7 +3412,7 @@ function SessionViewLoaded({
     // unrelated server's setting decide whether this Session may switch Agent.
     const agentSwitchingDecision = useFeatureDecision('sessions.agentSwitching', {
         scopeKind: 'spawn',
-        serverId: capabilityServerId,
+        serverId: sessionRouteServerId,
     });
     // Read here rather than beside the composer's other draft work because the
     // armed Agent is a Session draft value like the rest, and the picker below is
@@ -4900,7 +4906,7 @@ function SessionViewLoaded({
     const { resumeCapabilityOptions } = useResumeCapabilityOptions({
         agentId: lifecycleAgentId,
         machineId: typeof machineId === 'string' ? machineId : null,
-        serverId: capabilityServerId,
+        serverId: sessionRouteServerId,
         settings,
         enabled: !isSessionActive || supportsLocalControl,
     });
@@ -6185,7 +6191,7 @@ function SessionViewLoaded({
                             session,
                             sourceSessionId: sessionId,
                             forkPoint: { type: 'latest' },
-                            serverId: capabilityServerId ?? null,
+                            serverId: sessionRouteServerId ?? null,
                             machineId: resumeMachineId,
                         }) as any);
                         return true;
@@ -6234,7 +6240,7 @@ function SessionViewLoaded({
                 ensureAgentInstallablesBackground({
                     agentId,
                     machineId: base.machineId,
-                    serverId: capabilityServerId,
+                    serverId: sessionRouteServerId,
                     settings,
                     resumeSessionId: base.resume ?? null,
                 }),
@@ -6243,7 +6249,7 @@ function SessionViewLoaded({
 
             const result = await resumeSession({
                 ...base,
-                serverId: capabilityServerId,
+                serverId: sessionRouteServerId,
                 ...buildResumeSessionExtrasFromUiState({
                     agentId,
                     settings,
@@ -6261,7 +6267,7 @@ function SessionViewLoaded({
             maybeAlert(t('session.resumeFailed'));
             return false;
         }
-    }, [agentId, capabilityServerId, executionRunsEnabled, isMachineReachable, reachableMachineTarget, resumeCapabilityOptions, router, session, sessionActionDefaultBackend, sessionId, settings]);
+    }, [agentId, sessionRouteServerId, executionRunsEnabled, isMachineReachable, reachableMachineTarget, resumeCapabilityOptions, router, session, sessionActionDefaultBackend, sessionId, settings]);
     handleUsageLimitRecoveryResumeNowRef.current = handleResumeSession;
 
     // The committed-but-inactive recovery. The banner offers it only once
@@ -6464,7 +6470,7 @@ function SessionViewLoaded({
         autoDetect: isLocallyAttached,
         includeLoginStatus: isLocallyAttached,
         agentIds: cliDetectionAgentIds,
-        serverId: capabilityServerId,
+        serverId: sessionRouteServerId,
     });
     const cliAuthStatus = agentId ? cliAvailability.authStatus[agentId] ?? null : null;
     const canRequestRemoteControl = shouldRequestRemoteControl(session, cliAuthStatus?.state ?? null);
@@ -6935,7 +6941,7 @@ function SessionViewLoaded({
             machineId: controlMachineTarget?.machineId ?? machineId ?? null,
             directory: liveAuthoringContext.snapshot.directory,
             agentId,
-            serverId: capabilityServerId,
+            serverId: sessionRouteServerId,
             isReadOnly,
             sessionActive: session.active === true,
         });
@@ -6990,7 +6996,7 @@ function SessionViewLoaded({
             sessionId,
             agentId,
             machineId: controlMachineTarget?.machineId ?? null,
-            serverId: capabilityServerId,
+            serverId: sessionRouteServerId,
             connectedAccounts: currentSessionAgentCatalogEntry?.connectedAccounts ?? [],
             agentIdentity: currentSessionAgentCatalogEntry
                 ? parseQualifiedPluginContributionKey(currentSessionAgentCatalogEntry.qualifiedId)
@@ -7722,7 +7728,7 @@ function SessionViewLoaded({
                 agentCatalogIdentity={currentSessionAgentCatalogEntry ? {
                     entry: currentSessionAgentCatalogEntry,
                     machineId: controlMachineTarget?.machineId ?? machineId ?? null,
-                    serverId: capabilityServerId,
+                    serverId: sessionRouteServerId,
                     current: daemonMergedProjection.phase === 'ready',
                 } : undefined}
                 armedContinuationTarget={armedContinuationTarget}
