@@ -20,8 +20,12 @@ export type SessionAudiencePresentation = Readonly<{
     label: string;
 }>;
 
+/**
+ * The single marker explaining why this Session is the viewer's, chosen from the canonical
+ * relevance vocabulary in declaration order: responsibility, then Follow, then a direct share.
+ */
 export type SessionResponsibilityPresentation = Readonly<{
-    kind: 'assigned' | 'following';
+    kind: 'assigned' | 'following' | 'shared_directly';
     label: string;
 }>;
 
@@ -159,8 +163,9 @@ function resolveFreshnessLabel(state: SessionHomeFreshnessPresentation['state'])
 }
 
 /**
- * At most one responsibility marker. Assignment already implies Follow, so a responsible viewer
- * reads "Assigned to you" and never both markers on the same row (Lane 07.4 §8).
+ * At most one marker. Assignment already implies Follow, so a responsible viewer reads
+ * "Assigned to you" and never both markers on the same row (Lane 07.4 §8); a Session someone
+ * shared straight with this viewer says so only when no stronger reason already explains it.
  */
 function resolveResponsibility(
     viewer: SessionViewerProjectionV1 | null | undefined,
@@ -171,6 +176,9 @@ function resolveResponsibility(
     }
     if (viewer.follow.follows) {
         return { kind: 'following', label: t('session.follow.following') };
+    }
+    if (viewer.relevance.reasons.includes('shared_directly_with_me')) {
+        return { kind: 'shared_directly', label: t('session.responsibilitySharedWithYou') };
     }
     return null;
 }
@@ -280,10 +288,11 @@ export function projectSessionContextPresentation(
     push('freshness', facts.freshness.label);
     push('freshness', facts.freshness.lastUpdatedLabel);
     push('audience', facts.audience?.label);
-    // Assignment is the only responsibility fact that earns words. Follow is a glyph on the
-    // surfaces that own the control, and repeating it as copy would say nothing a followed row —
-    // or a delivered notification — has not already established (Lane 07.4 §8).
-    if (facts.responsibility?.kind === 'assigned') {
+    // Assignment and a direct share are the facts that earn words: neither is visible anywhere
+    // else on the row. Follow is a glyph on the surfaces that own the control, and repeating it as
+    // copy would say nothing a followed row — or a delivered notification — has not already
+    // established (Lane 07.4 §8).
+    if (facts.responsibility && facts.responsibility.kind !== 'following') {
         push('responsibility', facts.responsibility.label);
     }
     if (facts.contentAvailability) {

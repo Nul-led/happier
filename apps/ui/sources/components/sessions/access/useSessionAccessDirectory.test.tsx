@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/dev/testkit';
 import { listTeamGroups } from '@/sync/ops/teams/teamGroupOperations';
+import { listTeamMembers } from '@/sync/ops/teams/teamMemberOperations';
 import { runTeamAction } from '@/sync/ops/teams/teamActionClient';
 import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccessLegacyAdapter';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
@@ -17,6 +18,7 @@ vi.mock('@/sync/api/session/sessionAccessLegacyAdapter', () => ({
 }));
 vi.mock('@/sync/ops/teams/teamActionClient', () => ({ runTeamAction: vi.fn() }));
 vi.mock('@/sync/ops/teams/teamGroupOperations', () => ({ listTeamGroups: vi.fn() }));
+vi.mock('@/sync/ops/teams/teamMemberOperations', () => ({ listTeamMembers: vi.fn() }));
 vi.mock('@/hooks/teams/useTeamGroups', () => ({ useTeamGroups: vi.fn(() => ({
     rows: [], status: 'ready', error: null, hasMore: false, loadMore: vi.fn(), reload: vi.fn(), isCurrent: true,
 })) }));
@@ -67,6 +69,15 @@ function team(id: string) {
 
 function group(teamId: string, id: string) {
     return { id, teamId, name: id };
+}
+
+function membership(id: string, accountId: string, firstName: string, status: 'active' | 'suspended') {
+    return {
+        v: 1, id, teamId: 'team-a', accountId,
+        account: { accountId, firstName, lastName: null, username: null, avatarUrl: null },
+        role: 'member', status, historyAccess: 'from_join', management: { kind: 'native' },
+        capabilities: {}, joinedAt: 1,
+    };
 }
 
 describe('useSessionAccessDirectory', () => {
@@ -252,7 +263,7 @@ describe('useSessionAccessDirectory', () => {
         await renderScreen(<Probe teamId="team-a" onValue={(value) => { latest = value; }} />);
 
         const people = latest.sections.find((section) => section.kind === 'account')!;
-        const peopleRows = await people.resolveCandidates!('Beyond', new AbortController().signal);
+        const peopleRows = await people.resolveCandidates!('', new AbortController().signal);
         expect(peopleRows[0]).toMatchObject({
             principal: { ref: { kind: 'account', accountId: 'account-11' } },
             teamMembership: { teamId: 'team-a', teamMembershipId: 'membership-11', accountId: 'account-11' },
@@ -271,5 +282,42 @@ describe('useSessionAccessDirectory', () => {
         });
         latest.retry('group');
         expect(groupRetry).toHaveBeenCalledOnce();
+        // The already-read page answers an empty lookup; only a real lookup asks the Home.
+        expect(listTeamMembers).not.toHaveBeenCalled();
+    });
+
+    it('asks the Home for a Team member no loaded roster page contains', async () => {
+        vi.mocked(useTeamMembersRoster).mockReturnValue({
+            rows: [membership('membership-11', 'account-11', 'Beyond', 'active')],
+            status: 'ready', error: null, hasMore: true, loadMore: vi.fn(), reload: vi.fn(),
+        } as never);
+        vi.mocked(listTeamMembers).mockResolvedValue({
+            kind: 'succeeded',
+            value: {
+                items: [
+                    membership('membership-99', 'account-99', 'Seventh', 'active'),
+                    membership('membership-98', 'account-98', 'Seventh', 'suspended'),
+                ],
+                nextCursor: null,
+            },
+        } as never);
+
+        let latest!: SessionAccessDirectory;
+        await renderScreen(<Probe teamId="team-a" onValue={(value) => { latest = value; }} />);
+
+        const people = latest.sections.find((section) => section.kind === 'account')!;
+        const rows = await people.resolveCandidates!('Seventh', new AbortController().signal);
+
+        expect(listTeamMembers).toHaveBeenCalledWith(expect.objectContaining({
+            address: { serverId: 'home-one', teamId: 'team-a' },
+            filter: 'all',
+            query: 'Seventh',
+        }));
+        // The Home's own matcher decides; a member outside the loaded pages is still found,
+        // and a suspended membership is still not a collaboration principal.
+        expect(rows.map((row) => row.principal.ref)).toEqual([{ kind: 'account', accountId: 'account-99' }]);
+        expect(rows[0]).toMatchObject({
+            teamMembership: { teamId: 'team-a', teamMembershipId: 'membership-99', accountId: 'account-99' },
+        });
     });
 });

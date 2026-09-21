@@ -16,6 +16,7 @@ const en = {
     responsibilityA11yReadOnly: ({ name }: { name: string }) => `Responsible person, ${name}.`,
     responsibilityA11yEmpty: 'Responsible person, no one. Change responsible person.',
     responsibilityAssignedToYou: 'Assigned to you',
+    responsibilitySharedWithYou: 'Shared with you',
 };
 
 type SessionResponsibilityTranslations = typeof en;
@@ -43,6 +44,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsable, ${name}.`,
         responsibilityA11yEmpty: 'Persona responsable, ningú. Canvia la persona responsable.',
         responsibilityAssignedToYou: 'Assignada a tu',
+        responsibilitySharedWithYou: 'Compartida amb tu',
     },
     de: {
         responsibilitySectionTitle: 'Verantwortung',
@@ -62,6 +64,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Verantwortliche Person, ${name}.`,
         responsibilityA11yEmpty: 'Verantwortliche Person, niemand. Verantwortliche Person ändern.',
         responsibilityAssignedToYou: 'Dir zugewiesen',
+        responsibilitySharedWithYou: 'Mit dir geteilt',
     },
     es: {
         responsibilitySectionTitle: 'Responsabilidad',
@@ -81,6 +84,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsable, ${name}.`,
         responsibilityA11yEmpty: 'Persona responsable, nadie. Cambiar la persona responsable.',
         responsibilityAssignedToYou: 'Asignada a ti',
+        responsibilitySharedWithYou: 'Compartida contigo',
     },
     fr: {
         responsibilitySectionTitle: 'Responsabilité',
@@ -100,6 +104,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Personne responsable, ${name}.`,
         responsibilityA11yEmpty: 'Personne responsable, personne. Changer la personne responsable.',
         responsibilityAssignedToYou: 'Qui vous est attribuée',
+        responsibilitySharedWithYou: 'Partagée avec vous',
     },
     it: {
         responsibilitySectionTitle: 'Responsabilità',
@@ -119,6 +124,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Persona responsabile, ${name}.`,
         responsibilityA11yEmpty: 'Persona responsabile, nessuno. Cambia la persona responsabile.',
         responsibilityAssignedToYou: 'Assegnata a te',
+        responsibilitySharedWithYou: 'Condivisa con te',
     },
     ja: {
         responsibilitySectionTitle: '担当',
@@ -137,6 +143,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `担当者、${name}。`,
         responsibilityA11yEmpty: '担当者、なし。担当者を変更。',
         responsibilityAssignedToYou: 'あなたの担当',
+        responsibilitySharedWithYou: 'あなたに共有されました',
     },
     pl: {
         responsibilitySectionTitle: 'Odpowiedzialność',
@@ -156,6 +163,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Osoba odpowiedzialna, ${name}.`,
         responsibilityA11yEmpty: 'Osoba odpowiedzialna, nikt. Zmień osobę odpowiedzialną.',
         responsibilityAssignedToYou: 'Przypisana Tobie',
+        responsibilitySharedWithYou: 'Udostępniona Tobie',
     },
     pt: {
         responsibilitySectionTitle: 'Responsabilidade',
@@ -175,6 +183,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Pessoa responsável, ${name}.`,
         responsibilityA11yEmpty: 'Pessoa responsável, ninguém. Mudar a pessoa responsável.',
         responsibilityAssignedToYou: 'Atribuída a ti',
+        responsibilitySharedWithYou: 'Partilhada contigo',
     },
     ru: {
         responsibilitySectionTitle: 'Ответственность',
@@ -194,6 +203,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `Ответственный, ${name}.`,
         responsibilityA11yEmpty: 'Ответственный, никто. Изменить ответственного.',
         responsibilityAssignedToYou: 'Назначено вам',
+        responsibilitySharedWithYou: 'Доступ открыт вам',
     },
     'zh-Hans': {
         responsibilitySectionTitle: '负责人',
@@ -213,6 +223,7 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `负责人：${name}。`,
         responsibilityA11yEmpty: '负责人：无人。更改负责人。',
         responsibilityAssignedToYou: '已指派给你',
+        responsibilitySharedWithYou: '已与你共享',
     },
     'zh-Hant': {
         responsibilitySectionTitle: '負責人',
@@ -232,5 +243,6 @@ export const sessionResponsibilityTranslations: Record<
         responsibilityA11yReadOnly: ({ name }: { name: string }) => `負責人：${name}。`,
         responsibilityA11yEmpty: '負責人：無人。變更負責人。',
         responsibilityAssignedToYou: '已指派給你',
+        responsibilitySharedWithYou: '已與你共用',
     },
 };

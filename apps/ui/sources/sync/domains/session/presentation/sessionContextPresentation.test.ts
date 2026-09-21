@@ -45,6 +45,13 @@ const VIEWER_FOLLOWING_ONLY: SessionViewerProjectionV1 = {
     relevance: { relevant: true, reasons: ['followed_by_me'] },
 };
 
+const VIEWER_SHARED_DIRECTLY: SessionViewerProjectionV1 = {
+    ...VIEWER_RESPONSIBLE,
+    relevance: { relevant: true, reasons: ['shared_directly_with_me'] },
+    follow: { follows: false, notificationLevel: null },
+    notification: { level: 'none', source: 'none' },
+};
+
 describe('sessionContextPresentation', () => {
     afterEach(resetTeamsSnapshotsForTests);
 
@@ -158,6 +165,31 @@ describe('sessionContextPresentation', () => {
         expect(projectSessionContextPresentation(assigned).segments).toEqual([
             { kind: 'responsibility', label: 'Assigned to you' },
         ]);
+    });
+
+    it('tells a recipient a Session was shared with them, and yields to the stronger reasons', () => {
+        const address = { serverId: 'home-b', sessionId: 'session-1' } as const;
+        const awareness = makeAwareness({ content: { mode: 'plain' } });
+        const shared = buildSessionContextFacts({ address, awareness, viewer: VIEWER_SHARED_DIRECTLY });
+
+        // A direct share is the only reason this row is here, so the row says so.
+        expect(shared.responsibility?.kind).toBe('shared_directly');
+        expect(projectSessionContextPresentation(shared).segments).toEqual([
+            { kind: 'responsibility', label: 'Shared with you' },
+        ]);
+
+        // Assignment and Follow already explain the row; the share adds nothing over them.
+        const assignedAndShared = buildSessionContextFacts({
+            address, awareness,
+            viewer: { ...VIEWER_RESPONSIBLE, relevance: { relevant: true, reasons: ['responsible_for_me', 'shared_directly_with_me'] } },
+        });
+        const followedAndShared = buildSessionContextFacts({
+            address, awareness,
+            viewer: { ...VIEWER_SHARED_DIRECTLY, follow: { follows: true, notificationLevel: 'important' } },
+        });
+        expect(assignedAndShared.responsibility?.kind).toBe('assigned');
+        expect(followedAndShared.responsibility?.kind).toBe('following');
+        expect(projectSessionContextPresentation(followedAndShared).segments).toEqual([]);
     });
 
     it('never fabricates workspace context its owner withheld', () => {

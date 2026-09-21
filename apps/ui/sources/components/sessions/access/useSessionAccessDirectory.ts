@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { TeamsPageV1Schema, type TeamExternalSharingPolicyV1, type TeamSessionCreationPolicyV1, type TeamsPageV1 } from '@happier-dev/protocol/teams';
+import { TeamsPageV1Schema, type TeamExternalSharingPolicyV1, type TeamMembershipV1, type TeamSessionCreationPolicyV1, type TeamsPageV1 } from '@happier-dev/protocol/teams';
 
 import type { SessionCollaborationAvailability } from '@/hooks/session/useSessionCollaborationAvailability';
 import { useTeamGroups } from '@/hooks/teams/useTeamGroups';
@@ -8,6 +8,7 @@ import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccess
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { listTeamGroups } from '@/sync/ops/teams/teamGroupOperations';
+import { listTeamMembers } from '@/sync/ops/teams/teamMemberOperations';
 import { runTeamAction } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
 
@@ -72,6 +73,32 @@ function groupRows(page: GroupDirectoryPage): readonly SessionAccessCandidateRow
     return Object.values(page.byTeam).flatMap((source) => source.rows);
 }
 
+/**
+ * One Team membership as a candidate row.
+ *
+ * Suspended memberships remain visible in administration history, but they are
+ * not current collaboration principals and cannot be assigned new credential
+ * access or External API keys — so the same status rule applies to the roster
+ * page and to a lookup the Home answered.
+ */
+function teamMemberRows(
+    memberships: readonly TeamMembershipV1[],
+): readonly SessionAccessCandidateRowModel[] {
+    return memberships
+        .filter((membership) => membership.status === 'active')
+        .map((membership) => ({
+            principal: projectSessionAccessPrincipal({
+                kind: 'account', accountId: membership.accountId,
+                username: membership.account.username,
+                firstName: membership.account.firstName,
+                lastName: membership.account.lastName,
+                avatarUrl: membership.account.avatarUrl,
+            }),
+            teamMembership: { teamId: membership.teamId, teamMembershipId: membership.id, accountId: membership.accountId },
+            addition: { kind: 'allowed' as const }, operation: IDLE_OPERATION,
+        }));
+}
+
 function narrow(rows: readonly SessionAccessCandidateRowModel[], query: string): readonly SessionAccessCandidateRowModel[] {
     const needle = query.trim().toLocaleLowerCase();
     if (!needle) return rows;
@@ -93,13 +120,16 @@ export type SessionAccessDirectory = Readonly<{
  * The heterogeneous candidate presentation the access editor renders, composed
  * from the independently owned directory sources.
  *
- * Each kind keeps its own owner, ranking, cursor and failure. Accounts are
- * server-searched through the collaboration-eligible projection of the incumbent
- * username directory; Teams and Groups are read
- * through Lane 01's Team intents, which declare no query contract, so their
- * bounded page is narrowed locally rather than by inventing a search API. No
- * cursor is merged, nothing is re-ranked across kinds, and identity is always
- * the kind-qualified subject reference — never a display name.
+ * Each kind keeps its own owner, ranking, cursor and failure. Every lookup for a
+ * person is the Home's: Accounts through the collaboration-eligible projection of
+ * the incumbent username directory, and Team members through the roster's own
+ * bounded `teams.members.list` query, so one matcher decides who matches and a
+ * member on an unread page is found exactly like one on the first. The Team and
+ * Group directory intents still declare no query contract
+ * (`TeamsListInputV1Schema`, `TeamGroupsListInputV1Schema`), so those bounded
+ * pages are narrowed locally rather than by inventing a search API. No cursor is
+ * merged, nothing is re-ranked across kinds, and identity is always the
+ * kind-qualified subject reference — never a display name.
  *
  * Groups have no Home-wide directory operation, so Group discovery composes the
  * complete member-Team directory with each Team's independently paged Group
@@ -374,6 +404,25 @@ export function useSessionAccessDirectory(input: Readonly<{
         }
     }, [applyOperations, availability, scope, scopeKey, sessionId]);
 
+    /**
+     * Looking a Team member up asks the Home, exactly as the roster screen does,
+     * so a member on an unread page is found and this editor never becomes a
+     * second matcher for the same question. An empty lookup is not a lookup: the
+     * roster page already read answers it without a request.
+     */
+    const resolveTeamMember = React.useCallback(async (
+        rosterRows: readonly SessionAccessCandidateRowModel[],
+        query: string,
+        signal: AbortSignal,
+    ): Promise<readonly SessionAccessCandidateRowModel[]> => {
+        const search = query.trim();
+        if (search === '' || !teamAddress) return applyOperations(rosterRows);
+        const outcome = await listTeamMembers({ scope, address: teamAddress, filter: 'all', query: search });
+        if (currentScope.current !== scopeKey || signal.aborted) return [];
+        if (outcome.kind !== 'succeeded') throw new Error(outcome.failure.kind);
+        return applyOperations(teamMemberRows(outcome.value.items));
+    }, [applyOperations, scope, scopeKey, teamAddress]);
+
     const resolvePaged = React.useCallback(async (
         kind: 'team' | 'group',
         query: string,
@@ -547,22 +596,7 @@ export function useSessionAccessDirectory(input: Readonly<{
         const accountPage = pages.account ?? EMPTY_PAGE;
         const directoryError = { code: 'session_access_directory_failed', message: t('errors.operationFailed'), retryable: true } as const;
         if (teamAddress) {
-            // Suspended memberships remain visible in administration history,
-            // but they are not current collaboration principals and cannot be
-            // assigned new credential access or External API keys.
-            const accountRows: readonly SessionAccessCandidateRowModel[] = teamMembers.rows
-                .filter((membership) => membership.status === 'active')
-                .map((membership) => ({
-                    principal: projectSessionAccessPrincipal({
-                        kind: 'account', accountId: membership.accountId,
-                        username: membership.account.username,
-                        firstName: membership.account.firstName,
-                        lastName: membership.account.lastName,
-                        avatarUrl: membership.account.avatarUrl,
-                    }),
-                    teamMembership: { teamId: membership.teamId, teamMembershipId: membership.id, accountId: membership.accountId },
-                    addition: { kind: 'allowed' as const }, operation: IDLE_OPERATION,
-                }));
+            const accountRows = teamMemberRows(teamMembers.rows);
             const groupCandidateRows: readonly SessionAccessCandidateRowModel[] = teamGroups.rows.map((group) => ({
                 principal: projectSessionAccessPrincipal({
                     kind: 'group', teamId: group.teamId, groupId: group.id, name: group.name,
@@ -578,7 +612,7 @@ export function useSessionAccessDirectory(input: Readonly<{
                 cursor: teamMembers.hasMore ? `team-members:${teamMembers.rows.length}` : null,
                 hasMore: teamMembers.hasMore, loadingMore: teamMembers.status === 'loading_more',
                 resolverKey: `${scopeKey}:team-members:${revision}:${teamMembers.rows.length}:${teamMembers.status}:${operationsKey}`,
-                resolveCandidates: async (query: string) => applyOperations(narrow(accountRows, query)),
+                resolveCandidates: (query: string, signal: AbortSignal) => resolveTeamMember(accountRows, query, signal),
             }, {
                 kind: 'group' as const, title: t('session.access.groups'), candidates: groupCandidateRows,
                 status: teamGroups.status === 'error' ? 'error' as const : teamGroups.status === 'loading' ? 'loading' as const : teamGroups.status === 'loading_more' ? 'refreshing' as const : 'idle' as const,
@@ -641,7 +675,7 @@ export function useSessionAccessDirectory(input: Readonly<{
             resolveCandidates: (query) => resolvePaged('group', query),
         });
         return built.filter((section) => principalKinds.includes(section.kind));
-    }, [applyOperations, availability, contextTeamKey, contextTeams, enabled, groupPage, operationsKey, pages, principalKinds, resolveAccount, resolvePaged, revision, scopeKey, teamAddress, teamGroups.hasMore, teamGroups.rows, teamGroups.status, teamMembers.hasMore, teamMembers.rows, teamMembers.status]);
+    }, [applyOperations, availability, contextTeamKey, contextTeams, enabled, groupPage, operationsKey, pages, principalKinds, resolveAccount, resolvePaged, resolveTeamMember, revision, scopeKey, teamAddress, teamGroups.hasMore, teamGroups.rows, teamGroups.status, teamMembers.hasMore, teamMembers.rows, teamMembers.status]);
 
     const teamContexts = React.useMemo(() => {
         const discovered = pages.team?.teamContexts ?? [];

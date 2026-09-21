@@ -54,6 +54,37 @@ function resolveRemoteAlertFallbackBody(
     return REMOTE_ALERT_FALLBACK_BODY[event.type];
 }
 
+/**
+ * What this leg does with one committed personal event.
+ *
+ * `personal_only` is a decision, not a gap: access "never creates tracking,
+ * unread or notifications by itself" (`LANE-09-BRIEF.md:68` item 16), so a
+ * direct share is a relevance fact at effective level `none` — it earns no
+ * OS-visible alert and no content-free wake, and adding either would notify
+ * about exactly the thing item 16 says access never notifies about.
+ *
+ * `no_alert_event` is the different, non-deliberate outcome: an alerting kind
+ * whose committed producer this Home does not own, which submits nothing
+ * because there is nothing valid to submit.
+ */
+export type SessionActivityRemoteAlertDisposition =
+    | Readonly<{ kind: "alert"; event: ActivityRemoteAlertEventV2 }>
+    | Readonly<{ kind: "personal_only" }>
+    | Readonly<{ kind: "no_alert_event" }>;
+
+const PERSONAL_ONLY_DISPOSITION: SessionActivityRemoteAlertDisposition = Object.freeze({ kind: "personal_only" as const });
+const NO_ALERT_EVENT_DISPOSITION: SessionActivityRemoteAlertDisposition = Object.freeze({ kind: "no_alert_event" as const });
+
+export function resolveSessionActivityRemoteAlertDisposition(
+    event: SessionPersonalEventKindV1,
+    committedMessage?: ActivityRemoteAlertCommittedMessageV2,
+    committedTurnId?: string,
+): SessionActivityRemoteAlertDisposition {
+    if (event === "directly_shared") return PERSONAL_ONLY_DISPOSITION;
+    const alertEvent = resolveActivityRemoteAlertEventForPersonalEventV2(event, committedMessage, committedTurnId);
+    return alertEvent ? { kind: "alert", event: alertEvent } : NO_ALERT_EVENT_DISPOSITION;
+}
+
 export type SubmitSessionActivityRemoteAlertsParams = Readonly<{
     sessionId: string;
     event: SessionPersonalEventKindV1;
@@ -95,12 +126,13 @@ export async function submitSessionActivityRemoteAlerts(
     params: SubmitSessionActivityRemoteAlertsParams,
 ): Promise<readonly string[]> {
     if (!isServerFeatureEnabledForRequest("sessions.following", process.env)) return [];
-    const alertEvent = resolveActivityRemoteAlertEventForPersonalEventV2(
+    const disposition = resolveSessionActivityRemoteAlertDisposition(
         params.event,
         params.committedMessage,
         params.committedTurnId,
     );
-    if (!alertEvent) return [];
+    if (disposition.kind !== "alert") return [];
+    const alertEvent = disposition.event;
 
     const session = await db.session.findUnique({ where: { id: params.sessionId }, select: { accountId: true } });
     if (!session) return [];

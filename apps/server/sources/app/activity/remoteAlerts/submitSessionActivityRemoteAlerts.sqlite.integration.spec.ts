@@ -22,7 +22,7 @@ vi.mock("expo-server-sdk", () => {
     return { __esModule: true, Expo };
 });
 
-const { submitSessionActivityRemoteAlerts } = await import("./submitSessionActivityRemoteAlerts");
+const { resolveSessionActivityRemoteAlertDisposition, submitSessionActivityRemoteAlerts } = await import("./submitSessionActivityRemoteAlerts");
 
 const DEVICE_POLICY: DeviceRemoteAlertPolicyV1 = {
     v: 1,
@@ -401,6 +401,18 @@ describe("Home remote alert submission (SQLite)", () => {
         })).toEqual([]);
         expect(submittedTokens()).toEqual([]);
         expect(submittedPayloads()).toEqual([]);
+    });
+
+    it("classifies a direct share as a personal-only fact, not as an alert this Home failed to build", () => {
+        // Deliberate, not a gap: access never creates tracking, unread or
+        // notifications by itself, so a direct share earns no alert and no wake.
+        expect(resolveSessionActivityRemoteAlertDisposition("directly_shared")).toEqual({ kind: "personal_only" });
+        // An alerting kind whose committed producer this Home does not own is a
+        // different outcome, and stays distinguishable from the deliberate one.
+        expect(resolveSessionActivityRemoteAlertDisposition("human_message")).toEqual({ kind: "no_alert_event" });
+        expect(resolveSessionActivityRemoteAlertDisposition("assigned")).toEqual({
+            kind: "alert", event: { type: "assigned" },
+        });
     });
 
     it("refuses an event kind whose content-free producer this Home does not own", async () => {
