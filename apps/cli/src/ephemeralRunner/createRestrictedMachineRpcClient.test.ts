@@ -6,6 +6,7 @@ import {
 } from '@happier-dev/protocol';
 import type { ManagedConnectionSupervisorConfig } from '@happier-dev/connection-supervisor';
 import { RPC_ERROR_CODES, RPC_METHODS } from '@happier-dev/protocol/rpc';
+import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from '@happier-dev/protocol/actions';
 import { signMachineInstallationProof } from '@happier-dev/protocol/machines/identity/installationIdentity';
 import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { VerifiedEphemeralSessionRunnerPrincipalSchema } from '@happier-dev/protocol/ephemeralRunner/principal';
@@ -103,7 +104,12 @@ describe('restricted Runner Machine RPC client', () => {
       irohEndpointId: 'a'.repeat(64),
       installationProof,
       transport: { encryptionMode: 'plain' },
-      registerHandlers: (rpc) => rpc.registerHandler(RPC_METHODS.READ_FILE, async () => ({ ok: true })),
+      registerHandlers: (rpc) => {
+        rpc.registerHandler(RPC_METHODS.READ_FILE, async () => ({ ok: true }));
+        // Installing the closed dispatch receiver is what publishes the
+        // protected-Action capability the Home requires before it relays one.
+        rpc.registerHandler(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1, async () => ({ ok: true }));
+      },
       dependencies,
     });
 
@@ -122,6 +128,7 @@ describe('restricted Runner Machine RPC client', () => {
             sessionInputAdmission: { protocolVersions: [1, 2] },
             sessionFollow: { contextV1: true },
             finiteTransferRpc: { protocolVersions: [1] },
+            externalActionExecutionAuthorization: { protocolVersions: [1] },
             irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
           },
         },
@@ -134,6 +141,7 @@ describe('restricted Runner Machine RPC client', () => {
         machineId: 'machine-1',
         capabilities: {
           finiteTransferRpc: { protocolVersions: [1] },
+          externalActionExecutionAuthorization: { protocolVersions: [1] },
           sessionInputAdmission: { protocolVersions: [1, 2] },
           sessionFollow: { contextV1: true, wakeOnHumanChangeV1: true },
           irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },
@@ -147,6 +155,7 @@ describe('restricted Runner Machine RPC client', () => {
         machineId: 'machine-1',
         capabilities: {
           finiteTransferRpc: { protocolVersions: [1] },
+          externalActionExecutionAuthorization: { protocolVersions: [1] },
           sessionInputAdmission: { protocolVersions: [1, 2] },
           sessionFollow: { contextV1: true },
           irohMachineEndpoint: { protocolVersions: [1], endpointId: 'a'.repeat(64) },

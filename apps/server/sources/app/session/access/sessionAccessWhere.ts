@@ -185,7 +185,6 @@ async function resolveSessionCollectiveAccessSnapshotInTx(
 async function buildCollectiveAccessBranches(
     input: EffectiveAccessWhereInput | Omit<EffectiveAccessWhereInput, "authentication">,
     scope: CollectiveScope = {},
-    qualifiedTeamIds?: Set<string>,
     options: Readonly<{ includeCredentialRestrictedTeamEntitlements?: boolean }> = {},
 ): Promise<Prisma.SessionWhereInput[]> {
     if (SESSION_CAPABILITY_RULES[input.capability].level === "owner" || !isSessionCollaborationEnabled()) return [];
@@ -226,9 +225,6 @@ async function buildCollectiveAccessBranches(
                 });
                 if (qualification.status !== "satisfied") continue;
             }
-            qualifiedTeamIds?.add(membership.teamId);
-        } else {
-            qualifiedTeamIds?.add(membership.teamId);
         }
         const audienceIncludesTeam = !scope.audience || scope.audience.teamIds.has(membership.teamId);
         if (!scope.groupId && audienceIncludesTeam && membership.role !== "guest") {
@@ -276,20 +272,6 @@ async function buildCollectiveAccessBranches(
             ? [{ groupGrants: { some: { OR: groupGrantAlternatives } } }]
             : []),
     ];
-}
-
-/** IDs/count-only background candidacy. It must never authorize Session content or a mutation. */
-export async function buildContentFreeStructuralSessionCandidacyWhere(
-    input: Omit<EffectiveAccessWhereInput, "authentication">,
-): Promise<Readonly<{ where: Prisma.SessionWhereInput; structurallyEntitledTeamIds: ReadonlySet<string> }>> {
-    const structurallyEntitledTeamIds = new Set<string>();
-    const collective = await buildCollectiveAccessBranches(
-        input,
-        {},
-        structurallyEntitledTeamIds,
-        { includeCredentialRestrictedTeamEntitlements: true },
-    );
-    return { where: composeAccessWhere(input, collective), structurallyEntitledTeamIds };
 }
 
 /** Complete viewer-relative audience predicate; never derived from bounded row display. */
@@ -400,7 +382,7 @@ export async function buildMembershipHistorySessionAccessWhereInTx(tx: Tx, input
     const collective = await buildCollectiveAccessBranches({
         tx, accountId: recipientAccountId, capability: "readTranscript", mode: "effective_access_v1",
         authentication: input.authentication,
-    }, scope, undefined, { includeCredentialRestrictedTeamEntitlements: true });
+    }, scope, { includeCredentialRestrictedTeamEntitlements: true });
     return { ok: true, recipientAccountId, where: { AND: [
         await buildSessionAccessWhere({ ...actor, capability: "readTranscript" }),
         await buildSessionAccessWhere({ ...actor, capability: "manageAccess" }),

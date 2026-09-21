@@ -432,8 +432,9 @@ const terminal = await run.wait({ timeoutSeconds: 300 });
 - `wait()` observes a **terminal** run status, not conversational idle. A typed
   observation timeout leaves the run running.
 - `history()` reads the run's own sidechain and never falls back to the main
-  transcript. A run without current correspondence rejects with the typed
-  `execution_run_correspondence_unavailable` code.
+  transcript. A response that names no sidechain correspondence is not a result
+  `execution.run.get` can return, so it rejects as `invalid_action_output`
+  before any transcript request is sent.
 - Bound `sessionId`, recipient, wait mode, and transcript scope are written
   after your input, and every bound method validates its finished body against
   the canonical public Action schema first: a host-only or unknown field
@@ -655,7 +656,9 @@ input or caller authority.
 route defaults an omitted target to its current machine. The server origin has
 no default machine: callers first select one through the API Token-authenticated
 `GET /v1/machines` discovery route (the SDK exposes this as
-`happier.machines.list()`), then send that exact machine target. A session
+`happier.machines.list()`), then send that exact machine target. That listing
+also names Temporary computers, and a protected Action targeting one is sealed
+with that machine's own published content key instead of the Account key. A session
 target is also valid when Happier can establish one exact current machine for
 that Session. An omitted server target returns the typed `target_required` Action
 result; the server never silently selects another machine. Account-level

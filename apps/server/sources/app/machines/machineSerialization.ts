@@ -112,16 +112,41 @@ export function serializeMachineRow(
     };
 }
 
+/**
+ * A PAT caller selects an exact Machine with this row and, for a restricted
+ * Runner, seals its protected request against the Runner's own content key.
+ * Only the Runner arm carries content: the envelope is an Account-sealed box
+ * the Home cannot open and the binding is the strict non-secret proof that
+ * authenticates it, so a bearer-only token learns nothing usable. Persistent
+ * Machine content and install state keep the released closed projection.
+ */
 export function serializeExternalActionMachineBootstrapRow(
     row: Pick<
         MachineSerializationRow,
         "id" | "active" | "revokedAt" | "replacedByMachineId"
-    >,
+    > & Partial<Pick<
+        MachineSerializationRow,
+        "kind" | "installationId" | "dataEncryptionKey" | "runnerContentKeyBinding"
+    >>,
 ) {
+    const kind = MachineKindFromLegacyProjectionSchema.parse(row.kind);
+    const runnerContentKeyBinding = kind === "ephemeral_session_runner"
+        ? RunnerMachineContentKeyBindingV1Schema.safeParse(row.runnerContentKeyBinding)
+        : null;
     return ExternalActionMachineBootstrapV1Schema.parse({
         id: row.id,
         active: row.active,
         revokedAt: row.revokedAt ? row.revokedAt.getTime() : null,
         replacedByMachineId: row.replacedByMachineId ?? null,
+        kind,
+        installationId: kind === "ephemeral_session_runner"
+            ? row.installationId ?? null
+            : null,
+        dataEncryptionKey: kind === "ephemeral_session_runner" && row.dataEncryptionKey
+            ? Buffer.from(row.dataEncryptionKey).toString("base64")
+            : null,
+        runnerContentKeyBinding: runnerContentKeyBinding?.success === true
+            ? runnerContentKeyBinding.data
+            : null,
     });
 }

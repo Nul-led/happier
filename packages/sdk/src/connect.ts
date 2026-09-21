@@ -35,7 +35,9 @@ import {
   type HappierSessions,
 } from './fluent/sessions.js';
 import {
+  parseMachineBootstrapRows,
   parseMachineListResponse,
+  resolveMachineProtectedActionMaterial,
   type HappierMachine,
   type MachineListOptions,
 } from './machines.js';
@@ -301,6 +303,13 @@ export type HappierExecutionRuns<TOptions extends ActionExecutionOptions = Actio
     options?: TOptions,
   ) => Promise<HappierExecutionRunStream>;
 }>;
+
+/**
+ * The endpoint does not serve the Machine bootstrap projection at all. That is
+ * not evidence about the target Machine, so it must not be confused with a
+ * Runner whose published key failed to resolve.
+ */
+const MACHINE_BOOTSTRAP_UNAVAILABLE = Symbol('happier.sdk.machineBootstrapUnavailable');
 
 export type HappierMachineExecutionRuns = HappierExecutionRuns<HappierMachineActionExecutionOptions>;
 
@@ -605,19 +614,61 @@ function createClient(
     };
 
     let protectedInvocation;
-    if (credential.encryption) {
+    const encryption = credential.encryption;
+    if (encryption) {
       const target = ExternalActionTargetV1Schema.safeParse(options.target ?? defaultTarget);
       if (!target.success) throw new HappierTransportError('An encrypted Action requires an explicit target.', {
         code: 'target_required', requestId,
       });
-      const materialPromise = credential.encryption.getMaterial(() => requestJson({
+      const materialPromise = encryption.getMaterial(() => requestJson({
         path: ACCOUNT_API_TOKEN_ENCRYPTION_ACCESS_HTTP_PATH_V1.slice(1), method: 'POST', body: '{}',
       }));
-      const material = allowAfterClose ? await materialPromise : await waitForClientMaterial(
+      const accountMaterial = allowAfterClose ? await materialPromise : await waitForClientMaterial(
         materialPromise, combinedSignal(options.signal, lifecycle.controller.signal),
       );
-      const binding = { serverIdentityId: credential.encryption.pins.serverIdentityId,
-        accountId: credential.encryption.pins.accountId, credentialId: credential.encryption.pins.tokenId,
+      // A restricted Runner holds no Account material: a request sealed with
+      // the Account key would be unreadable there. Its own Machine content key
+      // is the one thing that opens it, and that key is reachable only through
+      // the creator-signed published binding — so an unresolvable Runner target
+      // fails closed rather than downgrading to Account-only sealing.
+      const machineTargetId = target.data.kind === 'machine' ? target.data.machineId : null;
+      // The bootstrap projection is what names a Runner target. When an
+      // endpoint does not serve it — a daemon-hosted Action API does not — the
+      // released Account sealing stands: that request is still readable only by
+      // an Account-material holder, so nothing is disclosed, and a Runner that
+      // cannot open it fails closed exactly as it did before. What must never
+      // happen is sealing a *known* Runner target with anything but that
+      // Runner's verified content key, and that resolution throws instead.
+      let material = accountMaterial;
+      if (machineTargetId !== null) {
+        try {
+          material = await encryption.getMachineMaterial(machineTargetId, async () => {
+            const rows = parseMachineBootstrapRows(await requestJson({
+              path: 'v1/machines',
+              method: 'GET',
+              signal: options.signal,
+              allowAfterClose,
+            }).catch(() => { throw MACHINE_BOOTSTRAP_UNAVAILABLE; }));
+            const resolution = resolveMachineProtectedActionMaterial({
+              rows,
+              machineId: machineTargetId,
+              homeServerIdentityId: encryption.pins.serverIdentityId,
+              accountId: encryption.pins.accountId,
+              accountMaterial,
+            });
+            if (resolution.kind === 'unavailable') {
+              throw new HappierTransportError('The target Machine published no usable encryption key.', {
+                code: 'invalid_encrypted_envelope', requestId,
+              });
+            }
+            return resolution.kind === 'runner' ? resolution.material : accountMaterial;
+          });
+        } catch (error) {
+          if (error !== MACHINE_BOOTSTRAP_UNAVAILABLE) throw error;
+        }
+      }
+      const binding = { serverIdentityId: encryption.pins.serverIdentityId,
+        accountId: encryption.pins.accountId, credentialId: encryption.pins.tokenId,
         actionId, requestId: requestId!, target: target.data };
       try {
         protectedInvocation = { material, binding, request: sealExternalActionRequestV2({ binding, input: requestInput, material,

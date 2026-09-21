@@ -1,7 +1,6 @@
 import { isSessionPersonallyTrackedV1, resolveSessionPersonalEventEligibilityV1, type SessionPersonalEventKindV1, type SessionPersonalEventEligibilityReasonV1 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
-import { resolveSessionAccessForOperation, type EffectiveSessionAccess } from "@/app/session/access/sessionAccess";
-import { backgroundDeliveryAuthentication } from "./backgroundDeliveryAuthentication";
+import { admitSessionBackgroundDeliveryInTx } from "./backgroundDelivery";
 import { listActivelyFollowingAccountIdsInTx, resolveSessionFollowFactsForAccountsInTx } from "./followFacts";
 
 /**
@@ -24,23 +23,17 @@ export async function listSessionPersonalEventRecipients(params: Readonly<{
     const following = await listActivelyFollowingAccountIdsInTx(db, { sessionId: params.sessionId });
     const candidateIds = [...new Set([session.accountId, ...following, ...targets])];
     const accounts = await db.account.findMany({ where: { id: { in: candidateIds }, status: "active" }, select: { id: true } });
-    const authentication = backgroundDeliveryAuthentication();
-    const accesses = new Map<string, EffectiveSessionAccess>();
-    for (const account of accounts) {
-        const decision = await resolveSessionAccessForOperation(db, {
-            accountId: account.id,
-            sessionId: params.sessionId,
-            authentication,
-        });
-        if (decision.status === "allowed") accesses.set(account.id, decision.access);
-    }
+    const accesses = await admitSessionBackgroundDeliveryInTx(db, {
+        sessionId: params.sessionId,
+        accountIds: accounts.map((row) => row.id),
+    });
     const followFactsByAccountId = await resolveSessionFollowFactsForAccountsInTx(db, {
         sessionId: params.sessionId,
         accountIds: accounts.map((row) => row.id),
     });
     const recipients = accounts.map(account => {
         const access = accesses.get(account.id);
-        if (!access?.capabilities.readTranscript) return null;
+        if (!access) return null;
         const followFacts = followFactsByAccountId.get(account.id)!;
         const eligibility = resolveSessionPersonalEventEligibilityV1({
             event: params.event, isSessionOwner: session.accountId === account.id,

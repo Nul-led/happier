@@ -1,7 +1,7 @@
 import { db } from "@/storage/db";
 import { log } from "@/utils/logging/log";
 
-import { listRelevantAccountIdsForSessionBadgeRefresh } from "@/app/session/personal/readState";
+import { listSessionBadgeRefreshPushAccountIds } from "@/app/session/personal/backgroundDelivery";
 
 import { sendAccountExpoPushMessages, type AccountPushDelivery } from "./accountPushTransport";
 import { computeAccountActivityBadgeCounts } from "./accountActivityBadge";
@@ -70,15 +70,18 @@ export function scheduleAccountActivityBadgeRefresh(params: Readonly<{
 
 /**
  * The Session-scoped replacement for the removed projection-recipient helper.
- * Badge refresh now follows the exact owner-or-active-Follow tracking relation
+ * Badge refresh follows the exact owner-or-active-Follow tracking relation
  * rather than every Account that can read the Session, so broad Team access can
- * no longer become badge fanout (L09B-R6).
+ * no longer become badge fanout (L09B-R6), and the personal owner admits those
+ * recipients through the one background-delivery decision — the push's arrival
+ * says this Session changed, so an unqualified restricted-Team follower is not
+ * a recipient at all rather than a recipient of a withheld count.
  */
 export async function refreshTrackedSessionAccountBadgePushes(params: Readonly<{
     badgeAttentionChanged: boolean;
     sessionId: string;
 }>): Promise<void> {
     if (!params.badgeAttentionChanged) return;
-    const accountIds = await listRelevantAccountIdsForSessionBadgeRefresh(params.sessionId);
+    const accountIds = await listSessionBadgeRefreshPushAccountIds(params.sessionId);
     scheduleCoalescedBadgeRefresh(accountIds);
 }

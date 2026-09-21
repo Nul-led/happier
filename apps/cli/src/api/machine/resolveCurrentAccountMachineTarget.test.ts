@@ -36,9 +36,22 @@ describe('resolveCurrentAccountMachineTarget', () => {
       { ...currentMachine('machine-old', 'old-desk'), active: false, revokedAt: 7, replacedByMachineId: 'machine-current' },
     ] });
     await expect(listCurrentAccountMachines({ token: 'token-1' })).resolves.toEqual([
-      { id: 'machine-current', label: 'desk', active: true, revokedAt: null, replacedByMachineId: null },
-      { id: 'machine-old', label: 'old-desk', active: false, revokedAt: 7, replacedByMachineId: 'machine-current' },
+      { id: 'machine-current', label: 'desk', kind: 'persistent', active: true, revokedAt: null, replacedByMachineId: null },
+      { id: 'machine-old', label: 'old-desk', kind: 'persistent', active: false, revokedAt: 7, replacedByMachineId: 'machine-current' },
     ]);
+  });
+
+  it('never selects a Temporary computer as the automatic current-daemon target', async () => {
+    boundaries.axiosGet.mockResolvedValue({ data: [
+      currentMachine('machine-desk', 'desk'),
+      { ...currentMachine('runner-1'), kind: 'ephemeral_session_runner' },
+    ] });
+
+    // Two rows are current, but only the persistent one is an automatic target.
+    await expect(resolveCurrentAccountMachineTarget({ token: 'token-1' })).resolves.toEqual({
+      kind: 'selected',
+      target: { machineId: 'machine-desk', machineLabel: 'desk' },
+    });
   });
 
   it('selects the sole current API-token bootstrap machine without metadata', async () => {

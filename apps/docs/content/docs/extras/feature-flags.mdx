@@ -18,8 +18,8 @@ clear answer about whether a feature is available, it treats it as unavailable.
 That is why a feature can seem to vanish when a server is unreachable, and why
 a misconfigured self-hosted server hides features rather than half-enabling them.
 
-There are 146 features in the catalog. 23 of them have a switch you can
-reach; the other 123 are decided before you get there.
+There are 145 features in the catalog. 23 of them have a switch you can
+reach; the other 122 are decided before you get there.
 
 ## Features you can turn on yourself
 
@@ -142,7 +142,6 @@ behaviour but still needs the server to advertise the capability.
 | `plugins.ui` | Plugin UI descriptor and executable UI tier projection. | server | `plugins` | `HAPPIER_FEATURE_PLUGINS_UI__ENABLED` |
 | `plugins.ui.hostedWeb` | Hosted web plugin UI surfaces embedded through host-owned preview frames and bridges. | server | `plugins.ui` | `HAPPIER_FEATURE_PLUGINS_UI_HOSTED_WEB__ENABLED` |
 | `plugins.ui.reactNativeBundles` | Trusted React Native plugin UI bundle execution with compatibility and fallback policy. | server | `plugins.ui` | `HAPPIER_FEATURE_PLUGINS_UI_REACT_NATIVE_BUNDLES__ENABLED` |
-| `plugins.ui.reactNativeBundles.devHotReload` | Development hot reload for React Native plugin UI bundles. | client | `plugins.ui.reactNativeBundles` | — |
 | `plugins.webhooks` | Durable public webhook ingress for plugin-contributed Actions. | server | `plugins` | `HAPPIER_FEATURE_PLUGINS_WEBHOOKS__ENABLED` |
 | `prompts.assets.external` | External prompt assets import/export surfaces and daemon adapters. | client | `prompts.library` | — |
 | `prompts.library` | Prompt library (docs + skills bundles) stored as artifacts. | client | — | — |

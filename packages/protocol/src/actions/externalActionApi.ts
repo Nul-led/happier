@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { WorkflowProjectTargetV1Schema } from '../workflows/workflowWorkspaceV1.js';
 
+import { RunnerMachineContentKeyBindingV1Schema } from '../ephemeralRunner/machineContentKeyBindingSchema.js';
+import { MachineKindFromLegacyProjectionSchema } from '../machines/machineKind.js';
+
 import {
   ActionExecuteFailureSchema,
   type ActionExecuteResult,
@@ -644,14 +647,28 @@ const ExternalActionTargetIdV1Schema = z.string()
 
 /**
  * Closed Account-server bootstrap projection used only to select an exact
- * Machine for a subsequent external Action request. Machine content and
- * daemon/install state deliberately do not cross this PAT-authenticated seam.
+ * Machine for a subsequent external Action request.
+ *
+ * Persistent-Machine content and daemon/install state deliberately do not
+ * cross this PAT-authenticated seam. A restricted Runner carries exactly the
+ * facts a protected request must seal against — its kind, its winning
+ * installation, its Account-sealed content-key envelope and the strict
+ * non-secret binding that authenticates it. All four are already
+ * Account-material-protected: the envelope is a sealed box only an Account
+ * content key opens, and the binding carries no secret. A bearer-only token
+ * therefore learns nothing it can use, and an encryption-capable credential
+ * reaches the same verifier every other authorized Account device reaches.
  */
 export const ExternalActionMachineBootstrapV1Schema = z.object({
   id: ExternalActionTargetIdV1Schema,
   active: z.boolean(),
   revokedAt: z.number().int().nonnegative().nullable(),
   replacedByMachineId: ExternalActionTargetIdV1Schema.nullable(),
+  kind: MachineKindFromLegacyProjectionSchema,
+  /** Runner only; a persistent Machine keeps the released closed projection. */
+  installationId: z.string().trim().min(1).nullable().default(null),
+  dataEncryptionKey: z.string().min(1).nullable().default(null),
+  runnerContentKeyBinding: RunnerMachineContentKeyBindingV1Schema.nullable().default(null),
 }).strict();
 export type ExternalActionMachineBootstrapV1 = z.infer<
   typeof ExternalActionMachineBootstrapV1Schema

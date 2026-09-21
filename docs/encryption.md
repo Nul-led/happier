@@ -817,6 +817,22 @@ sequenceDiagram
   `runnerContentKeyBinding`; a Plain endpoint must carry no binding at all. The feature
   remains unreleased, and its composed release checks do not make this implemented path
   absent.
+- A protected external Action can target that Runner. The API Token-authenticated
+  `GET /v1/machines` bootstrap projection names a Runner Machine with its kind, winning
+  installation, Account-sealed `dataEncryptionKey` envelope and that same
+  `runnerContentKeyBinding`; a persistent Machine keeps the released
+  content-free projection. The SDK opens the envelope with its Account
+  `{ type: 'dataKey', machineKey }` material, resolves the key through
+  `resolvePublishedMachineDataEncryptionKeyV1` with the Home identity, creator Account
+  and exact Machine taken from its own locally pinned credential, and seals the V2
+  request with the resolved Runner content key. A substituted binding, verifier fact,
+  envelope or Machine fails closed with `invalid_encrypted_envelope`; the SDK never
+  downgrades a Runner target to plaintext or to Account-only sealing. The Runner opens
+  the request with the same key it received in its verified bootstrap and executes only
+  inside its own Session, so the Home relays bytes it cannot read in either direction.
+  An endpoint that serves no bootstrap projection at all — a daemon-hosted Action API —
+  keeps the released Account sealing, which discloses nothing and simply cannot be
+  opened by a Runner.
 - Plain Machines carry base64-encoded `{ t:'plain', v }` metadata/state and use the
   corresponding plain marker in `dataEncryptionKey`.
 - Machine RPC uses the persisted Machine row mode. Token-only callers never enter the

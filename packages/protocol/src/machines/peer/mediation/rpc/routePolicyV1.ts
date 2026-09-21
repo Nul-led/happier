@@ -1,3 +1,4 @@
+import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from '../../../../actions/externalActionApi.js';
 import { HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD } from '../../../../marketplace/internal.js';
 import { RPC_METHODS, SESSION_RPC_METHODS } from '../../../../rpc/index.js';
 import { MachineLiveStreamRelayCapsV1Schema, type MachineLiveStreamRelayCaps } from '../stream/v1.js';
@@ -14,7 +15,14 @@ export type EphemeralRunnerMachineRpcAuthority =
   | 'submitAgentInput'
   | 'manageAccess'
   | 'stopSession'
-  | 'followSourceKeyPreparation';
+  | 'followSourceKeyPreparation'
+  /**
+   * The closed server-origin public Action dispatch. Unlike the Session
+   * authorities beside it, the caller is the Home relaying an Account-minted
+   * invocation authority, so the Runner receiver proves server origin and its
+   * own placement rather than a Session capability.
+   */
+  | 'externalActionDispatch';
 
 export type MachineRpcRouteClass = 'server_required' | 'direct_ephemeral' | 'direct_medium_risk_receipted';
 
@@ -204,6 +212,24 @@ const HOST_PRIVATE_PLUGIN_INSTALL_DECISION_ROUTE_POLICY: MachineRpcRoutePolicyV1
   rpcClassification: 'internal_only',
   commandReceiptRequired: true,
   scope: DIRECT_EPHEMERAL_SCOPE,
+});
+
+/**
+ * The Home relays one protected public Action to the exact selected Machine.
+ * It stays server-required (the Home mints and binds the invocation authority)
+ * and is reachable by a restricted Runner principal, which opens the request
+ * with its own Machine content key and executes only inside its own Session.
+ */
+const EXTERNAL_ACTION_DAEMON_DISPATCH_ROUTE_POLICY: MachineRpcRoutePolicyV1 = Object.freeze({
+  method: EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
+  routeClass: 'server_required',
+  rationale: 'Public Action dispatch carries a Home-minted invocation authority bound to the exact Machine and request envelope; it is server-origin only and never a direct machine route.',
+  ownerPacket: 'PMS-5',
+  rpcClassification: 'internal_only',
+  commandReceiptRequired: false,
+  scope: SERVER_REQUIRED_SCOPE,
+  serverRequiredReason: 'auth',
+  ephemeralRunnerAuthority: 'externalActionDispatch',
 });
 
 const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
@@ -734,6 +760,7 @@ export const MACHINE_RPC_ROUTE_POLICIES = Object.freeze([
   ...serverRequiredRows(ACCOUNT_QUOTA_RECOVERY_METHODS, 'billing', 'Connected-service quota recovery credit consumption mutates account quota/recovery state and stays server-routed.'),
   serverRequired(RPC_METHODS.KILL_SESSION, 'durable_session_write', 'Session kill is a durable/destructive lifecycle mutation and must stay server-routed.', SESSION_SERVER_REQUIRED_SCOPE),
   serverRequired(RPC_METHODS.BASH, 'ambiguous', 'Shell execution has broad side-effect and access-policy ambiguity and must stay server-routed.'),
+  EXTERNAL_ACTION_DAEMON_DISPATCH_ROUTE_POLICY,
 ] satisfies readonly MachineRpcRoutePolicyV1[]);
 
 const POLICY_BY_METHOD = new Map<string, MachineRpcRoutePolicyV1>();
@@ -760,6 +787,7 @@ function collectRegisteredMachineRpcMethods(): readonly string[] {
     ...Object.values(RPC_METHODS),
     ...Object.values(SESSION_RPC_METHODS),
     HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD,
+    EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   ]);
 }
 

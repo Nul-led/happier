@@ -23,6 +23,15 @@ export function createClientCredential(token: string) {
   const wrappingSecret = decodeBase64(parsed.wrappingSecret, 'base64url');
   let material: Readonly<{ type: 'dataKey'; machineKey: Uint8Array }> | undefined;
   let initialization: Promise<NonNullable<typeof material>> | undefined;
+  /**
+   * Sealing material for an exact Machine target, resolved once for this
+   * credential's lifetime exactly like the Account bootstrap above. A
+   * restricted Runner's content key is generated once for that Machine and
+   * never rotated, and Machine ids are never reused, so a later request to the
+   * same Machine reuses the resolved key instead of re-reading the bootstrap
+   * projection.
+   */
+  const machineMaterial = new Map<string, Promise<NonNullable<typeof material>>>();
   let disposed = false;
 
   const getMaterial = (retrieve: () => Promise<unknown>) => {
@@ -48,13 +57,31 @@ export function createClientCredential(token: string) {
     })();
     return initialization;
   };
+  const getMachineMaterial = (
+    machineId: string,
+    resolve: () => Promise<NonNullable<typeof material>>,
+  ) => {
+    if (disposed) return Promise.reject(new HappierClientClosedError());
+    const resolved = machineMaterial.get(machineId);
+    if (resolved) return resolved;
+    const pending = resolve().catch((error: unknown) => {
+      machineMaterial.delete(machineId);
+      throw error;
+    });
+    machineMaterial.set(machineId, pending);
+    return pending;
+  };
   return {
     bearer,
-    encryption: { pins, getMaterial },
+    encryption: { pins, getMaterial, getMachineMaterial },
     dispose: () => {
       disposed = true;
       wrappingSecret.fill(0);
       material?.machineKey.fill(0);
+      for (const pending of machineMaterial.values()) {
+        void pending.then((resolved) => resolved.machineKey.fill(0), () => undefined);
+      }
+      machineMaterial.clear();
       material = undefined;
       initialization = undefined;
     },

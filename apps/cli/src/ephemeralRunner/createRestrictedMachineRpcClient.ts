@@ -8,6 +8,7 @@ import {
 import { SOCKET_RPC_EVENTS } from '@happier-dev/protocol/socketRpc';
 import { resolveEphemeralRunnerMachineRpcAuthority } from '@happier-dev/protocol/rpc';
 import {
+  EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
   PEER_TCP_TUNNEL_RELAY_SOCKET_EVENT,
   type MachineInstallationProofV1,
   type PeerTcpTunnelRelayEnvelope,
@@ -82,11 +83,16 @@ export function createRestrictedMachineRpcClient(input: Readonly<{
     ...input.transport,
     authorizeRequest: admission.authorizeRpc,
   });
+  // Publishing the protected-Action capability is what makes the Home dispatch
+  // to this Machine, so it is derived from the actual registration rather than
+  // asserted: a Runner that installed no dispatch receiver never advertises one.
+  let externalActionDispatchInstalled = false;
   const registrar: RpcHandlerRegistrar = {
     registerHandler(method, handler) {
       if (resolveEphemeralRunnerMachineRpcAuthority(method) === null) {
         throw new Error(`runner_rpc_method_not_classified:${method}`);
       }
+      if (method === EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1) externalActionDispatchInstalled = true;
       rpc.registerHandler(method, handler);
     },
   };
@@ -115,6 +121,9 @@ export function createRestrictedMachineRpcClient(input: Readonly<{
     // the single Machine capability projection rather than adding a Runner
     // publisher that could race the socket owner.
     finiteTransferRpc: { protocolVersions: [1] as const },
+    ...(externalActionDispatchInstalled
+      ? { externalActionExecutionAuthorization: { protocolVersions: [1] as const } }
+      : {}),
     ...(input.irohEndpointId
       ? {
           irohMachineEndpoint: {

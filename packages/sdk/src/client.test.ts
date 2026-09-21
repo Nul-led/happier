@@ -208,6 +208,9 @@ describe('Happier SDK client', () => {
       if (path.endsWith('/encryption-access')) {
         return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
       }
+      // The exact target Machine decides what a protected request seals
+      // against; an ordinary daemon keeps the Account material.
+      if (path === '/v1/machines') return response([]);
       const body = String(init?.body ?? '');
       protectedBodies.push(body);
       const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(body));
@@ -228,7 +231,8 @@ describe('Happier SDK client', () => {
       await expect(client.machine('machine-1').actions.session.list(input)).resolves.toEqual(result);
       expect(protectedBodies.join('')).not.toContain('sentinel');
       expect(protectedBodies.join('')).not.toContain(token);
-      expect(fetch).toHaveBeenCalledTimes(2);
+      // Credential bootstrap, the one target-Machine read, one Action call.
+      expect(fetch).toHaveBeenCalledTimes(3);
     } finally {
       await client.close();
     }
@@ -502,6 +506,7 @@ describe('Happier SDK client', () => {
       const path = new URL(String(url)).pathname;
       if (path.endsWith('/encryption-access')) return response({ v: 1, accountId: context.accountId,
         tokenId: context.tokenId, encryptionAccess });
+      if (path === '/v1/machines') return response([]);
       const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(String(init?.body)));
       const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
         credentialId: context.tokenId, actionId: 'session.message.send',
@@ -523,7 +528,7 @@ describe('Happier SDK client', () => {
           details: { document: 'private-document-sentinel' } });
       expect(captured.join('')).not.toContain('sentinel');
       expect(captured.join('')).not.toContain(token);
-      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenCalledTimes(3);
     } finally { await client.close(); }
   });
 
@@ -543,6 +548,7 @@ describe('Happier SDK client', () => {
       if (new URL(String(url)).pathname.endsWith('/encryption-access')) {
         return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
       }
+      if (new URL(String(url)).pathname === '/v1/machines') return response([]);
       return new Response('{"private":"plaintext-sentinel"}', {
         headers: { 'content-length': String(EXTERNAL_ACTION_RESPONSE_MAX_SERIALIZED_BYTES_V2 + 1) },
       });
@@ -578,6 +584,7 @@ describe('Happier SDK client', () => {
       if (new URL(String(url)).pathname.endsWith('/encryption-access')) {
         return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
       }
+      if (new URL(String(url)).pathname === '/v1/machines') return response([]);
       const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(String(init?.body)));
       const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
         credentialId: context.tokenId, actionId: 'action.spec.get', requestId: request.requestId, target };
@@ -1319,6 +1326,7 @@ describe('Happier SDK client', () => {
     const client = connect({ endpoint: 'https://api.example.test/root/', token: TEST_ALT_API_TOKEN });
     await expect(client.machines.list({ signal })).resolves.toEqual([{
       id: 'machine-1',
+      kind: 'persistent',
       active: true,
       revokedAt: null,
       replacedByMachineId: null,

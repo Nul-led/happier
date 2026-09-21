@@ -33,6 +33,18 @@ async function readJsonObjectBody(request: IncomingMessage): Promise<Readonly<Re
   }
 }
 
+// The SDK returns a typed public result only when the response really is one:
+// `executeRequest` settles every success through the Action's own declared
+// output schema. A fake server standing in for a successful execution has to
+// answer with a real result of that Action, not a shape it could never return.
+const MESSAGE_SEND_RESULT = { status: 'accepted', localId: 'input-1' } as const;
+const RUN_RESULT = {
+  runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1', intent: 'delegate',
+  backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'safe-yolo',
+  retentionPolicy: 'resumable', runClass: 'long_lived', ioMode: 'streaming',
+  status: 'running', startedAtMs: 1,
+} as const;
+
 function actionResponse(actionId: string): Readonly<Record<string, unknown>> {
   if (actionId === 'agents.backends.list') {
     return {
@@ -124,7 +136,11 @@ function successfulActionResponse(actionId: string): Readonly<Record<string, unk
   }
 
   if (actionId === 'session.wait.idle') {
-    return { v: 1, actionId, execution: { ok: true, result: { ok: true } } };
+    return {
+      v: 1,
+      actionId,
+      execution: { ok: true, result: { ok: true, sessionId: 'session-1', idle: true, observedAt: 1 } },
+    };
   }
 
   if (actionId === 'transcript.follow') {
@@ -148,23 +164,47 @@ function successfulActionResponse(actionId: string): Readonly<Record<string, unk
   }
 
   if (actionId === 'session.message.send') {
-    return { v: 1, actionId, execution: { ok: true, result: { accepted: true } } };
+    return { v: 1, actionId, execution: { ok: true, result: MESSAGE_SEND_RESULT } };
   }
 
   if (actionId === 'session.discussion.post') {
-    return { v: 1, actionId, execution: { ok: true, result: { discussionId: 'discussion-1' } } };
-  }
-
-  if (actionId === 'execution.run.start') {
-    return { v: 1, actionId, execution: { ok: true, result: { runId: 'run-1' } } };
-  }
-
-  if (actionId === 'execution.run.get') {
     return {
       v: 1,
       actionId,
-      execution: { ok: true, result: { run: { id: 'run-1', sidechainId: 'sidechain-1' } } },
+      execution: {
+        ok: true,
+        result: {
+          v: 1,
+          serverId: 'server-1',
+          sessionId: 'session-1',
+          messageSeq: 1,
+          message: {
+            id: 'discussion-message-1',
+            discussionId: 'discussion-1',
+            localId: 'external-plugin-thread-1-followup',
+            seq: 1,
+            authorAccountId: null,
+            accountActor: null,
+            producerV1: null,
+            content: { v: 1, parts: [{ t: 'text', text: 'Starting a contextual run for this discussion.' }] },
+            mentionedAccountIds: [],
+            createdAt: 1,
+          },
+        },
+      },
     };
+  }
+
+  if (actionId === 'execution.run.start') {
+    return {
+      v: 1,
+      actionId,
+      execution: { ok: true, result: { runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1' } },
+    };
+  }
+
+  if (actionId === 'execution.run.get') {
+    return { v: 1, actionId, execution: { ok: true, result: { run: RUN_RESULT } } };
   }
 
   if (actionId === 'execution.run.stop') {
@@ -172,7 +212,18 @@ function successfulActionResponse(actionId: string): Readonly<Record<string, unk
   }
 
   if (actionId === 'execution.run.wait') {
-    return { v: 1, actionId, execution: { ok: true, result: { status: 'cancelled' } } };
+    return {
+      v: 1,
+      actionId,
+      execution: {
+        ok: true,
+        result: {
+          ok: true,
+          status: 'succeeded',
+          result: { run: { ...RUN_RESULT, status: 'succeeded' } },
+        },
+      },
+    };
   }
 
   if (actionId === 'session.transcript.get') {
@@ -446,7 +497,7 @@ describe('external integration SDK example', () => {
     expect(JSON.parse(result.stdout)).toEqual({
       discussionId: 'discussion-1',
       runId: 'run-1',
-      settled: { accepted: true },
+      settled: MESSAGE_SEND_RESULT,
       historyOk: true,
     });
     expect(result.stderr).toBe('');

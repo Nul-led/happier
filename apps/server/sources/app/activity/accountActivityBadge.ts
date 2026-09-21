@@ -12,8 +12,7 @@ import {
     countSessionPersonalAttentionRowsForAccountsInTx,
     type SessionPersonalAttentionAccountAdmission,
 } from "@/app/session/personal/queries";
-import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
-import { backgroundDeliveryAuthentication } from "@/app/session/personal/backgroundDeliveryAuthentication";
+import { backgroundDeliveryAuthentication, type SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { parseStoredSessionRuntimeIssue } from "@/app/session/turns/parseSessionTurnState";
 import {
     applySessionTranscriptPublicationCeilingToProjection,

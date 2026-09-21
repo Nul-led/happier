@@ -17,9 +17,8 @@ It covers the three public seams an integration usually needs together:
 2. an **Execution Run** started through canonical `execution.run.start` and then
    bound with `sessions.get(sessionId).runs.get(runId)` for `send`,
    `sendAndWait`, `history`, `stop` and terminal `wait`;
-3. typed failure handling — canonical Action codes such as `approval_required`,
-   `invalid_parameters` and `execution_run_correspondence_unavailable` survive
-   the transport unchanged.
+3. typed failure handling — canonical Action codes such as `approval_required`
+   and `invalid_parameters` survive the transport unchanged.
 
 ## Credentials
 

@@ -111,7 +111,8 @@ Session:
 ```ts
 const serverAccount = connect({ endpoint, token: apiToken });
 const eligibleMachines = (await serverAccount.machines.list()).filter((candidate) => (
-  candidate.active && candidate.revokedAt === null && candidate.replacedByMachineId === null
+  candidate.kind === 'persistent'
+  && candidate.active && candidate.revokedAt === null && candidate.replacedByMachineId === null
 ));
 const [machine] = eligibleMachines;
 if (!machine) {
@@ -268,10 +269,17 @@ require approval or turn it off. That setting does not raise an API Token above
 present-user controls reject with `present_user_required`.
 
 When connected to the Account server, `machines.list()` reads its existing
-authenticated `/v1/machines` bootstrap and returns only target-selection fields.
-Use the selected id with `machine(id).sessions.spawn(...)`. This bootstrap is
-separate from the `actions.machines.list(...)` operation and does not select a
-default machine for a server Action request.
+authenticated `/v1/machines` bootstrap and returns the target-selection fields
+plus each machine's `kind` (`persistent`, or `ephemeral_session_runner` for a
+Temporary computer). Use the selected id with `machine(id).sessions.spawn(...)`.
+This bootstrap is separate from the `actions.machines.list(...)` operation and
+does not select a default machine for a server Action request.
+
+An encryption-capable credential also uses that same bootstrap to decide what a
+protected Action seals against. A Temporary computer holds no Account material,
+so a request targeting one is sealed with that machine's own published content
+key after its creator-signed binding verifies; anything that does not verify
+fails with `invalid_encrypted_envelope` rather than falling back.
 
 ## API reference
 
@@ -411,9 +419,10 @@ The bound handle preserves the canonical Action behavior:
 - `history()` reads `execution.run.get` for the canonical sidechain
   correspondence and then reads that exact sidechain through
   `session.transcript.get`. It caches nothing and never falls back to the main
-  transcript scope; if the run read fails, no transcript request is sent. A run
-  without current sidechain correspondence rejects with the typed
-  `execution_run_correspondence_unavailable` Action code. A caller-supplied
+  transcript scope; if the run read fails, no transcript request is sent. A
+  response that names no sidechain correspondence is not a result
+  `execution.run.get` can return, so it rejects as `invalid_action_output`
+  before any transcript request is sent. A caller-supplied
   `requestId` applies only to the transcript request. The handle reads its own
   sidechain, so it refuses a `projection` rather than quietly ignoring one.
 - The handle's bound `sessionId`, recipient and wait mode are written after your

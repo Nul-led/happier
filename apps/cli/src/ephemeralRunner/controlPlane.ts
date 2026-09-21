@@ -140,6 +140,12 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
     materialized: Materialized;
     preparation: Preparation;
     localState: EphemeralRunnerLocalState;
+    /**
+     * This endpoint's own Machine installation key. The runtime proves with it
+     * that this exact Machine executed a Home-relayed public Action, the same
+     * way an ordinary daemon does.
+     */
+    installationPrivateKey: string;
     signal: AbortSignal;
     /** The ordinary Session/process terminal owner, exposed before Agent admission. */
     onRuntimeStopReady(stop: () => Promise<void>): void;
@@ -553,6 +559,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
           materialized,
           preparation,
           localState: input.localState,
+          installationPrivateKey: input.installation.privateKey,
           signal: lifetime.signal,
           onRuntimeStopReady: (stopOwner) => {
             runtimeStopOwner ??= stopOwner;

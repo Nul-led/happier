@@ -19,6 +19,8 @@ import { publishSessionFollowWakeInvalidation } from '@/agent/runtime/session/fo
 import { runHostSessionRuntimePlan } from '@/agent/runtime/session/loop/lifecycle';
 import { runWithServerHttpBaseUrl } from '@/api/client/serverHttpBaseUrl';
 import { prepareManagedAgentCliLaunch } from '@/packagedRuntime/managedTools/prepareManagedAgentCliLaunch';
+import { registerExternalActionRpcHandler } from '@/rpc/handlers/externalAction';
+import { createCliActionExecutorFromCredentials } from '@/session/actions/createCliActionExecutorFromCredentials';
 import { bindAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
 import { createDaemonMachineIrohRuntime } from '@/daemon/peer/iroh/daemonMachineIrohRuntime';
@@ -332,7 +334,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
         throw error;
       }
     },
-    startSession: async ({ binding, manifest, materialized, preparation, localState, signal, onRuntimeStopReady }) => {
+    startSession: async ({ binding, manifest, materialized, preparation, localState, installationPrivateKey, signal, onRuntimeStopReady }) => {
       const executionTarget = manifest.preparedAuthoring.authoring.executionTarget;
       if (executionTarget?.kind !== 'temporary_computer') {
         throw new Error('runner_execution_target_invalid');
@@ -506,6 +508,51 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
               sourceMaterial,
               onSourceMaterialInstalled: publishSessionFollowWakeInvalidation,
             });
+            // The Home relays a protected public Action to this exact Machine.
+            // Installing the canonical daemon receiver here — and only when the
+            // installation key that proves execution is present — is what
+            // publishes the capability the Home requires before dispatching.
+            const runnerMachineContentKey = materialized.bootstrap.mode === 'e2ee'
+              ? materialized.bootstrap.machineContentKey
+              : null;
+            if (installationPrivateKey) {
+              registerExternalActionRpcHandler(rpc, {
+                machineId: binding.machineId,
+                currentServerId: runnerServerId,
+                resolveAccountId: async () => materialized.principal.accountId,
+                // A Runner executes inside its own Session and nowhere else:
+                // its own outer Machine target resolves to that Session, and
+                // any other target is refused before the Action runs.
+                resolveTarget: async ({ target }) => {
+                  if (
+                    target === undefined
+                    || (target.kind === 'machine' && target.machineId === binding.machineId)
+                  ) return { kind: 'session', sessionId: binding.sessionId };
+                  return target.kind === 'session' && target.sessionId === binding.sessionId
+                    ? target
+                    : null;
+                },
+                executor: createCliActionExecutorFromCredentials({
+                  credentials: { token: materialized.runtimeToken, encryption: null },
+                  serverId: runnerServerId,
+                  serverApiUrl: materialized.runtimeOrigin,
+                  machineId: binding.machineId,
+                  actionsSettingsProvider,
+                }),
+                // The Runner holds no Account material by contract. Its own
+                // Machine content key is what the creator's SDK sealed the
+                // request against, so it is the only material that opens it.
+                ...(runnerMachineContentKey
+                  ? {
+                      resolveEncryption: async () => ({
+                        serverIdentityId: binding.homeServerIdentityId,
+                        material: { type: 'dataKey' as const, machineKey: runnerMachineContentKey },
+                      }),
+                    }
+                  : {}),
+                externalActionMachineRequestPrivateKey: installationPrivateKey,
+              });
+            }
           },
           onTerminalConnectionFailure: requestStopAfterMaterialization,
         });

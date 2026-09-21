@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1 } from '../../../../actions/externalActionApi.js';
 import { HOST_PRIVATE_PLUGIN_INSTALL_DECISION_RPC_METHOD } from '../../../../marketplace/internal.js';
 import {
   RPC_METHODS,
@@ -30,8 +31,11 @@ describe('MachineRpcRoutePolicyV1', () => {
     expect(result.missingMethods).toEqual([]);
     expect(result.unknownMethods).toEqual([]);
     expect(result.duplicateMethods).toEqual([]);
+    // Two classified methods are owned outside the two method literal maps:
+    // the host-private plugin install decision and the closed server-origin
+    // public Action dispatch.
     expect(result.policies).toHaveLength(
-      Object.keys(RPC_METHODS).length + Object.keys(SESSION_RPC_METHODS).length + 1,
+      Object.keys(RPC_METHODS).length + Object.keys(SESSION_RPC_METHODS).length + 2,
     );
   });
 
@@ -1358,6 +1362,23 @@ describe('MachineRpcRoutePolicyV1', () => {
 
     expect(result.ok).toBe(false);
     expect(result.invalidMethods).toContain(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_START);
+  });
+
+  it('classifies the closed server-origin Action dispatch as Runner-reachable on its own row', async () => {
+    const protocol = await importRpcPolicy();
+    expect(protocol).toHaveProperty('resolveMachineRpcRoutePolicy');
+    if ('importError' in protocol) throw protocol.importError;
+
+    expect(protocol.resolveMachineRpcRoutePolicy(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1)).toMatchObject({
+      routeClass: 'server_required',
+      serverRequiredReason: 'auth',
+      ephemeralRunnerAuthority: 'externalActionDispatch',
+    });
+    expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1))
+      .toBe('externalActionDispatch');
+    expect(resolveEphemeralRunnerMachineRpcAuthorityFromRpcSubpath(EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1))
+      .toBe('externalActionDispatch');
+    expect(protocol.validateMachineRpcRoutePolicies().ok).toBe(true);
   });
 
   it('identifies session transcript RPC governance from A.12 transcript ActionSpec bindings', async () => {

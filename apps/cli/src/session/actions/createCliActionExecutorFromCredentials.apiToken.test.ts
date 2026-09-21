@@ -146,6 +146,20 @@ function sessionListItem(id: string, tag?: string) {
   };
 }
 
+// The PAT route executes through the SDK, which settles every success through
+// the Action's own declared output schema. A stub standing in for a successful
+// execution has to be a real result of that Action; `PARSED_*` is what the
+// schema returns to the caller, defaults included.
+const HANDOFF_RESULT = {
+  handoffId: 'handoff-1',
+  status: { handoffId: 'handoff-1', status: 'completed', phase: 'finalizing' },
+  workspace: { kind: 'none' },
+} as const;
+const PARSED_HANDOFF_RESULT = {
+  ...HANDOFF_RESULT,
+  status: { ...HANDOFF_RESULT.status, recoveryActions: [] },
+} as const;
+
 function apiSuccess(actionId: string, result: unknown): MockActionResponse {
   return {
     statusCode: 200,
@@ -997,8 +1011,14 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
   });
 
   it('rejects a PAT session-list result that does not satisfy the canonical Session list schema', async () => {
+    // `session.list` declares a union output: the released smaller UI-host page
+    // is a result the Action really can return, so it survives the SDK's own
+    // output parse and reaches this selector, which needs the canonical CLI
+    // summary. The narrowing is the CLI's own contract, not a second copy of
+    // the Action schema.
     const fetch = vi.fn<FetchLike>(() => apiSuccess('session.list', {
-      sessions: [{ id: exactSessionId, tag: 'active-work' }],
+      ok: true,
+      sessions: [{ id: exactSessionId, active: true, presence: null, updatedAt: 2 }],
       nextCursor: null,
       hasNext: false,
     }));
@@ -1215,7 +1235,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
             nextCursor: null,
             hasNext: false,
           })
-        : apiSuccess('session.handoff', { handoffId: 'handoff-1' });
+        : apiSuccess('session.handoff', HANDOFF_RESULT);
     });
     installPatActionTransportMock(fetch);
 
@@ -1232,7 +1252,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       'session.handoff',
       { sessionId: 'active-work', targetMachineId: 'machine-2', targetPath: '/target/repo' },
       { surface: 'api', actionRequestId: 'request-handoff' },
-    )).resolves.toEqual({ ok: true, result: { handoffId: 'handoff-1' } });
+    )).resolves.toEqual({ ok: true, result: PARSED_HANDOFF_RESULT });
 
     expect(requests.at(-1)).toEqual({
       actionId: 'session.handoff',
@@ -1313,10 +1333,15 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
   });
 
   it('projects PAT Session creation through the canonical public spawn binding', async () => {
-    const fetch = vi.fn<FetchLike>(() => apiSuccess('session.spawn_new', {
+    const spawnResult = {
       type: 'success',
+      disposition: 'created',
       sessionId: exactSessionId,
-    }));
+      executionTarget: { serverId: 'daemon-profile-only', machineId: 'machine-selected' },
+      organizationPlacement: { folderId: null, tagIds: [] },
+      initialInput: { status: 'accepted', localId: 'initial-input-1' },
+    } as const;
+    const fetch = vi.fn<FetchLike>(() => apiSuccess('session.spawn_new', spawnResult));
     installPatActionTransportMock(fetch);
 
     const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
@@ -1341,10 +1366,7 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
         },
       },
       { surface: 'cli' },
-    )).resolves.toEqual({
-      ok: true,
-      result: { type: 'success', sessionId: exactSessionId },
-    });
+    )).resolves.toEqual({ ok: true, result: spawnResult });
 
     expect(createCliActionExecutor).not.toHaveBeenCalled();
     expect(ensureCliActionPolicySettings).not.toHaveBeenCalled();

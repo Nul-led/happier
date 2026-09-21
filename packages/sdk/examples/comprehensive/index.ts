@@ -25,7 +25,9 @@ try {
     : account.machine(process.env.HAPPIER_MACHINE_ID?.trim() || await (async () => {
       const machines = await account.machines.list();
       const eligibleMachines = machines.filter((machine) => (
-        machine.active && machine.revokedAt === null && machine.replacedByMachineId === null
+        // A Temporary computer is a Session-scoped target selected explicitly.
+        machine.kind === 'persistent'
+        && machine.active && machine.revokedAt === null && machine.replacedByMachineId === null
       ));
       const [selectedMachine] = eligibleMachines;
       if (!selectedMachine) {

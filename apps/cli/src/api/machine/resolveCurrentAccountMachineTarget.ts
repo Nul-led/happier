@@ -20,7 +20,8 @@ export type CurrentAccountMachineTarget = Readonly<{
   machineLabel: string;
 }>;
 export type CurrentAccountMachineInventoryItem = Readonly<{
-  id: string; label: string; active: boolean; revokedAt: number | null; replacedByMachineId: string | null;
+  id: string; label: string; kind: 'persistent' | 'ephemeral_session_runner';
+  active: boolean; revokedAt: number | null; replacedByMachineId: string | null;
 }>;
 
 export type CurrentAccountMachineTargetResolution =
@@ -73,7 +74,7 @@ export async function listCurrentAccountMachines(params: Readonly<{
     const inventory = ACCOUNT_MACHINE_INVENTORY_SCHEMA.safeParse(response.data);
     if (!inventory.success) throw new Error('invalid machine inventory');
     return inventory.data.map((row) => ({
-      id: row.id, label: readMachineLabel(row.metadata, row.id), active: row.active,
+      id: row.id, label: readMachineLabel(row.metadata, row.id), kind: row.kind, active: row.active,
       revokedAt: row.revokedAt, replacedByMachineId: row.replacedByMachineId,
     }));
   } catch (error) {
@@ -112,7 +113,12 @@ export async function resolveCurrentAccountMachineTarget(params: Readonly<{
   try {
     const inventory = await listCurrentAccountMachines(params);
     const candidates = inventory
-      .filter((row) => row.active && row.revokedAt === null && row.replacedByMachineId === null)
+      // A restricted Runner is a Session-scoped target chosen explicitly, never
+      // an automatic current-daemon selection.
+      .filter((row) => (
+        row.kind === 'persistent'
+        && row.active && row.revokedAt === null && row.replacedByMachineId === null
+      ))
       .map((row) => ({ machineId: row.id, machineLabel: row.label }));
     if (candidates.length === 0) return unavailable('no_current_machine', 'No current machine is available.');
     if (candidates.length > 1) return { kind: 'selection_required', candidates };

@@ -114,7 +114,88 @@ describe("machinesRoutes API-token admission (integration)", () => {
                 active: false,
                 revokedAt: 1234,
                 replacedByMachineId: "machine-2",
+                kind: "persistent",
+                // Persistent Machine content and install state still do not
+                // cross this seam.
+                installationId: null,
+                dataEncryptionKey: null,
+                runnerContentKeyBinding: null,
             }]);
+        } finally {
+            await app.close();
+        }
+    });
+
+    it("carries the Runner content-key facts a protected SDK request seals against", async () => {
+        const account = await db.account.create({
+            data: { publicKey: null, encryptionMode: "e2ee" },
+            select: { id: true },
+        });
+        const sealedEnvelope = new Uint8Array(96).fill(7);
+        const binding = {
+            v: 1,
+            purpose: "happier.ephemeral-runner.machine-content-key",
+            homeServerIdentityId: "home-1",
+            activationId: "00000000-0000-4000-8000-000000000001",
+            creatorAccountId: account.id,
+            machineId: "runner-1",
+            installationId: "installation-1",
+            machineContentKeyFingerprint:
+                `runner-machine-content-key-sha256:${"a".repeat(64)}`,
+            accountSignatureBase64Url: "A".repeat(86),
+        };
+        await db.machine.createMany({ data: [
+            {
+                id: "persistent-1",
+                accountId: account.id,
+                metadata: "encrypted",
+                dataEncryptionKey: new Uint8Array(96).fill(3),
+                installationId: "installation-persistent",
+            },
+            {
+                id: "runner-1",
+                accountId: account.id,
+                metadata: "encrypted",
+                kind: "ephemeral_session_runner",
+                dataEncryptionKey: sealedEnvelope,
+                installationId: "installation-1",
+                runnerContentKeyBinding: binding,
+            },
+        ] });
+        const pat = await auth.createApiToken({
+            accountId: account.id,
+            tokenId: crypto.randomUUID(),
+            label: "Runner discovery",
+        });
+        const app = createTestApp();
+        await app.ready();
+
+        try {
+            const response = await app.inject({
+                method: "GET",
+                url: "/v1/machines",
+                headers: { authorization: `Bearer ${pat.token}` },
+            });
+
+            expect(response.statusCode).toBe(200);
+            const rows = response.json() as ReadonlyArray<Record<string, unknown>>;
+            expect(rows.map((row) => row.id).sort()).toEqual(["persistent-1", "runner-1"]);
+            expect(rows.find((row) => row.id === "runner-1")).toEqual({
+                id: "runner-1",
+                active: true,
+                revokedAt: null,
+                replacedByMachineId: null,
+                kind: "ephemeral_session_runner",
+                installationId: "installation-1",
+                dataEncryptionKey: Buffer.from(sealedEnvelope).toString("base64"),
+                runnerContentKeyBinding: binding,
+            });
+            expect(rows.find((row) => row.id === "persistent-1")).toMatchObject({
+                kind: "persistent",
+                installationId: null,
+                dataEncryptionKey: null,
+                runnerContentKeyBinding: null,
+            });
         } finally {
             await app.close();
         }

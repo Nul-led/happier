@@ -95,8 +95,7 @@ try {
 } catch (error) {
   if (error instanceof HappierActionError) {
     // Canonical Action codes survive the protected transport unchanged:
-    // `approval_required`, `invalid_parameters`,
-    // `execution_run_correspondence_unavailable`, and the domain's own codes.
+    // `approval_required`, `invalid_parameters`, and the domain's own codes.
     console.error(JSON.stringify({ actionErrorCode: error.code, requestId: error.requestId }));
   }
   throw error;

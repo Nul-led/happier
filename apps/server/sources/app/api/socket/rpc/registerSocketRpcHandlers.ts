@@ -354,6 +354,11 @@ function isExternalActionReservedRpcMethod(method: string): boolean {
         || method.endsWith(`:${EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1}`);
 }
 
+function isMachineOwnedSessionSpawnRpcMethod(method: string): boolean {
+    return method === RPC_METHODS.SESSION_SPAWN_NEW
+        || method.endsWith(`:${RPC_METHODS.SESSION_SPAWN_NEW}`);
+}
+
 function canRegisterReservedServerOriginRpcMethod(params: Readonly<{
     socket: SocketDataCarrier;
     method: string;
@@ -410,15 +415,31 @@ function readMachineRuntimeRunnerPrincipal(target: SocketDataCarrier) {
     return parsed.success ? parsed.data : null;
 }
 
+/**
+ * The two non-Session Runner authorities have their own admission owners and
+ * are never reachable from this client-originated socket RPC path: Follow
+ * source-key preparation is authorized by its own guard, and the closed public
+ * Action dispatch is server-origin only.
+ */
+type ClientReachableEphemeralRunnerMachineRpcAuthority = Exclude<
+    EphemeralRunnerMachineRpcAuthority,
+    "followSourceKeyPreparation" | "externalActionDispatch"
+>;
+
 function readEphemeralRunnerMachineRpcRequest(method: string): Readonly<{
     machineId: string;
-    authority: Exclude<EphemeralRunnerMachineRpcAuthority, "followSourceKeyPreparation">;
+    authority: ClientReachableEphemeralRunnerMachineRpcAuthority;
 }> | null {
     const separatorIndex = method.indexOf(":");
     if (separatorIndex <= 0 || separatorIndex === method.length - 1) return null;
     const machineId = method.slice(0, separatorIndex).trim();
     const authority = resolveEphemeralRunnerMachineRpcAuthority(method.slice(separatorIndex + 1));
-    if (!machineId || authority === null || authority === "followSourceKeyPreparation") return null;
+    if (
+        !machineId
+        || authority === null
+        || authority === "followSourceKeyPreparation"
+        || authority === "externalActionDispatch"
+    ) return null;
     return { machineId, authority };
 }
 
@@ -426,7 +447,7 @@ function createEphemeralRunnerMachineRpcTargetGuard(params: Readonly<{
     accountId: string;
     targetAccountId: string;
     machineId: string;
-    authority: Exclude<EphemeralRunnerMachineRpcAuthority, "followSourceKeyPreparation">;
+    authority: ClientReachableEphemeralRunnerMachineRpcAuthority;
     authentication: ReturnType<typeof readSessionAccessAuthenticationFromSocket>;
 }>): RpcForwardTargetGuard {
     const authorizeTarget = async (target: SocketDataCarrier): Promise<boolean> => {
@@ -691,9 +712,14 @@ export function registerSocketRpcHandlers(params: Readonly<{
             }
             const sessionAuthorization = resolveSocketRpcSessionAuthorization(method);
             const isSessionAuthorizationNamespace = isSocketRpcSessionAuthorizationNamespace(method);
+            const isMachineOwnedSessionSpawnRegistration = (
+                readSocketClientType(params.socket) === "machine-scoped"
+                && isMachineOwnedSessionSpawnRpcMethod(method)
+            );
             if (
                 isSessionAuthorizationNamespace
                 && !sessionAuthorization
+                && !isMachineOwnedSessionSpawnRegistration
             ) {
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: RPC_ERROR_MESSAGES.METHOD_NOT_AVAILABLE });
                 return;
@@ -701,6 +727,7 @@ export function registerSocketRpcHandlers(params: Readonly<{
             if (
                 (isSessionAuthorizationNamespace || sessionAuthorization?.routeToSessionOwnerDaemon === true)
                 && readSocketClientType(params.socket) !== "session-scoped"
+                && !isMachineOwnedSessionSpawnRegistration
             ) {
                 params.socket.emit(SOCKET_RPC_EVENTS.ERROR, { type: "register", error: "Forbidden" });
                 return;

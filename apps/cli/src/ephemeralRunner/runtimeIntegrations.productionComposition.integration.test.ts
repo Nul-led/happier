@@ -657,6 +657,7 @@ describe('production Ephemeral Runner composition', () => {
           environment: { HAPPIER_HOME_DIR: root, HOME: root, PATH: '' },
           unsetEnvironmentVariables: [],
         },
+        installationPrivateKey,
         signal: controller.signal,
         onRuntimeStopReady: () => undefined,
       } as never);
@@ -668,6 +669,9 @@ describe('production Ephemeral Runner composition', () => {
             finiteTransferRpc: { protocolVersions: [1] },
             sessionInputAdmission: { protocolVersions: [1, 2] },
             sessionFollow: { contextV1: true },
+            // Published only because the composition installed the real
+            // dispatch receiver; the Home dispatcher gates on exactly this.
+            externalActionExecutionAuthorization: { protocolVersions: [1] },
           }),
         }),
       ));
@@ -689,6 +693,7 @@ describe('production Ephemeral Runner composition', () => {
         }, resolve);
       });
       await expect(followResponse).resolves.toEqual({ v: 1, outcome: 'installed' });
+
 
       await Promise.race([
         vi.waitFor(() => {

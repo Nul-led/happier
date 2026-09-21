@@ -1,10 +1,15 @@
 import {
   RPC_ERROR_CODES,
   RPC_ERROR_MESSAGES,
+  isSocketRpcActionApiServerOriginAuthorizationContext,
   parseSocketRpcAuthorizationContext,
   resolveEphemeralRunnerMachineRpcAuthority,
   type SocketRpcAuthorizationContext,
 } from '@happier-dev/protocol/rpc';
+import {
+  EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
+  ExternalActionDaemonPlacementV1Schema,
+} from '@happier-dev/protocol/actions';
 import type { VerifiedEphemeralSessionRunnerPrincipal } from '@happier-dev/protocol/ephemeralRunner/principal';
 import {
   SessionFollowSourceKeyPrepareAuthorizationV1Schema,
@@ -54,6 +59,24 @@ export function createEphemeralRunnerRestrictedRpcAdmission(input: Readonly<{
     if (!request.method.startsWith(machinePrefix)) return forbidden();
     const method = request.method.slice(machinePrefix.length);
     if (resolveEphemeralRunnerMachineRpcAuthority(method) === null) return forbidden();
+    if (method === EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1) {
+      // The Home relays this request under its own Account-minted invocation
+      // authority, so the Session capability vocabulary does not apply here.
+      // Admission is exactly the closed server origin plus this Runner's own
+      // placement; the receiver then verifies that authorization, opens the
+      // envelope with its own Machine content key, and executes only inside
+      // its own Session.
+      if (!isSocketRpcActionApiServerOriginAuthorizationContext(request.authorization)) return forbidden();
+      const params = request.params;
+      const placement = ExternalActionDaemonPlacementV1Schema.safeParse(
+        params && typeof params === 'object' && !Array.isArray(params)
+          ? (params as Readonly<Record<string, unknown>>).placement
+          : undefined,
+      );
+      return placement.success && placement.data.machineId === input.principal.machineId
+        ? { ok: true }
+        : forbidden();
+    }
     if (method === RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE) {
       const authorization = SessionFollowSourceKeyPrepareAuthorizationV1Schema.safeParse(request.authorization);
       if (!authorization.success || authorization.data.destinationSessionId !== input.principal.sessionId) return forbidden();

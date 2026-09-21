@@ -38,6 +38,12 @@ describe('CLI encrypted SDK transport through real HTTP', () => {
         if (request.url?.endsWith('/encryption-access')) {
           expect(body).toBe('{}');
           result = { v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess };
+        } else if (request.url?.endsWith('/v1/machines')) {
+          // A protected Action aimed at a Machine first asks the bootstrap
+          // projection what that Machine publishes, so a restricted Runner is
+          // sealed with its own content key. This Home hosts one ordinary
+          // persistent daemon, so the released Account sealing stands.
+          result = [{ id: 'machine-1', kind: 'persistent', active: true, revokedAt: null, replacedByMachineId: null }];
         } else {
           const envelope = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(body));
           expect(envelope.target).toEqual({ kind: 'machine', machineId: 'machine-1' });
@@ -49,7 +55,11 @@ describe('CLI encrypted SDK transport through real HTTP', () => {
           const executionResult = actionId === 'session.list'
             ? { sessions: [{ id: 'c123456789012345678901234', tag: 'private-tag-sentinel', createdAt: 1, updatedAt: 2,
               active: true, activeAt: 2, share: null, encryption: null }], nextCursor: null, hasNext: false }
-            : { delivered: 'private-result-sentinel' };
+            // A real `session.message.send` admission result: the SDK settles
+            // every success through the Action's declared output schema, so the
+            // private sentinel has to travel inside a result the Action can
+            // actually return.
+            : { status: 'accepted', localId: 'private-result-sentinel' };
           expect(input).toMatchObject(actionId === 'session.list'
             ? { limit: 200 }
             : { sessionId: 'c123456789012345678901234', message: 'private-input-sentinel' });
@@ -84,10 +94,19 @@ describe('CLI encrypted SDK transport through real HTTP', () => {
             sessionId: directDaemon ? 'private-tag-sentinel' : 'c123456789012345678901234', message: 'private-input-sentinel',
           }, { surface: 'cli' })
             .catch((error: unknown) => { if (failures.length) throw new AggregateError(failures, 'HTTP fixture failed'); throw error; }))
-            .resolves.toEqual({ ok: true, result: { delivered: 'private-result-sentinel' } });
+            .resolves.toEqual({ ok: true, result: { status: 'accepted', localId: 'private-result-sentinel' } });
         });
         expect(failures).toEqual([]);
-        expect(captured).toHaveLength(directDaemon ? 6 : 2);
+        // Each protected client pays exactly one encryption-access read and one
+        // Machine bootstrap read before its Action; the direct-daemon arm builds
+        // three of them (two Session resolutions plus the send).
+        expect((captured as readonly { path: string }[]).map((entry) => entry.path)).toEqual(
+          directDaemon
+            ? ['/v1/auth/api-tokens/encryption-access', '/v1/machines', '/v1/actions/session.list',
+              '/v1/auth/api-tokens/encryption-access', '/v1/machines', '/v1/actions/session.list',
+              '/v1/auth/api-tokens/encryption-access', '/v1/machines', '/v1/actions/session.message.send']
+            : ['/v1/auth/api-tokens/encryption-access', '/v1/machines', '/v1/actions/session.message.send'],
+        );
         expect(JSON.stringify(captured)).not.toContain('sentinel');
         expect(JSON.stringify(captured)).not.toContain(token);
       });

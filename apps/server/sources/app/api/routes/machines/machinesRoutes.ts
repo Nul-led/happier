@@ -781,11 +781,19 @@ export function machinesRoutes(app: Fastify) {
     }, async (request, reply) => {
         const userId = request.userId;
 
+        // Ordinary discovery stays persistent-only. A PAT caller additionally
+        // selects a restricted Runner as an Action target, so its listing is
+        // the Account's own Machines of every kind through the closed
+        // bootstrap projection.
+        const isApiTokenCaller = request.authTokenKind === "api_token";
         const machines = await db.machine.findMany({
-            where: { accountId: userId, ...persistentMachineWhere },
+            where: {
+                accountId: userId,
+                ...(isApiTokenCaller ? {} : persistentMachineWhere),
+            },
             orderBy: { lastActiveAt: 'desc' }
         });
-        if (request.authTokenKind === "api_token") {
+        if (isApiTokenCaller) {
             return machines.map(serializeExternalActionMachineBootstrapRow);
         }
         if (

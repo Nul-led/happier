@@ -98,11 +98,49 @@ describe('External Action API envelope v1', () => {
       replacedByMachineId: null,
     };
 
-    expect(ExternalActionMachineBootstrapListV1Schema.parse([row])).toEqual([row]);
+    expect(ExternalActionMachineBootstrapListV1Schema.parse([row])).toMatchObject([row]);
     expect(ExternalActionMachineBootstrapListV1Schema.safeParse([{
       ...row,
       metadata: '{"host":"must-not-cross-this-boundary"}',
     }]).success).toBe(false);
+  });
+
+  it('carries the Runner content-key facts a protected SDK request must seal against', () => {
+    const runnerRow = {
+      id: 'machine-runner-1',
+      active: true,
+      revokedAt: null,
+      replacedByMachineId: null,
+      kind: 'ephemeral_session_runner' as const,
+      installationId: 'installation-1',
+      dataEncryptionKey: 'c2VhbGVkLWVudmVsb3Bl',
+      runnerContentKeyBinding: {
+        v: 1 as const,
+        purpose: 'happier.ephemeral-runner.machine-content-key' as const,
+        homeServerIdentityId: 'home-1',
+        activationId: '00000000-0000-4000-8000-000000000001',
+        creatorAccountId: 'account-1',
+        machineId: 'machine-runner-1',
+        installationId: 'installation-1',
+        machineContentKeyFingerprint: `runner-machine-content-key-sha256:${'a'.repeat(64)}`,
+        accountSignatureBase64Url: 'A'.repeat(86),
+      },
+    };
+
+    expect(ExternalActionMachineBootstrapListV1Schema.parse([runnerRow])).toEqual([runnerRow]);
+    // A persistent Machine keeps the released minimal row; kind is projected.
+    expect(ExternalActionMachineBootstrapListV1Schema.parse([{
+      id: 'machine-1',
+      active: true,
+      revokedAt: null,
+      replacedByMachineId: null,
+    }])[0]).toMatchObject({
+      id: 'machine-1',
+      kind: 'persistent',
+      dataEncryptionKey: null,
+      installationId: null,
+      runnerContentKeyBinding: null,
+    });
   });
 
   it('accepts only the public target and input envelope fields', () => {
@@ -169,7 +207,7 @@ describe('External Action API envelope v1', () => {
     { v: 1, input: {}, authority: 'present_user' },
     { v: 1, input: {}, actionCaller: { kind: 'host' } },
     { v: 1, input: {}, bypassApprovals: true },
-    { v: 1, input: {}, expectedContributorImmutableGenerationId: 'forged' },
+    { v: 1, input: {}, expectedContributorOccurrenceId: 'forged' },
     { v: 1, input: {}, target: { kind: 'machine', machineId: 'machine-1', accountId: 'forged' } },
   ])('rejects caller-controlled execution context %#', (value) => {
     expect(ExternalActionRequestEnvelopeV1Schema.safeParse(value).success).toBe(false);

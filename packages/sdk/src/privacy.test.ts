@@ -1,10 +1,17 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { once } from 'node:events';
 
+import tweetnacl from 'tweetnacl';
 import { describe, expect, it } from 'vitest';
-import { wrapApiTokenEncryptionAccessV1 } from '@happier-dev/protocol';
+import {
+  computeRunnerMachineContentKeyFingerprintV1,
+  sealEncryptedDataKeyEnvelopeV1,
+  sealRunnerMachineContentKeyVerifierFactV1,
+  signRunnerMachineContentKeyBindingV1,
+  wrapApiTokenEncryptionAccessV1,
+} from '@happier-dev/protocol';
 import { formatAccountApiTokenCredentialV1 } from '@happier-dev/protocol/auth/accountApiTokens';
-import { encodeBase64 } from '@happier-dev/protocol/crypto/base64';
+import { decodeBase64, encodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import {
   ExternalActionRequestEnvelopeV2Schema,
   openExternalActionRequestV2,
@@ -39,9 +46,73 @@ const accessResponse = { v: 1, accountId: pins.accountId, tokenId: pins.tokenId,
 
 type Invocation = Readonly<{ request: ExternalActionRequestEnvelopeV2; binding: ExternalActionEncryptionBindingV2; input: unknown }>;
 
+const RUNNER_MACHINE_ID = 'runner-1';
+const runnerContentKey = new Uint8Array(32).fill(9);
+const runnerMaterial = { type: 'dataKey' as const, machineKey: runnerContentKey };
+
+/**
+ * The exact facts a creator publishes for a restricted Runner: an Account-sealed
+ * content-key envelope, the strict binding signed by the activation identity, and
+ * that identity sealed for every authorized Account reader.
+ */
+function buildRunnerBootstrapRow(overrides: Readonly<{
+  contentKey?: Uint8Array;
+  machineId?: string;
+  verifierMachineId?: string;
+}> = {}) {
+  const contentKey = overrides.contentKey ?? runnerContentKey;
+  const machineId = overrides.machineId ?? RUNNER_MACHINE_ID;
+  const activationId = '11111111-2222-4333-8444-555555555555';
+  const installationId = 'installation-1';
+  const signing = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(5));
+  const binding = signRunnerMachineContentKeyBindingV1({
+    payload: {
+      v: 1,
+      purpose: 'happier.ephemeral-runner.machine-content-key',
+      homeServerIdentityId: pins.serverIdentityId,
+      activationId,
+      creatorAccountId: pins.accountId,
+      machineId,
+      installationId,
+      machineContentKeyFingerprint: computeRunnerMachineContentKeyFingerprintV1(contentKey),
+    },
+    activationSigningSecretKey: signing.secretKey,
+  });
+  return {
+    id: machineId,
+    active: true,
+    revokedAt: null,
+    replacedByMachineId: null,
+    kind: 'ephemeral_session_runner' as const,
+    installationId,
+    dataEncryptionKey: encodeBase64(sealEncryptedDataKeyEnvelopeV1({
+      dataKey: contentKey,
+      recipientPublicKey: decodeBase64(pins.contentPublicKey),
+      randomBytes: (length) => new Uint8Array(length).fill(6),
+    })),
+    runnerContentKeyBinding: {
+      ...binding,
+      creatorVerifierFactCiphertext: sealRunnerMachineContentKeyVerifierFactV1({
+        payload: {
+          v: 1,
+          activationId,
+          machineId: overrides.verifierMachineId ?? machineId,
+          activationSigningPublicKey: encodeBase64(signing.publicKey, 'base64url'),
+        },
+        material,
+        randomBytes: (length) => new Uint8Array(length).fill(2),
+      }),
+    },
+  };
+}
+
 async function serve(params: Readonly<{
   bootstrap?: (response: ServerResponse) => Promise<void> | void;
   invoke?: (invocation: Invocation, response: ServerResponse) => Promise<void> | void;
+  machines?: readonly unknown[];
+  /** Endpoint that answers Actions but serves no Machine bootstrap projection. */
+  machinesUnavailable?: true;
+  requestMaterial?: Readonly<{ type: 'dataKey'; machineKey: Uint8Array }>;
 }> = {}) {
   const captured: Array<{ path: string; authorization: string | undefined; body: string }> = [];
   const failures: unknown[] = [];
@@ -60,16 +131,21 @@ async function serve(params: Readonly<{
       else send(response, accessResponse);
       return;
     }
-    if (path === '/v1/machines') { send(response, []); return; }
+    if (path === '/v1/machines') {
+      if (params.machinesUnavailable) { send(response, { error: 'not_found' }, 404); return; }
+      send(response, params.machines ?? []);
+      return;
+    }
     const envelope = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(body));
     if (!envelope.target) throw new Error('Expected target');
     const binding = { serverIdentityId: pins.serverIdentityId, accountId: pins.accountId,
       credentialId: pins.tokenId, actionId: decodeURIComponent(path.split('/').at(-1)!),
       requestId: envelope.requestId, target: envelope.target };
-    const opened = openExternalActionRequestV2({ envelope, binding, material });
+    const requestMaterial = params.requestMaterial ?? material;
+    const opened = openExternalActionRequestV2({ envelope, binding, material: requestMaterial });
     if (!opened) throw new Error('Request did not authenticate');
     if (params.invoke) await params.invoke({ request: envelope, binding, input: opened.input }, response);
-    else send(response, prepareExternalActionResponseV2({ binding, request: envelope, material,
+    else send(response, prepareExternalActionResponseV2({ binding, request: envelope, material: requestMaterial,
       executedMachineId: binding.target.kind === 'machine' ? binding.target.machineId : 'machine-1',
       randomBytes: (length) => new Uint8Array(length).fill(4),
       execution: { ok: true, result: { status: 'accepted', localId: 'result-sentinel' } },
@@ -108,6 +184,79 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
       expect(actionCall ? JSON.parse(actionCall.body).v : undefined).toBe(2);
       expect(actionCall?.body).not.toContain('private-team-sentinel');
       expect(JSON.stringify(server.captured)).not.toContain('resources');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('seals a protected Action for a restricted Runner with that Runner\'s own content key', async () => {
+    const runnerRow = buildRunnerBootstrapRow();
+    const server = await serve({ machines: [runnerRow], requestMaterial: runnerMaterial,
+      invoke: ({ binding, input, request }, response) => {
+        expect(binding.target).toEqual({ kind: 'machine', machineId: RUNNER_MACHINE_ID });
+        expect(input).toEqual({ teamId: 'private-team-sentinel' });
+        server.send(response, prepareExternalActionResponseV2({ binding, request, material: runnerMaterial,
+          executedMachineId: RUNNER_MACHINE_ID, randomBytes: (length) => new Uint8Array(length).fill(4),
+          execution: { ok: true, result: { resources: [] } },
+        }).response);
+      } });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.machine(RUNNER_MACHINE_ID).actions.teams.credentials.entitled.list({
+        teamId: 'private-team-sentinel',
+      })).resolves.toEqual({ resources: [], nextCursor: null });
+      expect(server.failures).toEqual([]);
+      // The Account key never sealed this request: the relay bytes do not open
+      // with it, and the plaintext never left the SDK.
+      const actionCall = server.captured.find((call) => call.path.startsWith('/v1/actions/'));
+      const envelope = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(actionCall!.body));
+      expect(openExternalActionRequestV2({ envelope, material,
+        binding: { serverIdentityId: pins.serverIdentityId, accountId: pins.accountId,
+          credentialId: pins.tokenId, actionId: 'teams.credentials.entitled.list',
+          requestId: envelope.requestId, target: envelope.target! },
+      })).toBeNull();
+      expect(actionCall?.body).not.toContain('private-team-sentinel');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it.each([
+    ['a binding signed for another Machine content key', () => buildRunnerBootstrapRow({
+      contentKey: new Uint8Array(32).fill(11),
+    })],
+    ['a verifier fact replayed from another Runner', () => buildRunnerBootstrapRow({
+      verifierMachineId: 'runner-2',
+    })],
+  ])('refuses a substituted Runner key binding without downgrading to the Account key (%s)', async (_label, build) => {
+    const row = _label.startsWith('a binding signed')
+      // Substitute only the envelope so the published key no longer matches the
+      // signed fingerprint; the Home relays both fields.
+      ? { ...build(), dataEncryptionKey: buildRunnerBootstrapRow().dataEncryptionKey }
+      : build();
+    const server = await serve({ machines: [row], requestMaterial: runnerMaterial });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.machine(RUNNER_MACHINE_ID).actions.teams.credentials.entitled.list({
+        teamId: 'private-team-sentinel',
+      })).rejects.toMatchObject({ name: 'HappierTransportError', code: 'invalid_encrypted_envelope' });
+      expect(server.captured.some((call) => call.path.startsWith('/v1/actions/'))).toBe(false);
+      expect(JSON.stringify(server.captured)).not.toContain('private-team-sentinel');
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('keeps Account sealing when the endpoint serves no Machine bootstrap projection', async () => {
+    // A daemon-hosted Action API answers Actions but not the Home's Machine
+    // listing. That is not evidence about the target, so the released Account
+    // sealing stands instead of failing the request.
+    const server = await serve({ machinesUnavailable: true,
+      invoke: ({ binding, request }, response) => server.send(response,
+        prepareExternalActionResponseV2({ binding, request, material,
+          executedMachineId: 'machine-1', randomBytes: (length) => new Uint8Array(length).fill(4),
+          execution: { ok: true, result: { resources: [] } },
+        }).response) });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.machine('machine-1').actions.teams.credentials.entitled.list({
+        teamId: 'private-team-sentinel',
+      })).resolves.toEqual({ resources: [], nextCursor: null });
+      expect(server.failures).toEqual([]);
     } finally { await client.close(); await server.close(); }
   });
 
@@ -153,7 +302,13 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     try {
       await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel'))
         .rejects.toMatchObject({ code: 'encrypted_action_unsupported', status: 409, details: undefined });
-      expect(server.captured).toHaveLength(2);
+      // Credential bootstrap, the one target-Machine read, and exactly one
+      // Action attempt: no retry and no downgraded second send.
+      expect(server.captured.map((call) => call.path)).toEqual([
+        '/v1/auth/api-tokens/encryption-access',
+        '/v1/machines',
+        '/v1/actions/session.message.send',
+      ]);
     } finally { await client.close(); await server.close(); }
   });
 
@@ -167,7 +322,11 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     try {
       await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel'))
         .rejects.toMatchObject({ code: undefined, status: 409, details: undefined });
-      expect(server.captured).toHaveLength(2);
+      expect(server.captured.map((call) => call.path)).toEqual([
+        '/v1/auth/api-tokens/encryption-access',
+        '/v1/machines',
+        '/v1/actions/session.message.send',
+      ]);
     } finally { await client.close(); await server.close(); }
   });
 
