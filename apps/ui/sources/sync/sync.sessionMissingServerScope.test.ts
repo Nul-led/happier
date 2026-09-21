@@ -164,6 +164,7 @@ import type { NormalizedMessage, RawRecord } from './typesRaw';
 import { enterDemoMode, resetDemoModeDepthForTests } from '@/demoMode/runtime/enterExitDemoMode';
 import {
     computeAccountEncryptionMigrateKeyFingerprintV1,
+    makeExternalSessionHistoricalImportLocalId,
     projectSessionSharedMetadataV1,
     SessionOwnerMetadataV1Schema,
     sealSessionOwnerMetadataEnvelopeV1,
@@ -369,7 +370,10 @@ function createTranscriptInvalidation(sessionId: string, _cursor: string) {
                 },
                 generation: 'source-1',
             },
-            contributionGeneration: 'contribution-1',
+            sourceCustody: {
+                kind: 'bundled_first_party' as const,
+                packagedRuntime: { kind: 'cli_version_root' as const, versionRootId: 'version-root-1' },
+            },
             cursorIdentity: `external_session_cursor_binding_v1:${'a'.repeat(64)}`,
         },
     };
@@ -452,6 +456,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('does not publish an empty loaded transcript while the route owner is unresolved', async () => {
         const sessionId = 'route_owner_race';
+        // The deferral this case asserts guards a deep link whose route row is
+        // already committed while its owner Home is still unresolved. Without the
+        // local row `fetchMessages` returns at its deleted-session guard and the
+        // unresolved-owner branch is never reached.
+        storage.getState().applySessions([createSession(sessionId)]);
         const { sync } = await import('./sync');
         const syncInternals = sync as unknown as {
             hasFetchedSessionsSnapshotForActiveServer: boolean;
@@ -1169,7 +1178,19 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
         expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalled();
-        expect(Object.keys(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})).toContain('recovered-msg');
+        // The canonical normalizer keys a rebuilt external row by the derived
+        // import identity, never by the raw source item id
+        // (`normalizeExternalSessionTranscriptMessages` →
+        // `makeExternalSessionHistoricalImportLocalId`), and the store assigns its
+        // own local key. Assert the identity the owner actually produces.
+        expect(
+            Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+                .map((message) => (message as { realID?: string }).realID),
+        ).toContain(makeExternalSessionHistoricalImportLocalId({
+            agentId: 'codex',
+            remoteSessionId: 'vendor-session-1',
+            directItemId: 'recovered-msg',
+        }));
     });
 
     it('loads direct session transcripts even when the active server snapshot does not yet know the linked session', async () => {
@@ -2368,21 +2389,26 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         );
 
         const { sync } = await import('./sync');
-        (sync as any).encryption = {
-            getSessionEncryption: () => ({
-                decryptMessages: async () => [
-                    {
-                        id: 'm1',
-                        seq: 1,
-                        localId: null,
-                        createdAt: 1_001,
-                        content: {
-                            role: 'user',
-                            content: { type: 'text', text: 'hello scoped' },
-                        },
+        // The real `Encryption.getSessionEncryption` returns a cached per-session
+        // instance; the page pipeline fences on that identity to drop a response
+        // whose encryption owner was replaced mid-read. A stub that allocates a
+        // fresh object per call trips that fence on every page.
+        const sessionEncryption = {
+            decryptMessages: async () => [
+                {
+                    id: 'm1',
+                    seq: 1,
+                    localId: null,
+                    createdAt: 1_001,
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: 'hello scoped' },
                     },
-                ],
-            }),
+                },
+            ],
+        };
+        (sync as any).encryption = {
+            getSessionEncryption: () => sessionEncryption,
         };
         (sync as any).activeServerSessionIds = new Set<string>();
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
@@ -2457,20 +2483,22 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             );
 
         const { sync } = await import('./sync');
+        // Stable per-session instance: see the note on the sibling case above.
+        const sessionEncryption = {
+            decryptMessages: async (messages: Array<{ id: string; seq: number; createdAt: number }>) =>
+                messages.map((message) => ({
+                    id: message.id,
+                    seq: message.seq,
+                    localId: null,
+                    createdAt: message.createdAt,
+                    content: {
+                        role: 'user',
+                        content: { type: 'text', text: message.id === 'm2' ? 'latest' : 'older' },
+                    },
+                })),
+        };
         (sync as any).encryption = {
-            getSessionEncryption: () => ({
-                decryptMessages: async (messages: Array<{ id: string; seq: number; createdAt: number }>) =>
-                    messages.map((message) => ({
-                        id: message.id,
-                        seq: message.seq,
-                        localId: null,
-                        createdAt: message.createdAt,
-                        content: {
-                            role: 'user',
-                            content: { type: 'text', text: message.id === 'm2' ? 'latest' : 'older' },
-                        },
-                    })),
-            }),
+            getSessionEncryption: () => sessionEncryption,
         };
         (sync as any).activeServerSessionIds = new Set<string>();
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = true;
@@ -5215,7 +5243,10 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             v: 1,
             binding: {
                 ...invalidation.binding,
-                contributionGeneration: 'different-contribution',
+                sourceCustody: {
+                    kind: 'bundled_first_party' as const,
+                    packagedRuntime: { kind: 'cli_version_root' as const, versionRootId: 'version-root-2' },
+                },
             },
             result: {
                 outcome: 'advanced',

@@ -2225,6 +2225,26 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
 
     it('uses its applied Home rather than staged selection for unqualified message-route hydration', async () => {
         const sessionId = 'unqualified_applied_route';
+        const appliedCredentials = {
+            token: tokenForSub('applied-account'),
+            secret: 'applied-secret',
+        };
+        const appliedSession = {
+            id: sessionId,
+            createdAt: 1,
+            updatedAt: 2,
+            seq: 3,
+            active: true,
+            activeAt: 2,
+            archivedAt: null,
+            encryptionMode: 'plain' as const,
+            dataEncryptionKey: null,
+            metadataVersion: 1,
+            metadata: JSON.stringify({ readStateV1: null }),
+            agentStateVersion: 1,
+            agentState: JSON.stringify({ controlledByUser: true }),
+            share: null,
+        };
         const appliedHome = await upsertServerProfile({
             serverUrl: 'https://applied-route.example.test',
             name: 'Applied route',
@@ -2236,7 +2256,7 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         await setActiveServerId(stagedHome.id, { scope: 'device' });
 
         const { sync } = await import('./sync');
-        (sync as any).credentials = { token: tokenForSub('applied-account'), secret: 'applied-secret' };
+        (sync as any).credentials = appliedCredentials;
         (sync as any).appliedServerTarget = {
             serverId: appliedHome.id,
             serverUrl: appliedHome.serverUrl,
@@ -2246,38 +2266,56 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         (sync as any).hasFetchedSessionsSnapshotForActiveServer = false;
         (sync as any).encryption = null;
         requestMock.mockRejectedValue(new Error('the unavailable singleton must not be used'));
-        getCredentialsForServerUrlMock.mockResolvedValue({
-            token: tokenForSub('applied-account'),
-            secret: 'applied-secret',
-        });
+        getCredentialsForServerUrlMock.mockResolvedValue(appliedCredentials);
         createEncryptionFromAuthCredentialsMock.mockResolvedValue(null);
         runtimeFetchMock.mockImplementation(async (url: string) => {
-            if (new URL(url).pathname === '/v1/auth/ping') {
+            const path = new URL(url).pathname;
+            if (path === '/v1/auth/ping') {
                 return Response.json({ success: true });
             }
-            return new Response(JSON.stringify({
-                session: {
-                    id: sessionId,
-                    createdAt: 1,
-                    updatedAt: 2,
-                    seq: 0,
-                    active: false,
-                    activeAt: 2,
-                    encryptionMode: 'plain',
-                    dataEncryptionKey: null,
-                    metadataVersion: 0,
-                    metadata: null,
-                    agentStateVersion: 0,
-                    agentState: null,
-                    share: null,
-                },
-            }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            if (path === '/v1/account/encryption/currentness') {
+                return Response.json({
+                    mode: 'plain',
+                    version: 1,
+                    signingKeyFingerprint: null,
+                    contentKeyFingerprint: null,
+                    updatedAt: 1,
+                });
+            }
+            if (path === '/v2/sessions') {
+                return Response.json({ sessions: [appliedSession], nextCursor: null, hasNext: false });
+            }
+            if (path !== `/v2/sessions/${sessionId}`) {
+                throw new Error(`Unexpected applied-route request: ${url}`);
+            }
+            return Response.json({
+                session: appliedSession,
+            });
+        });
+        const {
+            resetServerReachabilitySupervisors,
+            startServerReachabilitySupervisor,
+            waitForServerReachable,
+        } = await import('@/sync/runtime/connectivity/serverReachabilitySupervisorPool');
+        await resetServerReachabilitySupervisors();
+        onTestFinished(async () => {
+            await resetServerReachabilitySupervisors();
+        });
+        await startServerReachabilitySupervisor({
+            serverUrl: appliedHome.serverUrl,
+            token: appliedCredentials.token,
+        });
+        await waitForServerReachable({
+            serverUrl: appliedHome.serverUrl,
+            token: appliedCredentials.token,
+            timeoutMs: 1_000,
         });
 
-        await expect(sync.ensureSessionVisibleForMessageRoute(sessionId, {
+        const result = await sync.ensureSessionVisibleForMessageRoute(sessionId, {
             forceRefresh: true,
             scopeCurrentness: () => true,
-        })).resolves.toMatchObject({
+        });
+        expect(result).toMatchObject({
             kind: 'available',
             sessionId,
             serverId: appliedHome.id,
@@ -2285,8 +2323,11 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
         expect(requestMock).not.toHaveBeenCalled();
         expectRuntimeFetchWithBearer(
             `https://applied-route.example.test/v2/sessions/${sessionId}`,
-            tokenForSub('applied-account'),
+            appliedCredentials.token,
         );
+        expect(runtimeFetchMock.mock.calls.some(([url]) => (
+            String(url).startsWith(stagedHome.serverUrl)
+        ))).toBe(false);
     });
 
     it('re-fetches a known encrypted session when the stored record is still partially hydrated', async () => {
@@ -3151,7 +3192,18 @@ describe('sync.ensureSessionVisibleForMessageRoute', () => {
                 { status: 401, headers: { 'Content-Type': 'application/json' } },
             ),
         );
-
+        // This suite never makes the applied active-server runtime available, so
+        // `resolveServerAccountRequestContext` takes its scoped branch for the
+        // active Home. Without a Home credential it throws before any request is
+        // issued and the route answers `retryable_failure`, hiding the 401 this
+        // case is about. Answer 401 on the scoped transport too.
+        getCredentialsForServerUrlMock.mockResolvedValue({ token: tokenForSub('deep-link-account') });
+        runtimeFetchMock.mockResolvedValue(
+            new Response(
+                JSON.stringify({ error: 'auth failed' }),
+                { status: 401, headers: { 'Content-Type': 'application/json' } },
+            ),
+        );
         await expect(sync.ensureSessionVisibleForMessageRoute(sessionId)).resolves.toMatchObject({
             kind: 'missing',
             sessionId,

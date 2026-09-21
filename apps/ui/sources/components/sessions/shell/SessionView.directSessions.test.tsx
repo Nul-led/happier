@@ -5558,7 +5558,7 @@ describe('SessionView (direct sessions)', () => {
         machineId: 'machine-1',
         machineHomeDir: '/tmp',
         initialDirectory: '/tmp',
-        serverId: 'server-1',
+        serverId: 'server-route-1',
       },
     });
     expect(machineDirectSessionTakeoverSpy).toHaveBeenCalledWith({
@@ -5582,7 +5582,7 @@ describe('SessionView (direct sessions)', () => {
         targetDirectory: '/tmp',
         targetRuntimeMode: 'terminal',
       },
-    }, { serverId: 'server-1' });
+    }, { serverId: 'server-route-1' });
     expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
     expect(findAgentInput(screen).props.value).toBe('continue this session');
 
@@ -5696,7 +5696,7 @@ describe('SessionView (direct sessions)', () => {
         targetDirectory: '/tmp',
         targetRuntimeMode: 'terminal',
       },
-    }, { serverId: 'server-1' });
+    }, { serverId: 'server-route-1' });
     expect(syncSubmitMessageSpy).not.toHaveBeenCalled();
     expect(findAgentInput(screen).props.value).toBe('persist this');
 
@@ -5835,7 +5835,7 @@ describe('SessionView (direct sessions)', () => {
     expect(voiceSurfacePropsSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         variant: 'session',
-        sessionAddress: { serverId: 'server-1', sessionId: 's1' },
+        sessionAddress: { serverId: 'server-route-1', sessionId: 's1' },
       }),
     );
 

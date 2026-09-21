@@ -1833,6 +1833,11 @@ const SessionViewFocusedSurfaceContent = React.memo((props: SessionViewFocusedSu
     const stableSessionForLoadedView = session;
     const stableSessionForHeader = stableSessionForLoadedView ?? session;
     const externalSessionRuntime = useExternalSessionRuntime({
+        // This surface already holds the qualified address, so the runtime must not
+        // re-derive the Home through the bare-Session-id legacy boundary: that
+        // resolver returns nothing when the same Session id exists on two Homes,
+        // which would send status reads, transcript leases and takeover to no Home.
+        serverId: expectedRouteServerId ?? session?.serverId ?? null,
         sessionId: acceptedSessionId,
         metadata: ownerMetadata,
         enabled: isSurfaceFocused && session != null,

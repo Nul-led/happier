@@ -26,6 +26,7 @@ import type {
   ApprovalRequest,
   ApprovalRequestOriginV1,
 } from '../../approvals/approvalRequestV1.js';
+import type { PluginSourceCustodyV1 } from '../../plugins/runtime/sourceCustody.js';
 import type {
   PromptRegistryConfiguredSourceV1,
   PromptRegistryInstallRequestV1,
@@ -171,7 +172,7 @@ import type {
 import type { PluginMachineMaterializationRefV1 } from '../../plugins/availability/materializationRefV1.js';
 import type { PluginSettingsAdministrationActionIdV1 } from '../../plugins/settingsAdministration.js';
 import type { AutomationRunCause } from '../../automations/automationRunCause.js';
-import type { MachinePoolActionIdV1 } from '../../machines/pools/actionsV1.js';
+import type { MachinePoolActionIdV1, MachinePoolActionInputV1 } from '../../machines/pools/actionsV1.js';
 import type { EphemeralRunnerActionIdV1 } from '../../ephemeralRunner/actionIdsV1.js';
 import type {
   WorkflowActionInputSchemasV1,
@@ -249,11 +250,10 @@ export type ActionPluginCaller = Readonly<{
   kind: 'plugin';
   pluginId: string;
   contributionLocalId?: string;
-  /**
-   * Exact host-stamped admitted plugin generation. It is optional only for
-   * legacy in-process callers and is never accepted from Action input.
-   */
-  immutableGenerationId?: string;
+  /** Exact host-stamped process-local plugin occurrence. */
+  occurrenceId?: string;
+  /** Durable source custody for owners that freeze replay provenance. */
+  sourceCustody?: PluginSourceCustodyV1;
   /**
    * Exact host-stamped materialization for a live plugin Action edge. Durable
    * approval replay carries only the persisted plugin/contribution identity;
@@ -1709,10 +1709,15 @@ export type ActionExecutorDeps = Readonly<{
     signal?: AbortSignal;
   }>) => Promise<unknown>;
 
-  /** One Account-server-owned transport for all personal Machine Pool intents. */
+  /**
+   * One Account-server-owned transport for all personal Machine Pool intents.
+   * The executor parses the caller input through `MachinePoolActionInputSchemasV1`
+   * before dispatching, so the port receives a parsed pool input and never an
+   * `unknown` its host has to re-narrow at the transport call.
+   */
   machinePoolAction?: (args: Readonly<{
     actionId: MachinePoolActionIdV1;
-    input: unknown;
+    input: MachinePoolActionInputV1;
     context: ActionExecutorContext;
     signal?: AbortSignal;
   }>) => Promise<unknown>;
