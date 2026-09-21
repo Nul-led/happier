@@ -167,7 +167,11 @@ the retry-safe `localId` and `timeoutSeconds`. It does not start a second wait.
 produce its typed Action result, either because the Action failed or because
 it requires approval. `HappierTransportError` instead means the SDK could not
 complete or validate the HTTP exchange, such as a network failure, a
-non-success HTTP status, invalid JSON, or an invalid response envelope.
+non-success HTTP status, invalid JSON, or an invalid response envelope. A
+successful response whose result does not satisfy that Action's declared output
+schema is the same kind of failure: the SDK rejects with `code`
+`invalid_action_output` rather than presenting an unchecked value as the typed
+result.
 
 When policy defers an Action for user approval, raw and generated Action methods
 resolve with the canonical admitted result

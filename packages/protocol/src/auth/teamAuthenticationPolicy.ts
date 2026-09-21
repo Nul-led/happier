@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { TeamIdentityConnectionIdSchema } from '../teams/identity/ids.js';
 import { AuthEntryMethodIdV1Schema } from './methodId.js';
+import { normalizeAuthMethodId } from './providers.js';
 
 export const TeamAcceptedAuthenticationV1Schema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('home_method'), methodId: AuthEntryMethodIdV1Schema }).strict(),
@@ -21,7 +22,7 @@ export const TeamRestrictedAuthenticationPolicyV1Schema = z.object({
       // cannot coexist as distinct accepted entries. Connection IDs are
       // exact opaque server-generated identities and stay case-sensitive.
       const key = reference.kind === 'home_method'
-        ? `home_method:${reference.methodId.toLowerCase()}`
+        ? `home_method:${normalizeAuthMethodId(reference.methodId)}`
         : `team_connection:${reference.connectionId}`;
       if (seen.has(key)) {
         context.addIssue({ code: z.ZodIssueCode.custom, message: 'Accepted authentication references must be unique' });
@@ -48,10 +49,10 @@ export function normalizeTeamAuthenticationPolicyV1(
     ...policy,
     accepted: [...policy.accepted].sort((left, right) => {
       const leftKey = left.kind === 'home_method'
-        ? `home_method:${left.methodId.toLowerCase()}`
+        ? `home_method:${normalizeAuthMethodId(left.methodId)}`
         : `team_connection:${left.connectionId}`;
       const rightKey = right.kind === 'home_method'
-        ? `home_method:${right.methodId.toLowerCase()}`
+        ? `home_method:${normalizeAuthMethodId(right.methodId)}`
         : `team_connection:${right.connectionId}`;
       return leftKey.localeCompare(rightKey);
     }),

@@ -4,6 +4,7 @@ import { voiceSessionManager } from '@/voice/session/voiceSession';
 import { normalizeNonEmptyString } from '@/voice/shared/normalizeNonEmptyString';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { SETTINGS_ROUTES } from '@/components/settings/catalog/routes';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import type { NavigationFocusReturnCapture } from '@/utils/navigation/useNavigationFocusReturn';
 
 import type { VoiceSurfaceVariant } from './voiceSurfaceTypes';
@@ -70,6 +71,7 @@ export function createVoiceSurfaceActionHandlers(params: Readonly<{
                     const nextSessionId = result
                         ? result.conversationSessionId
                         : openConversationSessionId;
+                    const nextServerId = result?.conversationServerId ?? null;
                     if (!nextSessionId) {
                         // A targetless direct-media attempt is attached to the hidden
                         // Voice History carrier. Ordinary session routes intentionally
@@ -82,12 +84,15 @@ export function createVoiceSurfaceActionHandlers(params: Readonly<{
                         navigate(SETTINGS_ROUTES.voiceHistory);
                         return;
                     }
-                    const performNavigation = () => params.router.push(`/session/${nextSessionId}` as any);
+                    // The binding named the Home; a bare id would re-resolve it from the
+                    // active Home and open the wrong same-id Session.
+                    const nextHref = buildScopedSessionRouteHref({ sessionId: nextSessionId, serverId: nextServerId });
+                    const performNavigation = () => params.router.push(nextHref as any);
                     if (focusReturn) {
                         focusReturn.navigate(performNavigation);
                         return;
                     }
-                    navigate(`/session/${nextSessionId}`);
+                    navigate(nextHref);
                 } catch (error) {
                     focusReturn?.cancel();
                     throw error;

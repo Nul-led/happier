@@ -1,9 +1,18 @@
 import { isSessionPersonallyTrackedV1, resolveSessionPersonalEventEligibilityV1, type SessionPersonalEventKindV1, type SessionPersonalEventEligibilityReasonV1 } from "@happier-dev/protocol";
 import { db } from "@/storage/db";
-import { resolveStructuralSessionAccessForAccountsInTx } from "@/app/session/access/sessionAccess";
+import { resolveSessionAccessForOperation, type EffectiveSessionAccess } from "@/app/session/access/sessionAccess";
+import { backgroundDeliveryAuthentication } from "./backgroundDeliveryAuthentication";
 import { listActivelyFollowingAccountIdsInTx, resolveSessionFollowFactsForAccountsInTx } from "./followFacts";
 
-/** Call only with an event and targets established by the committed semantic mutation owner. */
+/**
+ * Call only with an event and targets established by the committed semantic
+ * mutation owner.
+ *
+ * Admission is the ordinary credential-qualified access decision taken with the
+ * evidence background delivery actually has — none — so a recipient whose only
+ * arm is a restricted Team is admitted only while that Team qualifies without
+ * evidence. Owner, direct and inherited-authentication arms are unaffected.
+ */
 export async function listSessionPersonalEventRecipients(params: Readonly<{
     sessionId: string;
     event: SessionPersonalEventKindV1;
@@ -15,7 +24,16 @@ export async function listSessionPersonalEventRecipients(params: Readonly<{
     const following = await listActivelyFollowingAccountIdsInTx(db, { sessionId: params.sessionId });
     const candidateIds = [...new Set([session.accountId, ...following, ...targets])];
     const accounts = await db.account.findMany({ where: { id: { in: candidateIds }, status: "active" }, select: { id: true } });
-    const accesses = await resolveStructuralSessionAccessForAccountsInTx(db, { sessionId: params.sessionId, accountIds: accounts.map(row => row.id) });
+    const authentication = backgroundDeliveryAuthentication();
+    const accesses = new Map<string, EffectiveSessionAccess>();
+    for (const account of accounts) {
+        const decision = await resolveSessionAccessForOperation(db, {
+            accountId: account.id,
+            sessionId: params.sessionId,
+            authentication,
+        });
+        if (decision.status === "allowed") accesses.set(account.id, decision.access);
+    }
     const followFactsByAccountId = await resolveSessionFollowFactsForAccountsInTx(db, {
         sessionId: params.sessionId,
         accountIds: accounts.map((row) => row.id),

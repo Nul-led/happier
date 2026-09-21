@@ -798,8 +798,25 @@ sequenceDiagram
   follows Machine replacement redirects. Ordinary
   `callMachineRpc` retains its existing replacement behavior.
 - Successful opening and the expected-mode check do not authenticate the provenance
-  of a published scoped key. Runner private-key delivery is not activated pending
-  the authenticated key-binding decision recorded in the Lane 13 plan.
+  of a published scoped key, so scoped Machine-content keys for a Temporary computer
+  carry their own signed binding. In current development source the creator seals the
+  Runner runtime bootstrap and the Runner opens it with
+  `openVerifiedRunnerRuntimeBootstrap` (`apps/cli/src/ephemeralRunner/runtimeBootstrap.ts`):
+  the bootstrap must name the exact Home identity, activation, creator Account, Session,
+  Machine, installation and launch-manifest commitment, its binding must equal the one
+  the creator already reviewed, and `verifyRunnerMachineContentKeyBindingV1` must verify
+  the `happier.ephemeral-runner.machine-content-key` payload — including the content-key
+  fingerprint — against the creator's activation signing key. That activation key is the
+  proof root: it is derived locally from this Runner's own activation package and
+  recorded by the Home when the creator created the activation, never taken from a
+  relayed field, so a DataKey-only or token-only creator needs no Account signing
+  authority. Any mismatch zeroizes the key material and fails closed with
+  `runner_runtime_bootstrap_binding_invalid`. The server verifies the same binding
+  before review (`activationProgress.ts`) and before materialization
+  (`materializeEphemeralRunner.ts`), and persists it as the Machine's
+  `runnerContentKeyBinding`; a Plain endpoint must carry no binding at all. The feature
+  remains unreleased, and its composed release checks do not make this implemented path
+  absent.
 - Plain Machines carry base64-encoded `{ t:'plain', v }` metadata/state and use the
   corresponding plain marker in `dataEncryptionKey`.
 - Machine RPC uses the persisted Machine row mode. Token-only callers never enter the
@@ -858,6 +875,13 @@ through `activePluginAccountPackageAssetRead.ts`. Release links and integrity
 descriptors remain server-visible metadata in both modes. Availability owns the
 qualified release link: disable-and-remove atomically removes the link and its
 Artifact, while disabling hosting alone prevents later publication.
+
+The release link keeps the contribution selection and generated `artifactId`
+separate from the Account storage carrier's `accountArtifactId`. Byte providers
+(daemon, packaged app, or Account hosting) are interchangeable sources for the
+selected digest; none can admit a release or renderer. Clients verify the selected
+digest before adoption, and persistent physical bytes are partitioned by server and
+Account rather than by projection generation or app/runtime compatibility metadata.
 
 ### Access keys
 - `AccessKey.data` is treated as an **opaque encrypted string**.
@@ -1496,9 +1520,11 @@ development source, restricted Runner Follow also has one consumed scoped source
 carrier: the qualified producer opens only the physical standalone Session DEK, the
 server rechecks the exact Follow/source/destination/Runner/Machine authority, and the
 restricted runtime keeps copied source material only in process-local zeroizing custody.
-That path remains unreleased and not live-verified. Creator-authenticated scoped
-Runner-Machine key binding and the composed preparer-disconnect/reconnect/revocation/
-cleanup journey are still required before activation can be called complete. No loaded
+That path remains unreleased and not live-verified. The creator-authenticated scoped
+Runner-Machine key binding it depends on is implemented and verified on both sides
+(see Machine metadata + daemon state above); the composed preparer-disconnect/
+reconnect/revocation/cleanup journey is still required before activation can be
+called complete. No loaded
 Teams/Runner/native, cross-provider, or release validation is claimed complete here.
 
 Session Discussions, Board/System Records, and Follow context reuse the same Session

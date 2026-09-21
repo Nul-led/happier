@@ -145,7 +145,10 @@ const TeamDescriptionInputV1Schema = z.string().max(TEAM_DESCRIPTION_MAX_LENGTH_
 /**
  * `teams.create`. `initialOwnerAccountId` is how a Home administrator creates a
  * managed Team for somebody else without implicitly becoming a member; when it
- * is absent the authenticated creator becomes the initial owner.
+ * is absent the authenticated creator becomes the initial owner. Under a
+ * `managed_only` Home creation policy the initial owner must be named
+ * explicitly — omitting it is refused as `invalid_team_input` rather than
+ * silently making the administrator the owner.
  *
  * `requestKey` is the caller's own retry identity, so a lost response cannot
  * create two Teams. It is scoped to actor, operation, and payload at the

@@ -11,6 +11,7 @@ import {
 import { buildSessionListRenderableMetadataComparison } from '@/sync/domains/session/listing/sessionListRenderableMetadataComparison';
 import type { ApiSessionMessagesResponse } from '@/sync/api/types/apiTypes';
 import { storage } from '@/sync/domains/state/storage';
+import { shouldRetireSessionCarrierForServer } from '@/sync/store/domains/sessions';
 import { readRollbackEligibleTurnStarts } from '@/sync/domains/session/rollback/rollbackEligibleTurnStarts';
 import {
     captureEncryptionGenerationCurrentness,
@@ -365,13 +366,24 @@ export async function buildNewSessionFromSocketUpdate(params: {
     };
 }
 
+/**
+ * The one Session teardown choke point, reached by the socket `delete-session` and
+ * `session-share-revoked` branches and by `Sync.retireLocalSession`.
+ *
+ * `serverId` names the Home whose authority produced the deletion; `null` is a
+ * Home-agnostic retirement of the whole id. The same Session id can exist on two Homes,
+ * so this decides ONCE whether the deletion also retires the shared per-id carrier —
+ * transcript, encryption key, project, SCM status and the state `deleteSession` clears —
+ * and otherwise removes only that Home's row.
+ */
 export function handleDeleteSessionSocketUpdate(params: {
     sessionId: string;
+    serverId: string | null;
     /** Socket owns its queued/coalesced work; callers inject its per-session teardown. */
     dropSocketSessionWork?: (sessionId: string) => void;
     invalidateSessionHydration?: (sessionId: string) => void;
     resetSessionTranscriptState?: (sessionId: string) => void;
-    deleteSession: (sessionId: string) => void;
+    deleteSession: (sessionId: string, serverId: string | null) => void;
     removeSessionEncryption: (sessionId: string) => void;
     removeProjectManagerSession: (sessionId: string) => void;
     clearScmStatusForSession: (sessionId: string) => void;
@@ -379,6 +391,7 @@ export function handleDeleteSessionSocketUpdate(params: {
 }) {
     const {
         sessionId,
+        serverId,
         dropSocketSessionWork,
         invalidateSessionHydration,
         resetSessionTranscriptState,
@@ -389,31 +402,41 @@ export function handleDeleteSessionSocketUpdate(params: {
         log,
     } = params;
 
+    const retireActiveCarrier = shouldRetireSessionCarrierForServer(
+        storage.getState().sessions[sessionId]?.serverId,
+        serverId,
+    );
+
     // Drop admitted socket work before it can flush back into the just-deleted
-    // carrier. The socket module owns this queue/raw-normalization inventory.
+    // carrier. The socket module owns this queue/raw-normalization inventory and
+    // already addresses it per Home.
     dropSocketSessionWork?.(sessionId);
 
-    // Fence older by-id responses before removing local state or encryption.
-    // Otherwise an already-started hydration can reapply the deleted tuple/key.
-    invalidateSessionHydration?.(sessionId);
+    if (retireActiveCarrier) {
+        // Fence older by-id responses before removing local state or encryption.
+        // Otherwise an already-started hydration can reapply the deleted tuple/key.
+        invalidateSessionHydration?.(sessionId);
 
-    // Sync owns the transcript's map, pagination and deferred state. Reset it
-    // before the session disappears so a later same-id carrier is a fresh row.
-    resetSessionTranscriptState?.(sessionId);
+        // Sync owns the transcript's map, pagination and deferred state. Reset it
+        // before the session disappears so a later same-id carrier is a fresh row.
+        resetSessionTranscriptState?.(sessionId);
+    }
 
-    // Remove session from storage
-    deleteSession(sessionId);
+    // Remove the addressed Home's row (and, when it owns the carrier, the rest).
+    deleteSession(sessionId, serverId);
 
-    // Remove encryption keys from memory
-    removeSessionEncryption(sessionId);
+    if (retireActiveCarrier) {
+        // Remove encryption keys from memory
+        removeSessionEncryption(sessionId);
 
-    // Remove from project manager
-    removeProjectManagerSession(sessionId);
+        // Remove from project manager
+        removeProjectManagerSession(sessionId);
 
-    // Clear any cached git status
-    clearScmStatusForSession(sessionId);
+        // Clear any cached git status
+        clearScmStatusForSession(sessionId);
+    }
 
-    log.log(`🗑️ Session ${sessionId} deleted from local storage`);
+    log.log(`🗑️ Session ${sessionId} deleted from local storage${serverId ? ` for Home ${serverId}` : ''}`);
 }
 
 // Session `metadata.version` is strictly monotonic per session on the server: every metadata write
@@ -938,6 +961,7 @@ export async function buildUpdatedSessionListRenderablePatchFromSocketUpdate(par
 
 export async function fetchAndApplyMessages(params: {
     sessionId: string;
+    shouldContinue?: () => boolean;
     scope?: 'main' | 'sidechain' | 'all';
     sidechainId?: string | null;
     getSessionEncryption: (sessionId: string) => SessionMessagesEncryption | null;
@@ -967,6 +991,7 @@ export async function fetchAndApplyMessages(params: {
     const result = await runSessionMessagesPagePipeline({
         sessionId: params.sessionId,
         purpose: 'initial',
+        shouldContinue: params.shouldContinue,
         serverId: params.serverId,
         page: {
             direction: 'initial',
@@ -992,7 +1017,7 @@ export async function fetchAndApplyMessages(params: {
         yieldToMessageDecryptBatch: params.yieldToMessageDecryptBatch,
     });
 
-    if (result.skippedMissingSession || params.isSessionKnown?.(params.sessionId) === false) return;
+    if (result.skippedMissingSession || result.skippedSuperseded || params.isSessionKnown?.(params.sessionId) === false) return;
 
     params.markMessagesLoaded(params.sessionId);
     writeSyncDebugLog(

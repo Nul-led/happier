@@ -64,7 +64,7 @@ function coerceTextMessages(messages: readonly Message[]): readonly string[] {
     return out;
 }
 
-export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, detailLevel, sessionId, messageId, interaction }) => {
+export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, detailLevel, sessionId, serverId, messageId, interaction }) => {
     if (tool.state === 'running') {
         return (
             <SubAgentSummarySection
@@ -73,6 +73,7 @@ export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, deta
                 messages={messages ?? []}
                 detailLevel={detailLevel}
                 sessionId={sessionId}
+                serverId={serverId}
                 messageId={messageId}
                 interaction={interaction}
                 opts={{ hideResultInlineWhenBackgroundRun: false }}
@@ -99,6 +100,7 @@ export const SubAgentRunView = React.memo<ToolViewProps>(({ tool, messages, deta
                 messages={messages ?? []}
                 detailLevel={detailLevel}
                 sessionId={sessionId}
+                serverId={serverId}
                 messageId={messageId}
                 interaction={interaction}
                 opts={{ hideResultInlineWhenBackgroundRun: false }}

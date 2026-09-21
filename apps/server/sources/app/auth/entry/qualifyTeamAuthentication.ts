@@ -1,3 +1,4 @@
+import { normalizeAuthMethodId } from "@happier-dev/protocol";
 import type {
     AuthTokenAuthenticationEvidenceV1,
     TeamAcceptedAuthenticationV1,
@@ -30,10 +31,6 @@ type TeamAuthenticationTeam = Readonly<{
     authenticationPolicy: unknown;
 }>;
 
-function normalized(value: string): string {
-    return value.trim().toLowerCase();
-}
-
 function hasCurrentProviderEvidence(
     input: Readonly<{
         currentEvidence: readonly AuthTokenAuthenticationEvidenceV1[];
@@ -44,7 +41,7 @@ function hasCurrentProviderEvidence(
     }>,
 ): boolean {
     if (input.evidence.kind !== "provider"
-        || normalized(input.evidence.providerId) !== normalized(input.providerId)
+        || normalizeAuthMethodId(input.evidence.providerId) !== normalizeAuthMethodId(input.providerId)
         || input.evidence.runtimeFingerprint !== input.runtimeFingerprint
         || input.evidence.teamConnectionId !== input.teamConnectionId) return false;
     return input.currentEvidence.includes(input.evidence);
@@ -129,7 +126,7 @@ export async function qualifyTeamAuthenticationsInTx(
     const acceptedHomeMethodIds = [...new Set(restrictedTeams.flatMap((team) => {
         const policy = structural.get(team.id);
         return policy?.status === "restricted" ? policy.choices.flatMap((choice) =>
-            choice.reference.kind === "home_method" ? [normalized(choice.reference.methodId)] : []) : [];
+            choice.reference.kind === "home_method" ? [normalizeAuthMethodId(choice.reference.methodId)] : []) : [];
     }))];
     const connectionReferences = restrictedTeams.flatMap((team) => {
         const policy = structural.get(team.id);
@@ -161,10 +158,10 @@ export async function qualifyTeamAuthenticationsInTx(
             for (const team of restrictedTeams) results.set(team.id, { status: "unavailable" });
             return results;
         }
-        const nativeMethodIds = new Set(resolveAuthMethodRegistry(input.env).map((method) => normalized(method.id)));
-        const effectiveHomeById = new Map(effectiveHome.decisions.map((decision) => [normalized(decision.id), decision]));
+        const nativeMethodIds = new Set(resolveAuthMethodRegistry(input.env).map((method) => normalizeAuthMethodId(method.id)));
+        const effectiveHomeById = new Map(effectiveHome.decisions.map((decision) => [normalizeAuthMethodId(decision.id), decision]));
         const homeDescriptorById = new Map(homeDescriptors.map((descriptor) => [
-            normalized(descriptor.reference.id),
+            normalizeAuthMethodId(descriptor.reference.id),
             descriptor.reference,
         ]));
 
@@ -185,7 +182,7 @@ export async function qualifyTeamAuthenticationsInTx(
                         descriptorOffered: read?.status === "ready" && read.descriptor !== null,
                     })] as const;
                 }
-                const methodId = normalized(reference.methodId);
+                const methodId = normalizeAuthMethodId(reference.methodId);
                 return [choice, resolveTeamAcceptedChoiceAvailability({
                     kind: "home_method",
                     native: nativeMethodIds.has(methodId),
@@ -205,9 +202,9 @@ export async function qualifyTeamAuthenticationsInTx(
             for (const choice of usable) {
                 const reference = choice.reference;
                 if (reference.kind === "home_method") {
-                    const methodId = normalized(reference.methodId);
+                    const methodId = normalizeAuthMethodId(reference.methodId);
                     if (nativeMethodIds.has(methodId) && currentEvidence.some((evidence) =>
-                        evidence.kind === "home_method" && normalized(evidence.methodId) === methodId)) {
+                        evidence.kind === "home_method" && normalizeAuthMethodId(evidence.methodId) === methodId)) {
                         matched = reference;
                         break;
                     }

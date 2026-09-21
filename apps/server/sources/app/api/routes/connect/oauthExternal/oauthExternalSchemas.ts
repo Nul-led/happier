@@ -4,6 +4,7 @@ import {
     ManagedGitHubAppOwnerV1Schema,
     PasswordCredentialMutationDigestV1Schema,
 } from "@happier-dev/protocol";
+import { GitHubAppManagementAuthenticationV1Schema } from "@/app/integrations/github/githubManagedApp";
 import { ProviderReferenceSchema } from "@/app/auth/providers/providerReference";
 import { teamOAuthAdmissionSourceSchema } from "@/app/teams/memberships/teamOAuthAdmissionSource";
 
@@ -69,9 +70,11 @@ export const oauthStateAttemptSchema = z.object({
         networkPolicyFingerprint: z.string().trim().min(1),
         githubInstallationId: z.string().regex(/^[1-9][0-9]*$/u),
         githubOrganizationId: z.string().regex(/^[1-9][0-9]*$/u),
+        authentication: GitHubAppManagementAuthenticationV1Schema.optional(),
     }).strict().optional(),
     githubAppManifestSetup: z.object({
         owner: ManagedGitHubAppOwnerV1Schema,
+        authentication: GitHubAppManagementAuthenticationV1Schema.optional(),
     }).strict().optional(),
     endpointUrl: z.string().url().optional(),
     endpointServerIdentityId: z.string().trim().min(1).optional(),

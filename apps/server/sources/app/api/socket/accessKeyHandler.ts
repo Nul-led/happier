@@ -11,6 +11,11 @@ import { canReadAccessKeyFromSessionScopedSocket } from "./sessionScopedBinding"
  * Re-runs the socket's own connect-time credential admission, once, on the only
  * socket read that returns a stored secret envelope.
  *
+ * It runs immediately before the synchronous callback, after the last awaited
+ * read, so the verification and the disclosure share one linearization point:
+ * a credential that stops being current while the Session, Machine and envelope
+ * reads are in flight cannot be overtaken by its own disclosure.
+ *
  * Eager eviction stays the revocation mechanism: the committed Account
  * transition disconnects the Account's sockets after commit. This is the single
  * place where a socket that outlived its eviction — a lost cross-node
@@ -56,17 +61,6 @@ export function accessKeyHandler(userId: string, socket: Socket, connection: Cli
                 }
                 return;
             }
-            if (!await hasCurrentSocketCredential(userId, socket)) {
-                if (callback) {
-                    callback({
-                        ok: false,
-                        error: 'Forbidden'
-                    });
-                }
-                socket.disconnect(true);
-                return;
-            }
-
             // Verify session and machine belong to user
             const [session, machine] = await Promise.all([
                 db.session.findFirst({
@@ -97,6 +91,17 @@ export function accessKeyHandler(userId: string, socket: Socket, connection: Cli
                     }
                 }
             });
+
+            if (!await hasCurrentSocketCredential(userId, socket)) {
+                if (callback) {
+                    callback({
+                        ok: false,
+                        error: 'Forbidden'
+                    });
+                }
+                socket.disconnect(true);
+                return;
+            }
 
             if (callback) {
                 if (accessKey) {

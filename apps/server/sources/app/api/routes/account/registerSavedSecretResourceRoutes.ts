@@ -266,6 +266,7 @@ export function registerSavedSecretResourceRoutes(app: Fastify): void {
         try {
             result = await inTx((tx) => promoteSavedSecretResourceInTx(tx, {
             accountId: request.userId,
+            authentication: readTeamOperationAuthenticationFromRequest(request),
             resourceId: body.resourceId,
             displayName: body.displayName,
             kind: body.kind,

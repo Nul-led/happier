@@ -144,7 +144,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
         providerId: string;
         requestedTargetSessionId: string | null;
         requestedTargetServerId?: string | null;
-    }>): Promise<{ conversationSessionId: string | null } | null> => {
+    }>): Promise<{ conversationSessionId: string | null; conversationServerId: string | null } | null> => {
         const openConversationSessionId = normalizeNonEmptyString(params.openConversationSessionId);
         if (!openConversationSessionId) return null;
 
@@ -154,20 +154,26 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             requestedTargetSessionId,
         );
         const existing = resolveExistingBindingByConversationSessionId(openConversationSessionId);
+        // The binding already holds the Home of both the target and the conversation
+        // carrier, so the caller never has to re-derive one from the active Home.
+        const existingConversationServerId = existing?.conversationSessionAddress?.serverId ?? null;
         if (existing?.lifetime === 'runtime_attempt') {
-            return { conversationSessionId: existing.targetSessionAddress?.sessionId ?? null };
+            return {
+                conversationSessionId: existing.targetSessionAddress?.sessionId ?? null,
+                conversationServerId: existing.targetSessionAddress?.serverId ?? null,
+            };
         }
         if (
             existing
             && resolveConversationTargeting(existing.adapterId) === 'bound_conversation'
         ) {
-            return { conversationSessionId: openConversationSessionId };
+            return { conversationSessionId: openConversationSessionId, conversationServerId: existingConversationServerId };
         }
         const shouldRebind =
             !existing
             || !haveSameTargetAddress(existing.targetSessionAddress, requestedTargetSessionAddress);
         if (!shouldRebind) {
-            return { conversationSessionId: openConversationSessionId };
+            return { conversationSessionId: openConversationSessionId, conversationServerId: existingConversationServerId };
         }
 
         const rebindAdapterId =
@@ -176,7 +182,7 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             ?? normalizeNonEmptyString(params.providerId);
         const controlSessionId = normalizeNonEmptyString(params.fallbackControlSessionId);
         if (!rebindAdapterId || !controlSessionId) {
-            return { conversationSessionId: openConversationSessionId };
+            return { conversationSessionId: openConversationSessionId, conversationServerId: existingConversationServerId };
         }
 
         const rebound = await ensureBound({
@@ -185,7 +191,12 @@ export function createVoiceSessionBindingManager(deps: Readonly<{
             requestedTargetSessionId,
             requestedTargetServerId: params.requestedTargetServerId,
         });
-        return { conversationSessionId: rebound?.conversationSessionId ?? openConversationSessionId };
+        return rebound
+            ? {
+                conversationSessionId: rebound.conversationSessionId,
+                conversationServerId: rebound.conversationSessionAddress?.serverId ?? null,
+            }
+            : { conversationSessionId: openConversationSessionId, conversationServerId: existingConversationServerId };
     };
 
     const syncTargetSession = async (params: Readonly<{

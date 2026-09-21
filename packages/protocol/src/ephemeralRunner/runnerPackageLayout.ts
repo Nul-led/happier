@@ -17,28 +17,42 @@ import { RUNNER_ARTIFACT_TARGETS, type RunnerArtifactTarget } from './runnerArti
 export const RUNNER_ACTIVATION_FILE_NAME = 'happier-runner.activation.json';
 
 /**
- * `appimage` and `exe` are one immutable executable file; `app-bundle` is the
- * signed, notarized and stapled macOS directory tree. The activation JSON always
- * sits beside the payload root so per-request composition never reopens it.
+ * `appimage` is one immutable executable file; `app-bundle` is the signed,
+ * notarized and stapled macOS directory tree; `portable-dir` is the signed
+ * closed portable directory holding the shell executable and its adjacent core
+ * sidecar. The activation JSON always sits beside the executable the endpoint
+ * launches — inside a `portable-dir` root, beside the payload root otherwise —
+ * so per-request composition never reopens the payload.
  */
-export type RunnerPackagePayloadKind = 'appimage' | 'app-bundle' | 'exe';
+export type RunnerPackagePayloadKind = 'appimage' | 'app-bundle' | 'portable-dir';
 
 export type RunnerPackageLayoutV1 = Readonly<{
   target: RunnerArtifactTarget;
   payloadKind: RunnerPackagePayloadKind;
-  /** The single archive root entry: a file, or the macOS bundle directory. */
+  /** The single archive root entry: a file, or the payload directory. */
   payloadRootName: string;
   /** Archive-relative path of the executable the endpoint actually launches. */
   executablePath: string;
-  activationFileName: typeof RUNNER_ACTIVATION_FILE_NAME;
+  /**
+   * Archive-relative path of the core sidecar the shell resolves beside that
+   * executable. Declared exactly for a `portable-dir` payload, whose closed
+   * entry set pins it as its own archive entry; the macOS sidecar lives inside
+   * the signed bundle the stapled ticket already covers, and the AppImage
+   * carries its core inside the single executable.
+   */
+  sidecarPath?: string;
+  /** Archive-relative path of the activation JSON the launched shell reads. */
+  activationFilePath: string;
 }>;
 
 const MACOS_APP_ROOT = 'Happier Runner.app';
+const WINDOWS_PAYLOAD_ROOT = 'Happier Runner';
 
 const PAYLOADS: Readonly<Record<RunnerArtifactTarget, Readonly<{
   payloadKind: RunnerPackagePayloadKind;
   payloadRootName: string;
   executablePath: string;
+  sidecarPath?: string;
 }>>> = {
   'linux-x64': { payloadKind: 'appimage', payloadRootName: 'happier-runner', executablePath: 'happier-runner' },
   'linux-arm64': { payloadKind: 'appimage', payloadRootName: 'happier-runner', executablePath: 'happier-runner' },
@@ -52,7 +66,12 @@ const PAYLOADS: Readonly<Record<RunnerArtifactTarget, Readonly<{
     payloadRootName: MACOS_APP_ROOT,
     executablePath: `${MACOS_APP_ROOT}/Contents/MacOS/happier-runner`,
   },
-  'windows-x64': { payloadKind: 'exe', payloadRootName: 'Happier Runner.exe', executablePath: 'Happier Runner.exe' },
+  'windows-x64': {
+    payloadKind: 'portable-dir',
+    payloadRootName: WINDOWS_PAYLOAD_ROOT,
+    executablePath: `${WINDOWS_PAYLOAD_ROOT}/Happier Runner.exe`,
+    sidecarPath: `${WINDOWS_PAYLOAD_ROOT}/happier-runner-core.exe`,
+  },
 };
 
 export function resolveRunnerPackageLayout(target: RunnerArtifactTarget): RunnerPackageLayoutV1 {
@@ -62,7 +81,14 @@ export function resolveRunnerPackageLayout(target: RunnerArtifactTarget): Runner
     payloadKind: payload.payloadKind,
     payloadRootName: payload.payloadRootName,
     executablePath: payload.executablePath,
-    activationFileName: RUNNER_ACTIVATION_FILE_NAME,
+    ...(payload.sidecarPath === undefined ? {} : { sidecarPath: payload.sidecarPath }),
+    // The shell joins the activation file to the parent of the executable it
+    // launches and pops out of the macOS bundle only
+    // (`apps/cli/runner-native-shell/src/main.rs`), so a portable directory
+    // payload carries its activation JSON inside that directory.
+    activationFilePath: payload.payloadKind === 'portable-dir'
+      ? `${payload.payloadRootName}/${RUNNER_ACTIVATION_FILE_NAME}`
+      : RUNNER_ACTIVATION_FILE_NAME,
   };
 }
 
@@ -75,9 +101,10 @@ export function resolveRunnerPackageLayout(target: RunnerArtifactTarget): Runner
  * - `linux-x64`: one-shot AppImage whose Rust shell owns the Bun core.
  * - `linux-arm64`/`darwin-*`: payload shape is settled, release/platform proof
  *   (Developer ID signing, notarization, stapling) has not been produced.
- * - `windows-x64`: the approved one-shot, no-installer contract conflicts with
- *   the shell's `externalBin`/NSIS packaging, and no Authenticode owner exists.
- *   It stays declared but publication-ineligible until that contract is amended.
+ * - `windows-x64`: payload shape is settled as the closed portable directory
+ *   above — no installer, service, updater or registry mutation — and its
+ *   Authenticode signing, timestamp and published-artifact evidence has not
+ *   been produced.
  */
 export const RUNNER_PUBLICATION_ELIGIBLE_ARTIFACT_TARGETS: readonly RunnerArtifactTarget[] = Object.freeze(['linux-x64']);
 

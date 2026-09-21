@@ -121,4 +121,42 @@ describe("access-key-get currentness on an established socket", () => {
         );
         expect(control.socket.disconnect).not.toHaveBeenCalled();
     });
+    it("refuses and disconnects when the credential stops being current while the envelope read is in flight", async () => {
+        const subject = await createEstablishedAccountFixture("inflight");
+        const eviction = vi.spyOn(eventRouter, "disconnectAccountSockets").mockImplementation(() => {});
+
+        // The database is a genuine boundary, so the read is held open there.
+        // This is the whole window the guard exists for: the credential was
+        // current when the handler started and is not current when it is about
+        // to hand back stored material.
+        let release: () => void = () => {};
+        const gate = new Promise<void>((resolve) => { release = resolve; });
+        const realFindUnique = db.accessKey.findUnique.bind(db.accessKey);
+        const findUnique = vi.spyOn(db.accessKey, "findUnique").mockImplementation((async (args: never) => {
+            const row = await realFindUnique(args);
+            await gate;
+            return row;
+        }) as never);
+
+        const callback = vi.fn();
+        const pending = getSocketHandler(subject.socket, "access-key-get")(
+            { sessionId: subject.sessionId, machineId: subject.machineId },
+            callback,
+        );
+        await vi.waitFor(() => expect(findUnique).toHaveBeenCalled());
+
+        const applied = await inTx(async (tx) => await setAccountStatusInTx(tx, {
+            actorAccountId: subject.accountId,
+            targetAccountId: subject.accountId,
+            status: "suspended",
+            authority: "account_erasure",
+        }));
+        expect(applied).toEqual({ status: "applied" });
+        expect(eviction).toHaveBeenCalledWith(subject.accountId);
+
+        release();
+        await pending;
+        expect(callback).toHaveBeenCalledWith({ ok: false, error: "Forbidden" });
+        expect(subject.socket.disconnect).toHaveBeenCalledWith(true);
+    });
 });

@@ -50,6 +50,11 @@ const DIRECT_BEARER_CONSUMER_DISPOSITIONS = [
         verifies: ["auth.verifyTokenDisposition"],
         disposition: "Canonical optional-public bearer verification; restricted Directory/PAT bearers remain anonymous-compatible while verified Runner bearers are rejected by every consumer.",
     },
+    {
+        path: "app/api/socket/accessKeyHandler.ts",
+        verifies: ["auth.verifyTokenForRoute"],
+        disposition: "Canonical single secret-bearing socket read: it re-runs the connect-time credential verification once before disclosing an access key and disconnects the socket on failure, so a suspended or rotated credential cannot keep reading secrets on an already-authenticated socket. It authorizes no route of its own; eager eviction remains the primary invalidation path and there is no per-event middleware.",
+    },
 ] as const satisfies readonly DirectBearerConsumerDisposition[];
 
 function listProductionTypeScriptFiles(directory: string): string[] {

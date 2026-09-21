@@ -194,11 +194,12 @@ export async function openExactSessionTeamCredentialProviderBinding(
   input.signal.throwIfAborted();
   const tunnel = await input.openTunnel({
     brokerOpen: opened,
+    // An established tunnel renews by presenting the prior signed authority it
+    // already holds. How the Home first selected this exact target is not a
+    // runtime renewal policy, so every established open refreshes the same way.
     refreshBrokerOpen: async (signal = input.signal) => await input.openBroker({
       ...brokerOpenRequest,
-      ...(opened.target.placementKind === 'machine_pool'
-        ? { refreshAuthority: opened.authority }
-        : {}),
+      refreshAuthority: opened.authority,
     }, signal),
     signal: input.signal,
   });

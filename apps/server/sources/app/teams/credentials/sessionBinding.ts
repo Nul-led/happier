@@ -20,6 +20,7 @@ import {
     readTeamCredentialBrokerPlacement,
     admitTeamCredentialBrokerPoolForBrokeredUseInTx,
     isTeamCredentialBrokerPlacementBoundToMachineInTx,
+    type TeamCredentialBrokerPlacementSelection,
 } from "./brokerPlacementResolver";
 import { resolveTeamCredentialEntitlementInTx, type TeamCredentialEntitlementDecision } from "./resourceAccess";
 import { resolveTeamCredentialResourceSourceInTx, type TeamCredentialResourceSourceResolution } from "./resourceSourceResolver";
@@ -265,6 +266,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         resourceId: string;
         expectedResourceRevision?: number;
         expectedBrokerMachineId?: string;
+        brokerSelection?: TeamCredentialBrokerPlacementSelection;
         deliveryMode: TeamCredentialRouteV1;
         policy: SessionTeamCredentialPolicyContext;
         authentication: SessionAccessAuthentication;
@@ -290,6 +292,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         && !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
             resource,
             machineId: input.expectedBrokerMachineId,
+            ...(input.brokerSelection ? { selection: input.brokerSelection } : {}),
         })
     ) {
         return { ok: false, reason: "broker_unavailable" };
@@ -362,6 +365,7 @@ export async function validatePlannedSessionTeamCredentialResourceInTx(
         resourceId: string;
         expectedResourceRevision: number;
         expectedBrokerMachineId?: string;
+        brokerSelection?: TeamCredentialBrokerPlacementSelection;
         deliveryMode: TeamCredentialRouteV1;
         plannedSession: PlannedSessionTeamCredentialContext;
         authentication: SessionAccessAuthentication;
@@ -373,6 +377,7 @@ export async function validatePlannedSessionTeamCredentialResourceInTx(
         resourceId: input.resourceId,
         expectedResourceRevision: input.expectedResourceRevision,
         expectedBrokerMachineId: input.expectedBrokerMachineId,
+        ...(input.brokerSelection ? { brokerSelection: input.brokerSelection } : {}),
         deliveryMode: input.deliveryMode,
         authentication: input.authentication,
         policy: {
@@ -421,6 +426,11 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
         authentication: SessionAccessAuthentication;
         /** Exact persistent Machine already selected for this activation before review. */
         selectedBrokerMachineId?: string;
+        /**
+         * `per_request` while this activation is still choosing its broker, and
+         * `established` for every later read of the exact target it froze.
+         */
+        selection?: TeamCredentialBrokerPlacementSelection;
     }>,
 ): Promise<
     | Readonly<{ ok: true; binding: Readonly<{ v: 1; resourceId: string; brokerMachineId: string; revision: number }> }>
@@ -442,14 +452,15 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
         }
     } else {
         // A Pool placement names no single Machine of its own. The exact member
-        // was selected once by the placement owner before review and travels in
-        // this activation's binding; here it is revalidated as a current member,
-        // never reranked, so membership edits after the freeze cannot move a
-        // reviewed activation onto a different Machine.
+        // is chosen once by the placement owner before review and then travels
+        // in this activation's binding: a fresh selection must still be a
+        // current member, while a later read of the established target is not
+        // re-ACLed against membership edits made after the freeze.
         if (input.selectedBrokerMachineId === undefined) return { ok: false, reason: "broker_unavailable" };
         if (!await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
             resource,
             machineId: input.selectedBrokerMachineId,
+            selection: input.selection ?? "per_request",
         })) {
             return { ok: false, reason: "broker_unavailable" };
         }
@@ -459,6 +470,7 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
         ...input,
         deliveryMode: "brokered",
         expectedBrokerMachineId: brokerMachineId,
+        ...(input.selection ? { brokerSelection: input.selection } : {}),
     });
     if (!admitted.ok) return admitted;
     return {

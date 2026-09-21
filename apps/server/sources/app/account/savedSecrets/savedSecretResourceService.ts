@@ -132,12 +132,18 @@ type SavedSecretTeamDerivedRow = Readonly<{
 
 /**
  * Drop the rows whose only authorization is a Team or Group arm the caller's
- * current credential does not satisfy.
+ * current credential does not satisfy, and say which Teams it did satisfy.
  *
  * The owner and direct-Account arms are independent of any Team policy and are
  * never touched. Only the Team-derived arms consume the Lane 03 qualification,
  * so a restricted Team never discloses its granted secrets to a member holding
  * a weaker credential — and never refuses the caller's own resources either.
+ *
+ * The qualified Team set is returned because the row projection needs the same
+ * answer: a row kept by its direct grant must not then name a restricted Team
+ * the credential never qualified through. One batch call over the union of
+ * every candidate row's Teams answers both questions, so provenance and
+ * retention can never disagree.
  */
 async function retainQualifiedSavedSecretRowsInTx<TRow extends SavedSecretTeamDerivedRow>(
     tx: Tx,
@@ -146,16 +152,17 @@ async function retainQualifiedSavedSecretRowsInTx<TRow extends SavedSecretTeamDe
         accountId: string;
         authentication?: TeamOperationAuthenticationContext;
     }>,
-): Promise<readonly TRow[]> {
-    const teamDerivedRows = input.rows.filter((row) => !isDirectlyAuthorizedSavedSecretRow(row, input.accountId));
-    if (teamDerivedRows.length === 0) return input.rows;
-    const qualified = await qualifiedSavedSecretTeamIdsInTx(tx, {
-        teamIds: teamDerivedRows.flatMap(savedSecretRowTeamIds),
+): Promise<Readonly<{ rows: readonly TRow[]; qualifiedTeamIds: ReadonlySet<string> }>> {
+    const qualifiedTeamIds = await qualifiedSavedSecretTeamIdsInTx(tx, {
+        teamIds: input.rows.flatMap(savedSecretRowTeamIds),
         actorAccountId: input.accountId,
         authentication: input.authentication,
     });
-    return input.rows.filter((row) => isDirectlyAuthorizedSavedSecretRow(row, input.accountId)
-        || savedSecretRowTeamIds(row).some((teamId) => qualified.has(teamId)));
+    return {
+        rows: input.rows.filter((row) => isDirectlyAuthorizedSavedSecretRow(row, input.accountId)
+            || savedSecretRowTeamIds(row).some((teamId) => qualifiedTeamIds.has(teamId))),
+        qualifiedTeamIds,
+    };
 }
 
 function isDirectlyAuthorizedSavedSecretRow(row: SavedSecretTeamDerivedRow, accountId: string): boolean {
@@ -447,19 +454,29 @@ function projectCorruptRow(
         };
 }
 
+/**
+ * `qualifiedTeamIds` is the set the retention pass established for this caller
+ * in this transaction. Recipient provenance names only the arms that actually
+ * admitted the caller, so a resource kept by a direct grant never discloses the
+ * identity of a restricted Team whose policy the caller failed. Owner `audience`
+ * is the roster the owner wrote and is unaffected.
+ */
 function projectRow(
     row: StoredResourceRow,
     accountId: string,
-    encryptedMaterialStatus: EncryptedMaterialStatus = "preparing_encrypted_access",
+    encryptedMaterialStatus: EncryptedMaterialStatus,
+    qualifiedTeamIds: ReadonlySet<string>,
 ): SavedSecretCatalogResultV1 | null {
     const isOwner = row.ownerAccountId === accountId;
     const hasDirect = row.accountGrants.some((grant) => grant.accountId === accountId);
-    const matchingTeams = row.teamGrants.filter((grant) => grant.team.memberships
-        .some((membership) => {
-            const role = TeamRoleV1Schema.safeParse(membership.role);
-            return role.success && isTeamPrincipalRoleV1(role.data);
-        }));
-    const matchingGroups = row.groupGrants.filter((grant) => grant.teamGroup.memberships.length > 0);
+    const matchingTeams = row.teamGrants.filter((grant) => qualifiedTeamIds.has(grant.teamId)
+        && grant.team.memberships
+            .some((membership) => {
+                const role = TeamRoleV1Schema.safeParse(membership.role);
+                return role.success && isTeamPrincipalRoleV1(role.data);
+            }));
+    const matchingGroups = row.groupGrants.filter((grant) => qualifiedTeamIds.has(grant.teamGroup.teamId)
+        && grant.teamGroup.memberships.length > 0);
     const hasGrant = isOwner || hasDirect || matchingTeams.length > 0 || matchingGroups.length > 0;
     if (!hasGrant) return null;
     let ref: string;
@@ -579,11 +596,12 @@ export async function listSavedSecretResourcesForAccountInTx(
         },
     })]);
     const authorized = await retainQualifiedSavedSecretRowsInTx(tx, { rows, accountId, authentication });
-    return authorized.flatMap((row) => {
+    return authorized.rows.flatMap((row) => {
         const projected = projectRow(
             row,
             accountId,
             resolveEncryptedMaterialStatus(account, row.keyEnvelopes[0] ?? null),
+            authorized.qualifiedTeamIds,
         );
         return projected ? [projected] : [];
     });
@@ -729,12 +747,13 @@ export async function listSavedSecretResourceMaterialsForAccountInTx(
     })]);
     const authorized = await retainQualifiedSavedSecretRowsInTx(tx, { rows, accountId, authentication });
     const projectedRows: SavedSecretResourceMaterialProjection[] = [];
-    for (const row of authorized) {
+    for (const row of authorized.rows) {
         const envelope = row.keyEnvelopes?.[0] ?? null;
         const entry = projectRow(
             row,
             accountId,
             resolveEncryptedMaterialStatus(account, envelope),
+            authorized.qualifiedTeamIds,
         );
         if (!entry) continue;
         if (entry.materialStatus === "resource_corrupt") {

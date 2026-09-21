@@ -351,6 +351,10 @@ describe('Session Team credential Provider binding', () => {
       credential: { kind: 'apiKey', transport: expect.anything(), value: 'c'.repeat(64) },
     }));
     expect(JSON.stringify(vi.mocked(adapter.materialize).mock.calls)).not.toContain(authority.signature.valueBase64Url);
+    // The one-shot local capability is the Agent's bearer and also travels in
+    // the endpoint's public headers, so it must be redacted from transcripts
+    // exactly like a direct source credential.
+    expect(opened?.additionalRedactionValues).toContain('c'.repeat(64));
     await opened?.cleanup();
     await opened?.cleanup();
     expect(retire).toHaveBeenCalledOnce();
@@ -465,12 +469,15 @@ describe('Session Team credential Provider binding', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
-  it('opens an already-authoritative exact selection without reading a catalog', async () => {
+  it('renews an established tunnel with its prior signed authority whatever the placement was', async () => {
     const close = vi.fn(async () => undefined);
+    // An exact-Machine open: the target's origin is not a runtime renewal
+    // policy, so this established tunnel presents the same prior authority a
+    // Pool-selected one does.
     const openBroker = vi.fn<ExactOpenBroker>(async () => ({ ok: true as const, authority,
       target: {
         custodianAccountId: 'account-2', brokerMachineId: 'broker-1', endpointId: 'b'.repeat(64),
-        endpointRevision: 1, placementKind: 'machine_pool' as const,
+        endpointRevision: 1,
       } }));
     const refreshedOpen = vi.fn();
     const adapter: ProviderAdapter = {

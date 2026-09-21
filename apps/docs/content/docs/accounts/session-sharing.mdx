@@ -112,9 +112,13 @@ When both `sessions.collaboration` and `sessions.conversations` are enabled, a
 current Session reader can read its human discussions. People with edit access
 can start discussions and post messages; discussion creators can rename or
 archive their own active discussions while Session managers can also restore
-them. Archived discussions remain readable. The Conversations feature is off
-by default while its complete Plain/E2EE mounted journey remains under
-development; a declared client capability alone does not enable it.
+them. Archived discussions remain readable. In current 0.3 development source
+the Conversations feature is on by default, with
+`HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED=0` as the operator opt-out
+([feature flags](/extras/feature-flags)). It still resolves false whenever
+Session collaboration is absent, disabled or malformed, and a declared client
+capability alone does not enable it. The feature has not shipped in a public
+release.
 
 Discussion access always follows the Session's current direct, Team, or Group
 access. A mention does not grant access, and removing someone's final Session

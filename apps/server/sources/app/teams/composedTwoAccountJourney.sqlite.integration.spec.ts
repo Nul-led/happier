@@ -166,6 +166,8 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
 
     it("step 1 — A creates a Team and is its owner", async () => {
         const created = await post("/v1/teams/create", state.aId, {
+            // A is the Home owner creating a Team for themselves; under the default managed_only policy the owner must be named (H7).
+            initialOwnerAccountId: state.aId,
             v: 1, name: "Acme", requestKey: randomUUID(),
         });
         expect(created.statusCode, created.body).toBe(200);

@@ -59,6 +59,13 @@ export type MachineRpcRoutePolicyV1 = Readonly<{
   scope: MachineRpcRoutePolicyScopeV1;
   serverRequiredReason?: MachineRpcServerRequiredReason;
   relayFallback?: MachineRpcRouteRelayFallbackPolicyV1;
+  /**
+   * Session authority a restricted Runner principal must hold to reach this
+   * method through the reusable Machine services installed in a Runner. This
+   * augments the ordinary route class: it does not make the method direct, and
+   * a row without it is unreachable for a Runner principal.
+   */
+  ephemeralRunnerAuthority?: EphemeralRunnerMachineRpcAuthority;
 }>;
 
 export type MachineRpcRelayFallbackDeploymentKind = 'shared_server' | 'self_hosted';
@@ -107,67 +114,10 @@ const SERVER_REQUIRED_SCOPE: MachineRpcRoutePolicyScopeV1 = Object.freeze({ acco
 
 const SESSION_SERVER_REQUIRED_SCOPE: MachineRpcRoutePolicyScopeV1 = Object.freeze({ accountRequired: true, machineRequired: true, sessionRequired: true, serverRequired: true });
 
-/**
- * Session authority required by the reusable Machine services installed in a
- * restricted Runner. This augments the ordinary route policy: it does not make
- * these methods direct, and methods absent here never acquire Runner authority.
- */
-const EPHEMERAL_RUNNER_MACHINE_RPC_AUTHORITIES = new Map<string, EphemeralRunnerMachineRpcAuthority>([
-  [RPC_METHODS.READ_FILE, 'readTranscript'],
-  [RPC_METHODS.LIST_DIRECTORY, 'readTranscript'],
-  [RPC_METHODS.GET_DIRECTORY_TREE, 'readTranscript'],
-  [RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS, 'readTranscript'],
-  [RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY, 'readTranscript'],
-  [RPC_METHODS.STAT_FILE, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT, 'readTranscript'],
-  [RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE, 'readTranscript'],
-  [RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE, 'readTranscript'],
-  [RPC_METHODS.WRITE_FILE, 'submitAgentInput'],
-  [RPC_METHODS.CREATE_DIRECTORY, 'submitAgentInput'],
-  [RPC_METHODS.RENAME_PATH, 'submitAgentInput'],
-  [RPC_METHODS.DELETE_PATH, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_SESSION_FOLLOW_SOURCE_KEY_PREPARE, 'followSourceKeyPreparation'],
-  [RPC_METHODS.STOP_SESSION, 'stopSession'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_WATCH, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_SNAPSHOT, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_SNAPSHOT, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_STATUS, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TERMINAL_STREAM_READ, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES, 'readTranscript'],
-  [RPC_METHODS.DAEMON_TERMINAL_STREAM_ACK, 'readTranscript'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_REFRESH, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_ENSURE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_STREAM_INPUT, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_INPUT, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_RESIZE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_CLOSE, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_TERMINAL_RESTART, 'submitAgentInput'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE, 'manageAccess'],
-  [RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_REVOKE, 'manageAccess'],
-]);
-
-export function resolveEphemeralRunnerMachineRpcAuthority(
-  method: string,
-): EphemeralRunnerMachineRpcAuthority | null {
-  return EPHEMERAL_RUNNER_MACHINE_RPC_AUTHORITIES.get(method) ?? null;
-}
-
 function directEphemeral(
   method: MachineRpcMethod,
   rationale: string,
+  ephemeralRunnerAuthority?: EphemeralRunnerMachineRpcAuthority,
 ): MachineRpcRoutePolicyV1 {
   return {
     method,
@@ -177,6 +127,7 @@ function directEphemeral(
     ...resolveMachineRpcGovernance(method),
     commandReceiptRequired: false,
     scope: DIRECT_EPHEMERAL_SCOPE,
+    ...(ephemeralRunnerAuthority ? { ephemeralRunnerAuthority } : {}),
   };
 }
 
@@ -184,6 +135,7 @@ function directMediumRiskReceipted(
   method: MachineRpcMethod,
   rationale: string,
   relayFallback?: MachineRpcRouteRelayFallbackPolicyV1,
+  ephemeralRunnerAuthority?: EphemeralRunnerMachineRpcAuthority,
 ): MachineRpcRoutePolicyV1 {
   return {
     method,
@@ -194,6 +146,7 @@ function directMediumRiskReceipted(
     commandReceiptRequired: true,
     scope: DIRECT_EPHEMERAL_SCOPE,
     ...(relayFallback ? { relayFallback } : {}),
+    ...(ephemeralRunnerAuthority ? { ephemeralRunnerAuthority } : {}),
   };
 }
 
@@ -202,6 +155,7 @@ function serverRequired(
   serverRequiredReason: MachineRpcServerRequiredReason,
   rationale: string,
   scope: MachineRpcRoutePolicyScopeV1 = SERVER_REQUIRED_SCOPE,
+  ephemeralRunnerAuthority?: EphemeralRunnerMachineRpcAuthority,
 ): MachineRpcRoutePolicyV1 {
   return {
     method,
@@ -212,6 +166,7 @@ function serverRequired(
     commandReceiptRequired: false,
     scope,
     serverRequiredReason,
+    ...(ephemeralRunnerAuthority ? { ephemeralRunnerAuthority } : {}),
   };
 }
 
@@ -220,8 +175,11 @@ function serverRequiredRows(
   serverRequiredReason: MachineRpcServerRequiredReason,
   rationale: string,
   scope?: MachineRpcRoutePolicyScopeV1,
+  ephemeralRunnerAuthority?: EphemeralRunnerMachineRpcAuthority,
 ): readonly MachineRpcRoutePolicyV1[] {
-  return methods.map((method) => serverRequired(method, serverRequiredReason, rationale, scope));
+  return methods.map((method) => (
+    serverRequired(method, serverRequiredReason, rationale, scope, ephemeralRunnerAuthority)
+  ));
 }
 
 function actionSpecServerRequired(
@@ -275,13 +233,13 @@ const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
   directEphemeral(RPC_METHODS.DAEMON_PLUGIN_UI_RESOURCE_WATCH_CLOSE, 'Daemon-local plugin resource invalidation subscription retirement with no server persistence or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_VOICE_DIAGNOSTICS_STATUS, 'Exact-machine Voice diagnostics status reads private daemon-local retention state without mutation or server persistence.'),
   directEphemeral(RPC_METHODS.DAEMON_VOICE_DIAGNOSTICS_ARTIFACT_DOWNLOAD_CHUNK, 'Exact-machine Voice diagnostics export chunk reads encrypted bytes from an already-authorized ephemeral download session.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT, 'Daemon-local local-services inventory snapshot read with no server persistence or cross-device fanout.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_REFRESH, 'Daemon-local local-services inventory refresh with typed snapshot response and no server persistence or cross-device fanout.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_WATCH, 'Daemon-local local-services inventory change long-poll; parks on the daemon-local inventory event producer and answers with one bounded typed snapshot or a no-change result, with no server persistence or cross-device fanout.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_SNAPSHOT, 'Daemon-local local-services launcher snapshot read with no server persistence or cross-device fanout.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_SNAPSHOT, 'Daemon-local local-services preview snapshot read with no server persistence or cross-device fanout.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_STATUS, 'Daemon-local public-preview status read returns server-derived exposure state through an explicit machine/session/preview-bound snapshot without mutating exposure state.'),
-  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL, 'Daemon-local public-preview copy URL reads an already-active known public exposure URL without creating or inferring exposure state.'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_SNAPSHOT, 'Daemon-local local-services inventory snapshot read with no server persistence or cross-device fanout.', 'readTranscript'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_REFRESH, 'Daemon-local local-services inventory refresh with typed snapshot response and no server persistence or cross-device fanout.', 'submitAgentInput'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_INVENTORY_WATCH, 'Daemon-local local-services inventory change long-poll; parks on the daemon-local inventory event producer and answers with one bounded typed snapshot or a no-change result, with no server persistence or cross-device fanout.', 'readTranscript'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_SNAPSHOT, 'Daemon-local local-services launcher snapshot read with no server persistence or cross-device fanout.', 'readTranscript'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_SNAPSHOT, 'Daemon-local local-services preview snapshot read with no server persistence or cross-device fanout.', 'readTranscript'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_STATUS, 'Daemon-local public-preview status read returns server-derived exposure state through an explicit machine/session/preview-bound snapshot without mutating exposure state.', 'readTranscript'),
+  directEphemeral(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_COPY_URL, 'Daemon-local public-preview copy URL reads an already-active known public exposure URL without creating or inferring exposure state.', 'readTranscript'),
   directEphemeral(RPC_METHODS.DAEMON_BROWSER_CONTROL_DISPATCH, 'Daemon-local browser control command dispatch (human-owner navigate/reload/stop/close/setTarget on a daemon-authoritative view) routed to the shared control broker with typed validation and no durable server mutation or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_BROWSER_DIAGNOSTICS_SNAPSHOT, 'Daemon-local browser diagnostics snapshot read with bounded redacted events and no server persistence or cross-device fanout.'),
   directEphemeral(RPC_METHODS.DAEMON_BROWSER_RECORDING_START, 'Daemon-local browser recording start command with typed runtime validation and no server persistence or cross-device fanout.'),
@@ -305,15 +263,15 @@ const DIRECT_EPHEMERAL_POLICIES = Object.freeze([
 
 const DIRECT_MEDIUM_RISK_RECEIPTED_POLICIES = Object.freeze([
   directMediumRiskReceipted(RPC_METHODS.APPROVAL_REQUEST_REPLAY_APPROVED, 'Exact-daemon replay consumes an already-approved durable Artifact through the canonical Action executor; the approval decision remains server-owned and direct execution requires command receipt coverage.'),
-  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE, 'Daemon-local private-preview openOrCreate mutates the machine-scoped preview registry and mints a BrowserViewTarget-bearing snapshot row; direct routing requires command receipt coverage.'),
-  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE, 'Daemon-local private-preview revoke unregisters a machine-scoped preview registry row; direct routing requires command receipt coverage.'),
+  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_OPEN_OR_CREATE, 'Daemon-local private-preview openOrCreate mutates the machine-scoped preview registry and mints a BrowserViewTarget-bearing snapshot row; direct routing requires command receipt coverage.', undefined, 'submitAgentInput'),
+  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PREVIEW_REVOKE, 'Daemon-local private-preview revoke unregisters a machine-scoped preview registry row; direct routing requires command receipt coverage.', undefined, 'submitAgentInput'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_START, 'Daemon-local local-services launcher start can launch local service targets; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_OPEN_PREVIEW, 'Daemon-local local-services launcher openPreview resolves and opens a local preview target; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_REGISTER_PREVIEW, 'Daemon-local local-services launcher registerPreview persists a private preview target; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_LAUNCHER_HISTORY_CLEAR, 'Daemon-local local-services launcher history clear mutates the daemon-owned launcher feed; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_ACTIONS_EXECUTE, 'Daemon-local local-services action dispatch can stop/restart/terminate local services; direct routing requires command receipt coverage.'),
-  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE, 'Daemon-mediated public-preview create can expose a local service through a public URL; direct routing requires command receipt coverage and server-side authorization.'),
-  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_REVOKE, 'Daemon-mediated public-preview revoke terminates a public exposure; direct routing requires command receipt coverage and server-side authorization.'),
+  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_CREATE, 'Daemon-mediated public-preview create can expose a local service through a public URL; direct routing requires command receipt coverage and server-side authorization.', undefined, 'manageAccess'),
+  directMediumRiskReceipted(RPC_METHODS.DAEMON_LOCAL_SERVICES_PUBLIC_PREVIEW_REVOKE, 'Daemon-mediated public-preview revoke terminates a public exposure; direct routing requires command receipt coverage and server-side authorization.', undefined, 'manageAccess'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_BROWSER_CONTEXT_DISPATCH, 'Daemon-local browser context dispatch can capture, attach, clear, or annotate browser context through one typed runtime dispatcher; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_NPM_REGISTRY_PROFILES_MUTATE, 'Daemon-local npm registry profile mutation writes private machine configuration; direct routing requires command receipt coverage.'),
   directMediumRiskReceipted(RPC_METHODS.DAEMON_PLUGIN_SESSION_HOOKS_INSTALL, 'Explicit Agent session-hook install mutates machine-local Agent configuration and rotates a scoped credential; direct routing requires command receipt coverage.'),
@@ -381,7 +339,7 @@ const DAEMON_VOICE_AUDIO_DIRECT_POLICIES = Object.freeze(
 );
 
 const SESSION_DURABLE_METHODS = [
-  RPC_METHODS.SPAWN_HAPPY_SESSION, RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE, RPC_METHODS.SESSION_SPAWN_NEW, RPC_METHODS.DAEMON_SESSION_CREATION_PREPARE, RPC_METHODS.DAEMON_SPAWN_SESSION_ABANDON, RPC_METHODS.STOP_SESSION, RPC_METHODS.SESSION_CONTINUE_WITH_REPLAY, RPC_METHODS.SESSION_FORK, RPC_METHODS.SESSION_FORK_PROVIDER_SAFE,
+  RPC_METHODS.SPAWN_HAPPY_SESSION, RPC_METHODS.SPAWN_HAPPY_SESSION_PROVIDER_SAFE, RPC_METHODS.SESSION_SPAWN_NEW, RPC_METHODS.DAEMON_SESSION_CREATION_PREPARE, RPC_METHODS.DAEMON_SPAWN_SESSION_ABANDON, RPC_METHODS.SESSION_CONTINUE_WITH_REPLAY, RPC_METHODS.SESSION_FORK, RPC_METHODS.SESSION_FORK_PROVIDER_SAFE,
   RPC_METHODS.SESSION_PERMISSION_RESPOND, RPC_METHODS.SESSION_USER_ACTION_ANSWER, RPC_METHODS.SESSION_PERMISSION_MODE_SET,
   RPC_METHODS.DAEMON_SESSION_CONNECTED_SERVICE_AUTH_SWITCH,
   RPC_METHODS.DAEMON_SESSION_GOAL_GET,
@@ -458,13 +416,22 @@ const SESSION_USAGE_LIMIT_RECOVERY_CREDIT_METHODS = [
   SESSION_RPC_METHODS.SESSION_USAGE_LIMIT_CONSUME_RESET_CREDIT,
 ] as const;
 
-const TRANSFER_CONTROL_METHODS = [
+/** Inbound transfer legs a restricted Runner reaches with input authority. */
+const TRANSFER_CONTROL_INBOUND_METHODS = [
   RPC_METHODS.DAEMON_TRANSFER_UPLOAD_INIT, RPC_METHODS.DAEMON_TRANSFER_UPLOAD_CHUNK, RPC_METHODS.DAEMON_TRANSFER_UPLOAD_FINALIZE,
   RPC_METHODS.DAEMON_TRANSFER_UPLOAD_ABORT, RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_PREPARE, RPC_METHODS.DAEMON_DIRECT_TRANSFER_IMPORT_ABORT,
+] as const;
+
+/** Outbound transfer legs a restricted Runner reaches with read authority. */
+const TRANSFER_CONTROL_OUTBOUND_METHODS = [
   RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_PREPARE,
   RPC_METHODS.DAEMON_DIRECT_TRANSFER_EXPORT_RELEASE,
   RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_INIT, RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_CHUNK, RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_FINALIZE,
-  RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT, RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_CAPABILITY_GET_V1,
+  RPC_METHODS.DAEMON_TRANSFER_DOWNLOAD_ABORT,
+] as const;
+
+const TRANSFER_CONTROL_METHODS = [
+  RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_CAPABILITY_GET_V1,
   RPC_METHODS.DAEMON_TRANSFER_COMPOSER_MEDIA_RELEASE,
   RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_INIT, RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_CHUNK,
   RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_FINALIZE, RPC_METHODS.DAEMON_PROMPT_ASSETS_UPLOAD_ABORT, RPC_METHODS.DAEMON_PROMPT_ASSETS_DOWNLOAD_INIT,
@@ -473,15 +440,23 @@ const TRANSFER_CONTROL_METHODS = [
   RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_FINALIZE, RPC_METHODS.DAEMON_PROMPT_REGISTRY_DOWNLOAD_ABORT,
 ] as const;
 
-const LOCAL_MUTATION_METHODS = [
-  RPC_METHODS.STOP_DAEMON,
-  RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND,
+/** Daemon-local mutations a restricted Runner reaches with input authority. */
+const LOCAL_MUTATION_AGENT_INPUT_METHODS = [
   RPC_METHODS.DAEMON_TERMINAL_ENSURE,
   RPC_METHODS.DAEMON_TERMINAL_INPUT,
   RPC_METHODS.DAEMON_TERMINAL_RESIZE,
   RPC_METHODS.DAEMON_TERMINAL_CLOSE,
   RPC_METHODS.DAEMON_TERMINAL_RESTART,
   RPC_METHODS.DAEMON_TERMINAL_STREAM_INPUT,
+  RPC_METHODS.WRITE_FILE,
+  RPC_METHODS.CREATE_DIRECTORY,
+  RPC_METHODS.RENAME_PATH,
+  RPC_METHODS.DELETE_PATH,
+] as const;
+
+const LOCAL_MUTATION_METHODS = [
+  RPC_METHODS.STOP_DAEMON,
+  RPC_METHODS.DAEMON_EXECUTION_RUN_PERMISSION_RESPOND,
   RPC_METHODS.DAEMON_MEMORY_SETTINGS_SET,
   RPC_METHODS.DAEMON_VOICE_SPEECH_SETTINGS_ACTION_EXECUTE,
   RPC_METHODS.DAEMON_VOICE_INFERENCE_MODELS_INSTALL,
@@ -502,7 +477,6 @@ const LOCAL_MUTATION_METHODS = [
   RPC_METHODS.DAEMON_PROVIDERS_PROFILE_MIGRATION_CONFIRM,
   RPC_METHODS.DAEMON_PROVIDERS_PROFILE_MIGRATION_CONFLICT_CONFIRM,
   RPC_METHODS.DAEMON_EXTENSIONS_RELOAD,
-  RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT,
   RPC_METHODS.DAEMON_PROMPT_ASSETS_DELETE,
   RPC_METHODS.DAEMON_PROMPT_REGISTRY_SCAN_SOURCE,
   RPC_METHODS.DAEMON_PROMPT_REGISTRY_INSTALL,
@@ -516,10 +490,6 @@ const LOCAL_MUTATION_METHODS = [
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_REPLACEMENT_PREFLIGHT,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_PREPARE,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_BOOTSTRAP_RELEASE,
-  RPC_METHODS.WRITE_FILE,
-  RPC_METHODS.CREATE_DIRECTORY,
-  RPC_METHODS.RENAME_PATH,
-  RPC_METHODS.DELETE_PATH,
   RPC_METHODS.SCM_CHANGE_INCLUDE,
   RPC_METHODS.SCM_CHANGE_EXCLUDE,
   RPC_METHODS.SCM_CHANGE_DISCARD,
@@ -552,10 +522,20 @@ const LOCAL_MUTATION_METHODS = [
   RPC_METHODS.SCM_REPOSITORY_REMOVE_INDEX_LOCK,
 ] as const;
 
-const AMBIGUOUS_READ_OR_EXTERNAL_METHODS = [
+/** Ambiguous reads a restricted Runner reaches with transcript-read authority. */
+const AMBIGUOUS_READ_RUNNER_READABLE_METHODS = [
   RPC_METHODS.DAEMON_TERMINAL_STREAM_READ,
   RPC_METHODS.DAEMON_TERMINAL_STREAM_READ_BYTES,
   RPC_METHODS.DAEMON_TERMINAL_STREAM_ACK,
+  RPC_METHODS.READ_FILE,
+  RPC_METHODS.LIST_DIRECTORY,
+  RPC_METHODS.GET_DIRECTORY_TREE,
+  RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS,
+  RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY,
+  RPC_METHODS.STAT_FILE,
+] as const;
+
+const AMBIGUOUS_READ_OR_EXTERNAL_METHODS = [
   RPC_METHODS.DAEMON_MEMORY_SEARCH,
   RPC_METHODS.DAEMON_MEMORY_GET_WINDOW,
   RPC_METHODS.DAEMON_MEMORY_ENSURE_UP_TO_DATE,
@@ -576,11 +556,6 @@ const AMBIGUOUS_READ_OR_EXTERNAL_METHODS = [
   RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE,
   RPC_METHODS.DAEMON_SPAWN_SESSION_RESOLVE_BY_NONCE,
   RPC_METHODS.PREVIEW_ENV,
-  RPC_METHODS.READ_FILE,
-  RPC_METHODS.LIST_DIRECTORY,
-  RPC_METHODS.GET_DIRECTORY_TREE,
-  RPC_METHODS.DAEMON_FILESYSTEM_LIST_ROOTS,
-  RPC_METHODS.DAEMON_FILESYSTEM_LIST_DIRECTORY,
   RPC_METHODS.DAEMON_WORKSPACE_FILES_LIST,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_GET,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_LIST,
@@ -588,7 +563,6 @@ const AMBIGUOUS_READ_OR_EXTERNAL_METHODS = [
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_FILE_READ,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_TARGET_FILE_READ,
   RPC_METHODS.DAEMON_WORKSPACE_SYNC_LEGACY_INSPECT,
-  RPC_METHODS.STAT_FILE,
   RPC_METHODS.DIFFTASTIC,
   RPC_METHODS.SESSION_LOG_TAIL,
   RPC_METHODS.TRANSCRIPT_PAGE,
@@ -674,6 +648,7 @@ export const MACHINE_RPC_ROUTE_POLICIES = Object.freeze([
     'sharing',
     'Follow source-key preparation carries private source material only after the server revalidates the current edge, caller, destination audience, and exact ephemeral Machine binding.',
     SESSION_SERVER_REQUIRED_SCOPE,
+    'followSourceKeyPreparation',
   ),
   actionSpecServerRequired(RPC_METHODS.DAEMON_SESSION_HANDOFF_PREPARE_TARGET_RESUME_V3, 'destructive_or_recovery_mutation', 'Interrupted handoff Resume records explicit revision-bound recovery intent and stays server-routed.', 'session.handoff.prepare_target.resume'),
   serverRequired(RPC_METHODS.DAEMON_SESSION_HANDOFF_TARGET_RESUME_V2, 'destructive_or_recovery_mutation', 'Predecessor V2 target Resume can start a session runtime and stays server-routed.'),
@@ -741,13 +716,19 @@ export const MACHINE_RPC_ROUTE_POLICIES = Object.freeze([
   ),
   serverRequired(RPC_METHODS.SESSION_AGENT_TRANSITION, 'durable_session_write', 'Same-Session Agent transition stops the exact source runtime, commits a sealed current view, appends a transcript divider, and re-admits one input; it depends on server-authoritative session write access and stays server-routed.', SESSION_SERVER_REQUIRED_SCOPE),
   serverRequired(RPC_METHODS.SESSION_CONTINUATION_INSPECT, 'ambiguous', 'Live continuation eligibility reads decrypted owner Session metadata and grants no authority; it stays on the authenticated server route because its answer depends on server-authoritative session access.', SESSION_SERVER_REQUIRED_SCOPE),
+  serverRequired(RPC_METHODS.SESSION_CONTINUATION_INSPECT_BATCH, 'ambiguous', 'The ordered Agent-picker continuation projection shares one decrypted owner Session read across its targets; it grants no authority and stays on the authenticated server route for the same reason as the single-target compatibility operation.', SESSION_SERVER_REQUIRED_SCOPE),
   serverRequired(RPC_METHODS.SESSION_AGENT_TRANSITION_BRIEF_PREVIEW, 'ambiguous', 'Rebuilding the handoff a transcript divider stands for reads decrypted owner Session metadata and transcript rows and grants no authority; it is classified with the continuation READ it mirrors, not with the transition mutation it describes, and stays server-routed because its answer depends on server-authoritative session access.', SESSION_SERVER_REQUIRED_SCOPE),
   serverRequired(RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART, 'durable_session_write', 'Per-session runner restart depends on server-authoritative session write access and stays server-routed.', SESSION_SERVER_REQUIRED_SCOPE),
   serverRequired(RPC_METHODS.DAEMON_SESSION_RUNNER_RESTART_V2, 'durable_session_write', 'Process-attested Provider recovery restart depends on server-authoritative session write access and stays server-routed.', SESSION_SERVER_REQUIRED_SCOPE),
   ...serverRequiredRows(SESSION_DURABLE_METHODS, 'durable_session_write', 'Session and execution-run lifecycle/state methods remain server-required because they can assign sequence, write durable session state, or fan out across devices.', SESSION_SERVER_REQUIRED_SCOPE),
+  serverRequired(RPC_METHODS.STOP_SESSION, 'durable_session_write', 'Session stop is a durable session lifecycle write; a restricted Runner reaches it with the stop authority its own Session principal carries.', SESSION_SERVER_REQUIRED_SCOPE, 'stopSession'),
   ...serverRequiredRows(TRANSFER_CONTROL_METHODS, 'server_persistence', 'Transfer control-plane RPC remains server-required; PMS bounded-transfer flows own direct byte movement and durable token/control reconciliation.'),
+  ...serverRequiredRows(TRANSFER_CONTROL_INBOUND_METHODS, 'server_persistence', 'Transfer control-plane RPC remains server-required; PMS bounded-transfer flows own direct byte movement and durable token/control reconciliation.', undefined, 'submitAgentInput'),
+  ...serverRequiredRows(TRANSFER_CONTROL_OUTBOUND_METHODS, 'server_persistence', 'Transfer control-plane RPC remains server-required; PMS bounded-transfer flows own direct byte movement and durable token/control reconciliation.', undefined, 'readTranscript'),
   ...serverRequiredRows(LOCAL_MUTATION_METHODS, 'destructive_or_recovery_mutation', 'Daemon-local or repository mutation is not low-risk direct RPC without a later ActionSpec command-receipt packet.'),
+  ...serverRequiredRows(LOCAL_MUTATION_AGENT_INPUT_METHODS, 'destructive_or_recovery_mutation', 'Daemon-local or repository mutation is not low-risk direct RPC without a later ActionSpec command-receipt packet.', undefined, 'submitAgentInput'),
   ...serverRequiredRows(AMBIGUOUS_READ_OR_EXTERNAL_METHODS, 'ambiguous', 'Read or external-service behavior has privacy, access-policy, transcript, or side-effect ambiguity and must stay on the server route until proven safe.'),
+  ...serverRequiredRows(AMBIGUOUS_READ_RUNNER_READABLE_METHODS, 'ambiguous', 'Read or external-service behavior has privacy, access-policy, transcript, or side-effect ambiguity and must stay on the server route until proven safe.', undefined, 'readTranscript'),
   ...serverRequiredRows(SERVER_PERSISTENCE_METHODS, 'server_persistence', 'Server persistence or external provider state remains server-authoritative for this RPC family.'),
   ...serverRequiredRows(AUTOMATION_METHODS, 'automation', 'Automation and invocation surfaces stay server-required until separate policy and command-receipt semantics are accepted.'),
   ...serverRequiredRows(ACCOUNT_QUOTA_RECOVERY_METHODS, 'billing', 'Connected-service quota recovery credit consumption mutates account quota/recovery state and stays server-routed.'),
@@ -793,6 +774,17 @@ export function resolveMachineRpcRoutePolicy(method: string): MachineRpcRoutePol
     scope: SERVER_REQUIRED_SCOPE,
     serverRequiredReason: 'unclassified',
   };
+}
+
+/**
+ * Session authority a restricted Runner principal needs for this method, read
+ * from the method's own canonical route policy row. A method without a row, or
+ * whose row declares no authority, is not reachable by a Runner principal.
+ */
+export function resolveEphemeralRunnerMachineRpcAuthority(
+  method: string,
+): EphemeralRunnerMachineRpcAuthority | null {
+  return POLICY_BY_METHOD.get(method)?.ephemeralRunnerAuthority ?? null;
 }
 
 export function isMachineRpcDirectRoutePolicy(policy: Pick<MachineRpcRoutePolicyV1, 'routeClass'>): boolean {

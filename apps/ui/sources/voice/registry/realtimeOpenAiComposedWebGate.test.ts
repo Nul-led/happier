@@ -348,6 +348,7 @@ if (!composedCurrentUiDestinationBinding) {
 const composedCurrentUiPlacement = Object.freeze({
   id: 'surfacePlacement:happier.current-ui-composed-gate:account-bound-destination',
   pluginId: COMPOSED_CURRENT_UI_DESTINATION.pluginId,
+  occurrenceId: 'happier-current-ui-composed-gate-occurrence-1',
   contributionKind: 'surfacePlacement',
   descriptorId: COMPOSED_CURRENT_UI_DESTINATION.localId,
   binding: composedCurrentUiDestinationBinding,
@@ -585,6 +586,7 @@ function createSourceComposedOpenAiRuntime(
   const requestAccountOperation = vi.fn();
   const scope = createExternalVoiceProviderActivationScope({
     pluginId: entry.pluginId,
+    occurrenceId: `${entry.pluginId}-activation-occurrence`,
     declarations: [entry.declaration],
     hostPlatform: 'web',
     runtimeHost: host,
@@ -2482,7 +2484,8 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       handleDeleteSessionSocketUpdate({
         sessionId: OPENAI_HISTORY_SESSION_ID,
-        deleteSession: (sessionId) => storage.getState().deleteSession(sessionId),
+        serverId: null,
+        deleteSession: (sessionId, serverId) => storage.getState().deleteSession(sessionId, serverId),
         removeSessionEncryption: vi.fn(),
         removeProjectManagerSession: vi.fn(),
         clearScmStatusForSession: vi.fn(),
@@ -2607,7 +2610,8 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       handleDeleteSessionSocketUpdate({
         sessionId: OPENAI_HISTORY_SESSION_ID,
-        deleteSession: (sessionId) => storage.getState().deleteSession(sessionId),
+        serverId: null,
+        deleteSession: (sessionId, serverId) => storage.getState().deleteSession(sessionId, serverId),
         removeSessionEncryption: vi.fn(),
         removeProjectManagerSession: vi.fn(),
         clearScmStatusForSession: vi.fn(),
@@ -3377,7 +3381,8 @@ describe('realtime_openai source-composed WebRTC gate', () => {
 
       handleDeleteSessionSocketUpdate({
         sessionId: OPENAI_HISTORY_SESSION_ID,
-        deleteSession: (sessionId) => storage.getState().deleteSession(sessionId),
+        serverId: null,
+        deleteSession: (sessionId, serverId) => storage.getState().deleteSession(sessionId, serverId),
         removeSessionEncryption: vi.fn(),
         removeProjectManagerSession: vi.fn(),
         clearScmStatusForSession: vi.fn(),

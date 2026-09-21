@@ -102,7 +102,6 @@ export type TeamCredentialProviderBrokerOpenResult =
             brokerMachineId: string;
             endpointId: string;
             endpointRevision: number;
-            placementKind?: 'machine_pool';
         }>;
     }>
     | Failure;
@@ -745,6 +744,14 @@ async function prepareTeamCredentialProviderBrokerOpenInTx(
     if (!placement.ok) {
         return failure(placement.error === 'resource_unavailable' ? 'resource_unavailable' : placement.error);
     }
+    // The private broker open is an Iroh peer tunnel, so this consumer — unlike
+    // the relay-reached resource test and external API key — cannot proceed
+    // without the Machine's own endpoint authority.
+    const endpointAuthority = placement.broker?.endpointAuthority ?? null;
+    if (placement.broker !== null && endpointAuthority === null) return failure('broker_unavailable');
+    const broker = placement.broker === null || endpointAuthority === null
+        ? null
+        : { machineId: placement.broker.machineId, endpointAuthority };
     return {
         request: authorized.request,
         sessionId: authorized.sessionId,
@@ -755,7 +762,7 @@ async function prepareTeamCredentialProviderBrokerOpenInTx(
         initiatorEndpoint,
         poolSnapshot: placement.poolSnapshot,
         poolCandidateMachineIds: placement.candidateMachineIds,
-        broker: placement.broker,
+        broker,
     };
 }
 
@@ -822,7 +829,6 @@ function finalizePreparedBrokerOpen(
             brokerMachineId: prepared.broker.machineId,
             endpointId: prepared.broker.endpointAuthority.endpointId,
             endpointRevision: prepared.broker.endpointAuthority.revision,
-            ...(prepared.resource.brokerPoolId !== null ? { placementKind: 'machine_pool' as const } : {}),
         },
     };
 }

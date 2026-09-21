@@ -2,6 +2,9 @@ import * as React from 'react';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { useSessionListRenderableWithServerScope } from '@/sync/store/hooks';
+import { readExternalSessionFollowPolicy } from '@/sync/domains/session/external/externalSessionFollowMetadata';
+import { readExternalSessionLink } from '@/sync/domains/session/external/readExternalSessionLink';
 import { sessionFollowGet, sessionFollowRemove, sessionFollowSet } from '@/sync/api/session/sessionFollowApi';
 import { captureActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 import { areServerProfileIdentifiersEquivalent } from '@/sync/domains/server/serverProfiles';
@@ -35,6 +38,18 @@ export function AccountSessionFollowControl(props: Readonly<{
         serverId,
         initialSnapshotPending: state.voiceInitialSnapshotPending,
     });
+    // 09C §11.7: Background sync is the external source's acquisition, never a
+    // Follow notification switch. When it is off, Happier can only observe that
+    // Session while it is attached, and Follow must say so rather than promise
+    // delivery it cannot make. The linked-external fact and the policy come from
+    // their existing metadata readers; nothing is decided a second time here.
+    // Exact Home: the bare-id entity is whichever Home hydrated that id last, so on a
+    // Session that exists on two Homes it could describe the other one's link.
+    const metadata = useSessionListRenderableWithServerScope(serverId, sessionId)?.metadata ?? null;
+    const externalBackgroundSyncOff = React.useMemo(() => (
+        readExternalSessionLink(metadata) !== null
+        && readExternalSessionFollowPolicy(metadata) === 'attached_only'
+    ), [metadata]);
     const onCloseRef = React.useRef(props.onClose);
     onCloseRef.current = props.onClose;
 
@@ -65,6 +80,7 @@ export function AccountSessionFollowControl(props: Readonly<{
         state={state}
         voiceReadiness={voiceReadiness}
         archived={props.archived === true}
+        externalBackgroundSyncOff={externalBackgroundSyncOff}
         onSet={(preferences) => { void controller.set(preferences); }}
         onRemove={() => { void controller.remove(); }}
         onRetry={() => { void controller.retry(); }}

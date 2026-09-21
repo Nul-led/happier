@@ -206,9 +206,6 @@ export const ProviderBrokerOpenResponseV1Schema = z.discriminatedUnion('ok', [
       brokerMachineId: IdentitySchema,
       endpointId: IrohEndpointIdV1Schema,
       endpointRevision: z.number().int().nonnegative(),
-      /** Present only when this exact target was selected from a Machine Pool.
-       * Omission preserves the released exact-Machine response shape. */
-      placementKind: z.literal('machine_pool').optional(),
     }).strict(),
   }).strict(),
   ProviderBrokerAdmissionFailureV1Schema,

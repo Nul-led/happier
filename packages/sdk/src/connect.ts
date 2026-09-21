@@ -9,6 +9,7 @@ import {
   ExternalActionTargetV1Schema,
   parseExternalActionResponseEnvelopeV1,
   parseSessionListQueryActionResultV1,
+  PUBLIC_ACTION_OUTPUT_SCHEMAS,
   SESSION_LIST_QUERY_UPDATE_REQUIRED_ERROR_CODE,
   parseQualifiedPluginActionId,
   sealExternalActionRequestV2,
@@ -20,6 +21,7 @@ import {
   AccountApiTokensServerErrorV1Schema,
 } from '@happier-dev/protocol/auth/accountApiTokens';
 import { SessionIdSchema } from '@happier-dev/protocol/sessions/idsV1';
+import type { WorkflowProjectTargetV1 } from '@happier-dev/protocol/workflows';
 import { Agent, request as requestWithUndici } from 'undici';
 
 import { createGeneratedActions, MUTATING_PUBLIC_ACTION_IDS } from './actions/generated.js';
@@ -57,6 +59,19 @@ import type {
   PublicActionInputById,
   PublicActionResultById,
 } from './actions/generated.js';
+
+/**
+ * The declared output contract of one public Action, read by identity. Every
+ * entry is the same Protocol schema the executing daemon settles its result
+ * through; this view keeps the lookup uniform so a generic Action id does not
+ * instantiate 400 per-id schema types at the call site.
+ */
+type PublicActionOutputParser = Readonly<{
+  safeParse(value: unknown): Readonly<{ success: true; data: unknown }> | Readonly<{ success: false }>;
+}>;
+
+const PUBLIC_ACTION_OUTPUT_PARSERS: Readonly<Record<PublicActionId, PublicActionOutputParser>> =
+  PUBLIC_ACTION_OUTPUT_SCHEMAS;
 
 function requireMachineId(value: string): string {
   const parsed = ExternalActionTargetV1Schema.safeParse({
@@ -243,7 +258,9 @@ export type HappierActions = ReturnType<typeof createGeneratedActions> & Readonl
 }>;
 
 /** Per-call controls for an Action client already bound to one Machine. */
-export type HappierMachineActionExecutionOptions = Readonly<Omit<ActionExecutionOptions, 'target'>>;
+export type HappierMachineActionExecutionOptions = Readonly<
+  Omit<ActionExecutionOptions, 'target'> & { project?: WorkflowProjectTargetV1 }
+>;
 
 export type HappierMachineActionExecute = <K extends PublicActionId>(
   actionId: K,
@@ -307,7 +324,7 @@ export type HappierMachineClient = Readonly<
   }>
 >;
 
-type MachineActionTarget = Readonly<{ kind: 'machine'; machineId: string }>;
+type MachineActionTarget = Extract<ActionTarget, { kind: 'machine' }>;
 
 type ClientCloseCleanup = () => Promise<void>;
 
@@ -384,6 +401,40 @@ function assertMachineBoundTarget(
       requestId,
     },
   );
+}
+
+function bindMachineActionExecutionOptions(
+  options: ActionExecutionOptions | HappierMachineActionExecutionOptions | undefined,
+  boundTarget: MachineActionTarget,
+): ActionExecutionOptions {
+  const runtimeOptions = options as Readonly<
+    ActionExecutionOptions & { project?: WorkflowProjectTargetV1 }
+  > | undefined;
+  assertMachineBoundTarget(runtimeOptions?.target, boundTarget, runtimeOptions?.requestId);
+  const targetFromRuntime = runtimeOptions?.target?.kind === 'machine'
+    ? runtimeOptions.target
+    : undefined;
+  const project = runtimeOptions?.project ?? targetFromRuntime?.project;
+  const parsedTarget = ExternalActionTargetV1Schema.safeParse({
+    kind: 'machine',
+    machineId: boundTarget.machineId,
+    ...(project ? { project } : {}),
+  });
+  if (!parsedTarget.success || parsedTarget.data.kind !== 'machine') {
+    throw new HappierTransportError(
+      'A machine-bound Happier client cannot execute an Action against a project on a different Machine.',
+      {
+        code: 'machine_target_conflict',
+        details: { requestedProject: project, boundTarget },
+        requestId: runtimeOptions?.requestId,
+      },
+    );
+  }
+  return {
+    ...(runtimeOptions?.signal ? { signal: runtimeOptions.signal } : {}),
+    ...(runtimeOptions?.requestId !== undefined ? { requestId: runtimeOptions.requestId } : {}),
+    target: parsedTarget.data,
+  };
 }
 
 function createActions(execute: RawActionExecute): HappierActions {
@@ -635,7 +686,24 @@ function createClient(
         requestId,
       );
     }
-    return (deferredApproval ?? externalActionResponse.execution.result) as PublicActionExecutionResult<K>;
+    if (deferredApproval !== null) return deferredApproval as PublicActionExecutionResult<K>;
+    // A typed public result is a Protocol contract, not a transport promise.
+    // The declared output schema — the same one the executing daemon settles
+    // its result through — is what makes the returned value that type, so a
+    // response that does not satisfy it fails closed instead of being cast.
+    const output = PUBLIC_ACTION_OUTPUT_PARSERS[actionId].safeParse(
+      externalActionResponse.execution.result,
+    );
+    if (!output.success) {
+      // Protected clients expose only the bounded error vocabulary, never the
+      // response content that failed to parse.
+      throw new HappierTransportError(`The ${actionId} Action returned an invalid result.`, {
+        code: 'invalid_action_output',
+        requestId,
+        ...(credential.encryption ? {} : { details: externalActionResponse.execution.result }),
+      });
+    }
+    return output.data as PublicActionExecutionResult<K>;
   };
   const rawExecute: RawActionExecute = (actionId, input, options) => executeRequest(actionId, input, options);
   const executeCompletedRequest = async <K extends PublicActionId>(
@@ -715,19 +783,21 @@ function createClient(
   });
   if (defaultTarget !== undefined) {
     const machineRawExecute: RawActionExecute = async (actionId, input, options) => {
-      assertMachineBoundTarget(options?.target, defaultTarget, options?.requestId);
-      return await executeRequest(actionId, input, { ...(options ?? {}), target: defaultTarget });
+      return await executeRequest(
+        actionId,
+        input,
+        bindMachineActionExecutionOptions(options, defaultTarget),
+      );
     };
     const machineExecute: ActionExecute = async <K extends PublicActionId>(
       actionId: K,
       input: PublicActionInputById[K],
       options?: ActionExecutionOptions,
     ): Promise<PublicActionResultById[K]> => {
-      assertMachineBoundTarget(options?.target, defaultTarget, options?.requestId);
       return await executeRequest(
         actionId,
         input,
-        { ...(options ?? {}), target: defaultTarget },
+        bindMachineActionExecutionOptions(options, defaultTarget),
         false,
         false,
       ) as PublicActionResultById[K];

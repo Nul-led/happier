@@ -151,6 +151,15 @@ export async function createTeamInTx(
     });
     if (!mayCreate) return denied("team_forbidden");
 
+    // Under `managed_only` the creator is provisioning a Team for somebody, and
+    // the product asks them to choose who. Silently falling back to the creator
+    // would make a Home administrator the owner of a Team they were creating for
+    // another person. Naming themselves stays legal; self-service creation keeps
+    // the fallback, and bootstrap already passes the owner explicitly.
+    if (policy.teamCreationPolicy === "managed_only" && input.initialOwnerAccountId === undefined) {
+        return denied("invalid_team_input");
+    }
+
     const authority = resolveHomeGovernanceAuthority(actor);
     const initialOwnerAccountId = input.initialOwnerAccountId ?? actor.accountId;
     if (initialOwnerAccountId !== actor.accountId && !authority.manageAllTeams) {

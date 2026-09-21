@@ -329,6 +329,38 @@ describe('creator-local Runner package assembly', () => {
         await reader.close();
     });
 
+    it('assembles the Windows portable directory with its core sidecar and the activation beside the shell', async () => {
+        const windows = [
+            ['Happier Runner/Happier Runner.exe', 'immutable executable', 0o100755],
+            ['Happier Runner/happier-runner-core.exe', 'immutable core', 0o100755],
+        ] satisfies [string, string, number][];
+        const f = await fixture(windows, 'windows-x64');
+        await assembleRunnerActivationPackage(f.input);
+        const reader = new ZipReader(new Uint8ArrayReader(f.output()), { useWebWorkers: false });
+        const entries = await reader.getEntries();
+        // The shell resolves both its core sidecar and its activation file beside
+        // the executable it launches, so all three stay inside the payload root.
+        expect(entries.map(e => e.filename)).toEqual([
+            'Happier Runner/',
+            'Happier Runner/Happier Runner.exe',
+            'Happier Runner/happier-runner-core.exe',
+            'Happier Runner/happier-runner.activation.json',
+        ]);
+        const activation = entries.at(-1)!;
+        expect(!activation.directory && JSON.parse(await activation.getData(new TextWriter()))).toEqual(f.input.activationFile);
+        await reader.close();
+
+        for (const entries of [
+            [windows[0]],
+            [windows[0], ['Happier Runner/renamed-core.exe', 'immutable core', 0o100755]],
+            [...windows, ['Happier Runner/extra.dll', 'unreviewed', 0o100644]],
+        ] satisfies [string, string, number][][]) {
+            const rejected = await fixture(entries, 'windows-x64');
+            await expect(assembleRunnerActivationPackage(rejected.input)).rejects.toThrow('runner_package_invalid_layout');
+            expect(rejected.output().length).toBe(0);
+        }
+    });
+
     it('rejects a Darwin link that stays extraction-contained yet escapes the signed app payload root', async () => {
         const f = await fixture([
             ['Happier Runner.app/Contents/Info.plist', '<plist/>', 0o100644],

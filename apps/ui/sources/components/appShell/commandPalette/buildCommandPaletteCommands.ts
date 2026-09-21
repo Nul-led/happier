@@ -79,13 +79,16 @@ type BuildCommandPaletteCommandsBaseParams = Readonly<{
     executionRunsEnabled: boolean;
     voiceEnabled: boolean;
     petsCompanionEnabled?: boolean;
+    /** The canonical Workflows availability decision, projected by the host. */
+    workflowsAvailable?: boolean;
   }>;
   shortcutLabels?: Partial<Record<KeyboardCommandId, string>>;
   petControls?: PetCommandControls;
   nav: Readonly<{
     push: (path: string) => void;
     openNewSession: () => void;
-    navigateToSession: (sessionId: string) => void;
+    /** Matches `useNavigateToSession`: the Home is passed when the producer holds it. */
+    navigateToSession: (sessionId: string, opts?: Readonly<{ serverId?: string }>) => void;
   }>;
   actions: Readonly<{
     execute: (actionId: ActionId, parameters: unknown, ctx?: { defaultSessionId?: string | null }) => Promise<unknown>;
@@ -203,6 +206,18 @@ export function buildCommandPaletteCommands(
     },
   ];
 
+  // The Workflows collection has no global tab; the palette reaches it only
+  // where the one canonical decision says Workflows exist on this Home.
+  if (features.workflowsAvailable === true) {
+    cmds.push({
+      id: 'workflows',
+      title: t('workflows.openCollection'),
+      icon: 'tree-structure',
+      category: t('commandPalette.commands.navigationCategory'),
+      action: () => nav.push('/workflows'),
+    });
+  }
+
   if (params.compactAppDestinations !== undefined) {
     for (const destination of params.compactAppDestinations) {
       if (!isCompactAppDestinationVisible(destination)) {
@@ -274,6 +289,7 @@ export function buildCommandPaletteCommands(
 
   for (const sessionId of extractRecentSessionIds(sessionsById)) {
     const session = sessionsById[sessionId];
+    const rowServerId = typeof session?.serverId === 'string' ? session.serverId.trim() : '';
     const label = readSessionLabel(session);
     cmds.push({
       id: `session-${sessionId}`,
@@ -282,7 +298,9 @@ export function buildCommandPaletteCommands(
       subtitle: label.subtitle,
       icon: 'clock',
       category: t('commandPalette.commands.recentSessionsCategory'),
-      action: () => nav.navigateToSession(sessionId),
+      // The recent row already names its Home; a bare id would re-resolve it and can
+      // open a different Session with the same id on the active Home.
+      action: () => nav.navigateToSession(sessionId, rowServerId ? { serverId: rowServerId } : undefined),
     });
   }
 
@@ -358,7 +376,7 @@ export function buildCommandPaletteCommands(
               instructions: '',
             }),
           });
-          nav.navigateToSession(sessionId);
+          nav.navigateToSession(sessionId, { serverId });
         },
       });
     }

@@ -50,6 +50,10 @@ function entryPath(entry: Entry): string {
 
 async function validateLayout(entries: readonly Entry[], layout: ReturnType<typeof resolveRunnerPackageLayout>): Promise<RunnerArtifactArchiveMetadataV1['entries']> {
     const bundle = layout.payloadKind === 'app-bundle';
+    // Only the closed portable directory payload declares a sidecar entry; the
+    // macOS core lives inside the signed bundle tree.
+    const sidecarPath = layout.sidecarPath;
+    const directoryRoot = bundle || sidecarPath !== undefined;
     const root = layout.payloadRootName;
     const executableName = layout.executablePath;
     const paths = new Map<string, Entry>();
@@ -63,7 +67,7 @@ async function validateLayout(entries: readonly Entry[], layout: ReturnType<type
         const type = mode & FILE_TYPE;
         if (paths.has(path) || caseFoldedPaths.has(folded) || entry.encrypted
             || (mode & 0o6000) !== 0
-            || (bundle ? path !== root && !path.startsWith(`${root}/`) : path !== root)
+            || (directoryRoot ? path !== root && !path.startsWith(`${root}/`) : path !== root)
             || (entry.directory ? type !== DIRECTORY && type !== 0 : ![REGULAR_FILE, SYMBOLIC_LINK, 0].includes(type))) {
             fail('runner_package_invalid_layout');
         }
@@ -80,10 +84,22 @@ async function validateLayout(entries: readonly Entry[], layout: ReturnType<type
     const executable = paths.get(executableName);
     const executableMode = executable ? executable.externalFileAttributes >>> 16 : 0;
     if (!executable || executable.directory || rawLinkTargets.has(executableName)
-        || layout.payloadKind !== 'exe' && (executableMode & 0o111) === 0
+        || (executableMode & 0o111) === 0
         || bundle && !paths.has(`${root}/Contents/Info.plist`)
-        || !bundle && paths.size !== 1) {
+        || !directoryRoot && paths.size !== 1) {
         fail('runner_package_invalid_layout');
+    }
+    // The portable payload is closed: exactly the shell executable and the core
+    // sidecar the shell spawns beside it, under the one payload directory.
+    if (sidecarPath !== undefined) {
+        const sidecar = paths.get(sidecarPath);
+        const sidecarMode = sidecar ? sidecar.externalFileAttributes >>> 16 : 0;
+        const files = [...paths].filter(([, entry]) => !entry.directory).map(([path]) => path).sort();
+        if (!sidecar || sidecar.directory || (sidecarMode & 0o111) === 0
+            || files.join('\n') !== [executableName, sidecarPath].sort().join('\n')
+            || [...paths].some(([path, entry]) => entry.directory && path !== root)) {
+            fail('runner_package_invalid_layout');
+        }
     }
     // Extraction must not write a file through an earlier symlink or through a
     // regular-file ancestor. Internal framework links themselves remain intact.
@@ -252,7 +268,7 @@ export async function assembleRunnerActivationPackage(input: RunnerPackageAssemb
         // Catch accidental cache mutation during assembly before committing any
         // activation material or exposing output. Caller custody is immutable.
         await verifySource();
-        await writer.add(layout.activationFileName, new TextReader(JSON.stringify(activationFile)), {
+        await writer.add(layout.activationFilePath, new TextReader(JSON.stringify(activationFile)), {
             level: 0, useWebWorkers: false, useCompressionStream: false,
             versionMadeBy: 0x031e, externalFileAttributes: 0o100600 << 16, signal: controller.signal,
         });

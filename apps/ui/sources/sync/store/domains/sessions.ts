@@ -126,6 +126,29 @@ export {
     type SessionTupleApplyCurrentness,
 } from './sessionTupleApplyCurrentness';
 
+/**
+ * Does a Home-addressed Session deletion also retire the shared per-id carrier?
+ *
+ * The same Session id can exist on two Homes (Personal Home relocation/restore keeps
+ * the id), while `sessions[sessionId]` and everything keyed off it — transcript,
+ * encryption key, project, SCM, drafts, permission/model modes — belongs to exactly one
+ * of them. A Home-agnostic fact (`serverId === null`) and a carrier with no Home binding
+ * both address it; a fact produced by a different Home does not.
+ *
+ * One rule, read by the store's `deleteSession` and by the Session teardown choke point
+ * `handleDeleteSessionSocketUpdate`, so the two cannot drift.
+ */
+export function shouldRetireSessionCarrierForServer(
+    carrierServerId: string | null | undefined,
+    serverId: string | null | undefined,
+): boolean {
+    const normalizedServerId = normalizeTrimmedString(serverId);
+    if (!normalizedServerId) return true;
+    const normalizedCarrierServerId = normalizeTrimmedString(carrierServerId);
+    if (!normalizedCarrierServerId) return true;
+    return areServerProfileIdentifiersEquivalent(normalizedCarrierServerId, normalizedServerId);
+}
+
 type SessionModelMode = NonNullable<Session['modelMode']>;
 type ScmOperationLogEntry = import('../../runtime/orchestration/projectManager').ScmProjectOperationLogEntry;
 type ScmInFlightOperation = import('../../runtime/orchestration/projectManager').ScmProjectInFlightOperation;
@@ -360,7 +383,13 @@ export type SessionsDomain = {
     beginWorkspaceScmOperation: (scope: WorkspaceScopeBase, operation: import('../../runtime/orchestration/projectManager').ScmProjectOperationKind) => BeginScmOperationResult;
     finishWorkspaceScmOperation: (scope: WorkspaceScopeBase, operationId: string) => boolean;
 
-    deleteSession: (sessionId: string) => void;
+    /**
+     * Retire a Session locally for ONE Home, or for every Home when `serverId` is
+     * omitted or null. Only the addressed Home's row/membership/index goes; the
+     * shared per-id carrier (record, transcript, SCM, drafts, modes) goes only when
+     * that Home is the carrier's own — see `shouldRetireSessionCarrierForServer`.
+     */
+    deleteSession: (sessionId: string, serverId?: string | null) => void;
 };
 
 type SessionsDomainDependencies = {
@@ -3012,13 +3041,21 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             }
             return finished;
         },
-        deleteSession: (sessionId: string) => set((state) => {
-            optimisticThinkingTimeouts.cancel(sessionId);
-            resumingTimeouts.cancel(sessionId);
-            thinkingGraceTimeouts.cancel(sessionId);
+        deleteSession: (sessionId: string, serverId?: string | null) => set((state) => {
+            const targetServerId = normalizeTrimmedString(serverId) || null;
+            const retireActiveCarrier = shouldRetireSessionCarrierForServer(
+                state.sessions[sessionId]?.serverId,
+                targetServerId,
+            );
+            if (retireActiveCarrier) {
+                optimisticThinkingTimeouts.cancel(sessionId);
+                resumingTimeouts.cancel(sessionId);
+                thinkingGraceTimeouts.cancel(sessionId);
+            }
 
             // Remove session from sessions
-            const { [sessionId]: deletedSession, ...remainingSessions } = state.sessions;
+            const { [sessionId]: deletedSession, ...remainingSessionRecords } = state.sessions;
+            const remainingSessions = retireActiveCarrier ? remainingSessionRecords : state.sessions;
             let didDeleteRenderable = false;
             let remainingRowsByServerId = state.sessionListRowsByServerId as Record<string, Readonly<Record<string, SessionListRenderableSession>>>;
             let remainingOrdinaryMembershipByServerId = state.ordinarySessionListMembershipByServerId as Record<string, readonly string[] | undefined>;
@@ -3027,6 +3064,10 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
             const indexSettings = resolveSessionListIndexRebuildSettings(state.settings);
             for (const [serverId, rows] of Object.entries(state.sessionListRowsByServerId)) {
                 if (!rows[sessionId]) continue;
+                if (targetServerId && !areServerProfileIdentifiersEquivalent(serverId, targetServerId)) {
+                    // Another Home's row for the same Session id is a different Session.
+                    continue;
+                }
                 didDeleteRenderable = true;
                 const { [sessionId]: _deletedRow, ...remainingRows } = rows;
                 if (remainingRowsByServerId === state.sessionListRowsByServerId) {
@@ -3069,64 +3110,99 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 }
             }
 
-            // Remove session messages if they exist. Module-scoped derived caches
-            // (hooks.ts message-array/subagent caches) root the materialized transcript
-            // outside the store, so release them through the shared seam as well.
-            const { [sessionId]: deletedMessages, ...remainingSessionMessages } = state.sessionMessages;
-            const { [sessionId]: _deletedCoverage, ...remainingHistoryStartLoaded } = state.sessionMessagesHistoryStartLoaded ?? {};
-            clearSessionTranscriptDerivedCachesForSession(sessionId);
+            // Everything below this point is the SHARED per-id carrier: the hydrated
+            // record, its transcript, SCM status, tree expansion, drafts and the
+            // persisted permission/model modes are keyed by bare Session id and belong
+            // to exactly one Home. Another Home's deletion of the same id removes only
+            // that Home's row above; erasing this is silent local data loss.
+            const {
+                [sessionId]: deletedMessages,
+                ...remainingSessionMessagesWithoutCarrier
+            } = state.sessionMessages;
+            const {
+                [sessionId]: _deletedCoverage,
+                ...remainingHistoryStartLoadedWithoutCarrier
+            } = state.sessionMessagesHistoryStartLoaded ?? {};
+            const {
+                [sessionId]: _deletedScmStatus,
+                ...remainingScmStatusWithoutCarrier
+            } = state.sessionScmStatus;
+            const {
+                [sessionId]: _deletedReviewDrafts,
+                ...remainingReviewDraftsWithoutCarrier
+            } = state.reviewCommentsDraftsBySessionId;
 
-            // Remove session source-control status if it exists
-            const { [sessionId]: _deletedScmStatus, ...remainingScmStatus } = state.sessionScmStatus;
-            const nextTreeExpansionState = deleteSessionRepositoryTreeExpansionForState(state, sessionId);
-            sessionRepositoryTreeExpandedPathsBySessionId =
-                nextTreeExpansionState.sessionRepositoryTreeExpandedPathsBySessionId;
-            workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey =
-                nextTreeExpansionState.workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey;
-            const { [sessionId]: _deletedReviewDrafts, ...remainingReviewDrafts } = state.reviewCommentsDraftsBySessionId;
-            reviewCommentsDraftsBySessionId = remainingReviewDrafts;
-            const deletedDraftAddress = normalizeSessionAddress(
-                deletedSession?.serverId ?? sessionLocalStateScope?.serverId,
-                sessionId,
-            );
-            const deletedDraftAddressKey = deletedDraftAddress ? sessionAddressKey(deletedDraftAddress) : null;
-            const remainingActionDrafts = { ...state.sessionActionDraftsByAddressKey };
-            if (deletedDraftAddressKey) delete remainingActionDrafts[deletedDraftAddressKey];
-            sessionActionDraftsByAddressKey = remainingActionDrafts;
+            const remainingSessionMessages = retireActiveCarrier
+                ? remainingSessionMessagesWithoutCarrier
+                : state.sessionMessages;
+            const remainingHistoryStartLoaded = retireActiveCarrier
+                ? remainingHistoryStartLoadedWithoutCarrier
+                : state.sessionMessagesHistoryStartLoaded ?? {};
+            const remainingScmStatus = retireActiveCarrier
+                ? remainingScmStatusWithoutCarrier
+                : state.sessionScmStatus;
+            const remainingReviewDrafts = retireActiveCarrier
+                ? remainingReviewDraftsWithoutCarrier
+                : state.reviewCommentsDraftsBySessionId;
+            const remainingActionDrafts = retireActiveCarrier
+                ? { ...state.sessionActionDraftsByAddressKey }
+                : state.sessionActionDraftsByAddressKey;
 
-            // Clear permission modes and other session-local projections from persistent storage.
-            const reviewDrafts = loadSessionReviewCommentsDrafts(sessionLocalStateScope);
-            delete reviewDrafts[sessionId];
-            saveSessionReviewCommentsDrafts(reviewDrafts, sessionLocalStateScope);
+            let nextTreeExpansionState: ReturnType<typeof deleteSessionRepositoryTreeExpansionForState> | null = null;
+            if (retireActiveCarrier) {
+                // Module-scoped derived caches (hooks.ts message-array/subagent caches)
+                // root the materialized transcript outside the store, so release them
+                // through the shared seam as well.
+                clearSessionTranscriptDerivedCachesForSession(sessionId);
 
-            if (sessionLocalStateScope && deletedDraftAddressKey) {
-                const actionDrafts = loadSessionActionDrafts(sessionLocalStateScope);
-                delete actionDrafts[deletedDraftAddressKey];
-                saveSessionActionDrafts(actionDrafts, sessionLocalStateScope);
+                nextTreeExpansionState = deleteSessionRepositoryTreeExpansionForState(state, sessionId);
+                sessionRepositoryTreeExpandedPathsBySessionId =
+                    nextTreeExpansionState.sessionRepositoryTreeExpandedPathsBySessionId;
+                workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey =
+                    nextTreeExpansionState.workspaceRepositoryTreeExpandedPathsByWorkspaceCacheKey;
+                reviewCommentsDraftsBySessionId = remainingReviewDrafts;
+                const deletedDraftAddress = normalizeSessionAddress(
+                    deletedSession?.serverId ?? sessionLocalStateScope?.serverId,
+                    sessionId,
+                );
+                const deletedDraftAddressKey = deletedDraftAddress ? sessionAddressKey(deletedDraftAddress) : null;
+                if (deletedDraftAddressKey) delete remainingActionDrafts[deletedDraftAddressKey];
+                sessionActionDraftsByAddressKey = remainingActionDrafts;
+
+                // Clear permission modes and other session-local projections from persistent storage.
+                const reviewDrafts = loadSessionReviewCommentsDrafts(sessionLocalStateScope);
+                delete reviewDrafts[sessionId];
+                saveSessionReviewCommentsDrafts(reviewDrafts, sessionLocalStateScope);
+
+                if (sessionLocalStateScope && deletedDraftAddressKey) {
+                    const actionDrafts = loadSessionActionDrafts(sessionLocalStateScope);
+                    delete actionDrafts[deletedDraftAddressKey];
+                    saveSessionActionDrafts(actionDrafts, sessionLocalStateScope);
+                }
+
+                const modes = loadSessionPermissionModes(sessionLocalStateScope);
+                delete modes[sessionId];
+                saveSessionPermissionModes(modes, sessionLocalStateScope);
+                sessionPermissionModes = modes;
+
+                const updatedAts = loadSessionPermissionModeUpdatedAts(sessionLocalStateScope);
+                delete updatedAts[sessionId];
+                saveSessionPermissionModeUpdatedAts(updatedAts, sessionLocalStateScope);
+                sessionPermissionModeUpdatedAts = updatedAts;
+
+                const modelModes = loadSessionModelModes(sessionLocalStateScope);
+                delete modelModes[sessionId];
+                saveSessionModelModes(modelModes, sessionLocalStateScope);
+                sessionModelModes = modelModes;
+
+                const modelUpdatedAts = loadSessionModelModeUpdatedAts(sessionLocalStateScope);
+                delete modelUpdatedAts[sessionId];
+                saveSessionModelModeUpdatedAts(modelUpdatedAts, sessionLocalStateScope);
+                sessionModelModeUpdatedAts = modelUpdatedAts;
+
+                delete sessionLastViewed[sessionId];
+                saveSessionLastViewed(sessionLastViewed, sessionLocalStateScope);
             }
-            
-            const modes = loadSessionPermissionModes(sessionLocalStateScope);
-            delete modes[sessionId];
-            saveSessionPermissionModes(modes, sessionLocalStateScope);
-            sessionPermissionModes = modes;
-
-            const updatedAts = loadSessionPermissionModeUpdatedAts(sessionLocalStateScope);
-            delete updatedAts[sessionId];
-            saveSessionPermissionModeUpdatedAts(updatedAts, sessionLocalStateScope);
-            sessionPermissionModeUpdatedAts = updatedAts;
-
-            const modelModes = loadSessionModelModes(sessionLocalStateScope);
-            delete modelModes[sessionId];
-            saveSessionModelModes(modelModes, sessionLocalStateScope);
-            sessionModelModes = modelModes;
-
-            const modelUpdatedAts = loadSessionModelModeUpdatedAts(sessionLocalStateScope);
-            delete modelUpdatedAts[sessionId];
-            saveSessionModelModeUpdatedAts(modelUpdatedAts, sessionLocalStateScope);
-            sessionModelModeUpdatedAts = modelUpdatedAts;
-
-            delete sessionLastViewed[sessionId];
-            saveSessionLastViewed(sessionLastViewed, sessionLocalStateScope);
 
             const nextStateBase = {
                 ...state,
@@ -3136,14 +3212,18 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 archivedSessionListMembershipByServerId: remainingArchivedMembershipByServerId,
                 sessionListIndexByServerId: remainingIndexByServerId,
                 // The only durable record that this id is gone rather than merely uncached.
-                deletedSessionIds: { ...state.deletedSessionIds, [sessionId]: true as const },
+                // Another Home's deletion cannot tombstone this bare id: its hydrated
+                // carrier remains authoritative even when that carrier's list row is evicted.
+                ...(retireActiveCarrier
+                    ? { deletedSessionIds: { ...state.deletedSessionIds, [sessionId]: true as const } }
+                    : {}),
                 sessionMessages: remainingSessionMessages,
                 sessionMessagesHistoryStartLoaded: remainingHistoryStartLoaded,
                 sessionScmStatus: remainingScmStatus,
-                ...nextTreeExpansionState,
+                ...(nextTreeExpansionState ?? {}),
                 reviewCommentsDraftsBySessionId: remainingReviewDrafts,
                 sessionActionDraftsByAddressKey: remainingActionDrafts,
-                sessionLastViewed: { ...sessionLastViewed },
+                ...(retireActiveCarrier ? { sessionLastViewed: { ...sessionLastViewed } } : {}),
             };
 
             return finalizeSessionListIndexUpdate(

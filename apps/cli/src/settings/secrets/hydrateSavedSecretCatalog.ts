@@ -155,7 +155,7 @@ export async function hydrateSavedSecretCatalog(input: Readonly<{
     return {
       resourceId: row.resourceId,
       ownerAccountId: row.entry.ownerAccountId ?? '',
-      displayName: row.entry.name ?? row.resourceId,
+      displayName: row.entry.name,
       kind: row.entry.kind ?? 'other',
       encryptionMode: row.encryptionMode,
       revision: row.entry.revision ?? 1,

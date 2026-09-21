@@ -561,6 +561,104 @@ describe("Saved Secret resource service (SQLite integration)", () => {
         }))).toEqual({ ok: false, error: "forbidden" });
     });
 
+    it("names only the restricted arms the caller's credential actually qualified in recipient provenance", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const member = await db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } });
+        const team = await db.team.create({
+            data: {
+                name: "Provenance restricted",
+                authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] },
+            },
+            select: { id: true },
+        });
+        const custodianMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: custodian.id, role: "owner" },
+            select: { id: true },
+        });
+        const memberMembership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: member.id, role: "member" },
+            select: { id: true },
+        });
+        const group = await db.teamGroup.create({
+            data: { teamId: team.id, name: "Provenance group", nameKey: "provenance-group" },
+            select: { id: true },
+        });
+        await db.teamGroupMembership.createMany({
+            data: [
+                { teamId: team.id, teamGroupId: group.id, teamMembershipId: custodianMembership.id },
+                { teamId: team.id, teamGroupId: group.id, teamMembershipId: memberMembership.id },
+            ],
+        });
+        for (const [accountId, address, factor] of [
+            [custodian.id, "provenance-owner@example.test", "owner password factor"],
+            [member.id, "provenance-member@example.test", "member password factor"],
+        ] as const) {
+            await db.accountIdentity.create({
+                data: { accountId, provider: "email", providerUserId: address, profile: {} },
+            });
+            await db.accountPasswordCredential.create({
+                data: {
+                    accountId,
+                    credential: {
+                        v: 1,
+                        kind: "plain_password_hash",
+                        hash: await hashPasswordMaterial(new TextEncoder().encode(factor)),
+                    },
+                },
+            });
+        }
+
+        const qualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authenticationAuthority: "present_user" as const,
+            authenticationEvidence: EMAIL_PASSWORD_EVIDENCE,
+        };
+        const unqualified = { ...qualified, authenticationEvidence: undefined };
+
+        expect(await inTx((tx) => createSavedSecretResourceInTx(tx, {
+            accountId: custodian.id,
+            authentication: qualified,
+            resourceId: "resource_multi_arm",
+            displayName: "Multi-arm token",
+            kind: "token",
+            encryptionMode: "plain",
+            storedContent: { t: "plain", v: { v: 1, name: "Multi-arm token", kind: "token", value: "multi-value" } },
+            accountGrants: [member.id],
+            teamGrants: [team.id],
+            groupGrants: [group.id],
+        }))).toMatchObject({ ok: true });
+
+        // The direct grant keeps the material authorized, so the row is still
+        // listed. The Team and Group arms are exactly what the current
+        // credential failed to qualify, so naming them would disclose a
+        // restricted Team's identity and this resource's relationship to it.
+        const [withoutEvidence] = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, unqualified));
+        if (!withoutEvidence || withoutEvidence.materialStatus === "resource_corrupt") throw new Error("expected the directly granted row");
+        expect(withoutEvidence.accessSources).toEqual([{ kind: "account" }]);
+        const [materialWithoutEvidence] = await inTx((tx) =>
+            listSavedSecretResourceMaterialsForAccountInTx(tx, member.id, unqualified));
+        if (!materialWithoutEvidence || materialWithoutEvidence.entry.materialStatus === "resource_corrupt") throw new Error("expected the directly granted material");
+        expect(materialWithoutEvidence.entry.accessSources).toEqual([{ kind: "account" }]);
+
+        const [withEvidence] = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, member.id, qualified));
+        if (!withEvidence || withEvidence.materialStatus === "resource_corrupt") throw new Error("expected the qualified row");
+        expect(withEvidence.accessSources).toEqual([
+            { kind: "account" },
+            { kind: "team", teamId: team.id, name: "Provenance restricted" },
+            { kind: "group", teamId: team.id, teamName: "Provenance restricted", groupId: group.id, name: "Provenance group" },
+        ]);
+
+        // The custodian owns the resource: their audience projection is the
+        // Team roster they wrote and never depends on their own credential.
+        const [ownerView] = await inTx((tx) => listSavedSecretResourcesForAccountInTx(tx, custodian.id, unqualified));
+        if (!ownerView || ownerView.materialStatus === "resource_corrupt") throw new Error("expected the owner row");
+        expect(ownerView.accessSources).toEqual([]);
+        expect(ownerView.audience).toMatchObject({
+            teams: [{ kind: "team", teamId: team.id, name: "Provenance restricted" }],
+            groups: [{ kind: "group", teamId: team.id, teamName: "Provenance restricted", groupId: group.id, name: "Provenance group" }],
+        });
+    });
+
     it("replaces explicit grants under one owner-only resource revision CAS", async () => {
         const [owner, firstRecipient, secondRecipient] = await Promise.all([
             db.account.create({ data: { encryptionMode: "plain" }, select: { id: true } }),

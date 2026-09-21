@@ -43,10 +43,15 @@ export async function readRunnerBrokerReadinessProjectionInTx(
         where: { id: input.selection.resourceId },
         select: { id: true, teamId: true, custodianAccountId: true, revision: true, sourceBindingJson: true, brokerMachineId: true, brokerPoolId: true },
     });
+    // The selection is the activation's own reviewed binding, so this is an
+    // established target: current resource, source, Machine and endpoint
+    // authority are revalidated below, but Pool membership edits after the
+    // freeze do not revoke it.
     if (!resource || resource.revision !== input.selection.revision
         || !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
             resource,
             machineId: input.selection.brokerMachineId,
+            selection: "established",
         })) return null;
     const entitlement = await resolveTeamCredentialEntitlementInTx(tx, {
         resourceId: resource.id, accountId: activation.creatorAccountId,
@@ -125,6 +130,7 @@ export async function authorizeRunnerBrokerReadiness(input: Readonly<{
             || !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
                 resource,
                 machineId: activation.brokerMachineId,
+                selection: "established",
             })) {
             return { ok: true, request: activation.request, credentialSelectionBinding: activation.credentialSelectionBinding, readiness: { kind: "resource_unavailable" } };
         }

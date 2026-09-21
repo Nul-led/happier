@@ -33,6 +33,7 @@ import {
 
 import {
     SESSION_BOARD_GRID_GAP_PX,
+    resolveSessionBoardGridRowIndexes,
     resolveSessionBoardGridTier,
     resolveSessionBoardItemWidthPx,
 } from './sessionBoardGridLayout';
@@ -443,6 +444,29 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     const [renamingViewId, setRenamingViewId] = React.useState<string | null>(null);
     const [mobileQuery, setMobileQuery] = React.useState('');
     const placementRects = React.useRef(new Map<string, SessionBoardItemRect>());
+    // Recovered rows live in their own section below the grid, so their rects are measured
+    // against that section's origin rather than the grid's.
+    const recoveredRects = React.useRef(new Map<string, SessionBoardItemRect>());
+    const recoveredSectionY = React.useRef(0);
+    const recoveredRowsY = React.useRef(0);
+    const [, setGeometryRevision] = React.useState(0);
+    /**
+     * A first measurement is new information about where a card actually is.
+     *
+     * Rects stay in refs because drag geometry reads them synchronously mid-gesture, but the
+     * body window has to be recomputed when one arrives: before layout the window can only
+     * estimate, and a wrapped grid's estimate is the one that leaves a visible card blank.
+     * Only the first rect per item bumps, so this is bounded by the number of cards drawn.
+     */
+    const recordItemRect = React.useCallback((
+        rects: Map<string, SessionBoardItemRect>,
+        itemId: string,
+        rect: SessionBoardItemRect,
+    ) => {
+        const firstMeasurement = !rects.has(itemId);
+        rects.set(itemId, rect);
+        if (firstMeasurement) setGeometryRevision((revision) => revision + 1);
+    }, []);
     const viewRects = React.useRef(new Map<string, SessionBoardItemRect>());
     const viewsRowY = React.useRef(0);
     const viewsHorizontalOffset = React.useRef(0);
@@ -573,11 +597,24 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     const bodyWindowViewport = measuredViewportHeight > 0 ? measuredViewportHeight : windowHeight;
     const bodyWindowTop = bodyWindowTopOffset - bodyWindowViewport;
     const bodyWindowBottom = bodyWindowTopOffset + bodyWindowQuantum + (bodyWindowViewport * 2);
-    const isItemBodyNearViewport = (itemId: string, ordinal: number): boolean => {
+    // The grid wraps, so the unmeasured estimate is placed by ROW, not by ordinal: three
+    // `compact` cards share a row at the twelve-column tier, and reading the third one as
+    // three rows down pushes cards the person can see out of the window.
+    const placementRowIndexes = resolveSessionBoardGridRowIndexes({
+        widths: visiblePlacements.map((placement) => placement.width),
+        tier: props.layout === 'grid' && gridWidth > 0 ? gridTier : 'single',
+    });
+    const recoveredRowBase = (placementRowIndexes[placementRowIndexes.length - 1] ?? -1) + 1;
+    const isItemBodyNearViewport = (input: Readonly<{
+        itemId: string;
+        row: number;
+        rects: Map<string, SessionBoardItemRect>;
+        contentStartY: number;
+    }>): boolean => {
         if (bodyWindowViewport <= 0) return true;
-        const rect = placementRects.current.get(itemId);
-        if (!rect) return ordinal * bodyWindowQuantum <= bodyWindowBottom;
-        const top = gridContentY.current + rect.y;
+        const rect = input.rects.get(input.itemId);
+        if (!rect) return input.row * bodyWindowQuantum <= bodyWindowBottom;
+        const top = input.contentStartY + rect.y;
         return top + rect.height >= bodyWindowTop && top <= bodyWindowBottom;
     };
 
@@ -943,12 +980,18 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                 />
                             ) : (
                                 <View
+                                    testID={`${testID}-items`}
                                     style={props.layout === 'grid' ? styles.grid : styles.single}
                                     onLayout={onGridLayout}
                                 >
                                                     {visiblePlacements.map((placement, ordinal) => {
                                         const width = itemWidthFor(placement.width);
-                                        const deferBody = !isItemBodyNearViewport(placement.itemId, ordinal);
+                                        const deferBody = !isItemBodyNearViewport({
+                                            itemId: placement.itemId,
+                                            row: placementRowIndexes[ordinal] ?? ordinal,
+                                            rects: placementRects.current,
+                                            contentStartY: gridContentY.current,
+                                        });
                                         return (
                                             <View
                                                 key={placement.itemId}
@@ -956,7 +999,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                                 style={width === null ? undefined : { width, minWidth: 0 }}
                                                 onLayout={(event) => {
                                                     const { x, y, width: measuredWidth, height } = event.nativeEvent.layout;
-                                                    placementRects.current.set(placement.itemId, {
+                                                    recordItemRect(placementRects.current, placement.itemId, {
                                                         x,
                                                         y,
                                                         width: measuredWidth,
@@ -971,17 +1014,41 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                 </View>
                             )}
                             {visibleRecovered.length > 0 ? (
-                                <View testID={`${testID}-recovered`}>
+                                <View
+                                    testID={`${testID}-recovered`}
+                                    onLayout={(event) => { recoveredSectionY.current = event.nativeEvent.layout.y; }}
+                                >
                                     <View style={styles.section}>
                                         <Text style={styles.sectionTitle} accessibilityRole="header">
                                             {t('sessionBoard.recovered.title')}
                                         </Text>
                                         <Text style={styles.sectionBody}>{t('sessionBoard.recovered.description')}</Text>
                                     </View>
-                                    <View style={styles.single}>
-                                        {visibleRecovered.map((itemId) => (
-                                            <View key={itemId}>
-                                                {renderItem(itemId, 'full')}
+                                    <View
+                                        testID={`${testID}-recovered-rows`}
+                                        style={styles.single}
+                                        onLayout={(event) => { recoveredRowsY.current = event.nativeEvent.layout.y; }}
+                                    >
+                                        {visibleRecovered.map((itemId, index) => (
+                                            <View
+                                                key={itemId}
+                                                testID={`${testID}-recovered-row-${itemId}`}
+                                                onLayout={(event) => {
+                                                    const { x, y, width, height } = event.nativeEvent.layout;
+                                                    recordItemRect(recoveredRects.current, itemId, { x, y, width, height });
+                                                }}
+                                            >
+                                                {/*
+                                                  * Recovery is a list like any other: a Board holding a
+                                                  * hundred unplaced documents must not instantiate all of
+                                                  * them, so these rows pass through the same body window.
+                                                  */}
+                                                {renderItem(itemId, 'full', false, undefined, !isItemBodyNearViewport({
+                                                    itemId,
+                                                    row: recoveredRowBase + index,
+                                                    rects: recoveredRects.current,
+                                                    contentStartY: recoveredSectionY.current + recoveredRowsY.current,
+                                                }))}
                                                 {mutationControls && controller.supports('item.pin') ? (
                                                     <View style={styles.addRow}>
                                                         <RoundButton

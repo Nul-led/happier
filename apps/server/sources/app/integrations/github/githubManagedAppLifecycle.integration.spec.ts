@@ -42,6 +42,15 @@ import {
 import { isManagedGitHubIdentityProviderAvailableForConnectionInTx } from "./githubManagedIdentityProvider";
 import { beginManagedGitHubDirectoryRead } from "./githubManagedDirectory";
 import { TEAM_CHANGE_ENTITY_ID } from "@/app/teams/teamChanges";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+
+const ACCEPTED_EMAIL_PASSWORD = { kind: "home_method" as const, methodId: "email_password" };
+const EMAIL_PASSWORD_EVIDENCE = [ACCEPTED_EMAIL_PASSWORD];
+const HOME_OFFERS_EMAIL_PASSWORD = {
+    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+    HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+    HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+};
 
 let harness: LightSqliteHarness;
 let sequence = 0;
@@ -106,6 +115,7 @@ afterEach(async () => {
     await db.teamMembership.deleteMany({});
     await db.team.deleteMany({});
     await db.accountIdentity.deleteMany({});
+    await db.accountPasswordCredential.deleteMany({});
     await db.account.deleteMany({});
     await db.homeGovernancePolicy.deleteMany({});
 });
@@ -401,6 +411,77 @@ describe("managed GitHub App registration lifecycle", () => {
         expect(githubMocks.installationRequest).toHaveBeenCalledTimes(installationRequestCountBeforeWithdrawal);
     });
 
+    it("holds a restricted Team's own App management to the Team's accepted credential", async () => {
+        const actorAccountId = await createAccount("member");
+        await db.accountIdentity.create({
+            data: {
+                accountId: actorAccountId,
+                provider: "email",
+                providerUserId: `restricted-admin-${actorAccountId}@example.test`,
+                profile: {},
+            },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: actorAccountId,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("restricted admin factor")),
+                },
+            },
+        });
+        const team = await db.team.create({
+            data: {
+                name: "Restricted identity administration",
+                authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] },
+            },
+        });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: actorAccountId, role: "owner" } });
+        const owner = { kind: "team" as const, teamId: team.id };
+        const unqualified = {
+            env: { ...process.env, ...HOME_OFFERS_EMAIL_PASSWORD },
+            authenticationAuthority: "present_user" as const,
+        };
+        const qualified = { ...unqualified, authenticationEvidence: EMAIL_PASSWORD_EVIDENCE };
+        const input = {
+            githubHost: "https://github.com",
+            githubAppId: 63n,
+            githubClientId: "Iv1.restricted",
+            secrets: { v: 1 as const, privateKey: "restricted-private-key" },
+        };
+
+        await expect(createGitHubAppRegistration({ ...unqualified, actorAccountId, owner, input }))
+            .resolves.toEqual({ status: "forbidden" });
+        await expect(db.gitHubAppRegistration.count()).resolves.toBe(0);
+        await expect(listGitHubAppRegistrations({ ...unqualified, actorAccountId, owner }))
+            .resolves.toEqual({ status: "forbidden" });
+
+        const created = await createGitHubAppRegistration({ ...qualified, actorAccountId, owner, input });
+        expect(created).toMatchObject({ status: "created", registration: { githubAppId: 63n } });
+        if (created.status !== "created") throw new Error("expected created registration");
+        await expect(listGitHubAppRegistrations({ ...qualified, actorAccountId, owner }))
+            .resolves.toMatchObject({ status: "ready", registrations: [{ githubAppId: 63n }] });
+        await expect(updateGitHubAppRegistration({
+            ...unqualified,
+            actorAccountId,
+            owner,
+            registrationId: created.registration.id,
+            expectedRevision: created.registration.revision,
+            patch: { githubAppSlug: "unqualified-edit" },
+        })).resolves.toEqual({ status: "forbidden" });
+        await expect(db.gitHubAppRegistration.findUniqueOrThrow({ where: { id: created.registration.id } }))
+            .resolves.toMatchObject({ revision: 1, githubAppSlug: null });
+
+        // Home-owned management is a separate authority and never consumes a
+        // Team's credential policy.
+        const homeAdminAccountId = await createAccount("owner");
+        await expect(createHomeGitHubAppRegistration({
+            actorAccountId: homeAdminAccountId,
+            input: { ...input, githubAppId: 64n, githubClientId: "Iv1.home-unqualified" },
+        })).resolves.toMatchObject({ status: "created" });
+    });
+
     it("lets a current Team administrator create and list only its Team-owned Apps", async () => {
         const actorAccountId = await createAccount("member");
         const otherActorAccountId = await createAccount("member");
@@ -476,7 +557,13 @@ describe("managed GitHub App registration lifecycle", () => {
         })).resolves.toMatchObject({
             status: "ready",
             registrations: [{ githubAppId: 45n }],
-            installations: [{ id: installation.id, teamConsumers: [] }],
+            // A Team-owned App's own identity consumers decide what it must be
+            // granted; the Home-owned filter must not hide them from its Team.
+            installations: [{
+                id: installation.id,
+                teamConsumers: [],
+                requirements: { permissions: { members: "read" }, missingPermissions: [{ permission: "members", required: "read" }] },
+            }],
         });
         await expect(listGitHubAppRegistrations({
             actorAccountId: otherActorAccountId,

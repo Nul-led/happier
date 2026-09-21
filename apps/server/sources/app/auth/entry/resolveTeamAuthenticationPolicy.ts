@@ -1,4 +1,5 @@
 import {
+    normalizeAuthMethodId,
     normalizeTeamAuthenticationPolicyV1,
     TeamAuthenticationPolicyV1Schema,
     type TeamAcceptedAuthenticationV1,
@@ -22,12 +23,12 @@ export type ResolvedTeamAuthenticationPolicy =
     }>;
 
 function sameReference(left: TeamAcceptedAuthenticationV1, right: TeamAcceptedAuthenticationV1): boolean {
-    // Provider method IDs resolve case-insensitively through the catalog
-    // (normalizeId lowercases before availability/descriptor checks), so two
-    // references to the same method in different cases are the same choice.
+    // Provider method IDs resolve through the one canonical method-id identity
+    // (`normalizeAuthMethodId`), so two references to the same method written
+    // with different case or surrounding whitespace are the same choice.
     // Team connection IDs are exact opaque identities and compare exactly.
     return left.kind === right.kind && (left.kind === "home_method"
-        ? left.methodId.toLowerCase() === (right.kind === "home_method" ? right.methodId.toLowerCase() : undefined)
+        ? normalizeAuthMethodId(left.methodId) === (right.kind === "home_method" ? normalizeAuthMethodId(right.methodId) : undefined)
         : left.connectionId === (right.kind === "team_connection" ? right.connectionId : undefined));
 }
 
@@ -47,13 +48,12 @@ export function resolveTeamAuthenticationPolicy(input: Readonly<{
     const normalized = normalizeTeamAuthenticationPolicyV1(parsed.data);
     if (normalized === null) return { status: "inherit" };
 
-    // Provider method IDs are case-insensitive identities everywhere else in
-    // this module (`sameReference`) and in operation qualification, and the
-    // in-transaction caller already lowercases the catalog ids it passes. Join
-    // on the same normalized form so a stored mixed-case selector is not
-    // reported unavailable; connection IDs stay exact opaque identities.
+    // Provider method IDs carry one canonical identity everywhere else in this
+    // module (`sameReference`) and in operation qualification. Join on that same
+    // normalized form so a stored mixed-case or whitespace-padded selector is
+    // not reported unavailable; connection IDs stay exact opaque identities.
     const availableHomeMethods = new Set(
-        input.homeMethods.filter((method) => method.available).map((method) => method.id.toLowerCase()),
+        input.homeMethods.filter((method) => method.available).map((method) => normalizeAuthMethodId(method.id)),
     );
     const availableConnections = new Set(
         input.teamConnections.filter((connection) => connection.available).map((connection) => connection.id),
@@ -63,7 +63,7 @@ export function resolveTeamAuthenticationPolicy(input: Readonly<{
         choices: normalized.accepted.map((reference) => ({
             reference,
             availability: (reference.kind === "home_method"
-                ? availableHomeMethods.has(reference.methodId.toLowerCase())
+                ? availableHomeMethods.has(normalizeAuthMethodId(reference.methodId))
                 : availableConnections.has(reference.connectionId))
                 ? "usable" as const
                 : "unavailable" as const,
@@ -162,9 +162,8 @@ export async function resolveTeamAuthenticationPolicyInTx(
         };
     }
 
-    const normalizeId = (value: string) => value.trim().toLowerCase();
     const acceptedHomeMethodIds = structural.choices.flatMap((choice) =>
-        choice.reference.kind === "home_method" ? [normalizeId(choice.reference.methodId)] : []);
+        choice.reference.kind === "home_method" ? [normalizeAuthMethodId(choice.reference.methodId)] : []);
     const acceptedConnectionIds = structural.choices.flatMap((choice) =>
         choice.reference.kind === "team_connection" ? [choice.reference.connectionId] : []);
     const [effectiveHome, connectionReads, homeDescriptors, teamDescriptors, instances] = await Promise.all([
@@ -192,21 +191,21 @@ export async function resolveTeamAuthenticationPolicyInTx(
     }
 
     const accountHomeMethods = input.accountFacts
-        ? new Set(input.accountFacts.usableHomeMethodIds.map(normalizeId))
+        ? new Set(input.accountFacts.usableHomeMethodIds.map(normalizeAuthMethodId))
         : null;
     const accountConnections = input.accountFacts
         ? new Set(input.accountFacts.usableTeamConnectionIds)
         : null;
-    const nativeMethodIds = new Set(resolveAuthMethodRegistry(input.env).map((method) => normalizeId(method.id)));
+    const nativeMethodIds = new Set(resolveAuthMethodRegistry(input.env).map((method) => normalizeAuthMethodId(method.id)));
     const homeDescriptorById = new Map(homeDescriptors.map((descriptor) => [
-        normalizeId(descriptor.reference.id),
+        normalizeAuthMethodId(descriptor.reference.id),
         descriptor,
     ]));
     const teamDescriptorByProviderId = new Map(teamDescriptors.map((descriptor) => [
-        normalizeId(descriptor.reference.id),
+        normalizeAuthMethodId(descriptor.reference.id),
         descriptor,
     ]));
-    const effectiveHomeById = new Map(effectiveHome.decisions.map((decision) => [normalizeId(decision.id), decision]));
+    const effectiveHomeById = new Map(effectiveHome.decisions.map((decision) => [normalizeAuthMethodId(decision.id), decision]));
     const connectionReadById = new Map(acceptedConnectionIds.map((id, index) => [id, connectionReads[index]!] as const));
     const connectionById = new Map(connectionReads.flatMap((read) =>
         read.status === "ready" ? [[read.connection.id, read.connection] as const] : []));
@@ -225,7 +224,7 @@ export async function resolveTeamAuthenticationPolicyInTx(
             connectionUnreadable: read?.status === "unreadable",
             connected: connection?.state === "connected",
             descriptorOffered: connection !== undefined
-                && teamDescriptorByProviderId.has(normalizeId(connection.providerInstanceId)),
+                && teamDescriptorByProviderId.has(normalizeAuthMethodId(connection.providerInstanceId)),
         })] as const;
     });
     if ([...homeMethodAvailability, ...teamConnectionAvailability].some(([, availability]) => availability === "unreadable")) {
@@ -271,7 +270,7 @@ export async function resolveTeamAuthenticationPolicyInTx(
         const connection = connectionById.get(id);
         const successfulTest = connection?.lastSuccessfulTest;
         const descriptor = connection
-            ? teamDescriptorByProviderId.get(normalizeId(connection.providerInstanceId))
+            ? teamDescriptorByProviderId.get(normalizeAuthMethodId(connection.providerInstanceId))
             : undefined;
         if (
             connection !== undefined

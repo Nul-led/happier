@@ -17,6 +17,7 @@ import { voiceSurfaceHaptics } from '@/components/voice/surface/voiceSurfaceHapt
 import { useProjectedConnectedServicesRegistry } from '@/components/appShell/plugins/AppShellPluginUiProjection';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 import { readSessionOwnerMetadataView } from '@/sync/domains/session/readSessionOwnerMetadataView';
 import { normalizeSessionAddress, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { resolvePortableServerIdentityForRoutingId } from '@/sync/domains/server/resolvePortableServerIdentityForRoutingId';
@@ -46,6 +47,8 @@ import {
     resolveVoiceAttemptRecoveryAvailable,
     type VoiceAttemptRecoveryRuntimeTarget,
 } from './voiceAttemptRecovery';
+
+type OpenConversationTarget = Readonly<{ sessionId: string; serverId: string | null }>;
 
 const voiceProviderRegistry = createDefaultVoiceProviderRegistry();
 
@@ -406,14 +409,17 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             unsubscribeBindings();
         };
     }, []);
+    // The conversation the user can return to, with the Home its binding named.
     const bindingCacheRef = React.useRef<Readonly<{
         sessions: unknown;
         bindings: unknown;
         controlSessionId: string;
         adapterId: string | null;
-        value: string | null;
+        value: OpenConversationTarget | null;
     }> | null>(null);
-    const readOpenConversationSessionId = React.useCallback((): string | null => {
+    // The binding already names the conversation carrier's Home. Cached whole so the
+    // external-store snapshot keeps one identity while the inputs are unchanged.
+    const readOpenConversationTarget = React.useCallback((): OpenConversationTarget | null => {
         const controlSessionId = snapSessionId?.trim() ?? '';
         const sessions = storage.getState();
         const bindings = voiceSessionBindingStore.getState();
@@ -432,7 +438,12 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
             : null;
         // A global attempt is bound to no session, so there is nothing to return to; only an
         // attempt with a target session has a conversation the user came from.
-        const value = binding?.targetSessionAddress ? binding.conversationSessionId : null;
+        const value = binding?.targetSessionAddress
+            ? {
+                sessionId: binding.conversationSessionId,
+                serverId: binding.conversationSessionAddress?.serverId ?? null,
+            }
+            : null;
         bindingCacheRef.current = {
             sessions,
             bindings,
@@ -442,16 +453,20 @@ export function useVoiceAttemptControl(idleTarget: VoiceAttemptIdleTarget): Voic
         };
         return value;
     }, [snapAdapterId, snapSessionId]);
-    const openConversationSessionId = React.useSyncExternalStore(
+    const openConversationTarget = React.useSyncExternalStore(
         subscribeBindingSources,
-        readOpenConversationSessionId,
-        readOpenConversationSessionId,
+        readOpenConversationTarget,
+        readOpenConversationTarget,
     );
+    const openConversationSessionId = openConversationTarget?.sessionId ?? null;
 
     const onOpenConversation = React.useCallback(() => {
-        if (!openConversationSessionId) return;
-        router.push(`/session/${openConversationSessionId}` as never);
-    }, [openConversationSessionId, router]);
+        if (!openConversationTarget) return;
+        router.push(buildScopedSessionRouteHref({
+            sessionId: openConversationTarget.sessionId,
+            serverId: openConversationTarget.serverId,
+        }) as never);
+    }, [openConversationTarget, router]);
 
     return React.useMemo(
         () => ({

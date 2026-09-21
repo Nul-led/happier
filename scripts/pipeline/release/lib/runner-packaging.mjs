@@ -25,11 +25,14 @@ import { join } from 'node:path';
 
 export const RUNNER_NATIVE_SHELL_DIR = 'apps/cli/runner-native-shell';
 export const RUNNER_CORE_SIDECAR_STEM = 'happier-runner-core';
+/** The shell crate's `mainBinaryName`: what every Tauri build emits. */
+export const RUNNER_SHELL_BINARY_STEM = 'happier-runner';
 export const RUNNER_ACTIVATION_FILE_NAME = 'happier-runner.activation.json';
 
 const MACOS_APP_ROOT = 'Happier Runner.app';
+const WINDOWS_PAYLOAD_ROOT = 'Happier Runner';
 
-/** @type {Readonly<Record<string, Readonly<{ payloadKind: 'appimage' | 'app-bundle' | 'exe'; payloadRootName: string; executablePath: string }>>>} */
+/** @type {Readonly<Record<string, Readonly<{ payloadKind: 'appimage' | 'app-bundle' | 'portable-dir'; payloadRootName: string; executablePath: string; sidecarPath?: string }>>>} */
 const PAYLOADS = Object.freeze({
   'linux-x64': { payloadKind: 'appimage', payloadRootName: 'happier-runner', executablePath: 'happier-runner' },
   'linux-arm64': { payloadKind: 'appimage', payloadRootName: 'happier-runner', executablePath: 'happier-runner' },
@@ -43,7 +46,12 @@ const PAYLOADS = Object.freeze({
     payloadRootName: MACOS_APP_ROOT,
     executablePath: `${MACOS_APP_ROOT}/Contents/MacOS/happier-runner`,
   },
-  'windows-x64': { payloadKind: 'exe', payloadRootName: 'Happier Runner.exe', executablePath: 'Happier Runner.exe' },
+  'windows-x64': {
+    payloadKind: 'portable-dir',
+    payloadRootName: WINDOWS_PAYLOAD_ROOT,
+    executablePath: `${WINDOWS_PAYLOAD_ROOT}/Happier Runner.exe`,
+    sidecarPath: `${WINDOWS_PAYLOAD_ROOT}/happier-runner-core.exe`,
+  },
 });
 
 /**
@@ -51,9 +59,9 @@ const PAYLOADS = Object.freeze({
  * immutable payload and applicable native trust evidence can be admitted by the
  * release owner. This is publication eligibility, not a claim that the product
  * journey has passed or that an artifact is currently available. Windows stays
- * declared but ineligible: the approved
- * one-shot, no-installer contract has no Authenticode owner, and changing that
- * requires a plan amendment rather than a build flag.
+ * declared but ineligible: its closed portable payload is composable here, and
+ * Authenticode signing, timestamping and published-artifact evidence are the
+ * release checks it still needs.
  */
 export const RUNNER_PUBLICATION_ELIGIBLE_TARGET_IDS = Object.freeze(['linux-x64']);
 
@@ -71,6 +79,7 @@ const RUST_TARGETS = Object.freeze({
   'linux-arm64': 'aarch64-unknown-linux-gnu',
   'darwin-x64': 'x86_64-apple-darwin',
   'darwin-arm64': 'aarch64-apple-darwin',
+  'windows-x64': 'x86_64-pc-windows-msvc',
 });
 
 /** @param {{ os: string; arch: string }} target */
@@ -87,7 +96,13 @@ export function resolveRunnerPackageLayout(targetId) {
     payloadKind: payload.payloadKind,
     payloadRootName: payload.payloadRootName,
     executablePath: payload.executablePath,
-    activationFileName: RUNNER_ACTIVATION_FILE_NAME,
+    ...(payload.sidecarPath === undefined ? {} : { sidecarPath: payload.sidecarPath }),
+    // The shell resolves its activation file beside the executable it launches
+    // and pops out of the macOS bundle only, so a portable directory payload
+    // carries the activation JSON inside that directory.
+    activationFilePath: payload.payloadKind === 'portable-dir'
+      ? `${payload.payloadRootName}/${RUNNER_ACTIVATION_FILE_NAME}`
+      : RUNNER_ACTIVATION_FILE_NAME,
   };
 }
 
@@ -104,11 +119,6 @@ export function resolveRunnerPublicationEligibleBinaryTargets(availableTargets) 
 /** @param {{ os: string; arch: string }} target */
 export function resolveRunnerShellRustTarget(target) {
   const targetId = runnerTargetId(target);
-  if (targetId.startsWith('windows-')) {
-    throw new Error(
-      '[release] Windows Runner packaging is not publication eligible: the one-shot no-installer contract has no Authenticode owner',
-    );
-  }
   const rustTarget = RUST_TARGETS[targetId];
   if (!rustTarget) throw new Error(`[release] no Runner shell Rust target for ${targetId}`);
   return rustTarget;
@@ -117,19 +127,23 @@ export function resolveRunnerShellRustTarget(target) {
 /**
  * Tauri bundle identifier and its output directory for the target's single
  * one-shot payload. The two differ for macOS: the bundle is requested as `app`
- * but written under `bundle/macos`.
+ * but written under `bundle/macos`. A `portable-dir` payload has no Tauri
+ * bundle at all — every Windows format Tauri can emit is an installer — so the
+ * release packager composes the compiled shell and its sidecar itself.
  */
 function resolveShellBundle(targetId) {
   const { payloadKind } = resolveRunnerPackageLayout(targetId);
   if (payloadKind === 'appimage') return { id: 'appimage', directory: 'appimage' };
   if (payloadKind === 'app-bundle') return { id: 'app', directory: 'macos' };
+  if (payloadKind === 'portable-dir') return null;
   throw new Error(`[release] no one-shot Runner shell bundle for ${targetId}`);
 }
 
 /**
- * Exactly one bundle per invocation. `dmg`, `deb`, `rpm` and `nsis` are installer
- * formats the one-shot Runner must never publish, so they are never requested
- * rather than filtered out afterwards.
+ * Exactly one bundle per invocation, or none for the composed portable payload.
+ * `dmg`, `deb`, `rpm` and `nsis` are installer formats the one-shot Runner must
+ * never publish, so they are never requested rather than filtered out
+ * afterwards.
  *
  * @param {{ tauriBin: string; target: { os: string; arch: string }; version: string }} params
  * @returns {[string, string[]]}
@@ -137,24 +151,20 @@ function resolveShellBundle(targetId) {
 export function resolveRunnerShellBuildCommand({ tauriBin, target, version }) {
   const normalizedVersion = String(version ?? '').trim();
   if (!normalizedVersion) throw new Error('[release] Runner shell build requires a version');
+  const bundle = resolveShellBundle(runnerTargetId(target));
   return [tauriBin, [
     'build',
     '--target', resolveRunnerShellRustTarget(target),
-    '--bundles', resolveShellBundle(runnerTargetId(target)).id,
+    ...(bundle ? ['--bundles', bundle.id] : ['--no-bundle']),
     '--config', JSON.stringify({ version: normalizedVersion }),
   ]];
 }
 
 /** @param {{ shellDir: string; target: { os: string; arch: string } }} params */
 export function resolveRunnerShellBundleDirectory({ shellDir, target }) {
-  return join(
-    shellDir,
-    'target',
-    resolveRunnerShellRustTarget(target),
-    'release',
-    'bundle',
-    resolveShellBundle(runnerTargetId(target)).directory,
-  );
+  const bundle = resolveShellBundle(runnerTargetId(target));
+  const releaseDir = join(shellDir, 'target', resolveRunnerShellRustTarget(target), 'release');
+  return bundle ? join(releaseDir, 'bundle', bundle.directory) : releaseDir;
 }
 
 /**
@@ -171,6 +181,15 @@ export async function resolveRunnerShellPayload({ shellDir, target }) {
   const entries = await readdir(bundleDir).catch(() => {
     throw new Error(`[release] Runner shell build produced no bundle directory: ${bundleDir}`);
   });
+  if (layout.payloadKind === 'portable-dir') {
+    // Tauri emits the crate's `mainBinaryName`; the user-facing payload name is
+    // applied when the packager composes the payload directory.
+    const built = `${RUNNER_SHELL_BINARY_STEM}.exe`;
+    if (!entries.includes(built)) {
+      throw new Error(`[release] Runner shell build produced no ${built} in ${bundleDir}`);
+    }
+    return join(bundleDir, built);
+  }
   if (layout.payloadKind === 'appimage') {
     const candidates = entries.filter((name) => name.endsWith('.AppImage')).sort();
     if (candidates.length === 0) {
@@ -201,10 +220,13 @@ export function resolveRunnerBundleArchiveCommand({ payloadPath, archivePath }) 
 }
 
 /**
- * The staged sidecar name Tauri's `externalBin` resolves for the compiled target.
+ * The staged sidecar name Tauri's `externalBin` resolves for the compiled
+ * target. Windows sidecars carry the executable extension Tauri expects.
  *
  * @param {{ shellDir: string; target: { os: string; arch: string } }} params
  */
 export function resolveRunnerCoreSidecarPath({ shellDir, target }) {
-  return join(shellDir, 'binaries', `${RUNNER_CORE_SIDECAR_STEM}-${resolveRunnerShellRustTarget(target)}`);
+  const rustTarget = resolveRunnerShellRustTarget(target);
+  const extension = rustTarget.includes('-windows-') ? '.exe' : '';
+  return join(shellDir, 'binaries', `${RUNNER_CORE_SIDECAR_STEM}-${rustTarget}${extension}`);
 }

@@ -132,12 +132,15 @@ export async function countSessionPersonalAttentionRowsInTx(tx: Tx, params: Read
     return count;
 }
 
+/**
+ * One Account's credential-qualified access restriction. Both the request-bound
+ * snapshot and background refresh resolve it through the same access owner, so
+ * an admission without an access predicate is not a representable state.
+ */
 export type SessionPersonalAttentionAccountAdmission = Readonly<{
     accountId: string;
-    /** Credential-qualified access restriction. Structural background counts project access from the selected row. */
-    accessWhere?: Prisma.SessionWhereInput;
-    qualifiedTeamIds?: ReadonlySet<string>;
-    includeCredentialRestrictedTeamEntitlements?: boolean;
+    accessWhere: Prisma.SessionWhereInput;
+    qualifiedTeamIds: ReadonlySet<string>;
 }>;
 
 const SESSION_PERSONAL_ATTENTION_ACCOUNT_BATCH_SIZE = 50;
@@ -178,7 +181,7 @@ export async function countSessionPersonalAttentionRowsForAccountsInTx(
                         {
                             OR: batch.map((admission) => ({
                                 AND: [
-                                    ...(admission.accessWhere ? [admission.accessWhere] : []),
+                                    admission.accessWhere,
                                     createSessionPersonalAttentionCandidateWhere({
                                         accountId: admission.accountId,
                                         now: new Date(now),
@@ -213,8 +216,6 @@ export async function countSessionPersonalAttentionRowsForAccountsInTx(
                                 mentioned: false,
                             },
                             qualifiedTeamIds: admission.qualifiedTeamIds,
-                            includeCredentialRestrictedTeamEntitlements:
-                                admission.includeCredentialRestrictedTeamEntitlements,
                             now,
                         })) continue;
                         countedSessionIds.get(admission.accountId)?.add(row.id);

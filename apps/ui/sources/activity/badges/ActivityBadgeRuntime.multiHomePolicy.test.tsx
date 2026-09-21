@@ -25,6 +25,16 @@ const SHARED_SESSION_ID = 'shared-session';
 const activeHome = vi.hoisted(() => ({ serverId: 'server-1' }));
 
 /**
+ * How much of the badge corpus has actually answered. Startup is the interesting case: the
+ * store is not ready yet and only one of the two Homes has contributed anything.
+ */
+const corpusReadiness = vi.hoisted(() => ({
+    isDataReady: true,
+    coverageComplete: true,
+    homeServerIds: ['server-1', 'server-2'],
+}));
+
+/**
  * The store's Account settings follow the active Home, which is exactly why the badge may not read
  * them: one Account answering for a corpus that spans Homes is the defect under test.
  */
@@ -79,7 +89,7 @@ function createMultiHomeStorageState(): StorageState {
             'server-2': [{ type: 'session', sessionId: SHARED_SESSION_ID, serverId: 'server-2', serverName: null }],
         },
         concurrentSessionListCacheByServerId: {},
-        isDataReady: true,
+        isDataReady: corpusReadiness.isDataReady,
         profileScope: {
             serverId: activeHome.serverId,
             accountId: resolveBadgeHomeAccountId(activeHome.serverId),
@@ -113,7 +123,7 @@ installActivityBadgeRuntimeCommonModuleMocks({
         return createStorageModuleStub({
             storage,
             useAllSessions: () => [],
-            useFriendRequests: () => [],
+            useFriendRequestCount: () => 0,
             useLocalSetting: (key: string) => (
                 key === 'attentionDeviceOverridesV1'
                     ? undefined
@@ -146,10 +156,10 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
 
 vi.mock('@/activity/source/activityPersonalSessionMembership', () => ({
     useActivityPersonalSessionMembership: () => ({
-        // The canonical Activity Home set: both saved Homes, regardless of which one is active.
-        membershipByServerId: { 'server-1': [], 'server-2': [] },
+        // The canonical Activity Home set: every saved Home, regardless of which one is active.
+        membershipByServerId: Object.fromEntries(corpusReadiness.homeServerIds.map((serverId) => [serverId, []])),
         statesByServerId: {},
-        coverageComplete: true,
+        coverageComplete: corpusReadiness.coverageComplete,
     }),
 }));
 
@@ -199,6 +209,9 @@ function readLastAppliedBadgeCount(): number | undefined {
 describe('ActivityBadgeRuntime multi-Home policy identity', () => {
     beforeEach(async () => {
         activeHome.serverId = 'server-1';
+        corpusReadiness.isDataReady = true;
+        corpusReadiness.coverageComplete = true;
+        corpusReadiness.homeServerIds = ['server-1', 'server-2'];
         await persistBadgeHomeAccountSettings('server-1', accountPolicyByServerId['server-1']);
         await persistBadgeHomeAccountSettings('server-2', accountPolicyByServerId['server-2']);
     });
@@ -236,6 +249,32 @@ describe('ActivityBadgeRuntime multi-Home policy identity', () => {
 
         // Home A still suppresses unread and Home B can no longer be asked, so nothing qualifies.
         expect(readLastAppliedBadgeCount()).toBe(0);
+        await act(async () => { tree.unmount(); });
+    });
+
+    it('leaves the OS badge alone while a second Home has not contributed its count yet', async () => {
+        corpusReadiness.isDataReady = false;
+        corpusReadiness.coverageComplete = false;
+
+        const tree = await renderBadgeRuntime();
+
+        // The closed-app badge is last-writer-wins, and the running app is the writer that
+        // knows better: with two Homes in the corpus and one still warming, every number it
+        // could write is one it already knows is short, so the last written value stands.
+        expect(applyExpoNativeBadgeState).not.toHaveBeenCalled();
+        await act(async () => { tree.unmount(); });
+    });
+
+    it('still writes a warm count when the corpus is one Home', async () => {
+        corpusReadiness.isDataReady = false;
+        corpusReadiness.coverageComplete = false;
+        corpusReadiness.homeServerIds = ['server-1'];
+
+        const tree = await renderBadgeRuntime();
+
+        // One Home cannot be partial across Homes: waiting here would delay every badge on
+        // the ordinary single-Home launch for no gain.
+        expect(applyExpoNativeBadgeState).toHaveBeenCalled();
         await act(async () => { tree.unmount(); });
     });
 

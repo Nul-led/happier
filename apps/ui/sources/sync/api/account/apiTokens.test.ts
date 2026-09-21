@@ -1,5 +1,23 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
+// This fixture stages a Home directly instead of running connectionManager's
+// restore lifecycle, so nothing ever publishes an applied active Home and
+// `getActiveServerAccountScope()` returns null for every request. Everything
+// else in the connection owner stays real; only the two applied-runtime facts
+// the lifecycle would have produced are supplied, the same way the direct-Sync
+// fixtures do (`sync.optimisticThinking.test.ts`, `sync.sessionMissingServerScope.test.ts`).
+vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
+    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+    return {
+        getAppliedActiveServerSnapshot: () => getActiveServerSnapshot(),
+        getAppliedActiveServerId: () => getActiveServerSnapshot().serverId,
+        isAppliedActiveServerRuntimeAvailable: () => true,
+        subscribeAppliedActiveServer: () => () => {},
+        subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
+        subscribeApplyingActiveServer: () => () => {},
+    };
+});
+
 beforeAll(async () => {
     // Load the real scoped store once; repeated graph transforms obscure the
     // HTTP contract and can outlive a test while the shared VM is busy.

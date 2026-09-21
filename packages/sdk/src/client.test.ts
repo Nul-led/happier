@@ -76,6 +76,47 @@ import {
 } from './index.js';
 
 const TEST_API_TOKEN = 'hap_v1_123e4567-e89b-42d3-a456-426614174000_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+// Results that satisfy the Actions' own declared output schemas. The SDK
+// presents a typed result only when the response really is one, so a stub that
+// stands in for a successful execution has to be a real result of that Action.
+const MESSAGE_SEND_RESULT = { status: 'accepted', localId: 'input-1' } as const;
+const RUN_RESULT = {
+  runId: 'run-1', callId: 'call-1', sidechainId: 'sidechain-1', intent: 'review',
+  backendTarget: { kind: 'builtInAgent', agentId: 'codex' }, permissionMode: 'default',
+  retentionPolicy: 'ephemeral', runClass: 'bounded', ioMode: 'request_response',
+  status: 'running', startedAtMs: 1,
+} as const;
+const TRANSCRIPT_RESULT = {
+  ok: true, sessionId: 'session-1', items: [], nextCursor: null, hasMore: false,
+  diagnostics: { rawRowsScanned: 1, pagesFetched: 1, scanLimitReached: false, payloadTruncations: 1 },
+} as const;
+const WAIT_IDLE_RESULT = { ok: true, sessionId: 'session-1', idle: true, observedAt: 1 } as const;
+
+function resultFor(actionId: string): unknown {
+  switch (actionId) {
+    case 'session.message.send': return MESSAGE_SEND_RESULT;
+    case 'execution.run.get': return { run: RUN_RESULT };
+    case 'execution.run.wait': return {
+      ok: true, status: 'succeeded', result: { run: { ...RUN_RESULT, status: 'succeeded' } },
+    };
+    case 'execution.run.stop': return { ok: true };
+    case 'session.transcript.get': return TRANSCRIPT_RESULT;
+    case 'session.wait.idle': return WAIT_IDLE_RESULT;
+    case 'session.stop': return { ok: true };
+    default: return {};
+  }
+}
+
+/** The ABI call-through tests are about the request that reaches transport; a
+ * real Action result is proven by the tests that consume one. */
+const RESULT_NOT_UNDER_TEST = 'result_not_under_test';
+async function callsTransport(call: Promise<unknown>): Promise<void> {
+  await expect(call).rejects.toMatchObject({
+    name: 'HappierActionError', code: RESULT_NOT_UNDER_TEST,
+  });
+}
+
 const TEST_ALT_API_TOKEN = 'hap_v1_223e4567-e89b-42d3-a456-426614174001_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 function response(body: unknown, status = 200): Response {
@@ -215,6 +256,24 @@ describe('Happier SDK client', () => {
           audiences: [], tagIds: [],
         },
       })).rejects.toMatchObject({ code: 'session_list_query_update_required' });
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('rejects a successful Action result that does not satisfy its declared output schema', async () => {
+    const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
+      v: 1,
+      actionId: 'session.list',
+      execution: { ok: true, result: { sessions: 'not-an-array', nextCursor: null, hasNext: false } },
+    }));
+    vi.stubGlobal('fetch', fetch);
+    const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
+    try {
+      await expect(client.actions.session.list({})).rejects.toMatchObject({
+        name: 'HappierTransportError',
+        code: 'invalid_action_output',
+      });
     } finally {
       await client.close();
     }
@@ -544,15 +603,12 @@ describe('Happier SDK client', () => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       const body = JSON.parse(String(init?.body));
       calls.push({ actionId, input: body.input, target: body.target, requestId: body.requestId });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result:
-        actionId === 'execution.run.get' ? { run: { sidechainId: 'sidechain-1' } }
-          : actionId === 'session.transcript.get' ? { items: [] } : { status: 'outcomeUnknown' },
-      } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: resultFor(actionId) } });
     });
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
     const run = client.sessions.get('session-1').runs.get('run-1');
-    await expect(run.sendAndWait('hello', { localId: 'input-1' })).resolves.toEqual({ status: 'outcomeUnknown' });
+    await expect(run.sendAndWait('hello', { localId: 'input-1' })).resolves.toEqual(MESSAGE_SEND_RESULT);
     await run.history({ limit: 5 }, { requestId: 'history-1', target: { kind: 'machine', machineId: 'machine-1' } });
     expect(calls.map(({ actionId }) => actionId)).toEqual([
       'session.message.send', 'execution.run.get', 'session.transcript.get',
@@ -572,7 +628,7 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       calls.push({ actionId, input: JSON.parse(String(init?.body)).input });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { status: 'ok' } } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: resultFor(actionId) } });
     });
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
@@ -627,7 +683,7 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       calls.push({ actionId, input: JSON.parse(String(init?.body)).input });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { status: 'ok' } } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: resultFor(actionId) } });
     });
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
@@ -644,7 +700,7 @@ describe('Happier SDK client', () => {
   });
 
   it('rejects host-only and unknown fields before a bound run send reaches transport', async () => {
-    const fetch = vi.fn(async () => response({ v: 1, actionId: 'session.message.send', execution: { ok: true, result: {} } }));
+    const fetch = vi.fn(async () => response({ v: 1, actionId: 'session.message.send', execution: { ok: true, result: MESSAGE_SEND_RESULT } }));
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
     const run = client.sessions.get('session-1').runs.get('run-1');
@@ -682,7 +738,7 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async () => response({
       v: 1,
       actionId: 'session.message.send',
-      execution: { ok: true, result: {} },
+      execution: { ok: true, result: MESSAGE_SEND_RESULT },
     }));
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
@@ -706,7 +762,7 @@ describe('Happier SDK client', () => {
   });
 
   it('refuses a transcript projection on a bound run history read without selecting one silently', async () => {
-    const fetch = vi.fn(async () => response({ v: 1, actionId: 'execution.run.get', execution: { ok: true, result: { run: { sidechainId: 'sidechain-1' } } } }));
+    const fetch = vi.fn(async () => response({ v: 1, actionId: 'execution.run.get', execution: { ok: true, result: { run: RUN_RESULT } } }));
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
 
@@ -717,19 +773,23 @@ describe('Happier SDK client', () => {
     await client.close();
   });
 
-  it('reports missing run sidechain correspondence as a typed domain failure', async () => {
+  it('never reads a transcript for a run correspondence the Action did not really return', async () => {
     const actionIds: string[] = [];
     const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       actionIds.push(actionId);
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: { run: {} } } });
+      // A run that names no transcript sidechain is not a result this Action
+      // can return, so the correspondence read fails at the typed boundary and
+      // no sidechain transcript request follows it.
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: true,
+        result: { run: { ...RUN_RESULT, sidechainId: '' } } } });
     });
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
 
     await expect(client.sessions.get('session-1').runs.get('run-1').history())
       .rejects.toMatchObject({
-        name: 'HappierActionError', code: 'execution_run_correspondence_unavailable',
+        name: 'HappierTransportError', code: 'invalid_action_output',
       });
     expect(actionIds).toEqual(['execution.run.get']);
     await client.close();
@@ -901,7 +961,11 @@ describe('Happier SDK client', () => {
         authenticationPolicyStatus: 'available',
       },
       viewerRole: 'owner',
-      capabilities: {},
+      capabilities: {
+        viewTeam: true, manageSettings: true, managePolicy: true, manageMembers: true,
+        manageGroups: true, manageInvitations: true, manageOwners: true,
+        manageAuthentication: true, archiveTeam: true, restoreTeam: true,
+      },
       admission: { historyChoice: { admin: 'choice', member: 'choice', guest: 'hidden' } },
     };
     const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
@@ -1024,7 +1088,7 @@ describe('Happier SDK client', () => {
       return responseForRequest(init, {
         v: 1,
         actionId: 'session.message.send',
-        execution: { ok: true, result: { accepted: true } },
+        execution: { ok: true, result: MESSAGE_SEND_RESULT },
       });
     }));
 
@@ -1088,7 +1152,7 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
       v: 1,
       actionId: 'session.message.send',
-      execution: { ok: true, result: { accepted: true } },
+      execution: { ok: true, result: MESSAGE_SEND_RESULT },
     }));
     vi.stubGlobal('fetch', fetch);
 
@@ -1135,11 +1199,7 @@ describe('Happier SDK client', () => {
         actionId,
         execution: {
           ok: true,
-          result: actionId === 'session.wait.idle'
-            ? { idle: true }
-            : actionId === 'session.transcript.get'
-              ? { messages: [] }
-              : { ok: true },
+          result: resultFor(actionId),
         },
       });
     });
@@ -1169,7 +1229,7 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (_url: URL | RequestInfo, init?: RequestInit) => responseForRequest(init, {
       v: 1,
       actionId: 'session.message.send',
-      execution: { ok: true, result: { ok: true } },
+      execution: { ok: true, result: MESSAGE_SEND_RESULT },
     }));
     vi.stubGlobal('fetch', fetch);
 
@@ -1291,7 +1351,12 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => response({
       v: 1,
       actionId: 'session.spawn_new',
-      execution: { ok: true, result: { sessionId: 'session-1' } },
+      execution: { ok: true, result: {
+        type: 'success', disposition: 'created', sessionId: 'session-1',
+        executionTarget: { serverId: 'server-1', machineId: 'machine-7' },
+        organizationPlacement: { folderId: null, tagIds: [] },
+        initialInput: { status: 'notRequested' },
+      } },
       requestId: JSON.parse(String(init?.body)).requestId,
     }));
     vi.stubGlobal('fetch', fetch);
@@ -1318,7 +1383,19 @@ describe('Happier SDK client', () => {
     const fetch = vi.fn(async (_url: string, init?: RequestInit) => responseForRequest(init, {
       v: 1,
       actionId: 'workflow.run.start',
-      execution: { ok: true, result: { run: {}, admission: 'created' } },
+      execution: { ok: true, result: {
+        run: {
+          id: 'run-1', origin: { kind: 'automation', automationId: 'automation-1' },
+          state: 'queued', revision: 1, machineId: 'machine-1',
+          workflowCustodyState: null, workflowResultDeliveryState: null,
+          availability: {
+            pause: false, resumeBoundary: false, restoreWorkspace: false,
+            cancel: false, inspectExecution: false, disabledReasons: [],
+          },
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+        admission: 'created',
+      } },
     }));
     vi.stubGlobal('fetch', fetch);
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
@@ -1352,20 +1429,20 @@ describe('Happier SDK client', () => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       const input = JSON.parse(String(init?.body)).input;
       calls.push({ actionId, input });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: false, errorCode: RESULT_NOT_UNDER_TEST, error: RESULT_NOT_UNDER_TEST } });
     });
     vi.stubGlobal('fetch', fetch);
 
     const poolId = '99d55938-f860-4af8-8023-01fecec86f35';
     const create = { poolId, name: 'Fast', description: 'Home-readable', members: [] };
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
-    await client.actions.machines.pools.list({});
-    await client.actions.machines.pools.get({ poolId });
-    await client.actions.machines.pools.create(create);
-    await client.actions.machines.pools.create(create);
-    await client.actions.machines.pools.update({ ...create, expectedRevision: 4 });
-    await client.actions.machines.pools.delete({ poolId, expectedRevision: 4 });
-    await client.actions.machines.pools.resolve({ poolId, requestKey: 'selection-1' });
+    await callsTransport(client.actions.machines.pools.list({}));
+    await callsTransport(client.actions.machines.pools.get({ poolId }));
+    await callsTransport(client.actions.machines.pools.create(create));
+    await callsTransport(client.actions.machines.pools.create(create));
+    await callsTransport(client.actions.machines.pools.update({ ...create, expectedRevision: 4 }));
+    await callsTransport(client.actions.machines.pools.delete({ poolId, expectedRevision: 4 }));
+    await callsTransport(client.actions.machines.pools.resolve({ poolId, requestKey: 'selection-1' }));
 
     expect(calls).toEqual([
       { actionId: 'machines.pools.list', input: {} },
@@ -1384,23 +1461,23 @@ describe('Happier SDK client', () => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       const input = JSON.parse(String(init?.body)).input;
       calls.push({ actionId, input });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: false, errorCode: RESULT_NOT_UNDER_TEST, error: RESULT_NOT_UNDER_TEST } });
     });
     vi.stubGlobal('fetch', fetch);
 
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
-    await client.actions.identity.providers.remove.preview({
+    await callsTransport(client.actions.identity.providers.remove.preview({
       owner: { kind: 'home' }, id: 'provider-1', expectedRevision: 1,
-    });
-    await client.actions.teams.identity.connections.remove.preview({
+    }));
+    await callsTransport(client.actions.teams.identity.connections.remove.preview({
       v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 1,
-    });
-    await client.actions.teams.directory.sources.remove.preview({
+    }));
+    await callsTransport(client.actions.teams.directory.sources.remove.preview({
       v: 1, teamId: 'team-1', sourceId: 'source-1',
-    });
-    await client.actions.teams.directory.sources.remove.execute({
+    }));
+    await callsTransport(client.actions.teams.directory.sources.remove.execute({
       v: 1, teamId: 'team-1', sourceId: 'source-1',
-    });
+    }));
 
     expect(calls).toEqual([
       { actionId: 'identity.providers.remove.preview', input: {
@@ -1425,27 +1502,27 @@ describe('Happier SDK client', () => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       const input = JSON.parse(String(init?.body)).input;
       calls.push({ actionId, input });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: {} } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: false, errorCode: RESULT_NOT_UNDER_TEST, error: RESULT_NOT_UNDER_TEST } });
     });
     vi.stubGlobal('fetch', fetch);
 
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
     const providerOwner = { kind: 'team' as const, teamId: 'team-1' };
-    await client.actions.identity.providers.test.start({
+    await callsTransport(client.actions.identity.providers.test.start({
       owner: providerOwner, id: 'provider-1', expectedRevision: 3, expectedSecurityRevision: 2,
-    });
-    await client.actions.identity.providers.test.consume({
+    }));
+    await callsTransport(client.actions.identity.providers.test.consume({
       owner: providerOwner, id: 'provider-1', resultHandle: 'provider-result',
-    });
-    await client.actions.teams.identity.connections.test.start({
+    }));
+    await callsTransport(client.actions.teams.identity.connections.test.start({
       v: 1, teamId: 'team-1', connectionId: 'connection-1', expectedRevision: 3,
-    });
-    await client.actions.teams.identity.connections.test.consume({
+    }));
+    await callsTransport(client.actions.teams.identity.connections.test.consume({
       v: 1, teamId: 'team-1', connectionId: 'connection-1', resultHandle: 'connection-result',
-    });
-    await client.actions.teams.identity.workos.adminPortalLink.create({
+    }));
+    await callsTransport(client.actions.teams.identity.workos.adminPortalLink.create({
       v: 1, teamId: 'team-1', connectionId: 'connection-1', intent: 'sso',
-    });
+    }));
 
     expect(calls).toEqual([
       { actionId: 'identity.providers.test.start', input: {
@@ -1931,7 +2008,7 @@ describe('Happier SDK client', () => {
         return responseForRequest(init, {
           v: 1,
           actionId,
-          execution: { ok: true, result: { accepted: true } },
+          execution: { ok: true, result: MESSAGE_SEND_RESULT },
         });
       });
       vi.stubGlobal('fetch', fetch);
@@ -2174,12 +2251,12 @@ describe('Happier SDK client', () => {
         input: envelope.input,
         ...(typeof envelope.requestId === 'string' ? { requestId: envelope.requestId } : {}),
       });
-      return responseForRequest(init, { v: 1, actionId, execution: { ok: true, result: [] } });
+      return responseForRequest(init, { v: 1, actionId, execution: { ok: false, errorCode: RESULT_NOT_UNDER_TEST, error: RESULT_NOT_UNDER_TEST } });
     }));
 
     const actions = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN }).actions;
-    await actions.search({ query: 'session' });
-    await actions.invoke({ pluginId: 'acme.notes', localId: 'save' }, { note: 'Remember' });
+    await callsTransport(actions.search({ query: 'session' }));
+    await callsTransport(actions.invoke({ pluginId: 'acme.notes', localId: 'save' }, { note: 'Remember' }));
 
     expect(requests).toEqual([
       { actionId: 'action.spec.search', input: { query: 'session' } },
@@ -2197,12 +2274,12 @@ describe('Happier SDK client', () => {
       const actionId = decodeURIComponent(new URL(String(url)).pathname.split('/').at(-1) ?? '');
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
       requests.push({ actionId, body });
-      return response({ v: 1, actionId, execution: { ok: true, result: {} } });
+      return response({ v: 1, actionId, execution: { ok: false, errorCode: RESULT_NOT_UNDER_TEST, error: RESULT_NOT_UNDER_TEST } });
     }));
 
     const client = connect({ endpoint: 'http://daemon', token: TEST_API_TOKEN });
-    await client.actions.get({ id: 'session.status.get' });
-    await client.machine('machine-7').actions.get({ id: 'session.status.get' });
+    await callsTransport(client.actions.get({ id: 'session.status.get' }));
+    await callsTransport(client.machine('machine-7').actions.get({ id: 'session.status.get' }));
 
     expect(requests).toEqual([
       {

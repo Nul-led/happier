@@ -166,6 +166,7 @@ whole recipe blindly:
 | A server-origin call has no exact machine or resolvable Session target | `HappierActionError` with `code` `target_required` | Select a machine as shown below and use a machine-bound client. |
 | The Session committed but its requested initial message did not settle as admitted | `HappierSessionInitialInputError` with the committed `session` and `result.initialInput` | Inspect that Session instead of spawning another one blindly. |
 | Authentication, HTTP admission, networking, JSON, or response validation fails | `HappierTransportError`; HTTP failures retain `status` and a typed `code` when supplied | Correct the token or endpoint. Inspect current state before retrying an interrupted mutation. |
+| A successful response carries a result the Action's declared output schema does not admit | `HappierTransportError` with `code` `invalid_action_output` | The SDK never presents an unchecked value as a typed result. Check that the target Home and this SDK version are current. |
 
 ### Use the configured server and an exact machine
 

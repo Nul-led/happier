@@ -63,6 +63,17 @@ type ResourceAudience = Readonly<{
 
 const NO_AUDIENCE: ResourceAudience = { groupGrants: [], memberGrants: [] };
 
+/**
+ * The candidate window the external-API listing walks, in rows.
+ *
+ * This is the maximum `limit` the administration-list contract already accepts
+ * (`TeamCredentialResourceListInputV1Schema.limit`, `packages/protocol/src/teams/credentials/resourceV1.ts`),
+ * reused so a candidate window is never smaller than a page this endpoint may
+ * be asked to serve. It bounds nothing new: a single request may already ask
+ * for this many resources, and the walk still stops on the Team's own keyset.
+ */
+const EXTERNAL_API_CANDIDATE_WINDOW = 100;
+
 async function readAudiencesInTx(tx: Tx, resourceIds: readonly string[]): Promise<Map<string, ResourceAudience>> {
     const audiences = new Map<string, { groupGrants: { teamGroupId: string; deliveryMode: string }[]; memberGrants: { teamMembershipId: string; deliveryMode: string }[] }>();
     if (resourceIds.length === 0) return audiences;
@@ -1076,7 +1087,7 @@ export async function readTeamCredentialResourcePageInTx(tx: Tx, input: Credenti
             ? ['direct', 'both'] as const
             : null;
     const now = new Date();
-    const readAdministrationCandidates = async (candidateAfter: typeof after) => await tx.teamCredentialResource.findMany({
+    const readAdministrationCandidates = async (candidateAfter: typeof after, windowSize: number = limit) => await tx.teamCredentialResource.findMany({
         where: {
             teamId: input.teamId,
             ...(!qualifiedViewer.manageCredentials ? { custodianAccountId: input.actorAccountId } : {}),
@@ -1107,7 +1118,7 @@ export async function readTeamCredentialResourcePageInTx(tx: Tx, input: Credenti
             ] } : {}),
         },
         orderBy: [{ displayName: 'asc' }, { id: 'asc' }],
-        take: limit + 1,
+        take: windowSize + 1,
     });
     let externalApiAudiences: Map<string, ResourceAudience> | null = null;
     let administrationRowsWithLookahead: readonly ResourceRow[];
@@ -1128,10 +1139,17 @@ export async function readTeamCredentialResourcePageInTx(tx: Tx, input: Credenti
         // Team's own resources are exhausted, the same storage boundary the
         // unfiltered listing already scans. A local window budget would answer
         // an empty page beside a cursor that still points at matching rows.
+        //
+        // The candidate window is the largest page this contract can already be
+        // asked for (`TeamCredentialResourceListInputV1Schema.limit`), not the
+        // caller's chosen page size, so the number of candidate reads follows
+        // the Team's own keyset instead of multiplying as the requested page
+        // shrinks. It is not a new bound: one request may already ask for this
+        // many rows.
         while (true) {
-            const candidates = await readAdministrationCandidates(windowAfter);
-            moreCandidates = candidates.length > limit;
-            const processed = candidates.slice(0, limit);
+            const candidates = await readAdministrationCandidates(windowAfter, EXTERNAL_API_CANDIDATE_WINDOW);
+            moreCandidates = candidates.length > EXTERNAL_API_CANDIDATE_WINDOW;
+            const processed = candidates.slice(0, EXTERNAL_API_CANDIDATE_WINDOW);
             if (processed.length === 0) break;
             const current = await retainResourcesWithCurrentExternalApiKeyInTx(tx, processed, now);
             for (const [key, value] of current.audiences) retainedAudiences.set(key, value);

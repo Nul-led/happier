@@ -15,10 +15,17 @@ import {
     authorizeGitHubAppManagementInTx,
     beginGitHubAppInstallationVerification,
     createGitHubAppRegistration,
+    projectGitHubAppManagementAuthenticationV1,
     readGitHubAppRegistrationRuntime,
     type BeginGitHubAppInstallationVerificationResult,
+    type GitHubAppManagementAuthorizationInput,
     type GitHubAppRegistrationView,
 } from "./githubManagedAppLifecycle";
+import {
+    GitHubAppManagementAuthenticationV1Schema,
+    type GitHubAppManagementAuthenticationV1,
+} from "./githubManagedApp";
+import type { TeamOperationAuthenticationContext } from "@/app/teams/actorContext";
 
 const GITHUB_MANIFEST_PURPOSE = "github_app_manifest_setup" as const;
 const GITHUB_CALLBACK_PROVIDER_ID = "github";
@@ -33,6 +40,10 @@ const GitHubManifestSetupContinuationSchema = z.object({
     ]),
     registrationId: z.string().min(1),
     registrationRevision: z.number().int().positive(),
+    // The initiating request's server-stamped authentication facts. The setup
+    // return is a browser redirect with no Happier credential, so the finalizer
+    // re-runs the same authorization with what the server observed.
+    authentication: GitHubAppManagementAuthenticationV1Schema.optional(),
 }).strict();
 
 export function isGitHubAppManifestSetupContinuationValue(value: string): boolean {
@@ -93,19 +104,14 @@ export type BeginGitHubAppManifestSetupResult =
     | Readonly<{ status: "ready"; authorizeUrl: string }>
     | Readonly<{ status: "forbidden" | "github_app_not_configured" }>;
 
-export async function beginGitHubAppManifestSetup(params: Readonly<{
-    actorAccountId: string;
-    owner: ProviderCatalogContext;
+export async function beginGitHubAppManifestSetup(params: GitHubAppManagementAuthorizationInput & Readonly<{
     appName: string;
     githubOwner: Readonly<{ kind: "account" }> | Readonly<{ kind: "organization"; login: string }>;
     env: NodeJS.ProcessEnv;
 }>): Promise<BeginGitHubAppManifestSetupResult> {
-    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(
-        tx,
-        params.actorAccountId,
-        params.owner,
-    ));
+    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, params));
     if (!authorized) return { status: "forbidden" };
+    const authentication = projectGitHubAppManagementAuthenticationV1(params);
     const publicServerUrl = resolveConfiguredPublicServerUrl(params.env);
     if (!publicServerUrl) return { status: "github_app_not_configured" };
 
@@ -120,7 +126,10 @@ export async function beginGitHubAppManifestSetup(params: Readonly<{
                     value: JSON.stringify({
                         provider: GITHUB_CALLBACK_PROVIDER_ID,
                         purpose: GITHUB_MANIFEST_PURPOSE,
-                        githubAppManifestSetup: { owner: params.owner },
+                        githubAppManifestSetup: {
+                            owner: params.owner,
+                            ...(authentication ? { authentication } : {}),
+                        },
                         // The shared attempt parser retains these fields for all
                         // callback purposes; manifest conversion does not use them.
                         pkceCodeVerifier: randomBytes(32).toString("base64url"),
@@ -226,6 +235,7 @@ export async function persistGitHubAppManifestSetupContinuation(input: Readonly<
     expiresAt: Date;
     actorAccountId: string;
     owner: ProviderCatalogContext;
+    authentication?: GitHubAppManagementAuthenticationV1;
     registration: GitHubAppRegistrationView;
 }>): Promise<boolean> {
     if (input.expiresAt.getTime() <= Date.now()) return false;
@@ -239,6 +249,7 @@ export async function persistGitHubAppManifestSetupContinuation(input: Readonly<
                     owner: input.owner,
                     registrationId: input.registration.id,
                     registrationRevision: input.registration.revision,
+                    ...(input.authentication ? { authentication: input.authentication } : {}),
                 })),
                 expiresAt: input.expiresAt,
             },
@@ -271,11 +282,12 @@ export async function completeGitHubAppManifestInstallationSetup(input: Readonly
     }
     const parsed = GitHubManifestSetupContinuationSchema.safeParse(decoded);
     if (!parsed.success || parsed.data.actorAccountId !== state.userId) return { status: "invalid_state" };
-    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(
-        tx,
-        state.userId!,
-        parsed.data.owner,
-    ));
+    const authentication = parsed.data.authentication;
+    const authorized = await inTx(async (tx) => await authorizeGitHubAppManagementInTx(tx, {
+        ...authentication,
+        actorAccountId: state.userId!,
+        owner: parsed.data.owner,
+    }));
     if (!authorized) return { status: "forbidden" };
     const consumed = await db.repeatKey.deleteMany({
         where: { key, value: row.value, expiresAt: { gt: new Date() } },
@@ -323,6 +335,7 @@ export async function completeGitHubAppManifestInstallationSetup(input: Readonly
         select: { revision: true },
     });
     return await beginGitHubAppInstallationVerification({
+        ...authentication,
         actorAccountId: state.userId,
         owner: parsed.data.owner,
         registrationId: registration.id,
@@ -366,14 +379,16 @@ export type CompleteGitHubAppManifestSetupResult =
     | Readonly<{ status: "forbidden" | "github_enterprise_origin_not_approved" | "github_manifest_exchange_failed" }>
     | Readonly<{ status: "github_app_already_registered" }>;
 
-export async function completeGitHubAppManifestSetup(params: Readonly<{
-    actorAccountId: string;
-    owner: ProviderCatalogContext;
-    code: string;
-    env: NodeJS.ProcessEnv;
-}>): Promise<CompleteGitHubAppManifestSetupResult> {
+export async function completeGitHubAppManifestSetup(
+    params: Partial<TeamOperationAuthenticationContext> & Readonly<{
+        actorAccountId: string;
+        owner: ProviderCatalogContext;
+        code: string;
+        env: NodeJS.ProcessEnv;
+    }>,
+): Promise<CompleteGitHubAppManifestSetupResult> {
     const prepared = await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params.actorAccountId, params.owner)) {
+        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
             return { status: "forbidden" as const };
         }
         return await resolveManagedIdentityNetworkPolicyInTx(tx, { env: params.env, timeoutSeconds: 30 });
@@ -403,8 +418,7 @@ export async function completeGitHubAppManifestSetup(params: Readonly<{
     const converted = GitHubManifestConversionSchema.safeParse(raw);
     if (!converted.success) return { status: "github_manifest_exchange_failed" };
     const result = await createGitHubAppRegistration({
-        actorAccountId: params.actorAccountId,
-        owner: params.owner,
+        ...params,
         input: {
             githubHost: "https://github.com",
             githubAppId: BigInt(converted.data.id),

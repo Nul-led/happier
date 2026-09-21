@@ -308,6 +308,9 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }));
             }
             const completed = await completeGitHubAppManifestSetup({
+                // The server stamped these facts on the request that started
+                // the setup; the redirect itself carries no Happier credential.
+                ...binding.authentication,
                 actorAccountId: userId,
                 owner: binding.owner,
                 code,
@@ -326,6 +329,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 expiresAt: attempt.expiresAt,
                 actorAccountId: userId,
                 owner: binding.owner,
+                ...(binding.authentication ? { authentication: binding.authentication } : {}),
                 registration: completed.registration,
             });
             if (!continuationPersisted) {
@@ -369,6 +373,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 }));
             }
             const resolved = await resolveGitHubAppInstallationVerificationOAuth({
+                ...binding.authentication,
                 actorAccountId: userId,
                 binding,
                 env: process.env,
@@ -397,6 +402,7 @@ export function registerOAuthCallbackRoute(app: Fastify) {
                 });
                 const profile = parseManagedGitHubUserProfile(exchanged.profile);
                 const verified = await verifyGitHubAppInstallationWithAdministratorProfile({
+                    ...binding.authentication,
                     actorAccountId: userId,
                     owner: binding.owner,
                     registrationId: binding.registrationId,

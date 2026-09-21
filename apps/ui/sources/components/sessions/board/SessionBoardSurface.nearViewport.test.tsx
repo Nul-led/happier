@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
     createSessionSurfaceNoteDocumentV1,
+    type SessionBoardItemWidth,
     type SessionBoardLayoutV1,
     type SessionSurfaceItemV1,
 } from '@happier-dev/protocol/sessions/board';
@@ -47,19 +48,29 @@ function note(title: string): SessionSurfaceItemV1 {
 
 const ITEM_IDS = Array.from({ length: PLACEMENT_COUNT }, (_value, index) => `note-${index}`);
 
-const LAYOUT: SessionBoardLayoutV1 = {
-    v: 1,
-    tabs: [{
-        id: 'overview',
-        title: 'Overview',
-        items: ITEM_IDS.map((itemId) => ({ itemId, width: 'full' })),
-    }],
-} as SessionBoardLayoutV1;
+function itemIds(count: number): readonly string[] {
+    return ITEM_IDS.slice(0, count);
+}
 
-function snapshot(): SessionBoardSnapshot {
+function layoutFor(placed: readonly string[], width: SessionBoardItemWidth): SessionBoardLayoutV1 {
+    return {
+        v: 1,
+        tabs: [{
+            id: 'overview',
+            title: 'Overview',
+            items: placed.map((itemId) => ({ itemId, width })),
+        }],
+    } as SessionBoardLayoutV1;
+}
+
+function snapshot(
+    present: readonly string[],
+    placed: readonly string[],
+    width: SessionBoardItemWidth,
+): SessionBoardSnapshot {
     return projectSessionBoard({
-        layout: { revision: 'rev-layout', outcome: { status: 'ready', value: LAYOUT } },
-        items: new Map(ITEM_IDS.map((itemId) => [itemId, {
+        layout: { revision: 'rev-layout', outcome: { status: 'ready', value: layoutFor(placed, width) } },
+        items: new Map(present.map((itemId) => [itemId, {
             revision: `rev-${itemId}`,
             outcome: { status: 'ready' as const, value: note(itemId) },
         }] as const)),
@@ -71,11 +82,21 @@ function snapshot(): SessionBoardSnapshot {
     });
 }
 
-function Harness(): React.ReactElement {
+function Harness(props: Readonly<{
+    /** Items the Board holds; every one is placed unless `placed` says otherwise. */
+    present?: readonly string[];
+    /** The shared layout's placements — empty means every item is recovered. */
+    placed?: readonly string[];
+    width?: SessionBoardItemWidth;
+    layout?: 'single' | 'grid';
+}> = {}): React.ReactElement {
+    const present = props.present ?? ITEM_IDS;
+    const placed = props.placed ?? present;
+    const width = props.width ?? 'full';
     const controller = useSessionBoardController({
         sessionId: 'session-1',
         serverId: 'home-1',
-        binding: { status: 'ready', snapshot: snapshot(), refresh: () => {} },
+        binding: { status: 'ready', snapshot: snapshot(present, placed, width), refresh: () => {} },
         actions: ACTIONS,
     });
     return (
@@ -85,7 +106,7 @@ function Harness(): React.ReactElement {
             host="details"
             resolvePrimaryHost={() => 'details'}
             density="full"
-            layout="single"
+            layout={props.layout ?? 'single'}
         />
     );
 }
@@ -108,6 +129,28 @@ function countBySuffix(screen: Screen, suffix: string): number {
 function mountedBodyItemIds(screen: Screen): readonly string[] {
     return testIdsBySuffix(screen, '-declarative')
         .map((testID) => testID.replace(/^session-board-item-/u, '').replace(/-declarative$/u, ''));
+}
+
+function nodeByTestId(screen: Screen, testID: string) {
+    return screen.tree.root.findAll(
+        (node) => (node.props as { testID?: unknown }).testID === testID,
+        { deep: true },
+    ).at(-1);
+}
+
+/** Report one measured rect the way the platform does after layout. */
+function publishLayout(
+    screen: Screen,
+    testID: string,
+    layout: Readonly<{ x: number; y: number; width: number; height: number }>,
+): void {
+    (nodeByTestId(screen, testID)?.props as { onLayout?: (event: unknown) => void } | undefined)
+        ?.onLayout?.({ nativeEvent: { layout } });
+}
+
+function deferredItemIds(screen: Screen): readonly string[] {
+    return testIdsBySuffix(screen, '-deferred')
+        .map((testID) => testID.replace(/^session-board-item-/u, '').replace(/-deferred$/u, ''));
 }
 
 function scrollNode(screen: Screen) {
@@ -185,5 +228,78 @@ describe('SessionBoardSurface near-viewport body window', () => {
         expect(after).not.toContain('note-0');
         expect(after).toContain('note-40');
         expect(after.length + countBySuffix(screen, '-deferred')).toBe(PLACEMENT_COUNT);
+    });
+
+    it('holds recovered rows to the same window instead of building every one', async () => {
+        // A Board whose shared layout places nothing: every readable record is recovered.
+        const screen = await renderScreen(<Harness placed={[]} />);
+        const scroll = scrollNode(screen);
+        expect(scroll).toBeTruthy();
+
+        await act(async () => {
+            (scroll?.props as { onLayout?: (event: unknown) => void }).onLayout?.({
+                nativeEvent: { layout: { x: 0, y: 0, width: 800, height: 600 } },
+            });
+        });
+
+        // Recovery is a list like any other: a hundred recovered documents must not all
+        // instantiate, and the bound is the surface's own near-viewport window.
+        const bodies = countBySuffix(screen, '-declarative');
+        expect(bodies).toBeGreaterThan(0);
+        expect(bodies).toBeLessThanOrEqual(
+            Math.floor((600 + 600 + MIN_CARD_HEIGHT) / MIN_CARD_HEIGHT) + 1,
+        );
+        expect(bodies + countBySuffix(screen, '-deferred')).toBe(PLACEMENT_COUNT);
+
+        // Real geometry then applies to recovered rows too: after they are measured, a row
+        // a viewport away from the scroll position keeps its chrome and drops its body.
+        await act(async () => {
+            publishLayout(screen, 'session-board-recovered', { x: 0, y: 0, width: 800, height: 200 * PLACEMENT_COUNT });
+            publishLayout(screen, 'session-board-recovered-rows', { x: 0, y: 40, width: 800, height: 200 * PLACEMENT_COUNT });
+            ITEM_IDS.forEach((itemId, ordinal) => {
+                publishLayout(screen, `session-board-recovered-row-${itemId}`, {
+                    x: 0, y: ordinal * 200, width: 800, height: 200,
+                });
+            });
+        });
+
+        const measured = mountedBodyItemIds(screen);
+        expect(measured).toContain('note-0');
+        expect(measured).not.toContain('note-20');
+    });
+
+    it('admits a wrapped grid row by its real geometry without waiting for a scroll', async () => {
+        // Sixty `compact` cards at the twelve-column tier: three to a row, twenty rows.
+        const screen = await renderScreen(<Harness layout="grid" width="compact" present={itemIds(60)} />);
+        const scroll = scrollNode(screen);
+
+        await act(async () => {
+            (scroll?.props as { onLayout?: (event: unknown) => void }).onLayout?.({
+                nativeEvent: { layout: { x: 0, y: 0, width: 1200, height: 600 } },
+            });
+            publishLayout(screen, 'session-board-items', { x: 0, y: 0, width: 1200, height: 4000 });
+        });
+
+        // Nothing is measured yet, so the estimate places card `n` by the minimum card
+        // height. Three cards share each row, so the eighteen cards of the first six rows
+        // are inside a 600px viewport plus its overscan — a linear estimate would blank them.
+        const unmeasuredDeferred = deferredItemIds(screen);
+        itemIds(18).forEach((itemId) => expect(unmeasuredDeferred).not.toContain(itemId));
+
+        await act(async () => {
+            itemIds(60).forEach((itemId, ordinal) => {
+                const row = Math.floor(ordinal / 3);
+                publishLayout(screen, `session-board-placement-${itemId}`, {
+                    x: (ordinal % 3) * 400, y: row * 200, width: 380, height: 200,
+                });
+            });
+        });
+
+        // Measuring is a geometry change: admission is recomputed there and then, so a card
+        // the person can see is never left waiting for an unrelated scroll to build its body.
+        const measured = mountedBodyItemIds(screen);
+        expect(measured).toContain('note-20');
+        expect(measured).not.toContain('note-21');
+        expect(measured.length + countBySuffix(screen, '-deferred')).toBe(60);
     });
 });

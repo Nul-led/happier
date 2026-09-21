@@ -15,7 +15,13 @@ import {
   type ActiveAccountSettingsSnapshot,
 } from '@/settings/accountSettings/activeAccountSettingsSnapshot';
 
-export type SavedSecretCatalogResourceInputV1 = Omit<SavedSecretCatalogResourceV1, 'storedContent'> & Readonly<{
+export type SavedSecretCatalogResourceInputV1 = Omit<SavedSecretCatalogResourceV1, 'storedContent' | 'displayName'> & Readonly<{
+  /**
+   * The Home's projected display name, which is genuinely absent for a retained
+   * resource whose stored name is empty. Inventing one here would then disagree
+   * with the authenticated payload and reject healthy material as corrupt.
+   */
+  displayName: string | null;
   storedContent: SavedSecretResourceStoredContentV1 | null;
   resourceDataKey?: Uint8Array;
 }>;
@@ -256,8 +262,10 @@ export function createSavedSecretMaterializerV1(input: Readonly<{
     // The Home projects display metadata separately so an encrypted resource
     // remains identifiable while access is preparing. Once opened, the
     // authenticated payload must agree with that projection; otherwise a
-    // stale or tampered snapshot must never be materialized.
-    if (content.name !== resource.displayName || content.kind !== resource.kind) {
+    // stale or tampered snapshot must never be materialized. An absent
+    // projected name states nothing to contradict, so it is not a mismatch.
+    if ((resource.displayName !== null && content.name !== resource.displayName)
+      || content.kind !== resource.kind) {
       return { status: 'corrupt' };
     }
     return {

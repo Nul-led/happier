@@ -13,6 +13,7 @@ import {
     type SessionPersonalAttentionAccountAdmission,
 } from "@/app/session/personal/queries";
 import type { SessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication";
+import { backgroundDeliveryAuthentication } from "@/app/session/personal/backgroundDeliveryAuthentication";
 import { parseStoredSessionRuntimeIssue } from "@/app/session/turns/parseSessionTurnState";
 import {
     applySessionTranscriptPublicationCeilingToProjection,
@@ -174,11 +175,22 @@ export function didViewerActivityBadgeContributionChange(
     return contributes(beforeLastViewedSessionSeq) !== contributes(afterLastViewedSessionSeq);
 }
 
-/** Count the same viewer-private attention membership used before list pagination. */
+/**
+ * Count the same viewer-private attention membership used before list
+ * pagination, for background badge refresh.
+ *
+ * Background refresh presents no credential, so it reads the one access owner
+ * with the evidence it actually has. A restricted Team therefore contributes to
+ * a recipient's badge only while it qualifies without evidence; owner, direct
+ * and inherited-authentication arms are unaffected.
+ */
 export async function computeAccountActivityBadgeCounts(
     accountIds: ReadonlyArray<string>,
 ): Promise<Map<string, number>> {
-    return await computeAccountActivityBadgeCountsForAdmission(accountIds, { kind: "structural" });
+    return await computeAccountActivityBadgeCountsForAuthentication(
+        accountIds,
+        backgroundDeliveryAuthentication(),
+    );
 }
 
 /** Request-bound badge snapshot using that request's exact verified credential evidence. */
@@ -186,17 +198,15 @@ export async function computeAuthenticatedAccountActivityBadgeCount(
     accountId: string,
     authentication: SessionAccessAuthentication,
 ): Promise<number> {
-    return (await computeAccountActivityBadgeCountsForAdmission(
+    return (await computeAccountActivityBadgeCountsForAuthentication(
         [accountId],
-        { kind: "credential", authentication },
+        authentication,
     )).get(accountId) ?? 0;
 }
 
-async function computeAccountActivityBadgeCountsForAdmission(
+async function computeAccountActivityBadgeCountsForAuthentication(
     accountIds: ReadonlyArray<string>,
-    admission:
-        | Readonly<{ kind: "structural" }>
-        | Readonly<{ kind: "credential"; authentication: SessionAccessAuthentication }>,
+    authentication: SessionAccessAuthentication,
 ): Promise<Map<string, number>> {
     const ids = [...new Set(accountIds.filter(id => id.trim().length > 0))];
     const counts = new Map(ids.map((accountId) => [accountId, 0]));
@@ -211,31 +221,19 @@ async function computeAccountActivityBadgeCountsForAdmission(
         if (activeAccountIds.length === 0) return counts;
 
         const admissions: SessionPersonalAttentionAccountAdmission[] = [];
-        if (admission.kind === "structural") {
-            // Background push refresh cannot carry a present-user credential.
-            // The canonical access projector therefore admits the content-free
-            // structural entitlement selected with each bounded Session batch.
-            for (const accountId of activeAccountIds) {
-                admissions.push({
-                    accountId,
-                    includeCredentialRestrictedTeamEntitlements: true,
-                });
-            }
-        } else {
-            for (const accountId of activeAccountIds) {
-                const access = await resolveEffectiveSessionAccessWhere({
-                    tx,
-                    accountId,
-                    capability: "readTranscript",
-                    mode: "effective_access_v1",
-                    authentication: admission.authentication,
-                });
-                admissions.push({
-                    accountId,
-                    accessWhere: access.where,
-                    qualifiedTeamIds: access.qualifiedTeamIds,
-                });
-            }
+        for (const accountId of activeAccountIds) {
+            const access = await resolveEffectiveSessionAccessWhere({
+                tx,
+                accountId,
+                capability: "readTranscript",
+                mode: "effective_access_v1",
+                authentication,
+            });
+            admissions.push({
+                accountId,
+                accessWhere: access.where,
+                qualifiedTeamIds: access.qualifiedTeamIds,
+            });
         }
 
         const grouped = await countSessionPersonalAttentionRowsForAccountsInTx(tx, {

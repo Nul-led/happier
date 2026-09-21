@@ -5,8 +5,11 @@ import {
 } from '@happier-dev/protocol/teams';
 import type { ManagedProviderEndpointAccessProjection } from '@/plugins/runtime/invocation/services/managedServicesAdapter';
 
+import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
+
 import {
   createTeamCredentialBrokerSourceOwner,
+  isCLIProxyAPIBrokerApplication,
   teamCredentialBrokerPlacementAcceptsMachine,
 } from './teamCredentialBrokerSourceOwner';
 
@@ -121,6 +124,23 @@ describe('Team credential broker source owner', () => {
       { kind: 'machine_pool', poolId: 'pool-1' },
       '',
     )).toBe(false);
+  });
+
+  it('takes the CLIProxyAPI application identity from the contribution projection', () => {
+    const projected = projectCLIProxyAPIProviderConnectionApplication({
+      agentTargetKey: 'agent:happier.agent.codex/codex',
+      protocol: 'openai-chat',
+    });
+    expect(projected).not.toBeNull();
+    expect(isCLIProxyAPIBrokerApplication(projected!)).toBe(true);
+    expect(isCLIProxyAPIBrokerApplication({
+      ...projected!,
+      implementationIdentity: { pluginId: 'happier.provider.other', localId: 'other' },
+    })).toBe(false);
+    expect(isCLIProxyAPIBrokerApplication({
+      ...projected!,
+      protocol: 'not-a-managed-protocol',
+    })).toBe(false);
   });
 
   it('routes Connected Accounts and connected_pool through the same Connected Services owner', async () => {

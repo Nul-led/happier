@@ -277,6 +277,15 @@ async function copyAdmissionGroupAttributionInTx(
             admission.teamCredentialGroupAttributions.map(({ teamGroupId }) => teamGroupId),
         ),
     );
+    // One idempotent write per admitted Group, deliberately. The external-key
+    // writer reaches this function with a `usageEvent.upsert` result, so two
+    // concurrent reports carrying the same idempotency key arrive here with the
+    // SAME `usageEventId`; the composite-key upsert is what makes the second one
+    // a no-op instead of a unique-constraint violation that aborts a usage
+    // transaction. A set-oriented `createMany` would need `skipDuplicates`,
+    // which SQLite does not support, and a caught P2002 cannot be swallowed
+    // inside a PostgreSQL transaction. N is the Groups containing the requester
+    // on that resource.
     for (const teamGroupId of admittedGroupIds) {
         await tx.usageEventTeamCredentialGroupAttribution.upsert({
             where: { usageEventId_teamGroupId: { usageEventId: params.usageEventId, teamGroupId } },

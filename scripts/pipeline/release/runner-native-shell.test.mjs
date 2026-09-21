@@ -20,9 +20,11 @@ import {
   RUNNER_CORE_SIDECAR_STEM,
   RUNNER_NATIVE_SHELL_DIR,
   RUNNER_PACKAGE_TARGET_IDS,
+  RUNNER_SHELL_BINARY_STEM,
   isRunnerTargetEligibleForPublication,
   resolveRunnerPublicationEligibleBinaryTargets,
   resolveRunnerBundleArchiveCommand,
+  resolveRunnerCoreSidecarPath,
   resolveRunnerPackageLayout,
   resolveRunnerShellBuildCommand,
   resolveRunnerShellBundleDirectory,
@@ -104,14 +106,27 @@ test('the release packaging owner mirrors the canonical Protocol package layout 
       row.index,
       index + 1 < rows.length ? rows[index + 1].index : payloadBlock.length,
     );
+    const payloadKind = parseProtocolLayoutField(rowSource, targetId, 'payloadKind');
+    const payloadRootName = parseProtocolLayoutField(rowSource, targetId, 'payloadRootName');
+    // Only a directory payload whose closed entry set must pin the adjacent core
+    // sidecar declares one; the macOS sidecar lives inside the signed tree.
+    const sidecarPath = rowSource.includes('sidecarPath:')
+      ? parseProtocolLayoutField(rowSource, targetId, 'sidecarPath')
+      : undefined;
     assert.deepEqual(
       resolveRunnerPackageLayout(targetId),
       {
         target: targetId,
-        payloadKind: parseProtocolLayoutField(rowSource, targetId, 'payloadKind'),
-        payloadRootName: parseProtocolLayoutField(rowSource, targetId, 'payloadRootName'),
+        payloadKind,
+        payloadRootName,
         executablePath: parseProtocolLayoutField(rowSource, targetId, 'executablePath'),
-        activationFileName: protocolActivationFileName,
+        ...(sidecarPath === undefined ? {} : { sidecarPath }),
+        // The shell resolves its activation file beside the executable it
+        // launches, popping out of the macOS bundle only, so a portable
+        // directory payload carries the activation JSON inside its root.
+        activationFilePath: payloadKind === 'portable-dir'
+          ? `${payloadRootName}/${protocolActivationFileName}`
+          : protocolActivationFileName,
       },
       `the release Runner package layout for '${targetId}' must mirror the canonical Protocol record`,
     );
@@ -142,10 +157,7 @@ test('each Runner target compiles the shell for its exact Rust triple', () => {
   assert.equal(resolveRunnerShellRustTarget({ os: 'linux', arch: 'arm64' }), 'aarch64-unknown-linux-gnu');
   assert.equal(resolveRunnerShellRustTarget({ os: 'darwin', arch: 'x64' }), 'x86_64-apple-darwin');
   assert.equal(resolveRunnerShellRustTarget({ os: 'darwin', arch: 'arm64' }), 'aarch64-apple-darwin');
-  assert.throws(
-    () => resolveRunnerShellRustTarget({ os: 'windows', arch: 'x64' }),
-    /Windows Runner packaging is not publication eligible/u,
-  );
+  assert.equal(resolveRunnerShellRustTarget({ os: 'windows', arch: 'x64' }), 'x86_64-pc-windows-msvc');
 });
 
 test('the shell build asks the canonical Tauri CLI for exactly one one-shot bundle', () => {
@@ -180,6 +192,35 @@ test('the shell build asks the canonical Tauri CLI for exactly one one-shot bund
   assert.equal(
     resolveRunnerShellBundleDirectory({ shellDir: '/shell', target: { os: 'linux', arch: 'x64' } }),
     '/shell/target/x86_64-unknown-linux-gnu/release/bundle/appimage',
+  );
+  // The Windows one-shot payload is the compiled shell plus its adjacent core
+  // sidecar, composed into the payload directory by the release packager. Tauri
+  // must therefore produce no bundle at all: every Windows bundle format it can
+  // emit is an installer the one-shot Runner never publishes.
+  assert.deepEqual(
+    resolveRunnerShellBuildCommand({
+      tauriBin: '/repo/node_modules/.bin/tauri',
+      target: { os: 'windows', arch: 'x64' },
+      version: '0.3.0-dev.7',
+    }),
+    ['/repo/node_modules/.bin/tauri', [
+      'build',
+      '--target', 'x86_64-pc-windows-msvc',
+      '--no-bundle',
+      '--config', '{"version":"0.3.0-dev.7"}',
+    ]],
+  );
+  assert.equal(
+    resolveRunnerShellBundleDirectory({ shellDir: '/shell', target: { os: 'windows', arch: 'x64' } }),
+    '/shell/target/x86_64-pc-windows-msvc/release',
+  );
+  assert.equal(
+    resolveRunnerCoreSidecarPath({ shellDir: '/shell', target: { os: 'windows', arch: 'x64' } }),
+    `/shell/binaries/${RUNNER_CORE_SIDECAR_STEM}-x86_64-pc-windows-msvc.exe`,
+  );
+  assert.equal(
+    resolveRunnerCoreSidecarPath({ shellDir: '/shell', target: { os: 'linux', arch: 'x64' } }),
+    `/shell/binaries/${RUNNER_CORE_SIDECAR_STEM}-x86_64-unknown-linux-gnu`,
   );
 });
 
@@ -278,7 +319,10 @@ test('macOS packaging refuses to produce an untrusted bundle without a Developer
 
 test('the shell configuration declares the exact one-shot bundle and trust metadata', () => {
   assert.equal(shellConfig.productName, 'Happier Runner');
-  assert.equal(shellConfig.mainBinaryName, 'happier-runner');
+  // The release packager composes the Windows payload from the binary Tauri
+  // emits, so the crate's main binary name is part of the packaging contract.
+  assert.equal(shellConfig.mainBinaryName, RUNNER_SHELL_BINARY_STEM);
+  assert.equal(RUNNER_SHELL_BINARY_STEM, 'happier-runner');
   assert.equal(shellConfig.identifier, 'dev.happier.runner');
   assert.deepEqual(shellConfig.bundle.targets, ['app', 'appimage']);
   assert.deepEqual(shellConfig.bundle.externalBin, [`binaries/${RUNNER_CORE_SIDECAR_STEM}`]);

@@ -262,7 +262,7 @@ describe('createVoiceSessionBindingManager', () => {
       });
 
       expect(resolveBinding).not.toHaveBeenCalled();
-      expect(result).toEqual({ conversationSessionId: 'hidden-codex-voice-a' });
+      expect(result).toEqual({ conversationSessionId: 'hidden-codex-voice-a', conversationServerId: 'server-a' });
     });
 
     it('routes to the existing conversation session without rebinding when the target already matches', async () => {
@@ -296,7 +296,7 @@ describe('createVoiceSessionBindingManager', () => {
       });
 
       expect(resolveBinding).not.toHaveBeenCalled();
-      expect(result).toEqual({ conversationSessionId: 'carrier-s1' });
+      expect(result).toEqual({ conversationSessionId: 'carrier-s1', conversationServerId: 'server-a' });
     });
 
     it('rebinds through ensureBound when the requested target drifts from the existing binding', async () => {
@@ -341,7 +341,7 @@ describe('createVoiceSessionBindingManager', () => {
         requestedTargetSessionId: 's2',
         requestedTargetServerId: 'server-a',
       });
-      expect(result).toEqual({ conversationSessionId: 'carrier-s2' });
+      expect(result).toEqual({ conversationSessionId: 'carrier-s2', conversationServerId: 'server-a' });
     });
 
     it('rebinds when no existing binding is found, using the active adapter then provider id', async () => {
@@ -378,7 +378,7 @@ describe('createVoiceSessionBindingManager', () => {
         requestedTargetSessionId: 's1',
         requestedTargetServerId: 'server-a',
       });
-      expect(result).toEqual({ conversationSessionId: 'voice-root-s1' });
+      expect(result).toEqual({ conversationSessionId: 'voice-root-s1', conversationServerId: 'server-a' });
     });
 
     it('falls back to the original conversation session when rebinding cannot proceed', async () => {
@@ -402,7 +402,7 @@ describe('createVoiceSessionBindingManager', () => {
         requestedTargetSessionId: null,
       });
 
-      expect(result).toEqual({ conversationSessionId: 'carrier-s1' });
+      expect(result).toEqual({ conversationSessionId: 'carrier-s1', conversationServerId: null });
     });
   });
 

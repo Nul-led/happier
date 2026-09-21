@@ -134,15 +134,12 @@ function projectSessionViewerAttentionState(params: Readonly<{
     qualifiedTeamIds?: ReadonlySet<string>;
     /** Exact access already admitted by the canonical point-operation owner. */
     effectiveAccess?: EffectiveSessionAccess;
-    /** Structural, content-free background admission; never content authority. */
-    includeCredentialRestrictedTeamEntitlements?: boolean;
     now?: number;
 }>) {
     const { row, viewerAccountId, discussion } = params;
     const now = params.now ?? Date.now();
     const access = params.effectiveAccess ?? projectEffectiveSessionAccess(row, viewerAccountId, {
         qualifiedTeamIds: params.qualifiedTeamIds,
-        includeCredentialRestrictedTeamEntitlements: params.includeCredentialRestrictedTeamEntitlements,
     });
     const follow = projectSessionFollowFacts(row.accountFollows?.find(value => value.accountId === viewerAccountId) ?? null);
     const tracked = isSessionPersonallyTrackedV1({ ownerAccountId: row.accountId, viewerAccountId, followFacts: follow });
@@ -191,7 +188,6 @@ export function doesSessionViewerNeedAttention(params: Readonly<{
     viewerAccountId: string;
     discussion: SessionPersonalDiscussionFacts;
     qualifiedTeamIds?: ReadonlySet<string>;
-    includeCredentialRestrictedTeamEntitlements?: boolean;
     now?: number;
 }>) {
     // Availability changes only `presentation`; these callers consume only

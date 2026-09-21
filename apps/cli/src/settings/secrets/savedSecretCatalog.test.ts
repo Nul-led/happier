@@ -187,6 +187,24 @@ describe('Saved Secret catalog materializer', () => {
     expect(materializer.resolve('happier:shared-secret:v1:resource_1')).toEqual({ status: 'corrupt' });
   });
 
+  it('materializes a retained resource whose Home projects no display name', () => {
+    // The Home maps an empty stored display name to `name: null` and still
+    // projects the row as ready, so a snapshot that invents a name out of the
+    // resource id would reject healthy material as corrupt. The UI already
+    // compares only when the projected name exists.
+    const storedContent = sealSavedSecretResourceStoredContentV1({
+      resourceId: 'resource_1', mode: 'plain',
+      content: { v: 1, name: 'source-name', kind: 'token', value: 'secret' },
+    });
+    const materializer = createSavedSecretMaterializerV1({
+      accountSettings: {}, settingsSecretsReadKeys: [], resources: [{
+        resourceId: 'resource_1', ownerAccountId: 'owner', displayName: null, kind: 'token',
+        encryptionMode: 'plain', revision: 1, storedContent, materialStatus: 'ready',
+      }],
+    });
+    expect(materializer.resolve('happier:shared-secret:v1:resource_1')).toMatchObject({ status: 'ready', value: 'secret' });
+  });
+
   it.each([
     ['recipient_mode_unsupported', 'mode_incompatible'],
     ['access_removed', 'forbidden'],

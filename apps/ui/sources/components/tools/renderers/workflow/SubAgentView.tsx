@@ -2,7 +2,7 @@ import * as React from 'react';
 import type { ToolViewProps } from '../core/_registry';
 import { SubAgentSummarySection } from './SubAgentSummarySection';
 
-export const SubAgentView = React.memo<ToolViewProps>(({ tool, metadata, messages, detailLevel, sessionId, messageId, interaction }) => {
+export const SubAgentView = React.memo<ToolViewProps>(({ tool, metadata, messages, detailLevel, sessionId, serverId, messageId, interaction }) => {
     return (
         <SubAgentSummarySection
             tool={tool as any}
@@ -10,6 +10,7 @@ export const SubAgentView = React.memo<ToolViewProps>(({ tool, metadata, message
             messages={messages ?? []}
             detailLevel={detailLevel}
             sessionId={sessionId}
+            serverId={serverId}
             messageId={messageId}
             interaction={interaction}
             opts={{ hideResultInlineWhenBackgroundRun: true }}

@@ -387,6 +387,48 @@ describe('TeamAuthEntrySurface', () => {
         expect(actionIconNames(screen, 'team-auth-entry-action:home-password')).toContain('sign-in');
     });
 
+    it('renders the provider icon hint the Home projected for a Team action', async () => {
+        // The Home already sends a bounded icon hint with every Team-origin
+        // provider action. Dropping it made every Team provider render the same
+        // generic entry glyph, so the surface said less than the wire carried.
+        const hinted = () => readyResponse('team', undefined, undefined, 'Acme Home', [{
+            kind: 'authenticate',
+            methodId: 'team-oidc',
+            action: 'connect',
+            mode: 'either',
+            origin: 'team',
+            presentation: { displayName: 'Acme SSO', iconHint: 'github-logo' },
+        }, {
+            kind: 'authenticate',
+            methodId: 'team-unknown-hint',
+            action: 'connect',
+            mode: 'either',
+            origin: 'team',
+            presentation: { displayName: 'Other SSO', iconHint: 'not-an-icon-this-app-ships' },
+        }]);
+        endpointFetch.mockImplementation(async (path: string) => (
+            String(path).includes('/team-invitations/preview')
+                ? new Response(JSON.stringify(previewResult), { status: 200 })
+                : hinted()
+        ));
+        authorityFetch.mockImplementation(async () => hinted());
+        const screen = await renderScreen(
+            <TeamAuthEntrySurface
+                teamId="team-1"
+                target={target}
+                onSelectAction={vi.fn()}
+                onBack={() => {}}
+            />,
+        );
+
+        await waitForTestId(screen, 'team-auth-entry-ready');
+
+        expect(actionIconNames(screen, 'team-auth-entry-action:team-oidc')).toContain('github-logo');
+        // A hint this app has no glyph for falls back to the shared entry icon
+        // rather than blanking the card.
+        expect(actionIconNames(screen, 'team-auth-entry-action:team-unknown-hint')).toContain('sign-in');
+    });
+
     it('admits only one action at a time and marks the selected action busy', async () => {
         let releaseAction!: () => void;
         const actionPending = new Promise<void>((resolve) => {

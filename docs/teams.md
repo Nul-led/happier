@@ -70,6 +70,21 @@ organization, installation id, observed permissions and verification state. A Te
 its own registration or an eligible Home registration, but every consumer resolves through
 the same registration and installation lifecycle.
 
+Authorization has one owner for both kinds. A Home-owned registration asks the Home
+governance authority for `manageAuthentication`. A Team-owned registration is that Team's
+identity administration, so it goes through `authorizeTeamIdentityAdministrationInTx` — the
+same membership, capability and credential-qualification decision the Team's OIDC providers,
+connections and directory sources already use. A restricted Team therefore holds its own App
+exactly as it holds every other identity surface: an administrator whose current credential
+does not satisfy the Team's accepted policy cannot list, create, edit, verify or remove it.
+
+GitHub's setup and verification returns are browser redirects that carry no Happier
+credential, so the manifest attempt and its installation continuation persist the
+authentication facts the server stamped on the initiating request, and the finalizer re-runs
+the same authorization with them before anything is written. It re-decides rather than
+replaying a stored answer: a Team that stops accepting the administrator's credential between
+starting and finishing stops the flow.
+
 GitHub.com setup has a manifest-assisted path. The server authorizes the administrator,
 creates a one-time state bound to the requested Home or Team, returns the GitHub manifest
 setup URL, and consumes that URL once to render a server-owned form that posts the manifest
@@ -142,9 +157,11 @@ owner rolls the whole transaction back, so an ownerless Team cannot exist.
 
 - Home policy decides who may create: `self_service`, `managed_only` (owner/admin), or
   `disabled`. The database and Personal Home default is `managed_only`.
-- Under managed creation an authorized Home administrator may name a different
-  `initialOwnerAccountId`. The administrator does **not** become a member; ordinary
-  self-service creation may only make the creator the owner.
+- Under managed creation an authorized Home administrator **must** name the
+  `initialOwnerAccountId` — omitting it is `invalid_team_input`, because a Team created for
+  somebody else must not silently make the administrator its owner. Naming themselves stays
+  legal. The administrator does **not** become a member; ordinary self-service creation may
+  only make the creator the owner and keeps the creator fallback when the field is omitted.
 - The initial owner's membership carries no history cutoff. A new Team has no prior
   Sessions, so a horizon would be a fiction.
 - `requestKey` is the caller's retry identity, recorded through the existing repeat-key

@@ -29,9 +29,12 @@ Happier is committed to protecting your privacy. This policy explains how Happie
 - **Timestamps**: When messages were created and synced
 - **Device IDs**: Anonymous identifiers for device pairing
 - **Session IDs**: Identifiers for your coding-agent sessions
-- **Session discussion metadata (0.3 development)**: When the default-off
-  Conversations feature is enabled, Happier synchronizes discussion and message
-  identifiers, ordering, author Account IDs, mentioned Account IDs, timestamps,
+- **Session discussion metadata (0.3 development)**: The Conversations feature is
+  on by default in current 0.3 development source, with an operator opt-out
+  (`HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED=0`); it also stays off
+  wherever Session collaboration is disabled. While it is enabled, Happier
+  synchronizes discussion and message identifiers, ordering, author Account IDs,
+  mentioned Account IDs, timestamps,
   archive state, private read cursors, and ciphertext size. In E2EE mode,
   discussion titles and message bodies remain encrypted, but this synchronization
   metadata does not. This feature has not shipped in a public release.

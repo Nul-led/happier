@@ -13,6 +13,7 @@ import { collectSubAgentSummaryTools } from './collectSubAgentSummaryTools';
 import { buildToolCallMessageRouteId } from '@/sync/domains/messages/messageRouteIds';
 import { navigateWithBlurOnWeb } from '@/utils/platform/navigateWithBlurOnWeb';
 import { Icon } from '@/components/ui/icons/Icon';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 
 type TaskOperation = 'run' | 'create' | 'list' | 'update' | 'unknown';
@@ -122,12 +123,14 @@ export const SubAgentSummarySection = React.memo<{
     messages: readonly Message[];
     detailLevel?: 'title' | 'summary' | 'full';
     sessionId?: string;
+    /** The Home the transcript is being read on, so the detail link stays exact. */
+    serverId?: string;
     messageId?: string;
     interaction?: TranscriptInteraction;
     opts?: Readonly<{
         hideResultInlineWhenBackgroundRun?: boolean;
     }>;
-}>(function SubAgentSummarySection({ tool, metadata, messages, detailLevel = 'summary', sessionId, messageId, interaction, opts }) {
+}>(function SubAgentSummarySection({ tool, metadata, messages, detailLevel = 'summary', sessionId, serverId, messageId, interaction, opts }) {
     const { theme } = useUnistyles();
     const styles = stylesheet;
     const router = useRouter();
@@ -149,9 +152,13 @@ export const SubAgentSummarySection = React.memo<{
     const handleOpenDetails = React.useCallback(() => {
         if (!sessionId || !routeMessageId || interaction?.disableToolNavigation === true) return;
         navigateWithBlurOnWeb(() => {
-            router.push(`/session/${encodeURIComponent(sessionId)}/message/${encodeURIComponent(routeMessageId)}`);
+            router.push(buildScopedSessionRouteHref({
+                sessionId,
+                serverId,
+                suffix: `/message/${encodeURIComponent(routeMessageId)}`,
+            }));
         });
-    }, [interaction?.disableToolNavigation, routeMessageId, router, sessionId]);
+    }, [interaction?.disableToolNavigation, routeMessageId, router, serverId, sessionId]);
 
     if (detailLevel === 'title') return null;
 

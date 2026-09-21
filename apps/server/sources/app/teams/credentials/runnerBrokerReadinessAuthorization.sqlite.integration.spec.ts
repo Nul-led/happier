@@ -178,8 +178,9 @@ describe("Runner Team credential readiness authorization", () => {
         }))).resolves.toMatchObject({ readiness: { kind: "available" } });
 
         // A Pool placement is a broker location for a Runner too: the exact member
-        // frozen into the activation's binding is revalidated as a current member,
-        // while a Machine the Pool does not carry is refused.
+        // frozen into the activation's binding keeps its already reviewed target,
+        // because Pool membership governs future selection and is never an
+        // ongoing ACL for an established one.
         const brokerPool = await db.machinePool.create({ data: {
             id: randomUUID(),
             accountId: custodian.id,
@@ -218,15 +219,39 @@ describe("Runner Team credential readiness authorization", () => {
             },
             operationProtocolCapabilitiesRevision: 1,
         } });
+        // Disabling the member the activation already froze does not revoke it.
+        await db.machinePoolMember.updateMany({
+            where: { poolId: brokerPool.id, machineId: machine.id },
+            data: { enabled: false },
+        });
+        await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
+            activationId: activation.id,
+            env: harness.envBase,
+            selection: { ...poolSelection, brokerMachineId: machine.id },
+        }))).resolves.toMatchObject({ readiness: { kind: "available" } });
+        // Current Machine authority is still revalidated for that same target.
+        await db.machine.update({ where: { id: machine.id }, data: { revokedAt: new Date() } });
+        await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
+            activationId: activation.id,
+            env: harness.envBase,
+            selection: { ...poolSelection, brokerMachineId: machine.id },
+        }))).resolves.toBeNull();
+        await db.machine.update({ where: { id: machine.id }, data: { revokedAt: null } });
+        await db.machinePoolMember.updateMany({
+            where: { poolId: brokerPool.id, machineId: machine.id },
+            data: { enabled: true },
+        });
+        await db.teamCredentialResource.update({
+            where: { id: resource.id },
+            data: { brokerMachineId: machine.id, brokerPoolId: null },
+        });
+        // An exact placement still names its one Machine: a different Machine of
+        // the same custodian is refused however eligible it is.
         await expect(inTx(tx => readRunnerBrokerReadinessProjectionInTx(tx, {
             activationId: activation.id,
             env: harness.envBase,
             selection: { ...poolSelection, brokerMachineId: outsider.id },
         }))).resolves.toBeNull();
-        await db.teamCredentialResource.update({
-            where: { id: resource.id },
-            data: { brokerMachineId: machine.id, brokerPoolId: null },
-        });
 
         await db.ephemeralRunnerActivation.update({
             where: { id: activation.id },

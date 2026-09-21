@@ -3,7 +3,7 @@
 
 import { createWriteStream } from 'node:fs';
 import { chmod, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import archiver from 'archiver';
 import { resolveReleaseArtifactArchiveName } from '@happier-dev/release-runtime/assets';
@@ -26,28 +26,36 @@ import {
 import { notarizeDarwinAppBundle, verifyDarwinAppBundleNotarizationEvidence } from './notarize-standalone-binary.mjs';
 
 /**
- * Targets whose native shell the release owner knows how to compose. Windows is
- * absent: its approved one-shot, no-installer contract has no Authenticode owner
- * and adding one is a plan amendment, not a build flag.
+ * Targets whose native shell the release owner knows how to compose — every
+ * declared Runner platform, including the Windows closed portable directory.
  *
  * Building a target is not advertising product availability.
  * `RUNNER_PUBLICATION_ELIGIBLE_TARGET_IDS` is the release-admission allowlist
  * and is what the default matrix resolves to; a
  * Darwin build must be requested explicitly and must carry real Developer ID
- * signing inputs.
+ * signing inputs, and a Windows build must run on Windows and carry
+ * Authenticode signing before it can ever become publication eligible.
  */
 export const RUNNER_BINARY_TARGETS = CLI_STACK_TARGETS.filter((target) =>
-  target.os === 'linux' || target.os === 'darwin');
+  target.os === 'linux' || target.os === 'darwin' || target.os === 'windows');
 
 /** @param {{ os: string; arch: string }} target */
 function isDarwinTarget(target) {
   return target.os === 'darwin';
 }
 
+/** @param {{ os: string; arch: string }} target */
+function isWindowsTarget(target) {
+  return target.os === 'windows';
+}
+
 /**
  * Package one built payload. Linux ships the single AppImage file that contains
  * the Bun core; macOS ships the signed, notarized and stapled app tree, which
- * only `ditto` can archive without losing bundle metadata.
+ * only `ditto` can archive without losing bundle metadata; Windows ships the
+ * closed portable directory holding the signed shell and its adjacent core
+ * sidecar, written by the same deterministic ZIP writer because `ditto` exists
+ * only on macOS.
  */
 export async function packageRunnerBinary({ product = 'happier-runner', version, target, payloadPath, outDir }) {
   const layout = resolveRunnerPackageLayout(runnerTargetId(target));
@@ -66,13 +74,30 @@ export async function packageRunnerBinary({ product = 'happier-runner', version,
     await execOrThrow(command, args, { timeoutMs: 10 * 60_000 });
     return { name: archiveName, path: archivePath, os: target.os, arch: target.arch };
   }
-  await chmod(payloadPath, 0o755);
+  // A declared sidecar entry is exactly the closed portable directory payload.
+  const portableEntries = layout.sidecarPath
+    ? [layout.executablePath, layout.sidecarPath]
+    : null;
+  if (portableEntries) {
+    for (const entryPath of portableEntries) {
+      await ensureFileExists(join(payloadPath, basename(entryPath)));
+    }
+  } else {
+    await chmod(payloadPath, 0o755);
+  }
   await new Promise((resolvePromise, reject) => {
     const output = createWriteStream(archivePath, { flags: 'wx', mode: 0o600 });
     const archive = archiver('zip', { zlib: { level: 9 } });
     output.on('close', resolvePromise); output.on('error', reject); archive.on('error', reject);
     archive.pipe(output);
-    archive.file(payloadPath, { name: layout.payloadRootName, mode: 0o755, date: new Date(0) });
+    if (portableEntries) {
+      archive.append(null, { name: `${layout.payloadRootName}/`, mode: 0o755, date: new Date(0) });
+      for (const entryPath of portableEntries) {
+        archive.file(join(payloadPath, basename(entryPath)), { name: entryPath, mode: 0o755, date: new Date(0) });
+      }
+    } else {
+      archive.file(payloadPath, { name: layout.payloadRootName, mode: 0o755, date: new Date(0) });
+    }
     void archive.finalize();
   });
   return { name: archiveName, path: archivePath, os: target.os, arch: target.arch };
@@ -122,7 +147,18 @@ async function buildRunnerPayload({ repoRoot, shellDir, entrypoint, target, vers
     version,
   });
   await execOrThrow(command, args, { cwd: shellDir, timeoutMs: 60 * 60_000 });
-  return await resolveRunnerShellPayload({ shellDir, target });
+  const built = await resolveRunnerShellPayload({ shellDir, target });
+  const layout = resolveRunnerPackageLayout(runnerTargetId(target));
+  if (!layout.sidecarPath) return built;
+  // Tauri emits no bundle for this payload, so the closed portable directory is
+  // composed here from the compiled shell and the exact sidecar it resolves
+  // beside itself. Nothing else ever enters the payload root.
+  const payloadRoot = join(tempDir, layout.payloadRootName);
+  await rm(payloadRoot, { recursive: true, force: true });
+  await mkdir(payloadRoot, { recursive: true });
+  await copyFile(built, join(payloadRoot, basename(layout.executablePath)));
+  await copyFile(sidecarPath, join(payloadRoot, basename(layout.sidecarPath)));
+  return payloadRoot;
 }
 
 /**
@@ -154,6 +190,14 @@ async function finalizeRunnerPayload({ payloadPath, target, macOSSigningIdentity
     await ensureFileExists(join(payloadPath, 'Contents', '_CodeSignature', 'CodeResources'));
     return payloadPath;
   }
+  if (layout.sidecarPath) {
+    // Authenticode signing and timestamping of both executables happen on the
+    // Windows signing host before the payload is archived; publication
+    // admission stays closed until that evidence exists.
+    await ensureFileExists(join(payloadPath, basename(layout.executablePath)));
+    await ensureFileExists(join(payloadPath, basename(layout.sidecarPath)));
+    return payloadPath;
+  }
   const payload = await lstat(payloadPath);
   if (!payload.isFile()) throw new Error(`[release] Runner AppImage payload is not a file: ${payloadPath}`);
   await chmod(payloadPath, 0o755);
@@ -183,6 +227,9 @@ async function main() {
   if (targets.some(isDarwinTarget) && process.platform !== 'darwin') {
     throw new Error('[release] macOS Runner artifacts must be built, signed and stapled on macOS');
   }
+  if (targets.some(isWindowsTarget) && process.platform !== 'win32') {
+    throw new Error('[release] Windows Runner artifacts must be built and Authenticode-signed on Windows');
+  }
   const outDir = join(repoRoot, 'dist', 'release-assets', 'runner');
   const tempDir = join(repoRoot, 'dist', 'release-assets', '.tmp-runner-binaries', `build-${process.pid}-${randomUUID()}`);
   await mkdir(tempDir, { recursive: true }); await mkdir(outDir, { recursive: true });
@@ -211,7 +258,9 @@ async function main() {
         const layout = resolveRunnerPackageLayout(runnerTargetId(target));
         const probe = layout.payloadKind === 'app-bundle'
           ? join(payloadPath, 'Contents', 'MacOS', 'happier-runner')
-          : payloadPath;
+          : layout.sidecarPath
+            ? join(payloadPath, basename(layout.executablePath))
+            : payloadPath;
         // AppImages need FUSE to self-mount; extraction keeps the probe usable
         // on hosts and CI images that do not provide it.
         await execOrThrow(probe, ['--version'], {

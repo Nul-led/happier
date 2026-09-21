@@ -231,11 +231,23 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
 
   it('composes Account-server-owned Actions into the executor used by the daemon ingress', async () => {
     const selectedServerApiUrl = 'https://selected-home.example.test';
-    const post = vi.spyOn(axios, 'post').mockResolvedValueOnce({
-      status: 200,
-      data: { tokens: [] },
+    // The canonical Account-server adapter issues `axios.request`, so the
+    // interception must sit there. Only the selected Home with the executor's
+    // own bearer answers; every other endpoint or credential is unreachable,
+    // which is what makes the resolved value evidence that the fixed Home
+    // survived the post-construction `HAPPIER_SERVER_URL` change.
+    const request = vi.spyOn(axios, 'request').mockImplementation(async (config) => {
+      const url = String((config as { url?: unknown } | undefined)?.url ?? '');
+      const headers = (config as { headers?: Record<string, unknown> } | undefined)?.headers ?? {};
+      if (
+        url !== `${selectedServerApiUrl}${ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1}`
+        || headers.Authorization !== 'Bearer signed-daemon-account-token'
+      ) {
+        throw Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'ENOTFOUND' });
+      }
+      return { status: 200, data: { tokens: [] } };
     });
-    onTestFinished(() => post.mockRestore());
+    onTestFinished(() => request.mockRestore());
     const { createCliActionExecutorFromCredentials } = await import('./createCliActionExecutorFromCredentials');
 
     createCliActionExecutorFromCredentials({
@@ -258,15 +270,6 @@ describe('createCliActionExecutorFromCredentials API Token transport', () => {
       input: {},
       context: { surface: 'api', authority: 'account_automation' },
     })).resolves.toEqual({ tokens: [] });
-    expect(post).toHaveBeenCalledWith(
-      `${selectedServerApiUrl}${ACCOUNT_API_TOKENS_LIST_HTTP_PATH_V1}`,
-      {},
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer signed-daemon-account-token',
-        }),
-      }),
-    );
   });
 
   it('binds approval-origin currentness to the exact executor credentials', async () => {

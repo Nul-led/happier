@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -126,12 +127,13 @@ test('Runner closed-ZIP admission retains central/local-header validation', asyn
 });
 
 test('Runner publication accepts only the target whose native release admission exists', () => {
-  // The shell is composable for both Unix families, but publication eligibility
-  // additionally needs native release admission. This list does not make a Home
-  // claim availability; that requires a verified immutable release record.
+  // The shell is composable for every declared platform, but publication
+  // eligibility additionally needs native release admission and trust evidence.
+  // This list does not make a Home claim availability; that requires a verified
+  // immutable release record.
   assert.deepEqual(
     RUNNER_BINARY_TARGETS.map(({ os, arch }) => `${os}-${arch}`).sort(),
-    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64'],
+    ['darwin-arm64', 'darwin-x64', 'linux-arm64', 'linux-x64', 'windows-x64'],
   );
   assert.deepEqual([...RUNNER_PUBLICATION_ELIGIBLE_TARGET_IDS], ['linux-x64']);
   assert.deepEqual(
@@ -156,6 +158,54 @@ test('a publication-ineligible Runner target is refused by release admission', a
     await assert.rejects(
       verifyReleaseArchiveAdmission({ archivePath: artifact.path, archiveName: artifact.name }),
       /Runner target is not eligible for publication/u,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('the Windows Runner package is the closed portable directory with its pinned core sidecar', async () => {
+  // Running the packaged shell needs a Windows host; the closed-layout read is
+  // the admission half this host can prove, and the smoke reaches it before any
+  // `.exe` candidate would be launched.
+  if (process.platform === 'win32') return;
+  const root = await mkdtemp(join(tmpdir(), 'happier-runner-windows-'));
+  try {
+    const payloadRoot = join(root, 'Happier Runner');
+    await mkdir(payloadRoot, { recursive: true });
+    await writeFile(join(payloadRoot, 'Happier Runner.exe'), 'shell fixture', 'utf8');
+    await writeFile(join(payloadRoot, 'happier-runner-core.exe'), 'core fixture', 'utf8');
+    const artifact = await packageRunnerBinary({
+      version: '0.3.0-dev.1',
+      target: { os: 'windows', arch: 'x64' },
+      payloadPath: payloadRoot,
+      outDir: root,
+    });
+
+    await smokeTestArchive({ archivePath: artifact.path });
+
+    // Authenticode evidence does not exist yet, so the Windows payload shape is
+    // modelled and buildable while publication stays Linux-only.
+    await assert.rejects(
+      verifyReleaseArchiveAdmission({ archivePath: artifact.path, archiveName: artifact.name }),
+      /Runner target is not eligible for publication/u,
+    );
+
+    const archiver = (await import('archiver')).default;
+    const renamedPath = join(root, 'happier-runner-v0.3.0-dev.2-windows-x64.zip');
+    await new Promise((resolvePromise, reject) => {
+      const output = createWriteStream(renamedPath, { flags: 'wx', mode: 0o600 });
+      const archive = archiver('zip', { zlib: { level: 9 } });
+      output.on('close', resolvePromise); output.on('error', reject); archive.on('error', reject);
+      archive.pipe(output);
+      archive.append(null, { name: 'Happier Runner/', date: new Date(0), mode: 0o755 });
+      archive.file(join(payloadRoot, 'Happier Runner.exe'), { name: 'Happier Runner/Happier Runner.exe', mode: 0o755, date: new Date(0) });
+      archive.file(join(payloadRoot, 'happier-runner-core.exe'), { name: 'Happier Runner/core.exe', mode: 0o755, date: new Date(0) });
+      void archive.finalize();
+    });
+    await assert.rejects(
+      smokeTestArchive({ archivePath: renamedPath }),
+      /Runner archive must contain exactly/u,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

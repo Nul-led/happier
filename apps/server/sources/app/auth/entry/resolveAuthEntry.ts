@@ -5,7 +5,7 @@ import {
     type AuthEntryRequestV1,
     type TeamEntryUnavailableReasonV1,
 } from '@happier-dev/protocol';
-import { readServerEnabledBit } from '@happier-dev/protocol';
+import { normalizeAuthMethodId, readServerEnabledBit } from '@happier-dev/protocol';
 import type { AuthTokenAuthenticationEvidenceV1 } from '@happier-dev/protocol';
 
 import {
@@ -76,15 +76,23 @@ type HomeActionRequestContext = Readonly<{
     requestIp?: unknown;
 }>;
 
-async function isAdmittedTeamMemberInTx(
+/**
+ * Why the three answers are distinct: only a member can be admitted by signing
+ * in again, so a `member_unqualified` visitor is offered the Team's accepted
+ * methods, while a `non_member` of a directory-provisioned Team cannot be
+ * admitted by any sign-in this Home can offer.
+ */
+type TeamMembershipAdmissionState = 'admitted' | 'member_unqualified' | 'non_member';
+
+async function resolveTeamMembershipAdmissionInTx(
     tx: Parameters<typeof resolveTeamActorContextInTx>[0],
     input: Readonly<{
         env: NodeJS.ProcessEnv;
         teamId: string;
         principal: AuthEntryPrincipal | null;
     }>,
-): Promise<boolean> {
-    if (input.principal === null) return false;
+): Promise<TeamMembershipAdmissionState> {
+    if (input.principal === null) return 'non_member';
     const actor = await resolveTeamActorContextInTx(tx, {
         teamId: input.teamId,
         actorAccountId: input.principal.accountId,
@@ -93,14 +101,14 @@ async function isAdmittedTeamMemberInTx(
         accountStatus: actor.accountStatus,
         membershipStatus: actor.membership.status,
         teamArchivedAt: actor.team.archivedAt,
-    })) return false;
+    })) return 'non_member';
     const qualification = await qualifyTeamOperationAuthenticationInTx(tx, {
         context: actor,
         env: input.env,
         authenticationEvidence: input.principal.authenticationEvidence,
         authenticationAuthority: 'present_user',
     });
-    return qualification.ok;
+    return qualification.ok ? 'admitted' : 'member_unqualified';
 }
 
 async function resolveAuthenticatedAccountPresentationInTx(
@@ -205,7 +213,7 @@ function projectHomeAuthenticationActions(
     allowedIds?: ReadonlySet<string>,
 ) {
     return homeMethods.decisions.flatMap((decision) => {
-        const methodId = decision.id.trim().toLowerCase();
+        const methodId = normalizeAuthMethodId(decision.id);
         if (!methodId || (allowedIds && !allowedIds.has(methodId))) return [];
         const displayName = decision.ui?.displayName ?? defaultMethodDisplayName(methodId);
         const iconHint = decision.ui?.iconHint ?? null;
@@ -249,7 +257,7 @@ function projectHomeAuthEntryProjection(
         ? resolveAuthFeature(env).capabilities?.auth?.ui?.autoRedirect
         : undefined;
     const autoRedirectMethodId = compatibilityAutoRedirect?.enabled === true
-        ? String(compatibilityAutoRedirect.providerId ?? '').trim().toLowerCase()
+        ? normalizeAuthMethodId(String(compatibilityAutoRedirect.providerId ?? ''))
         : '';
     const autoRedirectAction = autoRedirectMethodId
         ? actions.find((action) => action.methodId === autoRedirectMethodId
@@ -312,11 +320,12 @@ async function resolveTeamAuthEntry(
         // credential proves the Team's accepted authentication context. Inherited
         // policy accepts any ordinary Home credential; restricted policy requires
         // one current evidence item matching a usable accepted reference.
-        if (await isAdmittedTeamMemberInTx(tx, {
+        const admission = await resolveTeamMembershipAdmissionInTx(tx, {
             env,
             teamId,
             principal,
-        })) {
+        });
+        if (admission === 'admitted') {
             return AuthEntryProjectionV1Schema.parse({
                 v: 1,
                 state: 'already_member',
@@ -328,12 +337,20 @@ async function resolveTeamAuthEntry(
                 autoRedirect: null,
             });
         }
+        // A `provisioned` Team's roster comes from its directory, so a signed-in
+        // stranger cannot join by authenticating again however usable the Team's
+        // policy is. Saying so is the truthful answer; offering sign-in actions
+        // would send them round a loop. A member whose credential merely failed
+        // to qualify keeps those actions, because signing in does admit them.
+        if (admission === 'non_member' && principal !== null && teamContext.admissionMode === 'provisioned') {
+            return unavailableTeamProjection('directory_delayed');
+        }
         if (homeMethods.status !== 'ready') return unavailableTeamProjection('entry_not_available');
 
         const allowedHomeMethodIds = policy.resolution.status === 'restricted'
             ? new Set(policy.resolution.choices.flatMap((choice) =>
                 choice.availability === 'usable' && choice.reference.kind === 'home_method'
-                    ? [choice.reference.methodId.trim().toLowerCase()]
+                    ? [normalizeAuthMethodId(choice.reference.methodId)]
                     : []))
             : undefined;
         const allowedConnectionIds = policy.resolution.status === 'restricted'
@@ -348,7 +365,7 @@ async function resolveTeamAuthEntry(
             listProviderDescriptorsInTx(tx, env, { kind: 'team', teamId }),
         ]);
         const descriptorByProviderId = new Map(descriptors.map((descriptor) => [
-            descriptor.reference.id.trim().toLowerCase(),
+            normalizeAuthMethodId(descriptor.reference.id),
             descriptor,
         ]));
         const teamActions = connections.flatMap((connection) => {
@@ -356,7 +373,7 @@ async function resolveTeamAuthEntry(
                 connection.state !== 'connected'
                 || (allowedConnectionIds && !allowedConnectionIds.has(connection.id))
             ) return [];
-            const provider = descriptorByProviderId.get(connection.providerInstanceId.trim().toLowerCase());
+            const provider = descriptorByProviderId.get(normalizeAuthMethodId(connection.providerInstanceId));
             if (!provider || provider.descriptor.enabled !== true || provider.descriptor.configured !== true) return [];
             const displayName = provider.descriptor.ui?.displayName ?? connection.providerDisplayName;
             const iconHint = provider.descriptor.ui?.iconHint ?? null;
@@ -427,11 +444,11 @@ async function resolveInvitationAuthEntryInTx(
 
     const account = await resolveAuthenticatedAccountPresentationInTx(tx, principal);
 
-    if (await isAdmittedTeamMemberInTx(tx, {
+    if (await resolveTeamMembershipAdmissionInTx(tx, {
         env,
         teamId: invitation.team.teamId,
         principal,
-    })) {
+    }) === 'admitted') {
         return AuthEntryProjectionV1Schema.parse({
             v: 1,
             state: 'already_member',
@@ -460,7 +477,7 @@ async function resolveInvitationAuthEntryInTx(
     const allowedHomeMethodIds = policy.resolution.status === 'restricted'
         ? new Set(policy.resolution.choices.flatMap((choice) =>
             choice.availability === 'usable' && choice.reference.kind === 'home_method'
-                ? [choice.reference.methodId.trim().toLowerCase()]
+                ? [normalizeAuthMethodId(choice.reference.methodId)]
                 : []))
         : undefined;
     const allowedConnectionIds = policy.resolution.status === 'restricted'
@@ -477,13 +494,13 @@ async function resolveInvitationAuthEntryInTx(
         listProviderDescriptorsInTx(tx, env, { kind: 'team', teamId: invitation.team.teamId }),
     ]);
     const descriptorByProviderId = new Map(descriptors.map((descriptor) => [
-        descriptor.reference.id.trim().toLowerCase(),
+        normalizeAuthMethodId(descriptor.reference.id),
         descriptor,
     ]));
     const connectionActions = connections.flatMap((connection) => {
         if (connection.state !== 'connected'
             || (allowedConnectionIds && !allowedConnectionIds.has(connection.id))) return [];
-        const provider = descriptorByProviderId.get(connection.providerInstanceId.trim().toLowerCase());
+        const provider = descriptorByProviderId.get(normalizeAuthMethodId(connection.providerInstanceId));
         if (!provider || provider.descriptor.enabled !== true || provider.descriptor.configured !== true) return [];
         const iconHint = provider.descriptor.ui?.iconHint ?? null;
         return [{

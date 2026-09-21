@@ -954,7 +954,7 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
             where: { poolId: pool.id, machineId: fallback.id },
             data: { priorityTier: 2 },
         });
-        const reread = await resolveRunnerCredentialSelection({
+        const rereadEstablished = async () => await resolveRunnerCredentialSelection({
             creatorAccountId: fixture.account.id,
             activationId: fixture.request.activationId,
             request,
@@ -964,11 +964,139 @@ describe('Runner activation and draft lifecycle (SQLite)', () => {
             readPoolSourceEligibility: async () => { throw new Error('A frozen Runner selection must not re-rank its Pool'); },
             readProviderProjection: async () => { throw new Error('A frozen Runner selection must not re-project'); },
         });
-        expect(reread).toMatchObject({
+        expect(await rereadEstablished()).toMatchObject({
             v: 1,
             status: 'resolved',
             credentialSelectionBinding: { brokerMachineId: fallback.id },
         });
+
+        // Pool membership governs future selection only. Disabling the frozen
+        // member must not revoke an activation whose broker was already
+        // selected and reviewed.
+        await db.machinePoolMember.updateMany({
+            where: { poolId: pool.id, machineId: fallback.id },
+            data: { enabled: false },
+        });
+        expect(await rereadEstablished()).toMatchObject({
+            v: 1,
+            status: 'resolved',
+            credentialSelectionBinding: { brokerMachineId: fallback.id },
+        });
+
+        // Current Machine, resource, source and endpoint authority stay with the
+        // readiness owner, which revalidates them before any effect.
+    });
+
+    // Reading a foreign custodian's Machine presence and asking their daemon
+    // whether it can run a source are real effects on someone else's computer.
+    // An unentitled caller must reach neither, and must not be able to tell a
+    // resource that does not exist from one they simply cannot use.
+    it('authorizes the named resource before it discovers a broker, and refuses missing and unauthorized alike', async () => {
+        const fixture = await activationFixture();
+        const created = await createEphemeralRunnerActivation({
+            creatorAccountId: fixture.account.id,
+            request: fixture.request,
+        }, fixture.options);
+        if (created.status !== 'created') throw new Error('Activation setup failed');
+        const installationKey = tweetnacl.sign.keyPair();
+        const claim = signRunnerClaimV1({
+            payload: runnerClaimPayload(runnerActivationProjectionBindingV1(created.activation), installationKey),
+            activationSecretKey: fixture.activationKey.secretKey,
+        });
+        expect(await claimEphemeralRunnerActivation({
+            activationId: fixture.request.activationId,
+            claim,
+        }, fixture.options)).toMatchObject({ status: 'claimed' });
+        await db.ephemeralRunnerActivation.update({
+            where: { id: fixture.request.activationId },
+            data: {
+                endpointFacts: signRunnerEndpointFactsV1({
+                    payload: {
+                        v: 1,
+                        purpose: 'happier.ephemeral-session-runner.endpoint-facts',
+                        claim: claim.payload,
+                        content: { t: 'plain', v: { v: 1, directory: '/work/foreign-resource', machine: {
+                            host: 'runner.example.test', platform: 'linux', happyCliVersion: '0.3.0',
+                            happyHomeDir: '/runner/home', homeDir: '/runner/home',
+                        } } },
+                    },
+                    activationSecretKey: fixture.activationKey.secretKey,
+                    installationSecretKey: installationKey.secretKey,
+                }),
+            },
+        });
+
+        // A Pool-backed resource of a Team the activation creator has no
+        // standing in: it exists, its revision matches, and it would rank.
+        const stranger = await db.account.create({ data: { encryptionMode: 'plain', username: `stranger-${randomUUID()}` } });
+        const foreign = await materializationCredentialFixture(stranger.id, `foreign-${fixture.request.activationId}`);
+        const foreignPool = await db.machinePool.create({ data: {
+            id: randomUUID(),
+            accountId: stranger.id,
+            name: 'Foreign brokers',
+            members: { create: [{ machineId: foreign.brokerMachine.id, priorityTier: 0, enabled: true }] },
+        } });
+        await db.teamCredentialResource.update({
+            where: { id: foreign.resource.id },
+            data: { brokerMachineId: null, brokerPoolId: foreignPool.id },
+        });
+
+        const application = {
+            agentTargetKey: 'agent:happier.agent.codex/codex',
+            implementationIdentity: { pluginId: 'happier.provider.openai', localId: 'openai' },
+            endpointTemplateId: 'responses',
+            protocol: 'openai-responses' as const,
+        };
+        const presenceReads: string[] = [];
+        const eligibilityReads: string[] = [];
+        const resolveFor = (selection: Readonly<{ resourceId: string; teamId: string; expectedResourceRevision: number }>) =>
+            resolveRunnerCredentialSelection({
+                creatorAccountId: fixture.account.id,
+                activationId: fixture.request.activationId,
+                request: {
+                    v: 1 as const,
+                    selection: {
+                        kind: 'team_credential_provider_model' as const,
+                        ...selection,
+                        agentTargetKey: application.agentTargetKey,
+                        modelId: 'gpt-5',
+                        deliveryMode: 'brokered' as const,
+                    },
+                    application,
+                    sourceRevision: 'source-revision-1',
+                    plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
+                },
+                authentication: presentUserAuthentication,
+                signal: new AbortController().signal,
+                readCurrentPresence: async (custodianAccountId) => {
+                    presenceReads.push(custodianAccountId);
+                    return { state: 'known', machineIds: new Set([foreign.brokerMachine.id]) };
+                },
+                readPoolSourceEligibility: async (eligibility) => {
+                    eligibilityReads.push(eligibility.resourceId);
+                    return { eligibleMachineIds: new Set(eligibility.machineIds), reasons: new Map() };
+                },
+                readProviderProjection: async () => { throw new Error('An unauthorized selection must not project a Provider'); },
+            });
+
+        const unauthorized = await resolveFor({
+            resourceId: foreign.resource.id,
+            teamId: foreign.team.id,
+            expectedResourceRevision: foreign.resource.revision,
+        });
+        const missing = await resolveFor({
+            resourceId: randomUUID(),
+            teamId: foreign.team.id,
+            expectedResourceRevision: foreign.resource.revision,
+        });
+        expect(unauthorized).toEqual({ v: 1, status: 'unavailable', reason: 'access_removed' });
+        expect(missing).toEqual(unauthorized);
+        expect(presenceReads).toEqual([]);
+        expect(eligibilityReads).toEqual([]);
+        await expect(db.ephemeralRunnerActivation.findUniqueOrThrow({
+            where: { id: fixture.request.activationId },
+            select: { credentialSelection: true },
+        })).resolves.toEqual({ credentialSelection: null });
     });
 
     it('rejects dual-signed broker readiness facts that differ from the creator-reviewed application or model', async () => {

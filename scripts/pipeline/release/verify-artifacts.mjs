@@ -191,23 +191,34 @@ async function readRunnerClosedZipLayout({ archivePath, archiveName, layout, sig
       `[release] Runner archive source is invalid: ${archiveName}`,
     );
   }
+  // The payload's own closed entry set: one executable file, or the portable
+  // directory root with exactly the shell executable and the core sidecar the
+  // shell resolves beside it. Nothing else may be present, renamed or missing.
+  const sidecarPath = layout.sidecarPath;
+  const expectedEntries = sidecarPath
+    ? [
+        { path: layout.payloadRootName, kind: 'directory' },
+        { path: layout.executablePath, kind: 'file' },
+        { path: sidecarPath, kind: 'file' },
+      ]
+    : [{ path: layout.executablePath, kind: 'file' }];
   // The exact-path check below is stricter than root containment, so the
   // shared extractor must not pre-empt the Runner-specific admission message.
   const entries = await inspectClosedZipArchiveEntries({
     archivePath,
     archiveSizeBytes: archive.size,
-    expectedEntryCount: 1,
+    expectedEntryCount: expectedEntries.length,
     signal,
   });
-  const entry = entries[0];
-  if (
-    !entry
-    || entry.path !== layout.executablePath
-    || entry.kind !== 'file'
-    || entry.mode !== 0o755
-  ) {
+  const admitted = entries.length === expectedEntries.length
+    && expectedEntries.every(({ path, kind }) => entries.some((entry) =>
+      entry.path === path && entry.kind === kind && entry.mode === 0o755));
+  if (!admitted) {
     throw new ReleaseArchiveAdmissionError(
-      `[release] Runner archive must contain exactly one ${layout.payloadRootName} executable payload: ${archiveName}`,
+      sidecarPath
+        ? `[release] Runner archive must contain exactly the ${layout.payloadRootName} payload directory`
+          + ` with ${basename(layout.executablePath)} and ${basename(sidecarPath)}: ${archiveName}`
+        : `[release] Runner archive must contain exactly one ${layout.payloadRootName} executable payload: ${archiveName}`,
     );
   }
   return { archiveSizeBytes: archive.size, entries };
@@ -241,10 +252,10 @@ export async function verifyReleaseArchiveAdmission({ archivePath, archiveName, 
       );
     }
     const layout = resolveRunnerPackageLayout(targetId);
-    if (layout.payloadKind !== 'appimage') {
-      // Making an app-bundle or exe target publication eligible requires its own admission
-      // evidence (stapled ticket, bundle layout, Authenticode). Adding a branch
-      // before that gate exists would let an unproven payload shape through.
+    if (layout.payloadKind !== 'appimage' && layout.payloadKind !== 'portable-dir') {
+      // Making the macOS app bundle publication eligible requires its own
+      // admission evidence (stapled ticket, bundle layout). Adding a branch
+      // before that evidence exists would let an unproven payload shape through.
       throw new ReleaseArchiveAdmissionError(
         `[release] Runner ${layout.payloadKind} admission is not implemented for ${archiveName}`,
       );
@@ -270,16 +281,20 @@ export async function verifyReleaseArchiveAdmission({ archivePath, archiveName, 
           `[release] Runner archive must contain exactly one ${layout.payloadRootName} payload: ${archiveName}`,
         );
       }
-      const executablePath = join(scratch, layout.executablePath);
-      const executable = await lstat(executablePath);
-      const mode = executable.mode & 0o7777;
-      if (!executable.isFile() || mode !== 0o755) {
-        throw new ReleaseArchiveAdmissionError(
-          `[release] Runner archive executable metadata is invalid: ${archiveName}`,
-        );
+      // The portable payload's sidecar is part of the executable surface: it is
+      // the process the shell actually spawns, so it carries the same metadata
+      // and private-material admission as the shell itself.
+      for (const relativePath of [layout.executablePath, ...(layout.sidecarPath ? [layout.sidecarPath] : [])]) {
+        const executablePath = join(scratch, relativePath);
+        const executable = await lstat(executablePath);
+        if (!executable.isFile() || (executable.mode & 0o7777) !== 0o755) {
+          throw new ReleaseArchiveAdmissionError(
+            `[release] Runner archive executable metadata is invalid: ${archiveName}`,
+          );
+        }
+        await scanFileForPrivateMaterial(executablePath);
       }
-      await scanFileForPrivateMaterial(executablePath);
-      return [{ path: layout.executablePath, kind: 'file', sizeBytes: executable.size, mode }];
+      return closedZipLayout.entries.map(({ path, kind, sizeBytes, mode }) => ({ path, kind, sizeBytes, mode }));
     } finally {
       await rm(scratch, { recursive: true, force: true });
     }
@@ -479,13 +494,11 @@ export async function smokeTestArchive({ archivePath, signal }) {
   const scratch = await mkdtemp(join(tmpdir(), 'happier-release-smoke-'));
   try {
     const archiveName = basename(archivePath);
-    const closedZipLayout = artifact?.product === 'happier-runner'
-      ? await readRunnerClosedZipLayout({
-          archivePath,
-          archiveName,
-          layout: resolveRunnerPackageLayout(`${artifact.os}-${artifact.arch}`),
-          signal,
-        })
+    const runnerLayout = artifact?.product === 'happier-runner'
+      ? resolveRunnerPackageLayout(`${artifact.os}-${artifact.arch}`)
+      : undefined;
+    const closedZipLayout = runnerLayout
+      ? await readRunnerClosedZipLayout({ archivePath, archiveName, layout: runnerLayout, signal })
       : undefined;
     await extractArchivePayloadToDirectory({
       archivePath,
@@ -504,17 +517,22 @@ export async function smokeTestArchive({ archivePath, signal }) {
     // root; existing CLI/server tarballs retain their product directory.
     const root = firstRootStat.isDirectory() ? firstRootPath : scratch;
     const entries = await readdir(root, { withFileTypes: true });
-    const candidate = entries
-      .filter((entry) => entry.isFile())
-      .map((entry) => entry.name)
-      .find((name) => !name.endsWith('.txt') && !name.endsWith('.json'));
+    // The Runner's entry point comes from its canonical package layout, never
+    // from a name heuristic: a portable payload holds two executables and only
+    // the shell is the product the endpoint launches.
+    const candidate = runnerLayout
+      ? basename(runnerLayout.executablePath)
+      : entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => entry.name)
+        .find((name) => !name.endsWith('.txt') && !name.endsWith('.json'));
     if (!candidate) {
       throw new Error(`[release] no executable found in archive: ${archivePath}`);
     }
     if (candidate.endsWith('.exe') && process.platform !== 'win32') {
       return;
     }
-    const binPath = join(root, candidate);
+    const binPath = runnerLayout ? join(scratch, runnerLayout.executablePath) : join(root, candidate);
     const serverBinary = isServerBinaryCandidate(candidate);
     const args = serverBinary ? [] : ['--version'];
     // The Runner payload is an AppImage, which self-mounts through FUSE. Asking

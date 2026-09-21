@@ -21,6 +21,7 @@ import {
 import { describeHomeAuthenticationAction } from '@/components/account/auth/homeAuthenticationActionPresentation';
 import { buildAuthenticatedAccountEntryHref } from '@/components/navigation/accountEntry/authenticatedAccountEntryRoute';
 import { useActionApprovalContinuation } from '@/components/approvals/useActionApprovalContinuation';
+import { asIconName } from '@/components/ui/icons/asIconName';
 import { WelcomeActionCard } from '@/components/onboarding/preAuth/WelcomeActionCard';
 import {
     WelcomeActionList,
@@ -792,20 +793,26 @@ export const TeamAuthEntrySurface = React.memo(function TeamAuthEntrySurface(pro
                                      * Team action into exactly that execution before running it.
                                      */
                                     const execution = projectTeamAuthAction(action)?.execution ?? null;
+                                    /*
+                                     * When the Home published a bounded icon hint for this provider
+                                     * it is the more specific answer, so it wins over the per-execution
+                                     * glyph. A hint this app ships no glyph for narrows away and the
+                                     * shared entry icon still renders.
+                                     */
+                                    const iconName = asIconName(action.presentation.iconHint)
+                                        ?? (execution
+                                            ? describeHomeAuthenticationAction({
+                                                execution,
+                                                providerName: action.presentation.displayName,
+                                            }).iconName
+                                            : undefined);
                                     return (
                                         <WelcomeActionCard
                                             key={`${action.origin}:${action.methodId}:${action.action}:${action.mode}`}
                                             testID={`team-auth-entry-action:${action.methodId}`}
                                             primary={index === 0 && accountServiceHref === null}
                                             title={t('teams.entry.continueWith', { method: action.presentation.displayName })}
-                                            {...(execution
-                                                ? {
-                                                    iconName: describeHomeAuthenticationAction({
-                                                        execution,
-                                                        providerName: action.presentation.displayName,
-                                                    }).iconName,
-                                                }
-                                                : {})}
+                                            {...(iconName ? { iconName } : {})}
                                             onPress={() => props.onSelectAction({
                                                 action,
                                                 teamId: projection.team.teamId,

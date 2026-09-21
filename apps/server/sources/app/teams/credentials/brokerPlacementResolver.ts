@@ -108,27 +108,68 @@ export async function admitTeamCredentialBrokerPoolForBrokeredUseInTx(
 }
 
 /**
- * True when this Machine is the broker the resource's current placement names:
- * an exact placement must name it, and a Pool placement must still carry it as
- * an enabled member. Established Runner bindings and existing-Session
- * validations ask exactly this; the Machine's own eligibility stays with the
- * Machine owner.
+ * How much of the placement a presented broker Machine must still satisfy.
+ *
+ * - `per_request` (default) — the request still gets to choose its target, so a
+ *   Pool placement must currently carry that Machine as an enabled member.
+ * - `established` — the target was selected for this operation before and
+ *   travels in its own record or signed binding. Per 11.03 §B3, tier
+ *   reordering, disabling and removal affect future selections only, so Pool
+ *   membership is never an ongoing ACL for an established target.
+ *
+ * An exact placement always names its one Machine in both modes.
+ */
+export type TeamCredentialBrokerPlacementSelection = "per_request" | "established";
+
+type TeamCredentialBrokerPlacementBinding =
+    | "bound"
+    | "unreadable"
+    | "not_placed"
+    | "not_named"
+    | "not_current_member";
+
+/** The one placement decision both the boolean predicate and admission read. */
+async function checkTeamCredentialBrokerPlacementBindingInTx(
+    tx: Tx,
+    input: Readonly<{
+        resource: TeamCredentialBrokerPlacementRow & Readonly<{ custodianAccountId: string }>;
+        machineId: string;
+        selection: TeamCredentialBrokerPlacementSelection;
+    }>,
+): Promise<TeamCredentialBrokerPlacementBinding> {
+    const read = readTeamCredentialBrokerPlacement(input.resource);
+    if (!read.ok) return "unreadable";
+    if (read.placement === null) return "not_placed";
+    if (read.placement.kind === "machine") {
+        return read.placement.machineId === input.machineId ? "bound" : "not_named";
+    }
+    if (input.selection === "established") return "bound";
+    return await isCurrentTeamCredentialBrokerPoolMemberInTx(tx, {
+        custodianAccountId: input.resource.custodianAccountId,
+        poolId: read.placement.poolId,
+        machineId: input.machineId,
+    }) ? "bound" : "not_current_member";
+}
+
+/**
+ * True when this Machine is the broker the resource's current placement names.
+ * Existing-Session validation and fresh Runner selection ask the `per_request`
+ * question; an activation rereading the exact target it already froze asks the
+ * `established` one. The Machine's own eligibility stays with the Machine owner.
  */
 export async function isTeamCredentialBrokerPlacementBoundToMachineInTx(
     tx: Tx,
     input: Readonly<{
         resource: TeamCredentialBrokerPlacementRow & Readonly<{ custodianAccountId: string }>;
         machineId: string;
+        selection?: TeamCredentialBrokerPlacementSelection;
     }>,
 ): Promise<boolean> {
-    const read = readTeamCredentialBrokerPlacement(input.resource);
-    if (!read.ok || read.placement === null) return false;
-    if (read.placement.kind === "machine") return read.placement.machineId === input.machineId;
-    return await isCurrentTeamCredentialBrokerPoolMemberInTx(tx, {
-        custodianAccountId: input.resource.custodianAccountId,
-        poolId: read.placement.poolId,
+    return await checkTeamCredentialBrokerPlacementBindingInTx(tx, {
+        resource: input.resource,
         machineId: input.machineId,
-    });
+        selection: input.selection ?? "per_request",
+    }) === "bound";
 }
 
 async function isCurrentTeamCredentialBrokerPoolMemberInTx(
@@ -154,17 +195,9 @@ export type TeamCredentialBrokerMachineAdmission =
 
 /**
  * Admission of one presented broker Machine against the resource's current
- * placement. An exact placement must always name that Machine; what a Pool
- * placement requires depends on whether this request still gets to choose:
- *
- * - `per_request` (default) — the request selects its own target, so the
- *   Machine must currently be an enabled member of the placed Pool. Every
- *   external API request is its own selection.
- * - `established` — the target was already selected for this operation and
- *   travels in its signed binding. Per 11.03 §B3, tier reordering, disabling
- *   and removing members affect future selections only, so an established
- *   target is revalidated for Machine eligibility alone and Pool membership
- *   is never an ongoing ACL for it.
+ * placement, in the caller's selection mode (see
+ * `TeamCredentialBrokerPlacementSelection`). Every external API request is its
+ * own selection and stays `per_request`.
  *
  * Eligibility is then rechecked by the one Machine owner.
  */
@@ -173,22 +206,17 @@ export async function admitTeamCredentialBrokerMachineForResourceInTx(
     input: Readonly<{
         resource: TeamCredentialBrokerPlacementResource;
         brokerMachineId: string;
-        selection?: "per_request" | "established";
+        selection?: TeamCredentialBrokerPlacementSelection;
     }>,
 ): Promise<TeamCredentialBrokerMachineAdmission> {
-    const read = readTeamCredentialBrokerPlacement(input.resource);
-    if (!read.ok) return { ok: false, error: "resource_unavailable" };
-    if (read.placement === null) return { ok: false, error: "resource_changed" };
-    if (read.placement.kind === "machine") {
-        if (read.placement.machineId !== input.brokerMachineId) return { ok: false, error: "resource_changed" };
-    } else if ((input.selection ?? "per_request") === "per_request"
-        && !await isCurrentTeamCredentialBrokerPoolMemberInTx(tx, {
-            custodianAccountId: input.resource.custodianAccountId,
-            poolId: read.placement.poolId,
-            machineId: input.brokerMachineId,
-        })) {
-        return { ok: false, error: "broker_unavailable" };
-    }
+    const binding = await checkTeamCredentialBrokerPlacementBindingInTx(tx, {
+        resource: input.resource,
+        machineId: input.brokerMachineId,
+        selection: input.selection ?? "per_request",
+    });
+    if (binding === "unreadable") return { ok: false, error: "resource_unavailable" };
+    if (binding === "not_placed" || binding === "not_named") return { ok: false, error: "resource_changed" };
+    if (binding === "not_current_member") return { ok: false, error: "broker_unavailable" };
     const saved = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
         custodianAccountId: input.resource.custodianAccountId,
         brokerMachineId: input.brokerMachineId,

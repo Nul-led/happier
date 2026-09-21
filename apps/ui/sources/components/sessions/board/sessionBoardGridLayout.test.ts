@@ -5,6 +5,7 @@ import type { SessionBoardItemWidth } from '@happier-dev/protocol/sessions/board
 import {
     SESSION_BOARD_GRID_GAP_PX,
     SESSION_BOARD_MIN_ITEM_WIDTH_PX,
+    resolveSessionBoardGridRowIndexes,
     resolveSessionBoardGridTier,
     resolveSessionBoardItemWidthPx,
 } from './sessionBoardGridLayout';
@@ -72,5 +73,32 @@ describe('session board grid layout', () => {
             availableWidthPx: Number.NaN,
             tier: 'twelve',
         })).toBeNull();
+    });
+});
+
+describe('session Board grid rows', () => {
+    it('packs a row until the next card no longer fits', () => {
+        expect(resolveSessionBoardGridRowIndexes({
+            widths: ['compact', 'compact', 'compact', 'compact', 'medium', 'wide'],
+            tier: 'twelve',
+        })).toEqual([0, 0, 0, 1, 1, 2]);
+    });
+
+    it('breaks the row for a card the remaining columns cannot hold', () => {
+        expect(resolveSessionBoardGridRowIndexes({
+            widths: ['compact', 'full', 'compact'],
+            tier: 'twelve',
+        })).toEqual([0, 1, 2]);
+    });
+
+    it('gives every card its own row once the grid linearizes', () => {
+        expect(resolveSessionBoardGridRowIndexes({
+            widths: ['compact', 'compact', 'wide'],
+            tier: 'single',
+        })).toEqual([0, 1, 2]);
+        expect(resolveSessionBoardGridRowIndexes({
+            widths: ['compact', 'compact', 'wide', 'compact'],
+            tier: 'halves',
+        })).toEqual([0, 0, 1, 2]);
     });
 });

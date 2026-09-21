@@ -30,6 +30,14 @@ import {
 import { registerOAuthCallbackRoute } from "./registerOAuthCallbackRoute";
 import { beginGitHubAppManifestSetup } from "@/app/integrations/github/githubManagedAppManifest";
 import { registerManagedGitHubAppRoutes } from "@/app/integrations/github/githubManagedAppRoutes";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+
+const ACCEPTED_EMAIL_PASSWORD = { kind: "home_method" as const, methodId: "email_password" };
+const HOME_OFFERS_EMAIL_PASSWORD = {
+    HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+    HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+    HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+};
 
 describe("OAuth callback GitHub App installation verification", () => {
     let harness: LightSqliteHarness;
@@ -73,6 +81,9 @@ describe("OAuth callback GitHub App installation verification", () => {
         await db.gitHubAppInstallation.deleteMany();
         await db.gitHubAppRegistration.deleteMany();
         await db.accountIdentity.deleteMany();
+        await db.accountPasswordCredential.deleteMany();
+        await db.teamMembership.deleteMany();
+        await db.team.deleteMany();
         await db.account.deleteMany();
     });
 
@@ -231,5 +242,126 @@ describe("OAuth callback GitHub App installation verification", () => {
         expect(ciphertext).not.toContain("manifest-client-secret");
         expect(ciphertext).not.toContain("manifest-private-key");
         expect(ciphertext).not.toContain("manifest-webhook-secret");
+    });
+    // The GitHub return is a browser redirect with no Happier credential. A
+    // restricted Team's App must still be finishable by the administrator who
+    // started it, and must stop the moment that Team stops accepting their
+    // credential — so the finalizer re-decides from the facts the server
+    // stamped on the initiating request, never from a stored "yes".
+    it("carries the initiating request's credential facts through the manifest round trip and re-decides at the end", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            HAPPIER_WEBAPP_URL: "https://app.example.test",
+            ...HOME_OFFERS_EMAIL_PASSWORD,
+        });
+        const account = await db.account.create({
+            data: { publicKey: "github-manifest-team-admin", homeRole: "member", status: "active" },
+            select: { id: true },
+        });
+        await db.accountIdentity.create({
+            data: {
+                accountId: account.id,
+                provider: "email",
+                providerUserId: "team-admin@example.test",
+                profile: {},
+            },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: account.id,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("team admin factor")),
+                },
+            },
+        });
+        const team = await db.team.create({
+            data: {
+                name: "Restricted App owner",
+                authenticationPolicy: { v: 1, mode: "restricted", accepted: [ACCEPTED_EMAIL_PASSWORD] },
+            },
+            select: { id: true },
+        });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: account.id, role: "owner" } });
+        const owner = { kind: "team" as const, teamId: team.id };
+
+        const started = await beginGitHubAppManifestSetup({
+            actorAccountId: account.id,
+            owner,
+            authenticationAuthority: "present_user",
+            authenticationEvidence: [ACCEPTED_EMAIL_PASSWORD],
+            appName: "Happier Team",
+            githubOwner: { kind: "organization", login: "acme" },
+            env: process.env,
+        });
+        if (started.status !== "ready") throw new Error(`unexpected start: ${started.status}`);
+        transport.fetch.mockResolvedValueOnce(new Response(JSON.stringify({
+            id: 78,
+            slug: "happier-team",
+            client_id: "Iv1.team-manifest",
+            client_secret: "team-manifest-client-secret",
+            pem: "team-manifest-private-key",
+            owner: { id: 89, login: "acme" },
+        }), { status: 201 }));
+        const app = Fastify({ logger: false });
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        app.decorate("authenticate", async () => undefined);
+        registerManagedGitHubAppRoutes(app.withTypeProvider<ZodTypeProvider>() as never);
+        registerOAuthCallbackRoute(app.withTypeProvider<ZodTypeProvider>());
+        const launchTarget = new URL(started.authorizeUrl);
+        const launch = await app.inject({
+            method: "GET",
+            url: `${launchTarget.pathname}${launchTarget.search}`,
+        });
+        const action = launch.body.match(/action="([^"]+)"/u)?.[1]?.replace(/&amp;/gu, "&");
+        const state = action ? new URL(action).searchParams.get("state") : null;
+        expect(state).toBeTruthy();
+
+        const created = await app.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?state=${encodeURIComponent(state!)}&code=team-manifest-code`,
+        });
+        const createdRedirect = new URL(created.headers.location as string);
+        expect(createdRedirect.searchParams.get("error")).toBeNull();
+        expect(createdRedirect.searchParams.get("created")).toBe("1");
+
+        // The Team now accepts a credential this administrator does not hold.
+        // The installation continuation must refuse rather than replay the
+        // authorization the attempt was started with.
+        await db.team.update({
+            where: { id: team.id },
+            data: {
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "key_challenge" }],
+                },
+            },
+        });
+        github.appRequest.mockImplementation(async (route: string) => ({
+            data: route.startsWith("POST ")
+                ? { token: "installation-token" }
+                : {
+                    id: 302,
+                    app_id: 78,
+                    account: { id: 402, login: "Acme", type: "Organization" },
+                    repository_selection: "selected",
+                    permissions: { members: "read" },
+                    events: [],
+                    suspended_at: null,
+                },
+        }));
+        const refused = await app.inject({
+            method: "GET",
+            url: `/v1/identity/github-apps/manifest-setup/complete?state=${encodeURIComponent(state!)}&installation_id=302&setup_action=install`,
+        });
+        await app.close();
+
+        expect(refused.statusCode).toBe(403);
+        expect(refused.json()).toEqual({ error: "forbidden" });
+        await expect(db.gitHubAppRegistration.count({ where: { ownerTeamId: team.id } })).resolves.toBe(1);
+        await expect(db.gitHubAppInstallation.count()).resolves.toBe(0);
     });
 });

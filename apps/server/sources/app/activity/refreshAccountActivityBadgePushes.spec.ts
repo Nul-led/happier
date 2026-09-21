@@ -12,7 +12,9 @@ const getPushNotificationReceiptsAsyncSpy = vi.hoisted(() => vi.fn(async (_ids: 
 // owners (owner-or-active-Follow tracking plus Discussion attention), so the
 // delegates those owners read must exist here or the migrated path is never
 // exercised: `accountSessionFollow` and `sessionDiscussionReadState` are the
-// Lane 09B/09C tables, `sessionDiscussion.groupBy` the latest-activity read.
+// Lane 09B/09C tables, `sessionDiscussion.groupBy` the latest-activity read,
+// and `teamMembership` the collective-access snapshot the badge admission
+// resolves for each Account through the canonical access owner.
 const dbMocks = createDbMocks({
     account: ["findMany"],
     session: ["findMany"],
@@ -21,6 +23,7 @@ const dbMocks = createDbMocks({
     sessionDiscussionReadState: ["findMany"],
     accountSessionFollow: ["findMany"],
     accountPushToken: ["findMany", "deleteMany"],
+    teamMembership: ["findMany"],
 } as const);
 
 const transactionMock = createDbTransactionMock(() => dbMocks.db);
@@ -103,6 +106,8 @@ describe("refreshAccountActivityBadgePushes", () => {
         dbMocks.db.sessionDiscussionMessage.findMany.mockReset();
         dbMocks.db.sessionDiscussionReadState.findMany.mockReset();
         dbMocks.db.accountSessionFollow.findMany.mockReset();
+        dbMocks.db.teamMembership.findMany.mockReset();
+        dbMocks.db.teamMembership.findMany.mockResolvedValue([]);
         dbMocks.db.account.findMany.mockResolvedValue([{ id: "a1" }, { id: "a2" }]);
         dbMocks.db.sessionDiscussion.findMany.mockResolvedValue([]);
         dbMocks.db.sessionDiscussion.groupBy.mockResolvedValue([]);

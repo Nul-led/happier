@@ -59,6 +59,7 @@ function projectedDaemonAction(
   const projected = PluginProjectedActionV2Schema.safeParse({
     id: action.id,
     pluginId,
+    occurrenceId: action.occurrenceId,
     title: action.title,
     ...(action.description ? { description: action.description } : {}),
     ...(action.icon ? { icon: action.icon } : {}),
@@ -82,6 +83,7 @@ function pluginAction(input: Partial<PluginProjectionAction> & Readonly<{
 }>): PluginProjectionAction {
   return {
     id: input.id,
+    occurrenceId: input.occurrenceId ?? 'commands-occurrence-a',
     title: input.title ?? input.id,
     description: input.description ?? null,
     icon: input.icon ?? null,
@@ -260,6 +262,32 @@ describe('buildCommandPaletteCommands', () => {
     expect(commands).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: 'session-ordinary-recent', kind: 'recentSession' }),
     ]));
+  });
+
+  it('opens a recent session on the Home its row already names', () => {
+    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
+    const navigateToSession = vi.fn();
+
+    const commands = buildCommandPaletteCommands({
+      sessionsById: {
+        'cross-home-recent': {
+          id: 'cross-home-recent',
+          serverId: 'home-b',
+          updatedAt: 100,
+          metadata: { name: 'Recent on another Home' },
+        },
+      },
+      isDev: false,
+      activeSessionId: null,
+      features: { executionRunsEnabled: false, voiceEnabled: false },
+      nav: { push: () => {}, openNewSession: () => {}, navigateToSession },
+      actions: { execute: async () => ({ ok: true, result: {} }) },
+      alert: async () => {},
+    } as never);
+
+    commands.find((command) => command.id === 'session-cross-home-recent')?.action();
+
+    expect(navigateToSession).toHaveBeenCalledWith('cross-home-recent', { serverId: 'home-b' });
   });
 
   it('projects an admitted command-palette Action with its canonical presentation and executor', async () => {
@@ -844,6 +872,38 @@ describe('buildCommandPaletteCommands', () => {
     expect(cmd).toBeTruthy();
     await cmd!.action();
     expect(pushes).toEqual(['/scan/terminal']);
+  });
+
+  /**
+   * Workflows are reached through the palette only when the one canonical
+   * Workflows decision says they exist on this Home; the caller projects that
+   * decision in, and an unavailable or unresolved Home gets no dead entry.
+   */
+  it.each([
+    ['available', true, ['/workflows']],
+    ['unavailable', false, []],
+  ] as const)('offers Open Workflows only when Workflows are %s', async (_label, workflowsAvailable, expectedPushes) => {
+    const pushes: string[] = [];
+    mockedState = { createSessionActionDraft: createSessionActionDraftSpy, settings: {} };
+
+    const cmds = buildCommandPaletteCommands({
+      sessionsById: {},
+      isDev: false,
+      activeSessionId: null,
+      features: { executionRunsEnabled: false, voiceEnabled: false, workflowsAvailable },
+      nav: {
+        push: (path) => pushes.push(path),
+        openNewSession: () => {},
+        navigateToSession: () => {},
+      },
+      actions: { execute: async () => ({ ok: true, result: {} }) },
+      alert: async () => {},
+    });
+
+    const workflows = cmds.find((command) => command.id === 'workflows');
+    expect(workflows !== undefined).toBe(workflowsAvailable);
+    await workflows?.action();
+    expect(pushes).toEqual(expectedPushes);
   });
 
   it('registers pet commands when the companion feature is enabled', async () => {

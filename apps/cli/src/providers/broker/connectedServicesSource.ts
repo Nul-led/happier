@@ -9,7 +9,10 @@ import { resolveManagedProviderPurposeBindingSnapshot } from '@/providers/manage
 import type { ConnectedAccountPurposeBindingOwner } from '@/daemon/connectedServices/purposeBindings/ConnectedAccountPurposeBindingOwner';
 import type { ManagedProviderExplicitStartCustody } from '@/providers/connections/publicManagedRuntimeStart';
 import type { TeamCredentialBrokerSourceOpenInput } from './teamCredentialBrokerSourceOwner';
-import { teamCredentialBrokerPlacementAcceptsMachine } from './teamCredentialBrokerSourceOwner';
+import {
+  isCLIProxyAPIBrokerApplication,
+  teamCredentialBrokerPlacementAcceptsMachine,
+} from './teamCredentialBrokerSourceOwner';
 
 type ConnectedSource = Extract<
   TeamCredentialSourceBindingV1,
@@ -52,9 +55,7 @@ export function createConnectedServicesBrokerSourceOpen(input: Readonly<{
     });
     if (
       !family
-      || request.application.implementationIdentity.pluginId
-        !== 'happier.provider.cliproxyapi'
-      || request.application.implementationIdentity.localId !== 'cliproxyapi'
+      || !isCLIProxyAPIBrokerApplication(request.application)
       || (
         request.source.target.kind === 'account'
           ? request.source.target.account.service.pluginId !== family.connectedAccount.service.pluginId

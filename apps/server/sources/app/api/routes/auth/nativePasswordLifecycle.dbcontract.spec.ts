@@ -8,8 +8,11 @@ import tweetnacl from "tweetnacl";
 
 import {
     createNativeAuthOneTimeOperationKeyV1,
+    createPasswordCredentialTargetDigestV1,
     createPasswordMutationChallengeSigningInputV1,
+    encodePasswordCredentialFieldV1,
     normalizeVerifiedEmail,
+    type E2eeAccountPasswordCredentialV1,
     type PasswordCredentialMutationV1,
 } from "@happier-dev/protocol";
 import {
@@ -23,6 +26,8 @@ import type { AuthEmailDelivery } from "@/app/auth/email/authEmailDelivery";
 import { emailPasswordAuthMethodModule } from "@/app/auth/methods/modules/emailPasswordAuthMethodModule";
 import { createTeamInvitationForActorInTx } from "@/app/teams/invitations/invitationService";
 import { enableAuthentication } from "@/app/api/utils/enableAuthentication";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
+import { registerAccountSecurityRoutes } from "./registerAccountSecurityRoutes";
 import { db, initDbMysql, initDbPostgres, shutdownDbClient } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
 
@@ -286,6 +291,105 @@ describe("native password public-owner provider contract", () => {
         expect(await db.keyChallengeV2.findUnique({ where: { id: challenge.challengeId } }))
             .toMatchObject({ consumedAt: expect.any(Date) });
         expect(await consume()).toBe(false);
+    }, 120_000);
+
+    providerIt("commits exactly one of two distinct valid password-mutation proofs over one credential revision", async () => {
+        const runKey = randomUUID().replace(/-/gu, "").slice(0, 16);
+        const signing = tweetnacl.sign.keyPair();
+        const accountSigningPublicKey = encodePasswordCredentialFieldV1(new Uint8Array(signing.publicKey));
+        const account = await db.account.create({ data: {
+            publicKey: privacyKit.encodeHex(new Uint8Array(signing.publicKey)),
+            encryptionMode: "e2ee",
+        } });
+        createdAccountIds.add(account.id);
+        const email = `${runKey}@proof-race.example.test`;
+        await db.accountIdentity.create({ data: {
+            accountId: account.id, provider: "email", providerUserId: email, profile: {},
+        } });
+        const field = (length: number, fill: number) => encodePasswordCredentialFieldV1(new Uint8Array(length).fill(fill));
+        const credential = async (fill: number): Promise<E2eeAccountPasswordCredentialV1> => ({
+            v: 1,
+            kind: "e2ee_password_envelope",
+            authVerifier: { v: 1, hash: await hashPasswordMaterial(new Uint8Array(32).fill(fill)) },
+            envelope: {
+                v: 1,
+                accountSigningPublicKey,
+                kdf: { algorithm: "argon2id13", salt: field(16, fill), opsLimit: 3, memLimitBytes: 67108864, outputBytes: 32 },
+                cipher: { algorithm: "aes256gcm", nonce: field(12, fill), ciphertext: field(48, fill) },
+            },
+        });
+        const currentCredential = await credential(1);
+        await db.accountPasswordCredential.create({ data: { accountId: account.id, credential: currentCredential } });
+
+        // Two genuinely different mutations of the SAME credential revision, each
+        // with its own valid signed proof. Only one may install a replacement:
+        // the other must find the revision gone and leave its proof unspent.
+        const attempt = async (fill: number) => {
+            const targetCredential = await credential(fill);
+            const mutation: PasswordCredentialMutationV1 = {
+                v: 1,
+                action: "change",
+                accountId: account.id,
+                expectedCredentialRevision: 1,
+                normalizedNativeEmail: email,
+                newCredentialDigest: createPasswordCredentialTargetDigestV1(targetCredential),
+            };
+            const challenge = await issuePasswordMutationKeyChallengeV1({ mutation, env: process.env });
+            if (!challenge) throw new Error("challenge issuance unavailable");
+            return {
+                targetCredential,
+                challengeId: challenge.challengeId,
+                payload: {
+                    v: 1 as const,
+                    kind: "e2ee" as const,
+                    action: "change" as const,
+                    expectedCredentialRevision: 1,
+                    targetCredential,
+                    proof: {
+                        challengeId: challenge.challengeId,
+                        publicKey: privacyKit.encodeBase64(new Uint8Array(signing.publicKey)),
+                        signature: privacyKit.encodeBase64(new Uint8Array(tweetnacl.sign.detached(
+                            createPasswordMutationChallengeSigningInputV1(challenge), signing.secretKey,
+                        ))),
+                    },
+                },
+            };
+        };
+        const [first, second] = await Promise.all([attempt(2), attempt(3)]);
+        expect(first.challengeId).not.toBe(second.challengeId);
+
+        const token = await auth.createToken(account.id, undefined, { kind: "account", authority: "present_user" });
+        const app = Fastify({ logger: false }).withTypeProvider<ZodTypeProvider>();
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        enableAuthentication(app);
+        registerAccountSecurityRoutes(app);
+        await app.ready();
+        try {
+            const change = (payload: unknown) => app.inject({
+                method: "POST",
+                url: "/v1/account/password/change",
+                headers: { authorization: `Bearer ${token}` },
+                payload: payload as Record<string, unknown>,
+            });
+            const responses = await Promise.all([change(first.payload), change(second.payload)]);
+            const statuses = responses.map((response) => response.statusCode).sort();
+            expect(statuses, responses.map((response) => response.body).join(" | ")).toEqual([200, 409]);
+
+            const stored = await db.accountPasswordCredential.findUniqueOrThrow({ where: { accountId: account.id } });
+            expect(stored.revision).toBe(2);
+            const winner = responses[0]?.statusCode === 200 ? first : second;
+            const loser = responses[0]?.statusCode === 200 ? second : first;
+            expect(stored.credential).toEqual(winner.targetCredential);
+            expect(await db.keyChallengeV2.findUnique({ where: { id: winner.challengeId } }))
+                .toMatchObject({ consumedAt: expect.any(Date) });
+            // The loser never reached proof consumption: its challenge is still
+            // spendable and the credential it proposed was never installed.
+            expect(await db.keyChallengeV2.findUnique({ where: { id: loser.challengeId } }))
+                .toMatchObject({ consumedAt: null });
+        } finally {
+            await app.close();
+        }
     }, 120_000);
 
     providerIt("rolls Account, identity, mailbox, password, and invitation consumption back when membership admission fails", async () => {

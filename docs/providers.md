@@ -230,8 +230,12 @@ Readiness and failures use the typed Team-credential result unions; clients must
 reported recovery action and must not silently fall back to a personal connection or from direct
 to brokered delivery.
 
-The development Temporary-computer flow resolves its Team credential before a Session exists. The
-reviewed `RunnerCredentialSelectionBindingV1` pins the exact resource, broker Machine, resource
+The development Temporary-computer flow resolves its Team credential before a Session exists. It
+authorizes the named resource through the planned-Session admission owner before it discovers any
+broker, because Pool selection reads the custodian's Machine presence and asks their daemon whether
+it can run the source. A caller who is not entitled to the resource reaches neither step and cannot
+tell a resource that does not exist from one they may not use: both refuse with the same reason.
+The reviewed `RunnerCredentialSelectionBindingV1` pins the exact resource, broker Machine, resource
 revision, Provider application binding, and source/catalog revision. For direct placement that is
 the configured Machine. For Pool placement, the server intersects current generic Pool availability
 with source-specific content-free eligibility, selects once, and emits the same exact binding; the
@@ -272,6 +276,8 @@ Visibility affects discovery in the picker, not the validity of an already-runni
 Large catalogs must use the app's virtualized option-list path. OpenRouter-scale catalogs must not render hundreds of model rows through a direct `.map()` of pressables.
 
 Catalog and health refresh is demand-driven. Enabling a connection, a semantic connection-detail or model-picker read, an explicit Test/Refresh, or an eligible read of expired cached data may schedule work through the canonical Provider probe scheduler. Cache expiry makes that read schedule a refresh; it does not create a timer, background crawler, lease, or global refresh budget. The scheduler owns single-flight execution, concurrency, retry/backoff, and freshness. UI and plugin code must not add a second polling path.
+
+An Agent may declare a native credential source for that same catalog observation. The host reads only the declared secret file under the Agent's declared native home and routes the credential into the existing Provider catalog observer; native authentication does not create a second HTTP probe, parser, cache, or refresh scheduler. Claude uses this path for its native Claude Code OAuth login when no selected Connected Service supplies the catalog credential. Its account setting and environment kill switch are evaluated before either credential source, cache, or network is touched.
 
 A model-picker read waits for the demand it schedules only when a connection is **cold**: it has no catalog observation yet and would therefore contribute no row at all. Answering that read immediately would be a silently empty picker with nothing to follow it, because the projection response is the only completion signal the client has. A connection that already holds an observation—even an empty, stale, or failed one—renders from that observation and keeps its refresh advisory, so an unreachable endpoint never blocks a later read. Waiting does not change work ownership: the demand still goes to the one probe scheduler, which keeps its single-flight execution, admission concurrency, typed local-capacity refusal, and failure backoff. Demand the scheduler refuses for capacity is left for a later read; no caller retains a second queue for it.
 

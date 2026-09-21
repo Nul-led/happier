@@ -1,6 +1,29 @@
 import { z } from "zod";
 
+import {
+    AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS,
+    AuthTokenAuthenticationEvidenceV1Schema,
+} from "@happier-dev/protocol";
+
 import { decryptString, encryptString } from "@/modules/encrypt";
+
+/**
+ * The server-stamped authentication facts of the request that started a GitHub
+ * App setup, as persisted on the OAuth attempt and the manifest continuation.
+ *
+ * GitHub returns the administrator through a browser redirect that carries no
+ * Happier credential, so the finalizer re-runs the same authorization with the
+ * facts the server observed on the initiating request. It is never a claim the
+ * client can author: the attempt value is server-written and signed-state bound.
+ */
+export const GitHubAppManagementAuthenticationV1Schema = z.object({
+    authenticationAuthority: z.enum(["present_user", "account_automation"]),
+    authenticationEvidence: z.array(AuthTokenAuthenticationEvidenceV1Schema)
+        .max(AUTH_TOKEN_AUTHENTICATION_EVIDENCE_MAX_ITEMS)
+        .optional(),
+}).strict();
+
+export type GitHubAppManagementAuthenticationV1 = z.infer<typeof GitHubAppManagementAuthenticationV1Schema>;
 
 const GitHubAppRegistrationConfigV1Schema = z.object({
     v: z.literal(1),

@@ -47,6 +47,7 @@ import { getActiveServerSnapshot } from '@/sync/domains/server/serverRuntime';
 import { readEndpointFromMachineState } from '@/sync/domains/machines/peer/mediation/stream/productionRouteHttp';
 import { readVoiceDaemonHttpPortFromState } from '@/voice/settings/voiceProviderLocalAvailability';
 import { resolveVoiceQaTransportReadiness } from './voiceQaTransportReadiness';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 function VoiceQaField(props: Readonly<{ label: string; value: string; onChangeText: (value: string) => void; placeholder: string; multiline?: boolean; testID?: string }>) {
   const { theme } = useUnistyles();
@@ -650,7 +651,11 @@ export function VoiceQaScreen() {
                   title={t('common.open')}
                   size="normal"
                   display="inverted"
-                  onPress={() => router.push(`/session/${boundConversationSessionId}` as any)}
+                  onPress={() => router.push(buildScopedSessionRouteHref({
+                    sessionId: boundConversationSessionId,
+                    // The binding names the conversation carrier's Home.
+                    serverId: boundVoiceBinding?.conversationSessionAddress?.serverId ?? null,
+                  }) as any)}
                 />
               ) : null}
               {routeOutputCaptureEnabled && routeOutputFixtureUrl ? (

@@ -118,6 +118,31 @@ describe("Team lifecycle (SQLite integration)", () => {
             expect(result.team.capabilities.manageMembers).toBe(false);
         });
 
+        it("requires managed creation to name its initial Team owner explicitly", async () => {
+            // Under `managed_only` the Home administrator is creating a Team for
+            // somebody, and the product asks them to choose who. Falling back to
+            // the creator would silently make an administrator the owner of a
+            // Team they were provisioning for another person.
+            await setTeamCreationPolicy("managed_only");
+            const admin = await account("admin");
+
+            expect(await create(admin.id, { name: "Managed omission" }))
+                .toEqual({ ok: false, error: "invalid_team_input" });
+            expect(await db.team.findFirst({ where: { name: "Managed omission" } })).toBeNull();
+
+            // Naming themselves stays legal, and self-service creation keeps the
+            // creator fallback it has always had.
+            expect(await create(admin.id, { name: "Managed explicit", initialOwnerAccountId: admin.id }))
+                .toMatchObject({ ok: true });
+            await setTeamCreationPolicy("self_service");
+            const ordinary = await account();
+            const selfService = await create(ordinary.id, { name: "Self service omission" });
+            expect(selfService.ok).toBe(true);
+            if (!selfService.ok) return;
+            expect((await db.teamMembership.findMany({ where: { teamId: selfService.team.id } }))
+                .map(m => m.accountId)).toEqual([ordinary.id]);
+        });
+
         it("refuses creation the Home policy does not permit and self-service creation for somebody else", async () => {
             await setTeamCreationPolicy("managed_only");
             const ordinary = await account();

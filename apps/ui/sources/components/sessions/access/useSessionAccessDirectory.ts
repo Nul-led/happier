@@ -8,7 +8,6 @@ import { searchSessionAccessAccountPage } from '@/sync/api/session/sessionAccess
 import type { ServerAccountScope } from '@/sync/domains/scope/serverAccountScope';
 import type { TeamAddress } from '@/sync/domains/teams/teamAddress';
 import { listTeamGroups } from '@/sync/ops/teams/teamGroupOperations';
-import { listTeamMembers } from '@/sync/ops/teams/teamMemberOperations';
 import { runTeamAction } from '@/sync/ops/teams/teamActionClient';
 import { t } from '@/text';
 
@@ -156,7 +155,11 @@ export function useSessionAccessDirectory(input: Readonly<{
     const allowsAccounts = principalKinds.includes('account');
     const allowsTeams = principalKinds.includes('team');
     const allowsGroups = principalKinds.includes('group');
-    const teamMembers = useTeamMembersRoster({ scope, address: teamAddress, filter: 'all', enabled: enabled && teamAddress !== null && allowsAccounts });
+    // The lookup the person is typing IS the roster's sequence identity: the Home answers it,
+    // and its cursor continues that answer. Holding the query anywhere else would give the
+    // section two pagers — one describing the matches, one paging the unqueried roster.
+    const [teamMemberQuery, setTeamMemberQuery] = React.useState('');
+    const teamMembers = useTeamMembersRoster({ scope, address: teamAddress, filter: 'all', query: teamMemberQuery, enabled: enabled && teamAddress !== null && allowsAccounts });
     const teamGroups = useTeamGroups({ scope, address: teamAddress, archived: 'active', enabled: enabled && teamAddress !== null && allowsGroups });
     const contextTeamKey = contextTeams.map((team) => team.teamId).sort().join(',');
     const [pages, setPages] = React.useState<Readonly<Record<string, Page>>>({});
@@ -177,6 +180,7 @@ export function useSessionAccessDirectory(input: Readonly<{
         groupRequest.current = null;
         setPages({});
         setGroupPage(null);
+        setTeamMemberQuery('');
     }, [scopeKey]);
 
     const operation = React.useCallback(
@@ -407,21 +411,21 @@ export function useSessionAccessDirectory(input: Readonly<{
     /**
      * Looking a Team member up asks the Home, exactly as the roster screen does,
      * so a member on an unread page is found and this editor never becomes a
-     * second matcher for the same question. An empty lookup is not a lookup: the
-     * roster page already read answers it without a request.
+     * second matcher for the same question.
+     *
+     * The lookup is published to the roster rather than fetched here: that owner
+     * already fences superseded answers and binds its cursor to the query, so
+     * "Load more" continues the matches the person is looking at instead of the
+     * unqueried roster, and the section's `hasMore` describes that same sequence.
      */
     const resolveTeamMember = React.useCallback(async (
         rosterRows: readonly SessionAccessCandidateRowModel[],
         query: string,
-        signal: AbortSignal,
     ): Promise<readonly SessionAccessCandidateRowModel[]> => {
         const search = query.trim();
-        if (search === '' || !teamAddress) return applyOperations(rosterRows);
-        const outcome = await listTeamMembers({ scope, address: teamAddress, filter: 'all', query: search });
-        if (currentScope.current !== scopeKey || signal.aborted) return [];
-        if (outcome.kind !== 'succeeded') throw new Error(outcome.failure.kind);
-        return applyOperations(teamMemberRows(outcome.value.items));
-    }, [applyOperations, scope, scopeKey, teamAddress]);
+        setTeamMemberQuery((current) => (current === search ? current : search));
+        return applyOperations(rosterRows);
+    }, [applyOperations]);
 
     const resolvePaged = React.useCallback(async (
         kind: 'team' | 'group',
@@ -609,10 +613,10 @@ export function useSessionAccessDirectory(input: Readonly<{
                 kind: 'account' as const, title: t('session.access.people'), candidates: accountRows,
                 status: teamMembers.status === 'error' ? 'error' as const : teamMembers.status === 'loading' ? 'loading' as const : teamMembers.status === 'loading_more' ? 'refreshing' as const : 'idle' as const,
                 ...(teamMembers.status === 'error' ? { error: directoryError } : {}),
-                cursor: teamMembers.hasMore ? `team-members:${teamMembers.rows.length}` : null,
+                cursor: teamMembers.hasMore ? `team-members:${teamMemberQuery}:${teamMembers.rows.length}` : null,
                 hasMore: teamMembers.hasMore, loadingMore: teamMembers.status === 'loading_more',
-                resolverKey: `${scopeKey}:team-members:${revision}:${teamMembers.rows.length}:${teamMembers.status}:${operationsKey}`,
-                resolveCandidates: (query: string, signal: AbortSignal) => resolveTeamMember(accountRows, query, signal),
+                resolverKey: `${scopeKey}:team-members:${revision}:${teamMemberQuery}:${teamMembers.rows.length}:${teamMembers.status}:${operationsKey}`,
+                resolveCandidates: (query: string) => resolveTeamMember(accountRows, query),
             }, {
                 kind: 'group' as const, title: t('session.access.groups'), candidates: groupCandidateRows,
                 status: teamGroups.status === 'error' ? 'error' as const : teamGroups.status === 'loading' ? 'loading' as const : teamGroups.status === 'loading_more' ? 'refreshing' as const : 'idle' as const,
@@ -675,7 +679,7 @@ export function useSessionAccessDirectory(input: Readonly<{
             resolveCandidates: (query) => resolvePaged('group', query),
         });
         return built.filter((section) => principalKinds.includes(section.kind));
-    }, [applyOperations, availability, contextTeamKey, contextTeams, enabled, groupPage, operationsKey, pages, principalKinds, resolveAccount, resolvePaged, resolveTeamMember, revision, scopeKey, teamAddress, teamGroups.hasMore, teamGroups.rows, teamGroups.status, teamMembers.hasMore, teamMembers.rows, teamMembers.status]);
+    }, [applyOperations, availability, contextTeamKey, contextTeams, enabled, groupPage, operationsKey, pages, principalKinds, resolveAccount, resolvePaged, resolveTeamMember, revision, scopeKey, teamAddress, teamGroups.hasMore, teamGroups.rows, teamGroups.status, teamMemberQuery, teamMembers.hasMore, teamMembers.rows, teamMembers.status]);
 
     const teamContexts = React.useMemo(() => {
         const discovered = pages.team?.teamContexts ?? [];

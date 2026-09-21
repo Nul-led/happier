@@ -282,39 +282,78 @@ describe('useSessionAccessDirectory', () => {
         });
         latest.retry('group');
         expect(groupRetry).toHaveBeenCalledOnce();
-        // The already-read page answers an empty lookup; only a real lookup asks the Home.
-        expect(listTeamMembers).not.toHaveBeenCalled();
+        // An empty lookup is not a lookup: it leaves the roster on its unqueried sequence
+        // instead of restarting it, so the pages already read still answer.
+        expect(vi.mocked(useTeamMembersRoster).mock.calls.every(([params]) => !params.query)).toBe(true);
+    });
+
+    it('pages a Team member search on the queried sequence, not the unqueried roster', async () => {
+        // The roster owner is the pager under test here, so it runs for real: what must hold
+        // is that one sequence describes the query AND its cursor.
+        const rosterModule = await vi.importActual<typeof import('@/hooks/teams/useTeamMembersRoster')>(
+            '@/hooks/teams/useTeamMembersRoster',
+        );
+        vi.mocked(useTeamMembersRoster).mockImplementation(rosterModule.useTeamMembersRoster);
+        vi.mocked(listTeamMembers).mockImplementation((async (input: {
+            query?: string;
+            cursor?: string | null;
+        }) => {
+            if (input.query !== 'Seventh') {
+                return { kind: 'succeeded', value: { items: [membership('membership-1', 'account-1', 'Unrelated', 'active')], nextCursor: null } };
+            }
+            return input.cursor === 'member-page-2'
+                ? { kind: 'succeeded', value: { items: [membership('membership-8', 'account-8', 'Seventh', 'active')], nextCursor: null } }
+                : { kind: 'succeeded', value: { items: [membership('membership-7', 'account-7', 'Seventh', 'active')], nextCursor: 'member-page-2' } };
+        }) as never);
+
+        let latest!: SessionAccessDirectory;
+        await renderScreen(<Probe teamId="team-a" onValue={(value) => { latest = value; }} />);
+        const people = () => latest.sections.find((section) => section.kind === 'account')!;
+
+        await act(async () => { await people().resolveCandidates!('Seventh', new AbortController().signal); });
+        await vi.waitFor(() => expect(listTeamMembers).toHaveBeenCalledWith(expect.objectContaining({
+            address: { serverId: 'home-one', teamId: 'team-a' }, filter: 'all', query: 'Seventh',
+        })));
+
+        // The section must describe the queried sequence: its second page exists.
+        await vi.waitFor(() => expect(people().hasMore).toBe(true));
+        await act(async () => { latest.loadMore('account'); });
+        await vi.waitFor(() => expect(listTeamMembers).toHaveBeenLastCalledWith(expect.objectContaining({
+            query: 'Seventh', cursor: 'member-page-2',
+        })));
+
+        const rows = await people().resolveCandidates!('Seventh', new AbortController().signal);
+        expect(rows.map((row) => row.principal.ref)).toEqual([
+            { kind: 'account', accountId: 'account-7' },
+            { kind: 'account', accountId: 'account-8' },
+        ]);
     });
 
     it('asks the Home for a Team member no loaded roster page contains', async () => {
+        // Rows the Home answered with for this lookup. Nothing about them matches the typed
+        // text locally, which is the point: the Home's matcher decides, not this editor.
         vi.mocked(useTeamMembersRoster).mockReturnValue({
-            rows: [membership('membership-11', 'account-11', 'Beyond', 'active')],
+            rows: [
+                membership('membership-99', 'account-99', 'Beyond', 'active'),
+                membership('membership-98', 'account-98', 'Beyond', 'suspended'),
+            ],
             status: 'ready', error: null, hasMore: true, loadMore: vi.fn(), reload: vi.fn(),
-        } as never);
-        vi.mocked(listTeamMembers).mockResolvedValue({
-            kind: 'succeeded',
-            value: {
-                items: [
-                    membership('membership-99', 'account-99', 'Seventh', 'active'),
-                    membership('membership-98', 'account-98', 'Seventh', 'suspended'),
-                ],
-                nextCursor: null,
-            },
         } as never);
 
         let latest!: SessionAccessDirectory;
         await renderScreen(<Probe teamId="team-a" onValue={(value) => { latest = value; }} />);
 
         const people = latest.sections.find((section) => section.kind === 'account')!;
-        const rows = await people.resolveCandidates!('Seventh', new AbortController().signal);
+        let rows: readonly SessionAccessCandidateRowModel[] = [];
+        await act(async () => { rows = await people.resolveCandidates!('Seventh', new AbortController().signal); });
 
-        expect(listTeamMembers).toHaveBeenCalledWith(expect.objectContaining({
+        await vi.waitFor(() => expect(useTeamMembersRoster).toHaveBeenLastCalledWith(expect.objectContaining({
             address: { serverId: 'home-one', teamId: 'team-a' },
             filter: 'all',
             query: 'Seventh',
-        }));
-        // The Home's own matcher decides; a member outside the loaded pages is still found,
-        // and a suspended membership is still not a collaboration principal.
+        })));
+        // A member outside the loaded pages is still found, and a suspended membership is
+        // still not a collaboration principal.
         expect(rows.map((row) => row.principal.ref)).toEqual([{ kind: 'account', accountId: 'account-99' }]);
         expect(rows[0]).toMatchObject({
             teamMembership: { teamId: 'team-a', teamMembershipId: 'membership-99', accountId: 'account-99' },

@@ -286,7 +286,17 @@ export function usePortableHomeLinkTarget(
 ): PortableHomeLinkTargetState {
     const resolution = React.useMemo(() => resolvePortableHomeLinkTarget(carrier), [carrier]);
     const [attempt, setAttempt] = React.useState(0);
-    const [acquisition, setAcquisition] = React.useState<PortableHomeAcquisitionOutcome | null>(null);
+    /**
+     * The outcome is stored WITH the resolution it answered. `resolution` recomputes
+     * synchronously when the carrier changes, while the reset below only runs after the
+     * render commits — so an unassociated outcome publishes the previous Home's target
+     * for the new link, and a consumer that dispatches its bearer from the first render
+     * (React runs child effects before parent effects) sends it to the wrong Home.
+     */
+    const [acquisition, setAcquisition] = React.useState<Readonly<{
+        resolution: PortableHomeLinkTarget;
+        outcome: PortableHomeAcquisitionOutcome;
+    }> | null>(null);
     const retry = React.useCallback(() => setAttempt((current) => current + 1), []);
 
     React.useEffect(() => {
@@ -298,9 +308,9 @@ export function usePortableHomeLinkTarget(
             const outcome = await acquirePortableHomeLinkTarget(resolution, {
                 signal: abortController.signal,
             });
-            if (current) setAcquisition(outcome);
+            if (current) setAcquisition({ resolution, outcome });
         })().catch(() => {
-            if (current) setAcquisition({ kind: 'rejected', reason: 'unreachable' });
+            if (current) setAcquisition({ resolution, outcome: { kind: 'rejected', reason: 'unreachable' } });
         });
         return () => {
             current = false;
@@ -312,10 +322,11 @@ export function usePortableHomeLinkTarget(
     // must stay referentially identical across renders.
     return React.useMemo<PortableHomeLinkTargetState>(() => {
         if (resolution.kind !== 'acquisition_required') return resolution;
-        if (acquisition === null) return ACQUIRING;
-        return acquisition.kind === 'acquired'
-            ? { kind: 'resolved', serverId: acquisition.serverId, target: acquisition.target }
-            : { kind: 'acquisition_failed', reason: acquisition.reason, retry };
+        if (acquisition === null || acquisition.resolution !== resolution) return ACQUIRING;
+        const outcome = acquisition.outcome;
+        return outcome.kind === 'acquired'
+            ? { kind: 'resolved', serverId: outcome.serverId, target: outcome.target }
+            : { kind: 'acquisition_failed', reason: outcome.reason, retry };
     }, [acquisition, resolution, retry]);
 }
 

@@ -203,6 +203,69 @@ describe('resolveAuthEntry', () => {
         expect(delayed).toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
     });
 
+    it('names directory delay for a signed-in non-member of a provisioned Team whose policy is usable', async () => {
+        // A `provisioned` Team takes its roster from a directory, so no sign-in
+        // this visitor performs can admit them. That is true whether or not the
+        // Team's own authentication policy happens to be usable, and the
+        // previous reading only reached it when the policy was unusable.
+        const provisioned = await db.team.create({
+            data: { name: 'Directory Team', admissionMode: 'provisioned', authenticationPolicy: undefined },
+        });
+        const stranger = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' },
+        });
+        const member = await db.account.create({
+            data: { publicKey: crypto.randomUUID(), encryptionMode: 'plain' },
+        });
+        const env = {
+            HAPPIER_FEATURE_TEAMS__ENABLED: '1',
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: '1',
+        } as const;
+
+        const delayed = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: provisioned.id } },
+            { env, principal: { accountId: stranger.id } },
+        );
+        expect(delayed).toMatchObject({ state: 'unavailable', reason: 'directory_delayed' });
+
+        // An anonymous visitor has proved nothing about themselves, so they get
+        // the ordinary admission page every Team shows and no statement about
+        // membership. Naming a directory delay here would make the public
+        // endpoint say something about an Account that was never presented.
+        const anonymous = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: provisioned.id } },
+            { env },
+        );
+        if (anonymous.state !== 'admission_required') throw new Error('expected Team admission');
+        expect(anonymous.actions).not.toContainEqual({ kind: 'switch_account' });
+
+        // A member whose current credential does not qualify is a different
+        // case: signing in with the accepted method does admit them, so the
+        // sign-in actions stay.
+        const restrictedProvisioned = await db.team.create({
+            data: {
+                name: 'Directory Team restricted',
+                admissionMode: 'provisioned',
+                authenticationPolicy: {
+                    v: 1,
+                    mode: 'restricted',
+                    accepted: [{ kind: 'home_method', methodId: 'email_password' }],
+                },
+            },
+        });
+        await db.teamMembership.create({
+            data: { teamId: restrictedProvisioned.id, accountId: member.id, role: 'member' },
+        });
+        const unqualifiedMember = await resolveAuthEntry(
+            { v: 1, scope: { kind: 'team', teamId: restrictedProvisioned.id } },
+            { env, principal: { accountId: member.id } },
+        );
+        if (unqualifiedMember.state !== 'admission_required') throw new Error('expected Team admission');
+        expect(unqualifiedMember.actions).toEqual(expect.arrayContaining([
+            expect.objectContaining({ kind: 'authenticate', methodId: 'email_password', origin: 'home' }),
+        ]));
+    });
+
     it('keeps unknown and archived Team targets non-enumerating', async () => {
         const archived = await db.team.create({
             data: { name: 'Do not disclose', archivedAt: new Date('2026-09-06T00:00:00.000Z') },

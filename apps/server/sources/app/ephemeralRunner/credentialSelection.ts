@@ -25,6 +25,7 @@ import type {
 import type { MachineDaemonPresenceInventory } from "@/app/machines/machineDaemonPresence";
 import {
     resolvePlannedRunnerCredentialSelectionBindingInTx,
+    validatePlannedSessionTeamCredentialResourceInTx,
 } from "@/app/teams/credentials/sessionBinding";
 import { inTx } from "@/storage/inTx";
 import { readRunnerCreatorCurrentnessInTx, reconcileRunnerActivationCurrentnessInTx } from "./activationCurrentness";
@@ -88,7 +89,34 @@ async function readFrozenSelection(input: Readonly<{
             if (row.state !== "claimed" || row.endpointFacts === null || row.review !== null) {
                 return { status: "unavailable", reason: "activation_conflict" } as const;
             }
-            if (row.credentialSelection === null) return { status: "absent" } as const;
+            if (row.credentialSelection === null) {
+                // Entitlement comes before discovery. Selecting a Pool member
+                // reads a foreign custodian's Machine presence and asks their
+                // daemon whether it can run the source, so a caller who is not
+                // entitled to this resource must not reach that step and must
+                // not learn whether the id they named exists: a missing
+                // resource and an existing one they cannot use refuse alike.
+                // Revision, placement and broker Machine stay with the
+                // selection itself, which re-enters this same planned-resource
+                // owner before anything is frozen.
+                const admitted = await validatePlannedSessionTeamCredentialResourceInTx(tx, {
+                    accountId: input.creatorAccountId,
+                    resourceId: input.request.selection.resourceId,
+                    expectedResourceRevision: input.request.selection.expectedResourceRevision,
+                    deliveryMode: "brokered",
+                    plannedSession: input.request.plannedSession,
+                    authentication: readRunnerActivationAuthentication(row, input.authentication.env),
+                });
+                if (!admitted.ok) {
+                    return {
+                        status: "unavailable",
+                        reason: admitted.reason === "resource_missing" || admitted.reason === "resource_changed"
+                            ? "access_removed"
+                            : admitted.reason,
+                    } as const;
+                }
+                return { status: "absent" } as const;
+            }
             const stored = StoredRunnerCredentialSelectionV1Schema.safeParse(row.credentialSelection);
             if (!stored.success || !pluginJsonValuesEqual(stored.data.request, input.request)) {
                 return { status: "unavailable", reason: "activation_conflict" } as const;
@@ -103,6 +131,7 @@ async function readFrozenSelection(input: Readonly<{
                 plannedSession: input.request.plannedSession,
                 authentication: readRunnerActivationAuthentication(row, input.authentication.env),
                 selectedBrokerMachineId: stored.data.binding.brokerMachineId,
+                selection: "established",
             });
             if (!currentBinding.ok) return { status: "unavailable", reason: currentBinding.reason } as const;
             if (!pluginJsonValuesEqual(currentBinding.binding, {
@@ -169,6 +198,7 @@ async function freezeSelection(input: Readonly<{
                     plannedSession: input.request.plannedSession,
                     authentication: readRunnerActivationAuthentication(row, input.authentication.env),
                     selectedBrokerMachineId: stored.data.binding.brokerMachineId,
+                    selection: "established",
                 });
                 if (!currentBinding.ok) return { v: 1, status: "unavailable", reason: currentBinding.reason } as const;
                 if (!pluginJsonValuesEqual(currentBinding.binding, {
@@ -196,6 +226,7 @@ async function freezeSelection(input: Readonly<{
                 plannedSession: input.request.plannedSession,
                 authentication: readRunnerActivationAuthentication(row, input.authentication.env),
                 selectedBrokerMachineId: input.binding.brokerMachineId,
+                selection: "per_request",
             });
             if (!currentBinding.ok) return { v: 1, status: "unavailable", reason: currentBinding.reason } as const;
             if (!pluginJsonValuesEqual(currentBinding.binding, {

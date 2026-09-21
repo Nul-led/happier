@@ -538,7 +538,7 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
         if (members.rows.length === 0 && members.status === 'ready') {
             add('members-empty', () => (
                 <ItemGroup footer={notice ?? t('teams.groups.emptyBody')}>
-                    <Item testID="team-group-members-empty" title={t('teams.members.emptyTitle')} showChevron={false} />
+                    <Item testID="team-group-members-empty" title={t('teams.groups.emptyRosterTitle')} showChevron={false} />
                 </ItemGroup>
             ));
         }
@@ -699,8 +699,8 @@ const GroupDetail = React.memo(function GroupDetail(props: Readonly<{
                                 <Item
                                     testID="team-group-candidates-empty"
                                     mode="info"
-                                    title={t('teams.members.emptyTitle')}
-                                    subtitle={t('teams.members.emptyBody')}
+                                    title={t('teams.groups.noEligibleCandidatesTitle')}
+                                    subtitle={t('teams.groups.noEligibleCandidatesBody')}
                                     showChevron={false}
                                 />
                     </ItemGroup>

@@ -35,6 +35,28 @@ describe("resolveTeamAuthenticationPolicy", () => {
         });
     });
 
+    it("resolves a stored provider method id whose bytes carry surrounding whitespace", () => {
+        // A `teams.policy.set` caller may store `" GitHub "`: the qualifier and
+        // the in-transaction resolver already trim before they compare, so this
+        // resolver reporting it unavailable was the only disagreement about the
+        // same method identity.
+        expect(resolveTeamAuthenticationPolicy({
+            policy: {
+                v: 1,
+                mode: "restricted",
+                accepted: [{ kind: "home_method", methodId: " GitHub " }],
+            },
+            homeMethods: [{ id: "github", available: true }],
+            teamConnections: [],
+        })).toEqual({
+            status: "restricted",
+            choices: [{
+                reference: { kind: "home_method", methodId: " GitHub " },
+                availability: "usable",
+            }],
+        });
+    });
+
     it("retains configured unavailable references while resolving exact usable alternatives", () => {
         const result = resolveTeamAuthenticationPolicy({
             policy: {

@@ -72,7 +72,7 @@ async function serve(params: Readonly<{
     else send(response, prepareExternalActionResponseV2({ binding, request: envelope, material,
       executedMachineId: binding.target.kind === 'machine' ? binding.target.machineId : 'machine-1',
       randomBytes: (length) => new Uint8Array(length).fill(4),
-      execution: { ok: true, result: { privateText: 'result-sentinel', content: { t: 'encrypted', c: 'nested-stored-ciphertext' } } },
+      execution: { ok: true, result: { status: 'accepted', localId: 'result-sentinel' } },
     }).response);
   };
   const server = createServer((request, response) => {
@@ -101,7 +101,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     try {
       await expect(client.machine('machine-1').actions.teams.credentials.entitled.list({
         teamId: 'private-team-sentinel',
-      })).resolves.toEqual({ resources: [] });
+      })).resolves.toEqual({ resources: [], nextCursor: null });
       expect(server.failures).toEqual([]);
       const actionCall = server.captured.find((call) => call.path.startsWith('/v1/actions/'));
       expect(actionCall?.path).toBe('/v1/actions/teams.credentials.entitled.list');
@@ -121,6 +121,24 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
       await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel'))
         .rejects.toMatchObject({ code: undefined, status: 503, details: undefined });
       expect(server.captured).toHaveLength(1);
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('refuses an authenticated result outside its declared output schema without disclosing it', async () => {
+    const server = await serve({ invoke: ({ binding, request }, response) => server.send(response,
+      prepareExternalActionResponseV2({ binding, request, material,
+        executedMachineId: 'machine-1', randomBytes: (length) => new Uint8Array(length).fill(4),
+        execution: { ok: true, result: { resources: 'result-sentinel' } },
+      }).response) });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      const failure = await client.machine('machine-1').actions.teams.credentials.entitled.list({
+        teamId: 'private-team-sentinel',
+      }).catch((error: unknown) => error);
+      expect(failure).toMatchObject({ name: 'HappierTransportError', code: 'invalid_action_output' });
+      expect((failure as HappierTransportError).details).toBeUndefined();
+      expect(String((failure as Error).message)).not.toContain('result-sentinel');
+      expect(server.failures).toEqual([]);
     } finally { await client.close(); await server.close(); }
   });
 
@@ -223,7 +241,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
       const live = client.machine('machine-2').sessions.get('session-2').send('input-sentinel');
       abort.abort(cancellation);
       release.resolve();
-      await expect(live).resolves.toMatchObject({ privateText: 'result-sentinel', content: { t: 'encrypted', c: 'nested-stored-ciphertext' } });
+      await expect(live).resolves.toMatchObject({ status: 'accepted', localId: 'result-sentinel' });
       await rejected;
       await client.machines.list();
       expect(server.captured.filter((call) => call.path.endsWith('/encryption-access'))).toHaveLength(1);
@@ -242,7 +260,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     try {
       await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel')).rejects.toBeInstanceOf(HappierTransportError);
       expect(server.captured.filter((call) => call.path.startsWith('/v1/actions/'))).toHaveLength(0);
-      await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel')).resolves.toMatchObject({ privateText: 'result-sentinel' });
+      await expect(client.machine('machine-1').sessions.get('session-1').send('input-sentinel')).resolves.toMatchObject({ localId: 'result-sentinel' });
       expect(count).toBe(2);
       expect(server.captured.filter((call) => call.path.startsWith('/v1/actions/'))).toHaveLength(1);
     } finally { await client.close(); await server.close(); }
@@ -266,7 +284,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
   it('carries every post-open outcome family inside the authenticated response', async () => {
     const server = await serve({ invoke: ({ binding, request }, response) => {
       const execution = binding.actionId === 'session.message.send'
-        ? { ok: true as const, result: { status: 'outcomeUnknown', localId: 'turn-sentinel-id' } }
+        ? { ok: true as const, result: { status: 'outcomeUnknown', localId: 'turn-sentinel-id', code: 'session_input_outcome_unknown' } }
         : binding.actionId === 'execution.run.stop'
           ? { ok: false as const, errorCode: 'conflict', error: 'The Run is already stopping.' }
           : { ok: true as const, result: { kind: 'approval_request_created',
@@ -282,7 +300,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
       // `outcomeUnknown` keeps its own local id: no adapter collapses it into a
       // codeless wait failure and no mutation is retried.
       await expect(run.sendAndWait('turn-sentinel')).resolves
-        .toEqual({ status: 'outcomeUnknown', localId: 'turn-sentinel-id' });
+        .toEqual({ status: 'outcomeUnknown', localId: 'turn-sentinel-id', code: 'session_input_outcome_unknown' });
       // A post-open domain failure keeps its canonical code instead of arriving
       // as a bare HTTP error the client would have to guess about.
       await expect(run.stop()).rejects.toMatchObject({ name: 'HappierActionError', code: 'conflict' });
@@ -336,7 +354,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
           : binding;
         const sealed = prepareExternalActionResponseV2({ binding: bound, request, material,
           executedMachineId: 'machine-1', randomBytes: (length) => new Uint8Array(length).fill(4),
-          execution: { ok: true, result: { privateText: 'result-sentinel' } } }).response;
+          execution: { ok: true, result: { status: 'accepted', localId: 'result-sentinel' } } }).response;
         const payload = 'payload' in sealed ? sealed.payload : undefined;
         if (!payload) throw new Error('Expected a protected response payload');
         server.send(response, corruption === 'ciphertext'
@@ -358,13 +376,15 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     const server = await serve({ invoke: ({ binding, request }, response) => {
       count += 1;
       first ??= prepareExternalActionResponseV2({ binding, request, material, executedMachineId: 'machine-1',
-        randomBytes: (length) => new Uint8Array(length).fill(4), execution: { ok: true, result: 'first' } }).response;
+        randomBytes: (length) => new Uint8Array(length).fill(4),
+        execution: { ok: true, result: { status: 'accepted', localId: 'first-sentinel-id' } } }).response;
       server.send(response, count === 3 ? { v: 1, actionId: binding.actionId, requestId: binding.requestId, execution: { ok: true, result: 'raw' } } : first);
     } });
     const client = connect({ endpoint: server.endpoint, token });
     const session = client.machine('machine-1').sessions.get('session-1');
     try {
-      await expect(session.send('first-sentinel', { requestId: 'same-id' })).resolves.toBe('first');
+      await expect(session.send('first-sentinel', { requestId: 'same-id' }))
+        .resolves.toEqual({ status: 'accepted', localId: 'first-sentinel-id' });
       await expect(session.send('second-sentinel', { requestId: 'same-id' })).rejects.toMatchObject({ code: 'invalid_encrypted_envelope' });
       await expect(session.send('third-sentinel', { requestId: 'same-id' })).rejects.toMatchObject({ code: 'invalid_encrypted_envelope' });
       expect(count).toBe(3);

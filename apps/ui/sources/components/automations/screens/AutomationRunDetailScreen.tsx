@@ -35,6 +35,7 @@ import type {
 } from '@/sync/domains/automations/automationRunDetailInspection';
 import type { AutomationDefinitionRun } from '@/sync/domains/automations/automationTypes';
 import { formatAutomationErrorMessage } from '@/components/automations/automationErrorFormatting';
+import { buildScopedSessionRouteHref } from '@/hooks/session/sessionRouteServerScope';
 
 const stylesheet = StyleSheet.create((theme) => ({
     loading: {
@@ -1033,7 +1034,12 @@ export function AutomationRunDetailScreen(): React.ReactElement {
                                     subtitle={producedSessionId}
                                     subtitleLines={0}
                                     onPress={() => navigateWithBlurOnWeb(
-                                        () => router.push(`/session/${producedSessionId}` as never),
+                                        // The Run was read under one Account scope; its produced
+                                        // Session lives on that Home, not the active one.
+                                        () => router.push(buildScopedSessionRouteHref({
+                                            sessionId: producedSessionId,
+                                            serverId: accountLifetime?.scope.serverId ?? null,
+                                        }) as never),
                                     )}
                                 />
                             ) : null}

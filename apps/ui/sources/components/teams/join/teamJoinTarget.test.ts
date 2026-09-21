@@ -39,11 +39,14 @@ import {
 import { createRootLayoutFeaturesResponse } from '@/dev/testkit';
 import { createTeamInvitationTargetBindingV1 } from '@happier-dev/protocol/teams';
 
+import { renderHook } from '@/dev/testkit/hooks/renderHook';
 import {
     acquirePortableHomeLinkTarget,
     isTeamInvitationTargetBindingValidBeforeResolution,
     resolvePortableHomeLinkTarget,
     resolveTeamJoinTarget,
+    usePortableHomeLinkTarget,
+    type PortableHomeLinkTargetState,
 } from './teamJoinTarget';
 
 const INVITATION_TOKEN = 'a'.repeat(43);
@@ -366,5 +369,68 @@ describe('acquirePortableHomeLinkTarget over an Iroh-only Home', () => {
         expect(outcome).toEqual({ kind: 'rejected', reason: 'unreachable' });
         expect(resolveServerProfileForPortableIdentity('srv_personal_home').kind).toBe('missing');
         expect(irohReleaseSpy).toHaveBeenCalledTimes(1);
+    });
+});
+
+/**
+ * A mounted portable-link route can receive a second link as an in-place param
+ * update. The acquired target of the previous carrier must never be published
+ * for the new one: consumers dispatch their bearer-carrying request from the
+ * first render after the change, before any reset effect can run.
+ */
+describe('usePortableHomeLinkTarget across a carrier change', () => {
+    const ENDPOINT_ID = 'b'.repeat(64);
+    const FIRST_CARRIER = JSON.stringify({
+        kind: 'descriptor',
+        authority: 'trusted_enrollment',
+        descriptor: {
+            v: 1,
+            homeServerIdentityId: 'srv_first_home',
+            canonicalServerUrl: 'http://localhost:3010',
+            revision: 1,
+            endpoints: [{ kind: 'iroh', endpointId: ENDPOINT_ID }],
+        },
+    });
+    const SECOND_CARRIER = currentLinkCarrier({
+        homeServerIdentityId: 'srv_second_home',
+        canonicalServerUrl: 'https://second-home.example',
+    });
+
+    it('never publishes the previous Home target for the new carrier', async () => {
+        acquireIrohHomeRuntimeOriginSpy.mockResolvedValue({
+            leaseId: 'lease-first-home',
+            localUrl: 'http://127.0.0.1:43123',
+            runtimeOrigin: 'http://127.0.0.1:43123',
+            homeServerIdentityId: 'srv_first_home',
+            endpointId: ENDPOINT_ID,
+            carrier: 'iroh',
+            observedPath: 'relay',
+            status: 'ready',
+            release: irohReleaseSpy,
+        });
+        answerFeatureProbeAs('srv_first_home');
+
+        const rendered: PortableHomeLinkTargetState[] = [];
+        const harness = await renderHook((carrier: string | null) => {
+            const value = usePortableHomeLinkTarget(carrier);
+            rendered.push(value);
+            return value;
+        }, { initialProps: FIRST_CARRIER as string | null });
+
+        // Acquisition is asynchronous; let it settle before the carrier changes.
+        for (let attempt = 0; attempt < 20 && harness.getCurrent().kind !== 'resolved'; attempt += 1) {
+            await harness.rerender(FIRST_CARRIER);
+        }
+        const firstTarget = harness.getCurrent();
+        expect(firstTarget.kind).toBe('resolved');
+        const firstServerId = firstTarget.kind === 'resolved' ? firstTarget.serverId : null;
+        expect(firstServerId).toBeTruthy();
+
+        rendered.length = 0;
+        await harness.rerender(SECOND_CARRIER);
+
+        expect(rendered.length).toBeGreaterThan(0);
+        expect(rendered.some((value) => value.kind === 'resolved' && value.serverId === firstServerId)).toBe(false);
+        expect(rendered[0]?.kind).toBe('acquiring');
     });
 });

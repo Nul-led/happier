@@ -4,6 +4,7 @@ import { isOAuthStateUnavailableError } from "@/app/auth/oauthStateErrors";
 import { generatePkceVerifier, pkceChallengeS256 } from "@/app/oauth/pkce";
 import type { OAuthFlowProvider } from "@/app/oauth/providers/types";
 import type { ProviderReference } from "@/app/auth/providers/providerReference";
+import type { GitHubAppManagementAuthenticationV1 } from "@/app/integrations/github/githubManagedApp";
 import { db } from "@/storage/db";
 import { randomKeyNaked } from "@/utils/keys/randomKeyNaked";
 import { resolveOauthStateAttemptTtlMsFromEnv } from "./oauthExternalConfig";
@@ -64,6 +65,7 @@ type ExternalAuthorizeFlowParams =
               networkPolicyFingerprint: string;
               githubInstallationId: string;
               githubOrganizationId: string;
+              authentication?: GitHubAppManagementAuthenticationV1;
           }>;
           webAppOAuthReturnUrl?: string | null;
       }>;

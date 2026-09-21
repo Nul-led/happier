@@ -326,6 +326,21 @@ describe('MachineRpcRoutePolicyV1', () => {
       .toBe('readTranscript');
   });
 
+  it('derives every restricted Runner authority from the canonical route policy rows', async () => {
+    const protocol = await importRpcPolicy();
+    if ('importError' in protocol) throw protocol.importError;
+
+    // `routePolicyV1` is the sole classifier: a method is Runner-reachable
+    // because its own policy row says so, never because a second map lists it.
+    const classified = protocol.MACHINE_RPC_ROUTE_POLICIES
+      .filter((policy) => policy.ephemeralRunnerAuthority !== undefined);
+    expect(classified.length).toBeGreaterThan(0);
+    for (const policy of protocol.MACHINE_RPC_ROUTE_POLICIES) {
+      expect(protocol.resolveEphemeralRunnerMachineRpcAuthority(policy.method))
+        .toBe(policy.ephemeralRunnerAuthority ?? null);
+    }
+  });
+
   it('keeps quota recovery, connected-service auth, and terminal composer controls server-routed', async () => {
     const protocol = await importRpcPolicy();
     expect(protocol).toHaveProperty('resolveMachineRpcRoutePolicy');
@@ -868,27 +883,6 @@ describe('MachineRpcRoutePolicyV1', () => {
         }),
       });
     }
-  });
-
-  it('keeps React Native crash report submission server-routed as an internal local mutation', async () => {
-    const protocol = await importRpcPolicy();
-    expect(protocol).toHaveProperty('resolveMachineRpcRoutePolicy');
-    if ('importError' in protocol) throw protocol.importError;
-
-    expect(protocol.resolveMachineRpcRoutePolicy(
-      RPC_METHODS.DAEMON_PLUGIN_UI_REACT_NATIVE_CRASH_REPORT_SUBMIT,
-    )).toMatchObject({
-      routeClass: 'server_required',
-      rpcClassification: 'internal_only',
-      serverRequiredReason: 'destructive_or_recovery_mutation',
-      commandReceiptRequired: false,
-      scope: expect.objectContaining({
-        accountRequired: true,
-        machineRequired: true,
-        sessionRequired: false,
-        serverRequired: true,
-      }),
-    });
   });
 
   it('rejects direct route rows that still carry advisory governance', async () => {

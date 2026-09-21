@@ -5,6 +5,8 @@ const en = {
     "notifications": "Notifications",
     "unavailableTitle": "Following is not available",
     "unavailableDescription": "This Home does not offer session following.",
+    "unreachableTitle": "Couldn't reach this Home",
+    "unreachableDescription": "Happier could not check whether this Home offers session following. Retry when it is reachable.",
     "editor": {
         "title": "Follow this session",
         "subtitle": "Get the updates that matter to you.",
@@ -75,6 +77,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Notificacions",
         "unavailableTitle": "El seguiment no està disponible",
         "unavailableDescription": "Aquesta Home no ofereix el seguiment de sessions.",
+        "unreachableTitle": "No s’ha pogut contactar amb aquest Home",
+        "unreachableDescription": "Happier no ha pogut comprovar si aquest Home ofereix el seguiment de sessions. Torna-ho a provar quan sigui accessible.",
         "editor": {
             "title": "Segueix aquesta sessió",
             "subtitle": "Rep les actualitzacions que t’importen.",
@@ -137,6 +141,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Benachrichtigungen",
         "unavailableTitle": "Folgen ist nicht verfügbar",
         "unavailableDescription": "Dieses Home bietet kein Session-Following an.",
+        "unreachableTitle": "Dieses Home ist nicht erreichbar",
+        "unreachableDescription": "Happier konnte nicht prüfen, ob dieses Home Session-Following anbietet. Versuche es erneut, sobald es erreichbar ist.",
         "editor": {
             "title": "Dieser Sitzung folgen",
             "subtitle": "Erhalte die Updates, die dir wichtig sind.",
@@ -199,6 +205,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Notificaciones",
         "unavailableTitle": "El seguimiento no está disponible",
         "unavailableDescription": "Este Home no ofrece el seguimiento de sesiones.",
+        "unreachableTitle": "No se pudo contactar con este Home",
+        "unreachableDescription": "Happier no pudo comprobar si este Home ofrece el seguimiento de sesiones. Inténtalo de nuevo cuando esté disponible.",
         "editor": {
             "title": "Seguir esta sesión",
             "subtitle": "Recibe las novedades que te importan.",
@@ -261,6 +269,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Notifications",
         "unavailableTitle": "Le suivi n’est pas disponible",
         "unavailableDescription": "Ce Home ne propose pas le suivi de sessions.",
+        "unreachableTitle": "Impossible de joindre ce Home",
+        "unreachableDescription": "Happier n’a pas pu vérifier si ce Home propose le suivi de sessions. Réessayez lorsqu’il sera joignable.",
         "editor": {
             "title": "Suivre cette session",
             "subtitle": "Recevez les nouvelles qui comptent pour vous.",
@@ -323,6 +333,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Notifiche",
         "unavailableTitle": "Il following non è disponibile",
         "unavailableDescription": "Questo Home non offre il following delle sessioni.",
+        "unreachableTitle": "Impossibile raggiungere questo Home",
+        "unreachableDescription": "Happier non è riuscito a verificare se questo Home offre il following delle sessioni. Riprova quando sarà raggiungibile.",
         "editor": {
             "title": "Segui questa sessione",
             "subtitle": "Ricevi gli aggiornamenti che ti interessano.",
@@ -385,6 +397,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "通知",
         "unavailableTitle": "フォローは利用できません",
         "unavailableDescription": "この Home はセッションのフォローに対応していません。",
+        "unreachableTitle": "この Home に接続できません",
+        "unreachableDescription": "この Home がセッションのフォローに対応しているか確認できませんでした。接続できるようになってから再試行してください。",
         "editor": {
             "title": "このセッションをフォロー",
             "subtitle": "大切な更新を受け取ります。",
@@ -447,6 +461,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Powiadomienia",
         "unavailableTitle": "Obserwowanie jest niedostępne",
         "unavailableDescription": "Ten Home nie obsługuje obserwowania sesji.",
+        "unreachableTitle": "Nie można połączyć się z tym Home",
+        "unreachableDescription": "Happier nie mógł sprawdzić, czy ten Home obsługuje obserwowanie sesji. Spróbuj ponownie, gdy będzie dostępny.",
         "editor": {
             "title": "Obserwuj tę sesję",
             "subtitle": "Otrzymuj aktualizacje, które są dla Ciebie ważne.",
@@ -509,6 +525,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Notificações",
         "unavailableTitle": "Seguir não está disponível",
         "unavailableDescription": "Esta Home não oferece o seguimento de sessões.",
+        "unreachableTitle": "Não foi possível aceder a este Home",
+        "unreachableDescription": "O Happier não conseguiu verificar se este Home oferece o seguimento de sessões. Tente novamente quando estiver acessível.",
         "editor": {
             "title": "Seguir esta sessão",
             "subtitle": "Recebe as atualizações que te interessam.",
@@ -571,6 +589,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "Уведомления",
         "unavailableTitle": "Отслеживание недоступно",
         "unavailableDescription": "Этот Home не поддерживает отслеживание сессий.",
+        "unreachableTitle": "Не удалось связаться с этим Home",
+        "unreachableDescription": "Happier не смог проверить, поддерживает ли этот Home отслеживание сессий. Повторите попытку, когда он будет доступен.",
         "editor": {
             "title": "Подписаться на эту сессию",
             "subtitle": "Получайте важные для вас обновления.",
@@ -633,6 +653,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "通知",
         "unavailableTitle": "无法关注",
         "unavailableDescription": "此 Home 不支持关注会话。",
+        "unreachableTitle": "无法连接此 Home",
+        "unreachableDescription": "Happier 无法确认此 Home 是否支持关注会话。请在其可访问时重试。",
         "editor": {
             "title": "关注此会话",
             "subtitle": "接收对你重要的更新。",
@@ -695,6 +717,8 @@ export const sessionFollowTranslations: Record<
         "notifications": "通知",
         "unavailableTitle": "無法追蹤",
         "unavailableDescription": "此 Home 不支援追蹤工作階段。",
+        "unreachableTitle": "無法連線至此 Home",
+        "unreachableDescription": "Happier 無法確認此 Home 是否支援追蹤工作階段。請在可連線時再試一次。",
         "editor": {
             "title": "關注此工作階段",
             "subtitle": "接收對你重要的更新。",

@@ -3,6 +3,7 @@ import {
   createFeatureDecision,
   evaluateFeatureDecisionBase,
   isFeatureServerRepresented,
+  isServerFeatureOperationReady,
   readServerEnabledBit,
   type FeatureDecision,
   type FeatureId,
@@ -105,7 +106,12 @@ function resolveCliFeatureDecisionFromInputs(
       return out;
     }
 
-    const serverEnabled = readServerEnabledBit(inputs.serverSnapshot.features, featureId) === true;
+    // The bit says the capability is switched on; the exact Home's own
+    // readiness says whether it can serve it. Both are this Home's answer, so
+    // the one decision every consumer reads composes them here rather than in
+    // each advertising or admitting host.
+    const serverEnabled = readServerEnabledBit(inputs.serverSnapshot.features, featureId) === true
+      && isServerFeatureOperationReady(inputs.serverSnapshot.features, featureId);
     const baseDecision = evaluateFeatureDecisionBase({
       featureId,
       scope: { scopeKind: 'runtime' },

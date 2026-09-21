@@ -34,6 +34,43 @@ const HALVES: Readonly<Record<SessionBoardItemWidth, number>> = Object.freeze({
     full: 2,
 });
 
+const TIER_COLUMNS: Readonly<Record<SessionBoardGridTier, number>> = Object.freeze({
+    twelve: 12,
+    halves: 2,
+    single: 1,
+});
+
+function columnsFor(width: SessionBoardItemWidth, tier: SessionBoardGridTier): number {
+    if (tier === 'single') return 1;
+    return tier === 'halves' ? HALVES[width] : TWELFTHS[width];
+}
+
+/**
+ * Which row each placement lands on, in the order the grid draws them.
+ *
+ * The grid wraps, so the nth card is not the nth row: three `compact` cards share
+ * one row at the twelve-column tier. Anything reasoning about a card's position
+ * before it has been measured — the body window, above all — has to pack the row
+ * the same way the flex row does, or it places a visible card far below the fold.
+ */
+export function resolveSessionBoardGridRowIndexes(input: Readonly<{
+    widths: readonly SessionBoardItemWidth[];
+    tier: SessionBoardGridTier;
+}>): readonly number[] {
+    const total = TIER_COLUMNS[input.tier];
+    let row = 0;
+    let used = 0;
+    return input.widths.map((width) => {
+        const columns = Math.min(columnsFor(width, input.tier), total);
+        if (used > 0 && used + columns > total) {
+            row += 1;
+            used = 0;
+        }
+        used += columns;
+        return row;
+    });
+}
+
 /** The width of `columns` of `total` inside `availableWidthPx`, gutters solved in. */
 function spanWidthPx(availableWidthPx: number, columns: number, total: number): number {
     return (((availableWidthPx + SESSION_BOARD_GRID_GAP_PX) * columns) / total) - SESSION_BOARD_GRID_GAP_PX;

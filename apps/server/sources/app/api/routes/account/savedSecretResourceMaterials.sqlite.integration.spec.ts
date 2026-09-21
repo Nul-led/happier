@@ -13,6 +13,8 @@ import {
     VoiceCredentialBindingIdentityV1Schema,
 } from "@happier-dev/protocol";
 import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
+import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
+import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
 import {
     createSavedSecretResourceInTx,
     promoteSavedSecretResourceInTx,
@@ -50,6 +52,12 @@ describe("Saved Secret material route (SQLite integration)", () => {
             () => db.savedSecretAccountGrant.deleteMany(),
             () => db.savedSecretResource.deleteMany(),
             () => db.accountSettingsSnapshot.deleteMany(),
+            () => db.teamGroupMembership.deleteMany(),
+            () => db.teamGroup.deleteMany(),
+            () => db.teamMembership.deleteMany(),
+            () => db.team.deleteMany(),
+            () => db.accountPasswordCredential.deleteMany(),
+            () => db.accountIdentity.deleteMany(),
             () => db.account.deleteMany(),
         ]);
     });
@@ -433,4 +441,99 @@ describe("Saved Secret material route (SQLite integration)", () => {
             await app.close();
         }
     });
+    it("promotes a restricted Team audience for a caller whose request credential qualifies", async () => {
+        const HOME_OFFERS_EMAIL_PASSWORD = {
+            HAPPIER_FEATURE_AUTH_EMAIL_PASSWORD__ENABLED: "1",
+            HAPPIER_FEATURE_E2EE__KEYLESS_ACCOUNTS_ENABLED: "1",
+            HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
+        };
+        for (const [key, value] of Object.entries(HOME_OFFERS_EMAIL_PASSWORD)) process.env[key] = value;
+        const owner = await db.account.create({
+            data: {
+                encryptionMode: "plain",
+                settingsVersion: 1,
+                settings: JSON.stringify({ t: "plain", v: { secrets: [] } }),
+            },
+            select: { id: true },
+        });
+        await db.accountIdentity.create({
+            data: { accountId: owner.id, provider: "email", providerUserId: "promote@example.test", profile: {} },
+        });
+        await db.accountPasswordCredential.create({
+            data: {
+                accountId: owner.id,
+                credential: {
+                    v: 1,
+                    kind: "plain_password_hash",
+                    hash: await hashPasswordMaterial(new TextEncoder().encode("promote password factor")),
+                },
+            },
+        });
+        const team = await db.team.create({
+            data: {
+                name: "Promote restricted",
+                authenticationPolicy: {
+                    v: 1,
+                    mode: "restricted",
+                    accepted: [{ kind: "home_method", methodId: "email_password" }],
+                },
+            },
+            select: { id: true },
+        });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: owner.id, role: "owner" } });
+
+        const body = (resourceId: string) => ({
+            resourceId,
+            displayName: "Promoted team key",
+            kind: "apiKey" as const,
+            encryptionMode: "plain" as const,
+            storedContent: {
+                t: "plain" as const,
+                v: { v: 1 as const, name: "Promoted team key", kind: "apiKey" as const, value: "promoted-value" },
+            },
+            teamGrants: [team.id],
+            expectedSettingsVersion: 1,
+            nextSettings: { t: "plain" as const, v: { secrets: [] } },
+        });
+
+        const app = createAuthenticatedTestApp();
+        registerSavedSecretResourceRoutes(app);
+        await app.ready();
+        try {
+            const url = homeDomainActionPathForMethod("secrets.shared.promote", "POST");
+            // The request proves the Team's accepted method, exactly as the
+            // create and grants-set routes already forward it.
+            const qualified = await app.inject({
+                method: "POST",
+                url,
+                headers: {
+                    "x-test-user-id": owner.id,
+                    "x-test-authentication-evidence": JSON.stringify([{ kind: "home_method", methodId: "email_password" }]),
+                },
+                payload: body("resource_promote_qualified"),
+            });
+            expect({ status: qualified.statusCode, body: qualified.json() }).toEqual({
+                status: 200,
+                body: { resourceId: "resource_promote_qualified", settingsVersion: 2 },
+            });
+            expect(await db.savedSecretTeamGrant.count({ where: { resourceId: "resource_promote_qualified" } })).toBe(1);
+
+            // The same request without that evidence still fails closed and
+            // writes nothing.
+            const unqualified = await app.inject({
+                method: "POST",
+                url,
+                headers: { "x-test-user-id": owner.id },
+                payload: { ...body("resource_promote_unqualified"), expectedSettingsVersion: 2 },
+            });
+            expect({ status: unqualified.statusCode, body: unqualified.json() }).toEqual({
+                status: 403,
+                body: { error: "forbidden" },
+            });
+            expect(await db.savedSecretResource.count({ where: { id: "resource_promote_unqualified" } })).toBe(0);
+        } finally {
+            await app.close();
+        }
+    });
+
 });

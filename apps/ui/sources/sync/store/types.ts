@@ -41,7 +41,7 @@ import type { SettingsAnalyticsSource } from '@/track/settingsAnalytics/types';
 import type { WorkspaceScopeBase } from '../domains/workspaces/workspaceScope';
 import type { SessionOrganizationDomain } from './domains/sessionOrganization';
 import type { SessionListRenderableDelta } from './domains/sessionListIndexFinalization';
-import type { SessionTranscriptLoadIssue } from './domains/transcriptLoading';
+import type { TranscriptLoadingDomain } from './domains/transcriptLoading';
 
 export type KnownEntitlements = 'voice' | 'pro';
 export type SessionModelMode = NonNullable<Session['modelMode']>;
@@ -158,7 +158,13 @@ export interface SessionsDomainSlice {
     applySessionResponsibleAccount: (sessionId: string, responsibleAccountId: string | null, scope: ServerAccountScope, responsibleAccount?: import('@happier-dev/protocol').SessionAccessAccountSummaryV1 | null) => void;
     updateSessionPermissionMode: (sessionId: string, mode: PermissionMode) => void;
     updateSessionModelMode: (sessionId: string, mode: SessionModelMode) => void;
-    deleteSession: (sessionId: string) => void;
+    /**
+     * Retire a Session locally for ONE Home, or for every Home when `serverId` is
+     * omitted or null. Only the addressed Home's row/membership/index goes; the
+     * shared per-id carrier (record, transcript, SCM, drafts, modes) goes only when
+     * that Home is the carrier's own — see `shouldRetireSessionCarrierForServer`.
+     */
+    deleteSession: (sessionId: string, serverId?: string | null) => void;
 }
 
 export interface MachinesDomainSlice {
@@ -200,18 +206,7 @@ export interface PendingDomainSlice {
     removePendingMessage: (sessionId: string, pendingId: string) => void;
 }
 
-export interface TranscriptLoadingDomainSlice {
-    sessionCatchUpNewerInFlight: Record<string, number>;
-    sessionTailContiguousFloorSeq: Record<string, number>;
-    sessionTranscriptLoadIssues: Record<string, SessionTranscriptLoadIssue>;
-    isSessionCatchingUpNewer: (sessionId: string) => boolean;
-    beginSessionCatchUpNewer: (sessionId: string) => void;
-    endSessionCatchUpNewer: (sessionId: string) => void;
-    getSessionTailContiguousFloorSeq: (sessionId: string) => number | null;
-    setSessionTailContiguousFloorSeq: (sessionId: string, floorSeq: number | null) => void;
-    getSessionTranscriptLoadIssue: (sessionId: string) => SessionTranscriptLoadIssue | null;
-    setSessionTranscriptLoadIssue: (sessionId: string, issue: SessionTranscriptLoadIssue | null) => void;
-}
+export type TranscriptLoadingDomainSlice = TranscriptLoadingDomain;
 
 export interface RealtimeDomainSlice {
     socketStatus: SocketStatus;

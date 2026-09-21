@@ -27,6 +27,7 @@ import {
 } from "./githubManagedAppManifest";
 
 import type { Fastify } from "@/app/api/types";
+import { readTeamOperationAuthenticationFromRequest } from "@/app/teams/actorContext";
 import { homeDomainActionPathForMethod } from "@/app/api/routes/actions/homeDomainActionRoute";
 import {
     createGitHubAppRegistration,
@@ -140,7 +141,11 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
             schema: { body: ManagedGitHubAppsListInputV1Schema, response: { 200: ManagedGitHubAppsListOutputV1Schema, ...ERROR_RESPONSES } },
         },
         async (request, reply) => {
-            const result = await listGitHubAppRegistrations({ actorAccountId: request.userId, owner: request.body.owner });
+            const result = await listGitHubAppRegistrations({
+                ...readTeamOperationAuthenticationFromRequest(request),
+                actorAccountId: request.userId,
+                owner: request.body.owner,
+            });
             if (result.status === "forbidden") return await reply.code(403).send({ error: "github_app_forbidden" });
             return await reply.send({
                 registrations: result.registrations.map(projectRegistration),
@@ -158,6 +163,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
         async (request, reply) => {
             const input = request.body;
             const result = await createGitHubAppRegistration({
+                ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: input.owner,
                 input: {
@@ -189,6 +195,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
         },
         async (request, reply) => {
             const result = await beginGitHubAppManifestSetup({
+                ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: request.body.owner,
                 appName: request.body.appName,
@@ -214,6 +221,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
         async (request, reply) => {
             const input = request.body;
             const result = await updateGitHubAppRegistration({
+                ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: input.owner,
                 registrationId: input.registrationId,
@@ -243,6 +251,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
         async (request, reply) => {
             const input = request.body;
             const result = await beginGitHubAppInstallationVerification({
+                ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: input.owner,
                 registrationId: input.registrationId,
@@ -275,6 +284,7 @@ export function registerManagedGitHubAppRoutes(app: Fastify): void {
         async (request, reply) => {
             const input = request.body;
             const result = await removeGitHubAppInstallation({
+                ...readTeamOperationAuthenticationFromRequest(request),
                 actorAccountId: request.userId,
                 owner: input.owner,
                 installationId: input.installationId,

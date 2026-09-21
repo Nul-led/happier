@@ -1534,10 +1534,11 @@ export async function handleUpdateContainer(params: {
         log.log('🗑️ Delete session update received');
         handleDeleteSessionSocketUpdate({
             sessionId: updateData.body.sid,
+            serverId: projectionServerId,
             dropSocketSessionWork: (sessionId) => dropSocketSessionWork(sessionId, projectionServerId),
             invalidateSessionHydration,
             resetSessionTranscriptState,
-            deleteSession: (sessionId) => storage.getState().deleteSession(sessionId),
+            deleteSession: (sessionId, serverId) => storage.getState().deleteSession(sessionId, serverId),
             removeSessionEncryption: (sessionId) => encryption?.removeSessionEncryption(sessionId),
             removeProjectManagerSession: (sessionId) => projectManager.removeSession(sessionId),
             clearScmStatusForSession: (sessionId) => scmStatusSync.clearForSession(sessionId),
@@ -2150,10 +2151,11 @@ export async function handleUpdateContainer(params: {
         }
         handleDeleteSessionSocketUpdate({
             sessionId,
+            serverId: projectionServerId,
             dropSocketSessionWork: (targetSessionId) => dropSocketSessionWork(targetSessionId, projectionServerId),
             invalidateSessionHydration,
             resetSessionTranscriptState,
-            deleteSession: (targetSessionId) => storage.getState().deleteSession(targetSessionId),
+            deleteSession: (targetSessionId, targetServerId) => storage.getState().deleteSession(targetSessionId, targetServerId),
             removeSessionEncryption: (targetSessionId) => encryption?.removeSessionEncryption(targetSessionId),
             removeProjectManagerSession: (targetSessionId) => projectManager.removeSession(targetSessionId),
             clearScmStatusForSession: (targetSessionId) => scmStatusSync.clearForSession(targetSessionId),

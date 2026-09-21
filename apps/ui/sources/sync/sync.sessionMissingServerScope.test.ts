@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { createDeferred } from '@/dev/testkit/hooks/createDeferred';
 import tweetnacl from 'tweetnacl';
 import { IDBFactory } from 'fake-indexeddb';
 import { resetServerFeaturesClientForTests } from '@/sync/api/capabilities/serverFeaturesClient';
@@ -43,6 +44,12 @@ vi.mock('react-native', async () => {
 vi.mock('@/log', () => ({
     log: { log: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
+
+// The Sync owner runs unchanged; only packaged Expo asset bytes are absent.
+vi.mock('@/sync/domains/plugins/availability/generatedBundledPluginUiArtifacts', async () => {
+    const { emptyBundledPluginUiAssetsModule } = await import('@/dev/testkit/mocks/bundledPluginUiAssets');
+    return emptyBundledPluginUiAssetsModule;
+});
 
 const requestMock = vi.hoisted(() => vi.fn());
 const runtimeFetchMock = vi.hoisted(() => vi.fn());
@@ -308,6 +315,41 @@ function installPlainRetirementEncryption(sync: unknown): void {
     };
 }
 
+// The Home's exact-session answer for a Session that is deleted or no longer visible
+// to this viewer. `GET /v2/sessions/:sessionId` returns this one body for both.
+function sessionNotFoundOnHomeResponse(): Response {
+    return Response.json({ error: 'Session not found' }, { status: 404 });
+}
+
+// `sync` is a module singleton this suite reaches into, so a case that gives it active
+// Home credentials must hand back exactly what it found or every later case inherits them.
+function installActiveHomeCredentials(sync: unknown, accountSub: string): void {
+    const holder = sync as { credentials: unknown };
+    const previous = holder.credentials;
+    onTestFinished(() => {
+        holder.credentials = previous;
+    });
+    holder.credentials = {
+        token: buildTokenWithSub(accountSub),
+        secret: encodeBase64(new Uint8Array(32).fill(5), 'base64url'),
+    };
+}
+
+type UnlistedSessionSyncState = {
+    hasFetchedSessionsSnapshotForActiveServer: boolean;
+    activeServerSessionIds: Set<string>;
+    deferredMessagesFetchSessionIds: Set<string>;
+};
+
+/** A Home whose Session list has been fetched and does not carry this Session. */
+function installUnlistedSessionState(sync: unknown): UnlistedSessionSyncState {
+    const state = sync as UnlistedSessionSyncState;
+    state.activeServerSessionIds = new Set<string>();
+    state.deferredMessagesFetchSessionIds = new Set<string>();
+    state.hasFetchedSessionsSnapshotForActiveServer = true;
+    return state;
+}
+
 function createMachine(machineId: string): Machine {
     const now = Date.now();
     return {
@@ -483,21 +525,21 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         const validSessionId = 'valid-cached-external-cursor';
         const validCursor = 'happier_external_cursor_v1:Y3Vyc29yLTE';
 
-        (sync as any).externalSessionTailCursorBySessionId.set(
+        (sync as any).externalSessionTailStateBySessionId.set(
             malformedSessionId,
-            'source-native-cursor',
+            { cursor: 'source-native-cursor', recoveryRequired: false },
         );
-        (sync as any).externalSessionTailCursorBySessionId.set(
+        (sync as any).externalSessionTailStateBySessionId.set(
             oversizedSessionId,
-            `happier_external_cursor_v1:${'a'.repeat(4_096)}`,
+            { cursor: `happier_external_cursor_v1:${'a'.repeat(4_096)}`, recoveryRequired: false },
         );
-        (sync as any).externalSessionTailCursorBySessionId.set(validSessionId, validCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(validSessionId, { cursor: validCursor, recoveryRequired: false });
 
         expect(sync.getAcceptedExternalSessionTailCursor(malformedSessionId)).toBeNull();
         expect(sync.getAcceptedExternalSessionTailCursor(oversizedSessionId)).toBeNull();
         expect(sync.getAcceptedExternalSessionTailCursor(validSessionId)).toBe(validCursor);
-        expect((sync as any).externalSessionTailCursorBySessionId.get(malformedSessionId)).toBeNull();
-        expect((sync as any).externalSessionTailCursorBySessionId.get(oversizedSessionId)).toBeNull();
+        expect((sync as any).externalSessionTailStateBySessionId.get(malformedSessionId)).toEqual({ cursor: null, recoveryRequired: false });
+        expect((sync as any).externalSessionTailStateBySessionId.get(oversizedSessionId)).toEqual({ cursor: null, recoveryRequired: false });
     });
 
     it('does not delete local session when snapshot is loaded and session is absent on active server', async () => {
@@ -513,8 +555,76 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
         expect(storage.getState().sessions[sessionId]).not.toBeUndefined();
-        // Ensure we don't get stuck in a perpetual loading state.
-        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
+        // Absence from the fetched membership cache is not evidence that the Session left
+        // its Home, so the transcript stays deferred rather than publishing an empty one.
+        // Only the Home's own answer ends that deferral; the two cases below own it.
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).not.toBe(true);
+        expect((sync as any).deferredMessagesFetchSessionIds.has(sessionId)).toBe(true);
+    });
+
+    it('settles a stale local Session whose Home answers that it is no longer there', async () => {
+        const sessionId = 'stale_session_left_home';
+        const server = await upsertServerProfile({ serverUrl: 'https://home.example', name: 'Home' });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().applySessions([createSession(sessionId)]);
+
+        const { sync } = await import('./sync');
+        installPlainRetirementEncryption(sync);
+        installActiveHomeCredentials(sync, 'home-account');
+        const syncInternals = installUnlistedSessionState(sync);
+
+        const sessionByIdPaths: string[] = [];
+        requestMock.mockImplementation(async (path: string) => {
+            if (path.startsWith(`/v2/sessions/${sessionId}`)) {
+                sessionByIdPaths.push(path);
+                return sessionNotFoundOnHomeResponse();
+            }
+            return Response.json({});
+        });
+
+        await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
+        await vi.waitFor(() => {
+            expect(storage.getState().deletedSessionIds[sessionId]).toBe(true);
+        });
+
+        expect(sessionByIdPaths.length).toBeGreaterThan(0);
+        // The canonical local retirement owner ran, so the Session route renders its
+        // existing settled unavailable state instead of a transcript that never loads.
+        expect(storage.getState().sessions[sessionId]).toBeUndefined();
+        expect(storage.getState().sessionMessages[sessionId]).toBeUndefined();
+        expect(syncInternals.deferredMessagesFetchSessionIds.has(sessionId)).toBe(false);
+    });
+
+    it('keeps a deferred transcript when its Home cannot answer whether the Session is still there', async () => {
+        const sessionId = 'unanswered_session_owner';
+        const server = await upsertServerProfile({ serverUrl: 'https://home.example', name: 'Home' });
+        await setActiveServerId(server.id, { scope: 'device' });
+        storage.getState().applySessions([createSession(sessionId)]);
+
+        const { sync } = await import('./sync');
+        installPlainRetirementEncryption(sync);
+        installActiveHomeCredentials(sync, 'home-account');
+        const syncInternals = installUnlistedSessionState(sync);
+
+        const sessionByIdPaths: string[] = [];
+        requestMock.mockImplementation(async (path: string) => {
+            if (path.startsWith(`/v2/sessions/${sessionId}`)) {
+                sessionByIdPaths.push(path);
+                return new Response('', { status: 503 });
+            }
+            return Response.json({});
+        });
+
+        await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
+        await vi.waitFor(() => {
+            expect(sessionByIdPaths.length).toBeGreaterThan(0);
+        });
+
+        // An unreachable Home is connectivity, not absence evidence: the row survives and
+        // the transcript stays deferred so a later attempt can still load its content.
+        expect(storage.getState().sessions[sessionId]).not.toBeUndefined();
+        expect(storage.getState().deletedSessionIds[sessionId]).toBeUndefined();
+        expect(syncInternals.deferredMessagesFetchSessionIds.has(sessionId)).toBe(true);
     });
 
     it('does not recreate a transcript entry for a deleted session missing from the snapshot', async () => {
@@ -832,7 +942,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         });
         (sync as any).externalSessionOlderCursorBySessionId.set(activeSession.id, 'stale-older');
         (sync as any).externalSessionHasMoreOlderBySessionId.set(activeSession.id, true);
-        (sync as any).externalSessionTailCursorBySessionId.set(activeSession.id, 'stale-tail');
+        (sync as any).externalSessionTailStateBySessionId.set(activeSession.id, { cursor: 'stale-tail', recoveryRequired: false });
         (sync as any).transcriptAuthorityKeyBySessionId.set(activeSession.id, 'live_agent:stale-source');
         storage.getState().setSessionTranscriptLoadIssue(activeSession.id, {
             kind: 'source_discontinuity',
@@ -859,7 +969,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         });
         expect((sync as any).externalSessionOlderCursorBySessionId.size).toBe(0);
         expect((sync as any).externalSessionHasMoreOlderBySessionId.size).toBe(0);
-        expect((sync as any).externalSessionTailCursorBySessionId.size).toBe(0);
+        expect((sync as any).externalSessionTailStateBySessionId.size).toBe(0);
         expect((sync as any).transcriptAuthorityKeyBySessionId.size).toBe(0);
         expect(storage.getState().sessionTranscriptLoadIssues).toEqual({});
     });
@@ -1715,7 +1825,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(true);
         expect(storage.getState().getSessionTranscriptLoadIssue(sessionId)).toBeNull();
 
-        machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
+        // A loaded-but-empty external transcript reopens through the cold-page
+        // owner, so fail that actual transport while retaining the empty view.
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
             ok: false,
             errorCode: 'machine_offline',
             error: 'Machine offline',
@@ -1877,6 +1989,359 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             kind: 'read_failed',
             errorCode: 'agent_unavailable',
         });
+    });
+
+    it.each(['forward', 'older', 'secure'] as const)('preserves detached external history and remembers %s source resets until replacement', async (resetOrigin) => {
+        const sessionId = 'external_detached_adjacent_page';
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), serverId: getActiveServerSnapshot().serverId }]);
+        const latestPage = {
+            ok: true, items: [{ id: 'latest', createdAtMs: 3, raw: { role: 'user', content: { type: 'text', text: 'latest' } } }],
+            nextCursor: null, tailCursor: 'happier_external_cursor_v1:YzM', hasMore: true, truncated: false,
+        };
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
+            ok: true, items: [{ id: 'anchor', createdAtMs: 1, raw: { role: 'user', content: { type: 'text', text: 'history anchor' } } }],
+            nextCursor: 'older', tailCursor: 'happier_external_cursor_v1:YzE', hasMore: true, truncated: false,
+        }).mockResolvedValue(latestPage);
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as {
+            fetchMessages: (id: string) => Promise<void>;
+            getExternalSessionTailCursor: (id: string) => string | null;
+            handleExternalSessionTranscriptEphemeralUpdate: (update: ReturnType<typeof createTranscriptInvalidation>) => Promise<void>;
+            activeServerSessionIds: Set<string>;
+            hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        await internals.fetchMessages(sessionId);
+        sync.onSessionViewportChange(sessionId, { isPinned: false, offsetY: 123, shouldRestoreViewport: true,
+            anchor: { kind: 'message', messageId: 'anchor', itemId: 'anchor', itemOffsetPx: 12, capturedAtMs: 1 },
+        });
+        const accepted = storage.getState().sessionMessages[sessionId];
+        const viewport = sync.getSessionViewport(sessionId);
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
+            ok: true, items: [{ id: 'adjacent', createdAtMs: 2, raw: { role: 'user', content: { type: 'text', text: 'adjacent history' } } }],
+            nextCursor: 'happier_external_cursor_v1:YzI', truncated: false, hasMore: true,
+        });
+        await internals.fetchMessages(sessionId);
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        expect(machineExternalSessionTranscriptReadAfterMock).not.toHaveBeenCalled();
+        expect(sync.hasDeferredNewerMessages(sessionId)).toBe(true);
+        await expect(sync.loadNewerMessages(sessionId)).resolves.toMatchObject({ loaded: 1, hasMore: true });
+        const texts = Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+            .filter((message) => message.kind === 'user-text').map((message) => message.text);
+        expect(texts).toEqual(['history anchor', 'adjacent history']);
+        expect(sync.getSessionViewport(sessionId)).toBe(viewport);
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalledTimes(1);
+        expect(requestMock).not.toHaveBeenCalled();
+        await internals.fetchMessages(sessionId);
+        expect(machineExternalSessionTranscriptReadAfterMock).toHaveBeenCalledTimes(1);
+        const beforeDiscontinuity = storage.getState().sessionMessages[sessionId];
+        const beforeCursor = internals.getExternalSessionTailCursor(sessionId);
+        expect(beforeCursor).toBe('happier_external_cursor_v1:YzI');
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValue({
+            ok: true, items: [], nextCursor: beforeCursor, truncated: false, hasMore: false,
+        });
+        const invalidItems = [{ id: 'invalid-source', createdAtMs: 4, raw: { role: 'user', content: { type: 'text', text: 'must not merge' } } }];
+        if (resetOrigin === 'forward') {
+            machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
+                ok: true, items: invalidItems,
+                nextCursor: 'happier_external_cursor_v1:YzQ', truncated: false, hasMore: true,
+                diagnostics: [{ code: 'external_session_source_diagnostic', severity: 'required', count: 1, positions: [0] }],
+            });
+            await expect(sync.loadNewerMessages(sessionId)).resolves.toMatchObject({ loaded: 0, status: 'not_ready' });
+        } else if (resetOrigin === 'older') {
+            machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
+                ok: true, items: invalidItems, nextCursor: 'replaced-older', hasMore: true, truncated: true,
+            });
+            await expect(sync.loadOlderMessages(sessionId)).resolves.toMatchObject({ loaded: 0, status: 'not_ready' });
+        } else {
+            const invalidation = createTranscriptInvalidation(sessionId, beforeCursor!);
+            sync.markSessionLiveTailIntent(sessionId);
+            machineExternalSessionTranscriptRefreshReadAfterMock.mockImplementationOnce(async () => {
+                sync.onSessionViewportChange(sessionId, { isPinned: false, offsetY: 123, shouldRestoreViewport: true });
+                return { v: 1, binding: invalidation.binding, result: { outcome: 'gap_or_cursor_expired' } };
+            });
+            await internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+            expect(machineExternalSessionTranscriptRefreshReadAfterMock).toHaveBeenCalledTimes(1);
+        }
+        expect(storage.getState().sessionMessages[sessionId]).toBe(beforeDiscontinuity);
+        expect(internals.getExternalSessionTailCursor(sessionId)).toBe(beforeCursor);
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValue({
+            ok: true, items: invalidItems, nextCursor: 'happier_external_cursor_v1:YzU', truncated: false, hasMore: false,
+        });
+        // A source may regrow so the old cursor appears usable again. The
+        // already-observed reset must still prevent merging this new history.
+        await expect(sync.loadNewerMessages(sessionId)).resolves.toMatchObject({ loaded: 0, status: 'not_ready' });
+        expect(storage.getState().sessionMessages[sessionId]).toBe(beforeDiscontinuity);
+        // Return-live also invalidates the real messages queue. Model the
+        // outage for every concurrent boundary request, not just one caller.
+        machineExternalSessionTranscriptPageMock.mockRejectedValue(new Error('latest temporarily unavailable'));
+        sync.markSessionLiveTailIntent(sessionId);
+        await expect(internals.fetchMessages(sessionId)).rejects.toThrow('latest temporarily unavailable');
+        expect(storage.getState().sessionMessages[sessionId]).toBe(beforeDiscontinuity);
+        expect(internals.getExternalSessionTailCursor(sessionId)).toBe(beforeCursor);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue(latestPage);
+        await internals.fetchMessages(sessionId);
+        expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+            .filter((message) => message.kind === 'user-text').map((message) => message.text)).toEqual(['latest']);
+    });
+
+    it.each([
+        { direction: 'older', change: 'ordinary tail growth' },
+        { direction: 'older', change: 'source replacement' },
+        { direction: 'forward', change: 'source replacement' },
+        { direction: 'secure', change: 'source replacement' },
+    ] as const)('admits a held $direction external page only while its accepted window survives $change', async ({ direction, change }) => {
+        const sessionId = `external_held_${direction}_${change}`;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), serverId: getActiveServerSnapshot().serverId }]);
+        const row = (text: string) => ({ id: text, createdAtMs: 1,
+            raw: { role: 'user' as const, content: { type: 'text' as const, text } } });
+        const tailCursor = 'happier_external_cursor_v1:YzE';
+        // Replacement deliberately reuses the cursor strings after regrowth.
+        const page = (text: string) => ({ ok: true as const, items: [row(text)],
+            nextCursor: 'same-older', tailCursor, hasMore: true, truncated: false });
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('initial'));
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as {
+            fetchMessages: (id: string) => Promise<void>;
+            handleExternalSessionTranscriptEphemeralUpdate: (update: ReturnType<typeof createTranscriptInvalidation>) => Promise<void>;
+            activeServerSessionIds: Set<string>;
+            hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        await internals.fetchMessages(sessionId);
+        const invalidation = createTranscriptInvalidation(sessionId, tailCursor);
+        const advanced = (text: string) => ({ v: 1 as const, binding: invalidation.binding, result: {
+            outcome: 'advanced' as const, items: [row(text)], nextCursor: 'happier_external_cursor_v1:YzI',
+            boundary: `1:${text}`, hasMore: false,
+        } });
+        const heldResponse = direction === 'secure' ? advanced('held-response') : {
+            ...page('held-response'),
+            nextCursor: direction === 'forward' ? 'happier_external_cursor_v1:YzI' : 'same-older',
+            hasMore: direction === 'older',
+        };
+        const held = createDeferred<typeof heldResponse>();
+        machineExternalSessionTranscriptPageMock.mockResolvedValue(page('replacement'));
+        const readMock = direction === 'older' ? machineExternalSessionTranscriptPageMock
+            : direction === 'forward' ? machineExternalSessionTranscriptReadAfterMock
+                : machineExternalSessionTranscriptRefreshReadAfterMock;
+        readMock.mockImplementationOnce(() => held.promise);
+        const pending = direction === 'older' ? sync.loadOlderMessages(sessionId)
+            : direction === 'forward' ? sync.loadNewerMessages(sessionId)
+                : internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        await vi.waitFor(() => expect(readMock).toHaveBeenCalledTimes(direction === 'older' ? 2 : 1));
+        machineExternalSessionTranscriptRefreshReadAfterMock.mockResolvedValueOnce({
+            v: 1, binding: invalidation.binding,
+            result: change === 'source replacement' ? { outcome: 'gap_or_cursor_expired' } : {
+                outcome: 'advanced', items: [row('tail-growth')], nextCursor: 'happier_external_cursor_v1:YzI',
+                boundary: '1:tail-growth', hasMore: false,
+            },
+        });
+        await internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        expect(machineExternalSessionTranscriptRefreshReadAfterMock).toHaveBeenCalledTimes(direction === 'secure' ? 2 : 1);
+        const accepted = storage.getState().sessionMessages[sessionId];
+        held.resolve(heldResponse);
+        if (direction === 'secure') await pending;
+        else await expect(pending).resolves.toMatchObject({ loaded: change === 'source replacement' ? 0 : 1 });
+        const texts = Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+            .filter((message) => message.kind === 'user-text').map((message) => message.text);
+        if (change === 'source replacement') {
+            expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+            expect(texts).toEqual(['replacement']);
+        } else {
+            expect(texts).toEqual(expect.arrayContaining(['initial', 'tail-growth', 'held-response']));
+        }
+    });
+
+    it.each(['replacement', 'tail advance'] as const)('keeps accepted external progress when a held replacement is overtaken by %s', async (overtakingRead) => {
+        const sessionId = `external_replacement_overtaken_${overtakingRead}`;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), serverId: getActiveServerSnapshot().serverId }]);
+        const row = (text: string) => ({ id: text, createdAtMs: 1,
+            raw: { role: 'user' as const, content: { type: 'text' as const, text } } });
+        const page = (text: string, tailCursor: string) => ({ ok: true as const, items: [row(text)],
+            nextCursor: null, tailCursor, hasMore: true, truncated: false });
+        const initialCursor = 'happier_external_cursor_v1:YzE';
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('initial', initialCursor));
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as {
+            fetchMessages: (id: string) => Promise<void>;
+            handleExternalSessionTranscriptEphemeralUpdate: (update: ReturnType<typeof createTranscriptInvalidation>) => Promise<void>;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        await internals.fetchMessages(sessionId);
+        const held = createDeferred<ReturnType<typeof page>>();
+        machineExternalSessionTranscriptPageMock.mockImplementationOnce(() => held.promise)
+            .mockResolvedValue(page('newer replacement', 'happier_external_cursor_v1:YzM'));
+        const invalidation = createTranscriptInvalidation(sessionId, initialCursor);
+        machineExternalSessionTranscriptRefreshReadAfterMock.mockResolvedValueOnce({
+            v: 1, binding: invalidation.binding,
+            result: overtakingRead === 'replacement' ? { outcome: 'gap_or_cursor_expired' } : {
+                outcome: 'advanced', items: [row('cap-page')], nextCursor: 'happier_external_cursor_v1:YzI', boundary: '1:cap', hasMore: true,
+            },
+        }).mockResolvedValueOnce({
+            v: 1, binding: invalidation.binding,
+            result: { outcome: 'advanced', items: [row('newer tail')], nextCursor: 'happier_external_cursor_v1:YzM', boundary: '1:newer-tail', hasMore: false },
+        });
+        const pending = internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        await vi.waitFor(() => expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalledTimes(2));
+        await internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        const accepted = storage.getState().sessionMessages[sessionId];
+        const expectedTexts = overtakingRead === 'replacement' ? ['newer replacement'] : ['initial', 'newer tail'];
+        expect(Object.values(accepted?.messagesById ?? {}).filter((message) => message.kind === 'user-text').map((message) => message.text))
+            .toEqual(expectedTexts);
+        held.resolve(page('stale replacement', 'happier_external_cursor_v1:YzI'));
+        await pending;
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        expect(sync.getAcceptedExternalSessionTailCursor(sessionId)).toBe('happier_external_cursor_v1:YzM');
+    });
+
+    it.each([
+        { transport: 'forward', continuation: 'bridge' },
+        { transport: 'secure', continuation: 'bridge' },
+        { transport: 'forward', continuation: 'terminal' },
+        { transport: 'forward', continuation: 'stacked' },
+        { transport: 'forward', continuation: 'stalled' },
+    ] as const)('retains cached external history and walks the capped tail gap ($transport, $continuation)', async ({ transport, continuation }) => {
+        const sessionId = `external_gap_${transport}_${continuation}`;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), serverId: getActiveServerSnapshot().serverId }]);
+        const row = (id: string, createdAtMs: number) => ({ id, createdAtMs,
+            raw: { role: 'user' as const, content: { type: 'text' as const, text: id } } });
+        const initialCursor = 'happier_external_cursor_v1:YzE';
+        const latestCursor = 'happier_external_cursor_v1:YzI';
+        const page = (id: string, at: number, older: string, tailCursor: string) => ({
+            ok: true as const, items: [row(id, at)], nextCursor: older, tailCursor, hasMore: true, truncated: false,
+        });
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('prefix', 1, 'prefix-older', initialCursor))
+            .mockResolvedValueOnce(page('latest', 10_000, 'latest-older', latestCursor));
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as {
+            fetchMessages: (id: string) => Promise<void>;
+            handleExternalSessionTranscriptEphemeralUpdate: (update: ReturnType<typeof createTranscriptInvalidation>) => Promise<void>;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean;
+            externalSessionTailStateBySessionId: Map<string, { lastSourceMessageIds?: readonly string[] }>;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        await internals.fetchMessages(sessionId);
+        const capped = { items: [row('bounded-backlog', 2)], nextCursor: latestCursor, hasMore: true };
+        if (transport === 'secure') {
+            const invalidation = createTranscriptInvalidation(sessionId, initialCursor);
+            machineExternalSessionTranscriptRefreshReadAfterMock.mockResolvedValueOnce({
+                v: 1, binding: invalidation.binding,
+                result: { outcome: 'advanced', ...capped, boundary: '2:bounded-backlog' },
+            });
+            await internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        } else {
+            // Warm source receipts may be absent; the real reducer retains the
+            // source-namespaced IDs needed to witness the cached prefix.
+            delete internals.externalSessionTailStateBySessionId.get(sessionId)?.lastSourceMessageIds;
+            machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true, ...capped, truncated: false });
+            await internals.fetchMessages(sessionId);
+        }
+        const messages = storage.getState().sessionMessages[sessionId];
+        expect(Object.values(messages?.messagesById ?? {}).filter((message) => message.kind === 'user-text').map((message) => message.text))
+            .toEqual(['prefix', 'latest']);
+        const latestId = Object.values(messages?.messagesById ?? {}).find((message) => message.kind === 'user-text' && message.text === 'latest')?.id;
+        const boundary = storage.getState().getSessionTailContiguousBoundary(sessionId);
+        expect(boundary).toEqual({ kind: 'messageIds', messageIds: [latestId] });
+
+        if (continuation === 'terminal') {
+            machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [], nextCursor: null, hasMore: false, truncated: false });
+            await expect(sync.loadOlderMessages(sessionId)).resolves.toMatchObject({ loaded: 0, hasMore: false });
+            const requests = machineExternalSessionTranscriptPageMock.mock.calls.length;
+            await expect(sync.loadOlderMessages(sessionId)).resolves.toMatchObject({ loaded: 0, hasMore: false });
+            expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalledTimes(requests);
+            expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toEqual(boundary);
+            return;
+        }
+        if (continuation === 'stalled') {
+            machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('latest', 10_000, 'latest-older', latestCursor));
+            const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+            try {
+                await expect(sync.loadOlderMessages(sessionId)).resolves.toMatchObject({ loaded: 0, hasMore: true, status: 'not_ready' });
+                expect(error).toHaveBeenCalled();
+                expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toEqual(boundary);
+            } finally { error.mockRestore(); }
+            return;
+        }
+        if (continuation === 'stacked') {
+            machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true,
+                items: [row('another-cap', 10_001)], nextCursor: 'happier_external_cursor_v1:YzM', hasMore: true, truncated: false });
+            machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('newest', 20_000, 'newest-older', 'happier_external_cursor_v1:YzM'));
+            await internals.fetchMessages(sessionId);
+            machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('latest', 10_000, 'latest-older', latestCursor));
+            await sync.loadOlderMessages(sessionId);
+            expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'newest-older' }), expect.anything());
+            expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toEqual(boundary);
+        }
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('gap-row', 5, 'gap-next', latestCursor));
+        await sync.loadOlderMessages(sessionId);
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'latest-older' }), expect.anything());
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce(page('prefix', 1, 'overlap-older', latestCursor));
+        await sync.loadOlderMessages(sessionId);
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'gap-next' }), expect.anything());
+        expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toBeNull();
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [], nextCursor: null, hasMore: false, truncated: false });
+        await sync.loadOlderMessages(sessionId);
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'prefix-older' }), expect.anything());
+    });
+
+    it('resumes only external transcripts with a current live-content consumer', async () => {
+        const hiddenId = 'external_resume_hidden';
+        const visibleId = 'external_resume_visible';
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([createExternalSession(hiddenId), createExternalSession(visibleId)]);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue({
+            ok: true, items: [{ id: 'initial', createdAtMs: 1, raw: { role: 'user', content: { type: 'text', text: 'initial' } } }],
+            nextCursor: null, tailCursor: 'happier_external_cursor_v1:YzE', hasMore: false, truncated: false,
+        });
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as { fetchMessages: (id: string) => Promise<void>; catchUpLoadedExternalSessionsOnResume: () => Promise<void> };
+        await internals.fetchMessages(hiddenId);
+        await internals.fetchMessages(visibleId);
+        const acceptedHidden = storage.getState().sessionMessages[hiddenId];
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValue({
+            ok: true, items: [{ id: 'newer', createdAtMs: 2, raw: { role: 'user', content: { type: 'text', text: 'newer' } } }],
+            nextCursor: 'happier_external_cursor_v1:YzI', truncated: false, hasMore: false,
+        });
+        markSessionSurfaceVisible(visibleId);
+        await internals.catchUpLoadedExternalSessionsOnResume();
+        expect(storage.getState().sessionMessages[hiddenId]).toBe(acceptedHidden);
+        expect(Object.values(storage.getState().sessionMessages[visibleId]?.messagesById ?? {}))
+            .toContainEqual(expect.objectContaining({ kind: 'user-text', text: 'newer' }));
+    });
+
+    it('continues hosted catch-up when the external link is retained after materialization', async () => {
+        const sessionId = 'hosted_retained_external_link_catchup';
+        const session = { ...createExternalSession(sessionId), currentStorageState: 'hosted' as const, encryptionMode: 'plain' as const, seq: 1 };
+        storage.getState().applySessions([session]);
+        const row = (seq: number) => ({ id: `row-${seq}`, seq, localId: null, sidechainId: null,
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: `hosted ${seq}` } } }, createdAt: seq, updatedAt: seq });
+        requestMock.mockResolvedValueOnce(Response.json({ messages: [row(1)], hasMore: false, nextBeforeSeq: null }))
+            .mockResolvedValueOnce(Response.json({ messages: [row(2)], hasMore: false, nextAfterSeq: null }));
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as {
+            fetchMessages: (id: string) => Promise<void>; encryption: unknown; isForeground: boolean;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.encryption = { getSessionEncryption: () => null };
+        internals.isForeground = true;
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        markSessionSurfaceVisible(sessionId);
+        await internals.fetchMessages(sessionId);
+        storage.getState().applySessions([{ ...session, seq: 2 }]);
+        await internals.fetchMessages(sessionId);
+        expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {}))
+            .toContainEqual(expect.objectContaining({ kind: 'user-text', text: 'hosted 2' }));
+        expect(machineExternalSessionTranscriptReadAfterMock).not.toHaveBeenCalled();
     });
 
     it('retains hosted authority when an older linked transcript read resolves after link retirement', async () => {
@@ -4854,7 +5319,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(sessionId, { cursor: initialCursor, recoveryRequired: false });
 
         (sync as any).handleEphemeralUpdate(invalidation, { serverId: sourceServer.id } as never);
         await vi.waitFor(() => {
@@ -4935,7 +5400,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(sessionId, { cursor: initialCursor, recoveryRequired: false });
 
         await (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
             invalidation,
@@ -5015,9 +5480,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(
+        (sync as any).externalSessionTailStateBySessionId.set(
             sessionId,
-            'happier_external_cursor_v1:Y3Vyc29yLTE',
+            { cursor: 'happier_external_cursor_v1:Y3Vyc29yLTE', recoveryRequired: false },
         );
 
         await (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
@@ -5080,9 +5545,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(
+        (sync as any).externalSessionTailStateBySessionId.set(
             sessionId,
-            'happier_external_cursor_v1:Y3Vyc29yLTE',
+            { cursor: 'happier_external_cursor_v1:Y3Vyc29yLTE', recoveryRequired: false },
         );
 
         await (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
@@ -5134,9 +5599,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(
+        (sync as any).externalSessionTailStateBySessionId.set(
             sessionId,
-            'happier_external_cursor_v1:Y3Vyc29yLTE',
+            { cursor: 'happier_external_cursor_v1:Y3Vyc29yLTE', recoveryRequired: false },
         );
 
         const refresh = (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
@@ -5209,7 +5674,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         );
 
         const { sync } = await import('./sync');
-        (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(sessionId, { cursor: initialCursor, recoveryRequired: false });
         const refresh = (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
             invalidation,
             { sourceServerId: sourceServer.id, shouldContinue: () => true },
@@ -5265,7 +5730,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         });
 
         const { sync } = await import('./sync');
-        (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(sessionId, { cursor: initialCursor, recoveryRequired: false });
         await (sync as any).handleExternalSessionTranscriptEphemeralUpdate(
             invalidation,
             { sourceServerId: sourceServer.id, shouldContinue: () => true },
@@ -5335,7 +5800,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             initializeSessions: vi.fn(async () => undefined),
             getSessionEncryption: vi.fn(() => null),
         };
-        (sync as any).externalSessionTailCursorBySessionId.set(sessionId, initialCursor);
+        (sync as any).externalSessionTailStateBySessionId.set(sessionId, { cursor: initialCursor, recoveryRequired: false });
         const applyItemsSpy = vi.spyOn(
             sync as any,
             'applyExternalSessionTranscriptItems',

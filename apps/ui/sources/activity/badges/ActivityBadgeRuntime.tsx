@@ -8,7 +8,7 @@ import type { AccountSettings } from '@happier-dev/protocol';
 import { useActiveServerSnapshot } from '@/hooks/server/useActiveServerSnapshot';
 import { useChangelog } from '@/hooks/inbox/useChangelog';
 import { useUpdates } from '@/hooks/inbox/useUpdates';
-import { storage, useFriendRequests, useLocalSetting } from '@/sync/domains/state/storage';
+import { storage, useFriendRequestCount, useLocalSetting } from '@/sync/domains/state/storage';
 import { serverFetch } from '@/sync/http/client';
 import { isDesktopHost } from '@/utils/platform/desktopHost';
 import { fireAndForget } from '@/utils/system/fireAndForget';
@@ -126,7 +126,7 @@ function useLocalActivityBadgeSnapshot(
 }
 
 export function ActivityBadgeRuntime(): React.ReactElement | null {
-    const friendRequests = useFriendRequests();
+    const friendRequestCount = useFriendRequestCount();
     const localSettings = useActivityBadgeLocalSettingsInput();
     const activeServer = useActiveServerSnapshot();
     const personalSessionMembership = useActivityPersonalSessionMembership();
@@ -147,7 +147,7 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
     const hasNonNumericInboxAttention = updateAvailable || changelogHasUnread;
     const badgeSnapshotParams = React.useMemo<LocalActivityBadgeSnapshotSelectorParams>(() => ({
         accountSettingsByServerId,
-        friendRequestCount: friendRequests.length,
+        friendRequestCount,
         hasNonNumericInboxAttention,
         localSettings,
         personalSessionListCoverageComplete: personalSessionMembership.coverageComplete,
@@ -155,7 +155,7 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
         personalSessionListQueryStatesByServerId: personalSessionMembership.statesByServerId,
     }), [
         accountSettingsByServerId,
-        friendRequests.length,
+        friendRequestCount,
         hasNonNumericInboxAttention,
         localSettings,
         personalSessionMembership.coverageComplete,
@@ -201,7 +201,14 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
         // write: clearing to 0 here would wipe a correct badge on every launch.
         if (!localBadgeSnapshot.policyReady) return null;
         if (localBadgeSnapshot.channelDisabled) return localBadgeSnapshot.localBadgeState;
-        if (localBadgeSnapshot.isDataReady || localBadgeSnapshot.hasLocalActivitySource) {
+        // A warm source is one Home answering for a corpus that may span several. The badge the
+        // OS already shows was written by whoever wrote last; replacing it with a number this
+        // app knows is short is worse than leaving it, so a multi-Home corpus waits for its
+        // coverage. One Home cannot be partial across Homes and never waits.
+        const warmSourceAnswersForEveryHome = badgeHomeServerIds.length <= 1
+            || personalSessionMembership.coverageComplete;
+        if (localBadgeSnapshot.isDataReady
+            || (localBadgeSnapshot.hasLocalActivitySource && warmSourceAnswersForEveryHome)) {
             return localBadgeSnapshot.localBadgeState;
         }
         if (
@@ -216,7 +223,9 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
     }, [
         activeServer.generation,
         activeServer.serverId,
+        badgeHomeServerIds,
         localBadgeSnapshot,
+        personalSessionMembership.coverageComplete,
         serverBadgeSnapshot,
         serverSnapshotAllowed,
     ]);

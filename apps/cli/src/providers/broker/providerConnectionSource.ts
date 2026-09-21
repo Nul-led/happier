@@ -29,7 +29,10 @@ import {
 } from '@/providers/spawn/credentials';
 import { resolveRuntimeProviderCredential } from '@/providers/spawn/runtimeCredential';
 import type { TeamCredentialBrokerSourceOpenInput } from './teamCredentialBrokerSourceOwner';
-import { teamCredentialBrokerPlacementAcceptsMachine } from './teamCredentialBrokerSourceOwner';
+import {
+  isCLIProxyAPIBrokerApplication,
+  teamCredentialBrokerPlacementAcceptsMachine,
+} from './teamCredentialBrokerSourceOwner';
 
 type ProviderConnectionSource = Extract<TeamCredentialSourceBindingV1, { kind: 'provider_connection' }>;
 
@@ -512,9 +515,7 @@ function isCpxApplication(
     endpointTemplateId: application.endpointTemplateId,
     protocol: application.protocol,
   }) !== null
-    && application.implementationIdentity.pluginId
-      === 'happier.provider.cliproxyapi'
-    && application.implementationIdentity.localId === 'cliproxyapi';
+    && isCLIProxyAPIBrokerApplication(application);
 }
 
 /**

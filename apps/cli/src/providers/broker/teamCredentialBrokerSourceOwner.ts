@@ -1,4 +1,5 @@
 import type { ProviderBrokerApplicationBindingV1 } from '@happier-dev/protocol';
+import { projectCLIProxyAPIProviderConnectionApplication } from '@happier-dev/plugins-cliproxyapi';
 import type { ManagedServiceRequest } from '@happier-dev/plugin-sdk/managed-services';
 import {
   computeTeamCredentialSourceMemberKeyV1,
@@ -31,6 +32,24 @@ export function teamCredentialBrokerPlacementAcceptsMachine(
   return machineId.trim().length > 0
     && placement !== null
     && (placement.kind === 'machine_pool' || placement.machineId === machineId);
+}
+
+/**
+ * True when the signed request names the one executable application the
+ * CLIProxyAPI contribution projects for this wire protocol. The contribution
+ * owns that identity, so the generic broker hosts compare against its own
+ * projection instead of repeating a Provider id.
+ */
+export function isCLIProxyAPIBrokerApplication(
+  application: Pick<ProviderBrokerApplicationBindingV1, 'agentTargetKey' | 'protocol' | 'implementationIdentity'>,
+): boolean {
+  const projected = projectCLIProxyAPIProviderConnectionApplication({
+    agentTargetKey: application.agentTargetKey,
+    protocol: application.protocol,
+  });
+  return projected !== null
+    && projected.implementationIdentity.pluginId === application.implementationIdentity.pluginId
+    && projected.implementationIdentity.localId === application.implementationIdentity.localId;
 }
 
 export type TeamCredentialBrokerOperation = Readonly<

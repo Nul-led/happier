@@ -6,6 +6,7 @@ import {
 } from '../../../teams/credentials/externalProviderApiV1.js';
 import { TeamCredentialRequestProtocolKindV1Schema } from '../../../teams/credentials/resourceV1.js';
 import { readServerEnabledBit } from '../../serverEnabledBit.js';
+import type { FeatureId } from '../../catalog.js';
 import type { FeaturesResponse } from '../../../features.js';
 
 export const TeamCredentialExternalApiUnavailableReasonV1Schema = z.enum([
@@ -91,4 +92,19 @@ export function resolveTeamCredentialExternalApiAvailability(
     : null;
   const parsed = TeamCredentialExternalApiAvailabilityV1Schema.safeParse(candidate);
   return parsed.success ? parsed.data : UNAVAILABLE_DEPLOYMENT_READINESS;
+}
+
+/**
+ * Whether this exact Home can actually serve the operations a feature switches
+ * on. A bit says the capability is enabled; the external Provider API is only
+ * usable when the Home also publishes its public-HTTPS readiness, so hosts that
+ * advertise or admit that family compose this one decision instead of reading
+ * the bit alone. Families without a deployment readiness answer `true`.
+ */
+export function isServerFeatureOperationReady(
+  payload: FeaturesResponse,
+  featureId: FeatureId,
+): boolean {
+  if (featureId !== 'teams.credentialResources.externalApi') return true;
+  return resolveTeamCredentialExternalApiAvailability(payload).available;
 }
