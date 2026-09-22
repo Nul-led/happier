@@ -5,8 +5,11 @@ import { accountSettingsParse } from '@happier-dev/protocol';
 import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
 import type { StorageState } from '@/sync/store/types';
-import { installActivityBadgeRuntimeCommonModuleMocks } from './activityBadgeRuntimeTestHelpers';
-import { persistBadgeHomeAccountSettings, resolveBadgeHomeServerUrl } from './activityBadgeRuntimeHomeFixtures';
+import {
+    installActivityBadgeRuntimeCommonModuleMocks,
+    installBadgeHomeIdentities,
+} from './activityBadgeRuntimeTestHelpers';
+import { persistBadgeHomeAccountSettings } from './activityBadgeRuntimeHomeFixtures';
 
 
 type ReactActEnvironmentGlobal = typeof globalThis & {
@@ -147,7 +150,7 @@ installActivityBadgeRuntimeCommonModuleMocks({
         return createStorageModuleStub({
             storage,
             useAllSessions: () => sessionsValue,
-            useFriendRequests: () => friendRequestsValue,
+            useFriendRequestCount: () => friendRequestsValue.length,
             useLocalSetting: (key: string) => (
                 Object.prototype.hasOwnProperty.call(localSettingsValue, key)
                     ? localSettingsValue[key]
@@ -217,43 +220,17 @@ vi.mock('@/hooks/server/useActiveServerSnapshot', () => ({
     useActiveServerSnapshot: () => activeServerSnapshot.value,
 }));
 
-// Each Home's reachable address, so the canonical credential-scope owner can bind it to an Account.
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-    return {
-        ...actual,
-        getServerProfileById: (serverId: string) => (serverId
-            ? {
-                id: serverId,
-                name: serverId,
-                serverUrl: resolveBadgeHomeServerUrl(serverId),
-                createdAt: 1,
-                updatedAt: 1,
-                lastUsedAt: 1,
-            }
-            : null),
-    };
-});
-
-// The device credential boundary: one Account per Home, which is what makes the per-Home policy
-// lookup meaningful instead of one Account answering for the whole corpus.
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
-    return createTokenStorageModuleMock({
-        importOriginal,
-        tokenStorage: {
-            getCredentialsForServerUrl: async (serverUrl: string) => ({
-                token: createAccountTokenForTests(serverUrl.includes('server-2') ? 'account-2' : 'account-1'),
-            }),
-        },
-    });
-});
+// Each Home's reachable address and the Account this device holds there are established in
+// `beforeEach` through the real Home owner plus a spy on the device credential store — the one
+// genuine boundary. The rule recorded at `installBadgeHomeIdentities` says why neither
+// `serverProfiles` nor `tokenStorage` may be `vi.mock`ed from this corridor.
 
 describe('ActivityBadgeRuntime', () => {
     beforeEach(async () => {
-        // Every Home in the badge corpus starts with its own persisted Account settings; a Home
-        // without them fails closed, which several cases below assert deliberately.
+        // Every Home in the badge corpus starts saved, credentialled, and carrying its own
+        // persisted Account settings; a Home without them fails closed, which several cases below
+        // assert deliberately.
+        await installBadgeHomeIdentities(['server-1', 'server-2']);
         await persistBadgeHomeAccountSettings('server-1');
         await persistBadgeHomeAccountSettings('server-2');
     });

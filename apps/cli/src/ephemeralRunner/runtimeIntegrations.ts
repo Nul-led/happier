@@ -538,6 +538,17 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
                   serverApiUrl: materialized.runtimeOrigin,
                   machineId: binding.machineId,
                   actionsSettingsProvider,
+                  // A relayed Action's Home-bound effects are authorized by the
+                  // Home-minted invocation authority signed with this
+                  // installation's key, exactly as the ordinary daemon executor
+                  // does. Without this identity every such effect is
+                  // `not_authenticated`.
+                  serverIdentityId: binding.homeServerIdentityId,
+                  externalActionMachineRequestPrivateKey: installationPrivateKey,
+                  externalActionMachineInstallationId: materialized.principal.installationId,
+                  // The Runner hosts its own plugin runtime in this process and
+                  // has no daemon to route plugin and meta Actions to.
+                  pluginActionExecutionOwner: 'current_process',
                 }),
                 // The Runner holds no Account material by contract. Its own
                 // Machine content key is what the creator's SDK sealed the
@@ -670,6 +681,15 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
           resolveLateEnvironment: async () => {
             const credentialFileOwner = materialized.pluginRuntime.lease.registry
               .resolveManagedServiceCredentialFileOwner?.();
+            // The reviewed plugin runtime is leased before this point, so its occurrence id
+            // is always registered; a missing id means the lease and the registry disagree,
+            // which fails closed here rather than scoping credential files to `undefined`.
+            const selectedPluginOccurrenceId = materialized.pluginRuntime.lease.registry.readPluginOccurrenceId(
+              materialized.pluginRuntime.selected.pluginId,
+            ) ?? null;
+            if (selectedPluginOccurrenceId === null) {
+              throw new Error('runner_reviewed_plugin_occurrence_unavailable');
+            }
             const environmentVariables = await materializeQualifiedConnectedAccountLaunchUses({
               connectedAccountsOwner: materialized.connectedAccountsAuthority.owner,
               credentialFileOwner,
@@ -677,7 +697,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
               sessionId: binding.sessionId,
               signal: connectedAccountMaterializationAbortController.signal,
               credentialFileScope: {
-                generation: materialized.pluginRuntime.selected.immutableGenerationId ?? 'bundled',
+                occurrenceId: selectedPluginOccurrenceId,
                 pluginId: materialized.pluginRuntime.selected.pluginId,
                 contributionQualifiedId: resolveAgentContributionQualifiedId({
                   pluginId: materialized.pluginRuntime.selected.pluginId,

@@ -18,7 +18,12 @@ import {
 } from '@happier-dev/protocol';
 import {
   computeExternalActionRequestEnvelopeDigestV1,
+  encodeExternalActionResolvedTargetV1,
   EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1,
+  EXTERNAL_ACTION_EFFECT_ACTION_HEADER,
+  EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER,
+  EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER,
+  EXTERNAL_ACTION_RESOLVED_TARGET_HEADER,
   ExternalActionRequestEnvelopeV2Schema,
   parseExternalActionDaemonDispatchResult,
   type ExternalActionRequestEnvelopeV2,
@@ -629,7 +634,16 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
       }
       return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
     }));
-    vi.spyOn(axios, 'get').mockImplementation(async (url: string) => {
+    const homeRequests: Array<{ path: string; headers: Readonly<Record<string, string>> }> = [];
+    const recordHomeRequest = (path: string, config?: Parameters<typeof axios.get>[1]) => {
+      homeRequests.push({
+        path,
+        headers: Object.fromEntries(
+          Object.entries(config?.headers ?? {}).map(([name, value]) => [name, String(value)]),
+        ),
+      });
+    };
+    vi.spyOn(axios, 'get').mockImplementation(async (url: string, config?: Parameters<typeof axios.get>[1]) => {
       if (url.endsWith('/v1/auth/ping')) {
         return { status: 200, data: { success: true } } as never;
       }
@@ -639,7 +653,23 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
           data: { records: [], nextCursor: null, hasNext: false },
         } as never;
       }
+      // The Home routes a relayed Action's own effects reach. Recording their
+      // headers is how the round trip proves which identity carried them.
+      if (url.endsWith('/v1/account/encryption/currentness')) {
+        recordHomeRequest('/v1/account/encryption/currentness', config);
+        return {
+          status: 200,
+          data: {
+            mode: 'e2ee',
+            version: 1,
+            signingKeyFingerprint: null,
+            contentKeyFingerprint: null,
+            updatedAt: 1,
+          },
+        } as never;
+      }
       if (url.includes('/v2/sessions/session-1')) {
+        recordHomeRequest('/v2/sessions/session-1', config);
         return {
           status: 200,
           data: {
@@ -918,17 +948,34 @@ describe('production Ephemeral Runner composition under an e2ee bootstrap', () =
         expect(JSON.stringify(relay.captured)).not.toContain(FOREIGN_SESSION_SENTINEL);
 
         // Its own outer Machine target resolves to its own Session, so the same
-        // Action against this Runner's Session is admitted past that owner and
-        // reaches the Runner's Action executor.
-        const own = await openedOutcome(
-          sdk.machine(MACHINE_ID).actions.session.activity.get({ sessionId: SESSION_ID }),
-        );
-        expect(own).not.toMatchObject({ code: 'target_not_local' });
-        // The completed execution behind this admission is not asserted here:
-        // the Runner builds its Action executor without the invocation-authority
-        // signing material and plugin-owner selection its Home-bound and
-        // meta Actions need (see the lane report's cross-corridor item), so no
-        // relayed Action can complete yet.
+        // Action against this Runner's Session executes and its own result
+        // comes back to the SDK client through the sealed round trip.
+        const own = await sdk.machine(MACHINE_ID).actions.session.activity.get({
+          sessionId: SESSION_ID,
+        });
+        expect(own).toMatchObject({ ok: true, sessionId: SESSION_ID, active: true, pendingCount: 0 });
+        // The Home-bound effect behind that result was made by this Runner:
+        // the session route carries the Home-minted invocation authority and a
+        // machine signature, which the executor can only produce from the
+        // installation key and installation id of this Machine.
+        const sessionEffect = homeRequests.filter((entry) => (
+          entry.path === '/v2/sessions/session-1'
+          && entry.headers[EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER] !== undefined
+        ));
+        expect(sessionEffect).toHaveLength(1);
+        expect(sessionEffect[0]!.headers).toMatchObject({
+          [EXTERNAL_ACTION_EXECUTION_AUTHORIZATION_HEADER]: 'home-minted-invocation',
+          [EXTERNAL_ACTION_EFFECT_ACTION_HEADER]: 'session.activity.get',
+          [EXTERNAL_ACTION_RESOLVED_TARGET_HEADER]: encodeExternalActionResolvedTargetV1({
+            kind: 'session',
+            sessionId: SESSION_ID,
+          }),
+        });
+        expect(sessionEffect[0]!.headers[EXTERNAL_ACTION_MACHINE_SIGNATURE_HEADER]).toBeTypeOf('string');
+        // A meta Action executes in the Runner's own process: it hosts its
+        // plugin runtime in-process and has no daemon to route to.
+        const spec = await sdk.machine(MACHINE_ID).actions.get({ id: 'session.activity.get' });
+        expect(spec).toMatchObject({ actionSpec: { id: 'session.activity.get' } });
 
         // A substituted Runner binding fails closed at the SDK: no Action is
         // dispatched at all, so the Home never carries the request.

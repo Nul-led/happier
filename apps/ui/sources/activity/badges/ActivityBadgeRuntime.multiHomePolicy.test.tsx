@@ -7,7 +7,10 @@ import { flushHookEffects, renderScreen } from '@/dev/testkit';
 import { localSettingsDefaults } from '@/sync/domains/settings/localSettings';
 import type { StorageState } from '@/sync/store/types';
 
-import { installActivityBadgeRuntimeCommonModuleMocks } from './activityBadgeRuntimeTestHelpers';
+import {
+    installActivityBadgeRuntimeCommonModuleMocks,
+    installBadgeHomeIdentities,
+} from './activityBadgeRuntimeTestHelpers';
 import {
     persistBadgeHomeAccountSettings,
     resolveBadgeHomeAccountId,
@@ -163,35 +166,9 @@ vi.mock('@/activity/source/activityPersonalSessionMembership', () => ({
     }),
 }));
 
-vi.mock('@/sync/domains/server/serverProfiles', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('@/sync/domains/server/serverProfiles')>();
-    return {
-        ...actual,
-        getServerProfileById: (serverId: string) => (serverId
-            ? {
-                id: serverId,
-                name: serverId,
-                serverUrl: resolveBadgeHomeServerUrl(serverId),
-                createdAt: 1,
-                updatedAt: 1,
-                lastUsedAt: 1,
-            }
-            : null),
-    };
-});
-
-vi.mock('@/auth/storage/tokenStorage', async (importOriginal) => {
-    const { createTokenStorageModuleMock } = await import('@/dev/testkit/mocks/tokenStorage');
-    const { createAccountTokenForTests } = await import('@/dev/testkit/harness/homeGovernanceHarness');
-    return createTokenStorageModuleMock({
-        importOriginal,
-        tokenStorage: {
-            getCredentialsForServerUrl: async (serverUrl: string) => ({
-                token: createAccountTokenForTests(serverUrl.includes('server-2') ? 'account-2' : 'account-1'),
-            }),
-        },
-    });
-});
+// The Home profiles and the device credential store are installed in `beforeEach` through
+// `installBadgeHomeIdentities`: the real Home owner, with a spy on the one genuine boundary. See
+// the rule recorded at that helper for why neither module is `vi.mock`ed here.
 
 async function renderBadgeRuntime(): Promise<renderer.ReactTestRenderer> {
     const { ActivityBadgeRuntime } = await import('./ActivityBadgeRuntime');
@@ -212,6 +189,7 @@ describe('ActivityBadgeRuntime multi-Home policy identity', () => {
         corpusReadiness.isDataReady = true;
         corpusReadiness.coverageComplete = true;
         corpusReadiness.homeServerIds = ['server-1', 'server-2'];
+        await installBadgeHomeIdentities(['server-1', 'server-2']);
         await persistBadgeHomeAccountSettings('server-1', accountPolicyByServerId['server-1']);
         await persistBadgeHomeAccountSettings('server-2', accountPolicyByServerId['server-2']);
     });

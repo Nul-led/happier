@@ -2090,8 +2090,26 @@ describe('createCliActionExecutor', () => {
     expect(fetchSessionById).not.toHaveBeenCalled();
   });
 
-  it('preserves account connected-service defaults for a strict V2 Session request', async () => {
-    const executor = createPlainExecutor();
+  it('uses the target account connected-service defaults instead of parent bindings for a strict V2 Session request', async () => {
+    const executor = createPlainExecutor({
+      rawSession: {
+        machineId: 'machine-1',
+        path: '/repo/current',
+        host: 'leeroy-mbp',
+        metadata: {
+          connectedServices: {
+            v: 2,
+            bindingsByServiceId: {
+              'happier.agent.codex/openai-codex': {
+                source: 'connected',
+                selection: 'profile',
+                profileId: 'parent-codex-profile',
+              },
+            },
+          },
+        },
+      },
+    });
     bootstrapAccountSettingsContext.mockResolvedValueOnce({
       source: 'network',
       settings: accountSettingsParse({
@@ -2132,6 +2150,14 @@ describe('createCliActionExecutor', () => {
       { surface: 'cli', defaultSessionId: 'sess-1' },
     );
 
+    expect(result).toMatchObject({
+      ok: true,
+      result: {
+        type: 'success',
+        sessionId: 'sess-new',
+        disposition: 'created',
+      },
+    });
     expect(spawnMachineSession).toHaveBeenCalledWith(expect.objectContaining({
       directory: '/repo/current',
       machineId: 'machine-1',
@@ -2157,14 +2183,6 @@ describe('createCliActionExecutor', () => {
         },
       },
     }));
-    expect(result).toMatchObject({
-      ok: true,
-      result: {
-        type: 'success',
-        sessionId: 'sess-new',
-        disposition: 'created',
-      },
-    });
   });
 
   it('resolves a fresh Team resource default through the bound Home catalog before Session dispatch', async () => {
@@ -2561,7 +2579,7 @@ describe('createCliActionExecutor', () => {
       }],
       targetRegistrations: [{
         pluginId: attachment.pluginId,
-        generation: '1',
+        occurrenceId: '1',
         registration: {
           family: 'composerAttachments',
           localId: attachment.localId,
