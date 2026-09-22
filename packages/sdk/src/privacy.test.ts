@@ -110,8 +110,8 @@ async function serve(params: Readonly<{
   bootstrap?: (response: ServerResponse) => Promise<void> | void;
   invoke?: (invocation: Invocation, response: ServerResponse) => Promise<void> | void;
   machines?: readonly unknown[];
-  /** Endpoint that answers Actions but serves no Machine bootstrap projection. */
-  machinesUnavailable?: true;
+  /** Status this endpoint answers `/v1/machines` with instead of the projection. */
+  machinesFailureStatus?: number;
   requestMaterial?: Readonly<{ type: 'dataKey'; machineKey: Uint8Array }>;
 }> = {}) {
   const captured: Array<{ path: string; authorization: string | undefined; body: string }> = [];
@@ -132,7 +132,11 @@ async function serve(params: Readonly<{
       return;
     }
     if (path === '/v1/machines') {
-      if (params.machinesUnavailable) { send(response, { error: 'not_found' }, 404); return; }
+      if (params.machinesFailureStatus !== undefined) {
+        send(response, { error: params.machinesFailureStatus === 404 ? 'not_found' : 'server_unavailable' },
+          params.machinesFailureStatus);
+        return;
+      }
       send(response, params.machines ?? []);
       return;
     }
@@ -245,7 +249,7 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
     // A daemon-hosted Action API answers Actions but not the Home's Machine
     // listing. That is not evidence about the target, so the released Account
     // sealing stands instead of failing the request.
-    const server = await serve({ machinesUnavailable: true,
+    const server = await serve({ machinesFailureStatus: 404,
       invoke: ({ binding, request }, response) => server.send(response,
         prepareExternalActionResponseV2({ binding, request, material,
           executedMachineId: 'machine-1', randomBytes: (length) => new Uint8Array(length).fill(4),
@@ -257,6 +261,22 @@ describe('SDK protected invocation lifecycle through real HTTP', () => {
         teamId: 'private-team-sentinel',
       })).resolves.toEqual({ resources: [], nextCursor: null });
       expect(server.failures).toEqual([]);
+    } finally { await client.close(); await server.close(); }
+  });
+
+  it('surfaces a failed Machine bootstrap read instead of taking the bootstrap-absent path', async () => {
+    // A Home that serves the projection but fails this read says nothing about
+    // the target either. Keeping Account sealing here would move the failure to
+    // the Runner after a dispatch, so the read failure stays its own typed
+    // error and no Action leaves the SDK.
+    const server = await serve({ machinesFailureStatus: 503 });
+    const client = connect({ endpoint: server.endpoint, token });
+    try {
+      await expect(client.machine(RUNNER_MACHINE_ID).actions.teams.credentials.entitled.list({
+        teamId: 'private-team-sentinel',
+      })).rejects.toMatchObject({ name: 'HappierTransportError', status: 503 });
+      expect(server.captured.some((call) => call.path.startsWith('/v1/actions/'))).toBe(false);
+      expect(JSON.stringify(server.captured)).not.toContain('private-team-sentinel');
     } finally { await client.close(); await server.close(); }
   });
 

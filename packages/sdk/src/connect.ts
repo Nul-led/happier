@@ -311,6 +311,16 @@ export type HappierExecutionRuns<TOptions extends ActionExecutionOptions = Actio
  */
 const MACHINE_BOOTSTRAP_UNAVAILABLE = Symbol('happier.sdk.machineBootstrapUnavailable');
 
+/**
+ * Only a route the endpoint does not serve states that. A network, auth or
+ * availability failure is evidence about this read, not about the projection,
+ * and it keeps its own typed error instead of moving the failure to the target.
+ */
+function isMachineBootstrapNotServed(error: unknown): boolean {
+  return error instanceof HappierTransportError
+    && (error.status === 404 || error.status === 405);
+}
+
 export type HappierMachineExecutionRuns = HappierExecutionRuns<HappierMachineActionExecutionOptions>;
 
 export type HappierClient = Readonly<{
@@ -648,7 +658,9 @@ function createClient(
               method: 'GET',
               signal: options.signal,
               allowAfterClose,
-            }).catch(() => { throw MACHINE_BOOTSTRAP_UNAVAILABLE; }));
+            }).catch((error: unknown) => {
+              throw isMachineBootstrapNotServed(error) ? MACHINE_BOOTSTRAP_UNAVAILABLE : error;
+            }));
             const resolution = resolveMachineProtectedActionMaterial({
               rows,
               machineId: machineTargetId,

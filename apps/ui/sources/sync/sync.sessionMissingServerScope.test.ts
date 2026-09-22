@@ -2293,6 +2293,63 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'prefix-older' }), expect.anything());
     });
 
+    it.each(['forward', 'secure'] as const)('reveals later %s rows after an absorbed external snapshot and bridges by source identity', async (transport) => {
+        const sessionId = `external_absorbed_gap_${transport}`;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), serverId: getActiveServerSnapshot().serverId }]);
+        const toolCall = { id: 'source-call', createdAtMs: 1, raw: { role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call', id: 'call-event', callId: 'tool-1', name: 'exec', input: {},
+        } } } };
+        const toolResult = (id: string, createdAtMs: number) => ({ id, createdAtMs, raw: { role: 'agent', content: { type: 'codex', data: {
+            type: 'tool-call-result', id, callId: 'tool-1', output: id,
+        } } } });
+        const initialCursor = 'happier_external_cursor_v1:YzE';
+        const prefixCursor = 'happier_external_cursor_v1:YzI';
+        const islandCursor = 'happier_external_cursor_v1:YzM';
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [toolCall],
+            nextCursor: 'original-older', tailCursor: initialCursor, hasMore: true, truncated: false });
+        const { sync } = await import('./sync');
+        const internals = sync as unknown as { fetchMessages: (id: string) => Promise<void>;
+            handleExternalSessionTranscriptEphemeralUpdate: (update: ReturnType<typeof createTranscriptInvalidation>) => Promise<void>;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        await internals.fetchMessages(sessionId);
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true, items: [toolResult('prefix-result', 2)],
+            nextCursor: prefixCursor, hasMore: false, truncated: false });
+        await internals.fetchMessages(sessionId);
+        const prefix = storage.getState().sessionMessages[sessionId];
+        expect([...prefix!.reducerState.messageIds.values()]).toHaveLength(1);
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true, items: [toolResult('cap-result', 3)],
+            nextCursor: islandCursor, hasMore: true, truncated: false });
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [toolResult('island-result', 10)],
+            nextCursor: 'island-older', tailCursor: islandCursor, hasMore: true, truncated: false });
+        await internals.fetchMessages(sessionId);
+        expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toEqual({ kind: 'messageIds', messageIds: [] });
+        const visibleTail = { id: 'visible-tail', createdAtMs: 11, raw: { role: 'user', content: { type: 'text', text: 'visible tail' } } };
+        if (transport === 'forward') {
+            machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({ ok: true, items: [visibleTail],
+                nextCursor: 'happier_external_cursor_v1:YzQ', hasMore: false, truncated: false });
+            await internals.fetchMessages(sessionId);
+        } else {
+            const invalidation = createTranscriptInvalidation(sessionId, islandCursor);
+            machineExternalSessionTranscriptRefreshReadAfterMock.mockResolvedValueOnce({ v: 1, binding: invalidation.binding,
+                result: { outcome: 'advanced', items: [visibleTail], nextCursor: 'happier_external_cursor_v1:YzQ', boundary: '11:visible-tail', hasMore: false } });
+            await internals.handleExternalSessionTranscriptEphemeralUpdate(invalidation);
+        }
+        const accepted = storage.getState().sessionMessages[sessionId];
+        const visibleId = Object.values(accepted?.messagesById ?? {}).find((message) => message.kind === 'user-text')?.id;
+        expect(visibleId).toBeDefined();
+        expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toEqual({ kind: 'messageIds', messageIds: [visibleId] });
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [toolResult('prefix-result', 2)],
+            nextCursor: 'island-older', hasMore: true, truncated: false });
+        await sync.loadOlderMessages(sessionId);
+        expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toBeNull();
+        machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({ ok: true, items: [], nextCursor: null, hasMore: false, truncated: false });
+        await sync.loadOlderMessages(sessionId);
+        expect(machineExternalSessionTranscriptPageMock).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'original-older' }), expect.anything());
+    });
+
     it('resumes only external transcripts with a current live-content consumer', async () => {
         const hiddenId = 'external_resume_hidden';
         const visibleId = 'external_resume_visible';
@@ -3083,6 +3140,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         const { sync } = await import('./sync');
         (sync as any).encryption = {
             getSessionEncryption: () => null,
+            // `sendPendingMessageNow` asks the same Encryption owner whether the
+            // target machine can be woken, so the stub mirrors both accessors.
+            getMachineEncryption: () => null,
         };
 
         const enqueueResult = await (sync as any).enqueuePendingMessage(
@@ -3115,21 +3175,78 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(JSON.parse(String(ownerPendingCall?.[1]?.body))).toMatchObject({
             requestedAction: { v: 1, kind: 'send_now' },
         });
-        const pendingMessages = storage.getState().sessionPending[sessionId]?.messages ?? [];
-        expect(pendingMessages.map((message) => message.text)).toEqual(['hello pending']);
-        expect(pendingMessages[0]?.localId).toBe(enqueueResult.localId);
+        // The enqueue serves the exact owner Home (above), but `sessionPending`
+        // is keyed by bare Session id and its readers are not Home-qualified, so
+        // the owner Home's optimistic row is deliberately NOT written into the
+        // active Home's bag — the same contract the pending owner asserts in
+        // `pendingQueueV2.scopeReconciliation.test.ts` ("enqueues exact Home …
+        // Session facts without borrowing the active same-ID Session"). Whether
+        // a non-active Home's composer should echo its own queued message is an
+        // open product question (R-X7-2); it is not answered here.
+        expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
         if (recipient) {
             expect(JSON.parse(String(ownerPendingCall?.[1]?.body))).toMatchObject({ v: 1, targetMachineId: 'machine-1' });
             expect(storage.getState().sessions[sessionId]?.optimisticThinkingAt ?? null).toBeNull();
-            runtimeFetchMock.mockImplementation(async (input) => String(input).endsWith('/v1/features')
-                ? currentPendingInputFeaturesResponse(3)
-                : Response.json({ didUpdate: true, recipient }));
+            // A qualified send-now reads the Session from its own Home before
+            // submitting, so the owner Home answers the exact-Session route too.
+            runtimeFetchMock.mockImplementation(async (input, _init?: RequestInit) => {
+                const url = new URL(String(input));
+                if (url.pathname.endsWith('/v1/features')) return currentPendingInputFeaturesResponse(3);
+                if (url.pathname === `/v2/sessions/${sessionId}`) {
+                    return Response.json({ session: {
+                        id: sessionId,
+                        seq: 1,
+                        createdAt: 1,
+                        updatedAt: 2,
+                        active: true,
+                        activeAt: 2,
+                        encryptionMode: 'plain',
+                        dataEncryptionKey: null,
+                        metadataLayoutVersion: 0,
+                        metadataVersion: 1,
+                        metadata: JSON.stringify({ path: '/workspace', host: 'host', machineId: 'machine-1' }),
+                        agentStateVersion: 0,
+                        agentState: null,
+                        share: null,
+                    } });
+                }
+                if (url.pathname === pendingPath && String(_init?.method ?? 'GET') === 'GET') {
+                    return Response.json({ pending: [{
+                        localId: enqueueResult.localId,
+                        recipient,
+                        content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hello pending' } } },
+                        status: 'queued',
+                        position: 0,
+                        createdAt: 100,
+                        updatedAt: 100,
+                        discardedAt: null,
+                        discardedReason: null,
+                        authorAccountId: null,
+                    }] });
+                }
+                return Response.json({ didUpdate: true, recipient });
+            });
+            // Without a local echo, the Run-scoped row the composer acts on is the
+            // owner Home's authoritative snapshot — the same one the sibling
+            // "fetches pending messages through the preferred owner server" case
+            // proves lands here for a non-active Home. Its recipient is what keeps
+            // send-now on the Run queue instead of the Session's main queue.
+            resolvePreferredServerIdForSessionIdMock.mockReturnValue(ownerServer.id);
+            await (sync as any).fetchPendingMessages(sessionId, undefined, recipient);
+            const hydrated = (storage.getState().sessionPending[sessionId]?.messages ?? [])
+                .find((message) => message.localId === enqueueResult.localId);
+            expect(hydrated?.recipient).toEqual(recipient);
+            // Poison restored: send-now must still choose Owner from its own address.
+            resolvePreferredServerIdForSessionIdMock.mockReturnValue(activeServer.id);
+            // Qualified exactly like the enqueue leg above: the ambient resolver
+            // is poisoned with the active duplicate on purpose, so an address-less
+            // send-now would only re-measure the poison, not the owner routing.
             await sync.sendPendingMessageNow(sessionId, {
                 localId: enqueueResult.localId,
                 createdAt: 1,
-                rawRecord: pendingMessages[0]?.rawRecord,
+                rawRecord: { role: 'user', content: { type: 'text', text: 'hello pending' }, meta: {} },
                 text: 'hello pending',
-            });
+            }, { serverId: ownerServer.id });
             expect(runtimeFetchMock).toHaveBeenCalledWith(
                 `https://owner.example${pendingPath}/${enqueueResult.localId}/action`,
                 expect.objectContaining({ method: 'PATCH' }),
@@ -3824,9 +3941,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             }
             return new Response(null, { status: 404 });
         });
-        runtimeFetchMock.mockResolvedValue(currentPendingInputFeaturesResponse(2));
+        runtimeFetchMock.mockResolvedValue(currentPendingInputFeaturesResponse(3));
 
         const { sync } = await import('./sync');
+        Reflect.set(sync, 'appliedServerTarget', getActiveServerSnapshot());
+        Reflect.set(sync, 'serverID', 'account-a');
         (sync as any).credentials = { token: 'active-token', secret: 'active-secret' };
         (sync as any).encryption = {
             decryptEncryptionKey: async () => null,
@@ -4855,8 +4974,11 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect(machineExternalSessionTranscriptPageMock).toHaveBeenCalledTimes(1);
 
         invalidateOpen.mockImplementation(() => undefined);
+        // Age the accepted heartbeat; an older inactive event is correctly ignored.
+        const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120_000);
+        onTestFinished(() => clock.mockRestore());
         (sync as any).flushMachineActivityUpdates(new Map([
-            ['machine-1', { id: 'machine-1', active: false, activeAt: Date.now() - 120_000 }],
+            ['machine-1', { id: 'machine-1', active: true, activeAt: Date.now() }],
         ]));
         expect(invalidateOpen).toHaveBeenCalledTimes(2);
         expect((sync as any).messagesSync.has(unopenedSessionId)).toBe(false);
@@ -5140,6 +5262,7 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
             vi.spyOn(unit, 'awaitQueue').mockResolvedValue(undefined);
         }
 
+        markSessionSurfaceVisible(sessionId);
         const firstResume = (sync as any).resumeSync('socket-reconnect');
         await catchUpStarted;
 
@@ -5845,10 +5968,15 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
     it('applies authoritative secure-refresh items and advances the tail cursor for fallback paging', async () => {
         const sessionId = 'direct_session_push_delta';
-        storage.getState().applySessions([{
+        const session = {
             ...createExternalSession(sessionId),
             serverId: getActiveServerSnapshot().serverId,
-        }]);
+        };
+        storage.getState().applySessions([session]);
+        const { buildSessionListRenderableFromSession } = await import('@/sync/domains/session/listing/sessionListRenderable');
+        storage.getState().applyServerScopedSessionListRows(session.serverId, [buildSessionListRenderableFromSession(session)], {
+            source: 'ordinary', mode: 'replace',
+        });
         emitSessionMetadataUpdateWithServerScopeMock.mockImplementation(async ({ expectedVersion, metadata }: any) => ({
             result: 'success',
             version: Number(expectedVersion ?? 0) + 1,

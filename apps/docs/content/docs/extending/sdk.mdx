@@ -907,15 +907,14 @@ Use the daemon-local transport when you need direct local delivery.
 <Callout type="warn">
   Development preview. Protected invocation needs an encryption-capable
   credential issued by the configured Home and a component that supports it.
-  The implementation and focused HTTP tests exist, but the current loaded SDK
-  journey through both direct-daemon and Home-relay origins has not yet been
-  certified. Do not treat source availability as release activation.
+  The implementation and focused HTTP tests exist; the loaded SDK journey
+  through direct-daemon and Home-relay origins is a release check, so source
+  availability is not release activation.
 
-  Protected delivery to a restricted Temporary computer is not available.
-  That path stays fail-closed until Happier has an independently authenticated
-  proof for the Runner machine envelope; a Home-provided key cannot attest a
-  claim made by that same Home. Use an ordinary authorized Account daemon for
-  protected calls in this preview.
+  A protected Action that targets a Temporary computer is sealed with that
+  machine's published content key. The SDK verifies the Runner key binding
+  against the credential's own pins before sealing and refuses a target whose
+  key does not verify, so a Home cannot substitute the key.
 </Callout>
 
 `connect({ endpoint, token })` also accepts a versioned encryption-capable

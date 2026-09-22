@@ -67,7 +67,8 @@ vi.mock('./api/session/apiChanges', () => ({
   fetchCurrentChangesCursor: fetchCurrentChangesCursorMock,
 }));
 
-vi.mock('@/sync/ops/machineExternalSessions', () => ({
+vi.mock('@/sync/ops/machineExternalSessions', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/sync/ops/machineExternalSessions')>(),
   machineExternalSessionTranscriptPage: machineExternalSessionTranscriptPageMock,
   machineExternalSessionTranscriptReadAfter: machineExternalSessionTranscriptReadAfterMock,
 }));
@@ -100,6 +101,7 @@ vi.mock('@/sync/api/session/apiSocket', () => {
       connect: vi.fn(),
       disconnect: vi.fn(),
       initialize: vi.fn(),
+      invalidateRequests: vi.fn(),
       request: apiSocketRequestMock,
       createRequestForPreparedTarget: (...args: unknown[]) => apiSocketPreparedRequestMock(...args),
       onStatusChange: (listener: (status: 'disconnected' | 'connecting' | 'connected' | 'error') => void) => {
@@ -109,6 +111,36 @@ vi.mock('@/sync/api/session/apiSocket', () => {
         return () => statusListeners.delete(listener);
       },
     },
+  };
+});
+
+// Every case here asserts on the active Home's socket transport
+// (`apiSocketRequestMock`), which `resolveServerAccountRequestContext` only
+// selects while the applied active-server runtime is available. `beforeEach`
+// calls `sync.disconnectServer()` and never completes a real switch, so the
+// unmocked connection owner reports "no applied runtime" and every request
+// falls to the scoped transport, which throws on the absent Home credential
+// before any HTTP is issued. Overriding the two applied-Home facts restores
+// the path the suite was written for. The factory deliberately does not spread
+// `importOriginal()`: `connectionManager.ts` imports `@/sync/sync`, and
+// spreading reintroduces that cycle into the module under test.
+const appliedServerSnapshotOverride = vi.hoisted(() => ({
+  current: null as null | Readonly<{ serverId: string; serverUrl: string; generation: number }>,
+}));
+const appliedRuntimeAvailableOverride = vi.hoisted(() => ({ current: true }));
+
+vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
+  const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
+  const noopSubscription = () => () => undefined;
+  return {
+    getAppliedActiveServerId: () => (appliedServerSnapshotOverride.current ?? getActiveServerSnapshot()).serverId,
+    getAppliedActiveServerSnapshot: () => appliedServerSnapshotOverride.current ?? getActiveServerSnapshot(),
+    isAppliedActiveServerRuntimeAvailable: () => appliedRuntimeAvailableOverride.current,
+    subscribeAppliedActiveServer: noopSubscription,
+    subscribeAppliedActiveServerRuntimeAvailability: noopSubscription,
+    subscribeApplyingActiveServer: noopSubscription,
+    retryActiveServerConnection: async () => undefined,
+    switchConnectionToActiveServer: async () => null,
   };
 });
 
@@ -222,23 +254,31 @@ function stubSnapshotRefreshFetch(): ReturnType<typeof vi.fn> {
   return fetchMock;
 }
 
-function expectApiSocketInitialMessageRequest(params: {
+/**
+ * The first native viewport is served by the same older-page loader every
+ * prepend uses, so its page size is asserted on a `beforeSeq` page rather than
+ * on the initial `/messages` fetch, which carries no page-size policy of its
+ * own.
+ */
+function expectApiSocketOlderMessageRequest(params: {
   sessionId: string;
+  beforeSeq: string;
   limit: string;
 }): void {
   const requestPath = '/v1/sessions/' + encodeURIComponent(params.sessionId) + '/messages';
   const calls = apiSocketRequestMock.mock.calls as Array<[string, RequestInit | undefined]>;
-  const call = calls.find(([path]) => String(path).startsWith(requestPath + '?'));
+  const call = calls.find(([path]) => String(path).startsWith(requestPath + '?')
+    && new URLSearchParams(String(path).split('?')[1] ?? '').has('beforeSeq'));
   expect(call).toBeDefined();
-  if (!call) throw new Error('Expected apiSocket request for ' + requestPath);
+  if (!call) throw new Error('Expected apiSocket older-page request for ' + requestPath);
   const [path, init] = call;
   expect(init).toEqual({ method: 'GET' });
   const [, query = ''] = String(path).split('?');
   const searchParams = new URLSearchParams(query);
   expect(searchParams.get('scope')).toBe('main');
+  expect(searchParams.get('beforeSeq')).toBe(params.beforeSeq);
   expect(searchParams.get('limit')).toBe(params.limit);
   expect(searchParams.has('afterSeq')).toBe(false);
-  expect(searchParams.has('beforeSeq')).toBe(false);
   expect(searchParams.has('sidechainId')).toBe(false);
 }
 
@@ -304,6 +344,8 @@ describe('sync socket offline tracking', () => {
 
   beforeEach(() => {
     platformOS.current = 'web';
+    appliedServerSnapshotOverride.current = null;
+    appliedRuntimeAvailableOverride.current = true;
     // `sync` is a shared singleton, so clear server-scoped private state before
     // restoring this test's storage fixture.
     sync.disconnectServer();
@@ -320,7 +362,7 @@ describe('sync socket offline tracking', () => {
     (sync as any).lastSocketOfflineDurationMs = null;
     (sync as any).socketOfflineCatchUpConsumedSessionIds?.clear?.();
     (sync as any).changesCursor = null;
-    (sync as any).externalSessionTailCursorBySessionId.clear();
+    (sync as any).externalSessionTailStateBySessionId.clear();
     (sync as any).externalSessionOlderCursorBySessionId.clear();
     (sync as any).externalSessionHasMoreOlderBySessionId.clear();
     (sync as any).transcriptAuthorityKeyBySessionId.clear();
@@ -461,15 +503,48 @@ describe('sync socket offline tracking', () => {
         } as any,
       },
     }), true);
-    storage.getState().applyMessagesLoaded('s_native_catchup_page');
-    (sync as any).sessionMaterializedMaxSeqById = { s_native_catchup_page: 20 };
+    // A loaded but zero-row transcript with a non-zero session hint is a blank
+    // projection the owner repairs with a snapshot, not an `afterSeq` page
+    // (`sync.ts#fetchMessages` `needsSnapshotLoad`), so the catch-up half is
+    // established by letting that snapshot materialize one row first.
+    apiSocketRequestMock.mockImplementation(async (requestPath) => {
+      const path = String(requestPath);
+      const isCatchupSnapshot = path.startsWith('/v1/sessions/s_native_catchup_page/messages?')
+        && !new URLSearchParams(path.split('?')[1] ?? '').has('afterSeq');
+      return new Response(JSON.stringify({
+        messages: isCatchupSnapshot
+          ? [{
+              id: 'm20',
+              seq: 20,
+              localId: null,
+              content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'materialized' } } },
+              createdAt: 20,
+              updatedAt: 20,
+            }]
+          : [],
+        hasMore: false,
+        nextAfterSeq: null,
+        nextBeforeSeq: null,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    });
     (sync as any).isForeground = true;
     markSessionSurfaceVisible('s_native_catchup_page');
+    await (sync as any).fetchMessages('s_native_catchup_page');
+    apiSocketRequestMock.mockClear();
 
-    await (sync as any).fetchMessages('s_native_initial_page');
+    // The native transcript owns no page-size policy of its own: it reads this
+    // one tuning value (`ChatListInternal#resolveSyncLoadOlderOptions`) and
+    // hands it to the same older-page loader every prepend uses, so the first
+    // viewport and a later prepend request the same bounded page.
+    const nativeFirstViewportLimit = sync.getSyncTuning().transcriptNativeOlderMessagesPageSize;
+    expect(nativeFirstViewportLimit).toBe(37);
+
+    await (sync as any).loadOlderMessagesFromCursor('s_native_initial_page', 21, {
+      limit: nativeFirstViewportLimit,
+    });
     await (sync as any).fetchMessages('s_native_catchup_page');
 
-    expectApiSocketInitialMessageRequest({ sessionId: 's_native_initial_page', limit: '37' });
+    expectApiSocketOlderMessageRequest({ sessionId: 's_native_initial_page', beforeSeq: '21', limit: '37' });
     expectApiSocketMessageRequest({ sessionId: 's_native_catchup_page', afterSeq: '20', limit: '150' });
   }, 60_000);
 
@@ -2209,7 +2284,7 @@ describe('sync socket offline tracking', () => {
   });
 
   it('catches up loaded direct sessions on resume even when the account changes feed is empty', async () => {
-    upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
+    await upsertAndActivateServer({ serverUrl: 'http://localhost:53288', scope: 'tab' });
     fetchChangesMock.mockResolvedValue({
       status: 'ok' as const,
       changes: [],
@@ -2274,7 +2349,16 @@ describe('sync socket offline tracking', () => {
 
     // Establish the same authority identity that a previously loaded direct
     // transcript carries before reconnect catch-up switches to read-after.
+    machineExternalSessionTranscriptPageMock.mockResolvedValueOnce({
+      ok: true,
+      items: [{ id: 'accepted-before-resume', createdAtMs: 0,
+        raw: { role: 'user', content: { type: 'text', text: 'accepted before resume' } } }],
+      nextCursor: null,
+      tailCursor: 'happier_external_cursor_v1:YzE',
+      hasMore: false,
+    });
     await (sync as any).fetchMessages('s1');
+    expect(storage.getState().sessionMessages.s1?.isLoaded).toBe(true);
     machineExternalSessionTranscriptReadAfterMock.mockReset();
     machineExternalSessionTranscriptReadAfterMock.mockResolvedValueOnce({
       ok: true,
@@ -2289,13 +2373,14 @@ describe('sync socket offline tracking', () => {
       truncated: false,
     });
 
+    markSessionSurfaceVisible('s1');
     await (sync as any).resumeSync('socket-reconnect');
 
     expect(machineExternalSessionTranscriptReadAfterMock).toHaveBeenCalledWith(expect.objectContaining({
       machineId: 'm1',
       agentId: 'codex',
       remoteSessionId: 'remote-1',
-      cursor: 'tail',
+      cursor: 'happier_external_cursor_v1:YzE',
     }), expect.anything());
     const sessionMessages = storage.getState().sessionMessages.s1;
     const texts = (sessionMessages?.messageIdsOldestFirst ?? [])
@@ -2303,7 +2388,7 @@ describe('sync socket offline tracking', () => {
       .filter((message): message is NonNullable<typeof message> => Boolean(message))
       .filter((message) => message.kind === 'user-text')
       .map((message) => message.text);
-    expect(texts).toEqual(['caught up direct']);
+    expect(texts).toEqual(['accepted before resume', 'caught up direct']);
     const activeServerId = String(getActiveServerSnapshot().serverId ?? '').trim();
     expect(loadExternalSessionTailCursor('s1', { serverScope: activeServerId, accountId: 'test' })).toBe(
       'happier_external_cursor_v1:dGFpbC0x',
