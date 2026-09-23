@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { formatPluginManifestIngestionDiagnostics, type PluginSourceSpecV1 } from '@happier-dev/protocol';
 
 import type { LoadedPlugin } from '@/plugins/discovery/load/installed';
-import { projectPath } from '@/projectPath';
+import { resolveCliRuntimeAssetPath } from '@/packagedRuntime/assets/resolveCliRuntimeAssetPath';
 import { readGeneratedPluginUiArtifactsManifestSync } from '@/plugins/install/ui/generatedArtifacts';
 import { ingestCanonicalPluginManifest } from '../../../manifest/ingest';
 import { pluginSourceProvenanceForKind } from '../../../manifest/sourceProvenance';
@@ -33,7 +33,7 @@ function managedProviderKey(pluginId: string, providerId: string): string {
 }
 
 function readUnavailableManagedProviderKeys(): ReadonlySet<string> {
-    const packageJson = JSON.parse(readFileSync(join(projectPath(), 'package.json'), 'utf8')) as Readonly<{
+    const packageJson = JSON.parse(readFileSync(resolveCliRuntimeAssetPath('package.json'), 'utf8')) as Readonly<{
         happier?: Readonly<{ managedRuntimePublication?: unknown }>;
     }>;
     const metadata = packageJson.happier?.managedRuntimePublication;

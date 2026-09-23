@@ -1,5 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -50,6 +51,27 @@ function locator(overrides: Partial<BundledPluginLocator> = {}): BundledPluginLo
 }
 
 describe('bundled plugin locators', () => {
+    it('reads publication metadata beside the native executable and fails closed on invalid metadata', () => {
+        const root = mkdtempSync(join(tmpdir(), 'happier-native-plugin-metadata-'));
+        const execPathDescriptor = Object.getOwnPropertyDescriptor(process, 'execPath')!;
+        try {
+            Object.defineProperty(process, 'execPath', { ...execPathDescriptor, value: join(root, 'happier') });
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                happier: { managedRuntimePublication: { v: 2 } },
+            }));
+            expect(() => loadBundledPluginLocators([locator()])).toThrow(
+                /Invalid CLI managed runtime publication metadata/,
+            );
+            writeFileSync(join(root, 'package.json'), JSON.stringify({
+                happier: { managedRuntimePublication: { v: 1, mode: 'complete', unavailableProviderRefs: [] } },
+            }));
+            expect(loadBundledPluginLocators([locator()])[0]?.pluginId).toBe('happier.provider.fixture');
+        } finally {
+            Object.defineProperty(process, 'execPath', execPathDescriptor);
+            rmSync(root, { recursive: true, force: true });
+        }
+    });
+
     it('loads declarative plugins without manufacturing daemon activation targets', () => {
         expect(loadBundledPluginLocators([locator()])).toEqual([
             expect.objectContaining({
