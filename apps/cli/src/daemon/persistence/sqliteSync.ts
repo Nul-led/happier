@@ -45,7 +45,10 @@ function isBunRuntime(): boolean {
 
 export function openSqliteDatabaseSync(filePath: string): SqliteDatabaseSync {
   const require = createRequire(import.meta.url);
-  const moduleName = isBunRuntime() ? 'bun:sqlite' : 'node:sqlite';
+  // Keep the runtime-selected specifier opaque to pkgroll. A literal
+  // `node:sqlite` branch is otherwise emitted as an eager external import and
+  // prevents the Bun-compiled CLI from starting before this function runs.
+  const moduleName = [isBunRuntime() ? 'bun' : 'node', 'sqlite'].join(':');
 
   const mod = require(moduleName) as unknown;
   if (!mod || typeof mod !== 'object') {

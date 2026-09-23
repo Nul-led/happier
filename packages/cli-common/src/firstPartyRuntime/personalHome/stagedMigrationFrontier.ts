@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 import { posix, win32 } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import {
     readSqliteMigrationCatalog,
@@ -14,6 +13,7 @@ import {
     resolveServerLightSqliteDatabaseUrlOptionsFromEnv,
 } from '../selfHostServerEnv.js';
 import type { PersonalHomeRuntimeLayout } from './layout.js';
+import { openPersonalHomeSqliteDatabase, type PersonalHomeSqliteDatabase } from './sqlite.js';
 
 export type PersonalHomeSqliteMigrationFrontierErrorCode =
     | 'installed_catalog_empty'
@@ -90,9 +90,9 @@ function normalizeChecksum(value: unknown): string {
 }
 
 function readLedger(databasePath: string): LedgerRow[] {
-    let database: DatabaseSync;
+    let database: PersonalHomeSqliteDatabase;
     try {
-        database = new DatabaseSync(databasePath, { readOnly: true });
+        database = openPersonalHomeSqliteDatabase(databasePath, { readOnly: true });
     } catch {
         return fail('migration_ledger_unavailable', 'The staged SQLite migration ledger is unavailable');
     }

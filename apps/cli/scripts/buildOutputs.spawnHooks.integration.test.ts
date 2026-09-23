@@ -52,6 +52,14 @@ function matchesDynamicConnectedServiceCatalogHookImport(text: string): boolean 
   return patterns.some((p) => p.test(text));
 }
 
+function matchesEagerNodeSqliteLoad(text: string): boolean {
+  return (
+    /^import(?:\s+[^'"\n]+\s+from)?\s*['"]node:sqlite['"]\s*;?/mu.test(text)
+    || /^(?:const|let|var)\s+[^\n=]+\s*=\s*require\(\s*['"]node:sqlite['"]\s*\)\s*;?/mu.test(text)
+    || /^require\(\s*['"]node:sqlite['"]\s*\)\s*;?/mu.test(text)
+  );
+}
+
 function findDescriptorOnlyPluginApiRegistration(text: string): string[] {
   const patterns: Readonly<Record<string, RegExp>> = {
     registerResource: /methodName:\s*["']registerResource["']/,
@@ -290,6 +298,18 @@ describe('CLI build output', () => {
     for (const file of distFiles) {
       const text = await fs.readFile(file, 'utf8');
       if (matchesDynamicConnectedServiceCatalogHookImport(text)) offenders.push(file);
+    }
+
+    expect(offenders).toEqual([]);
+  }, 60_000);
+
+  it('does not eagerly load Node-only SQLite from the Bun-compiled entrypoint closure', async () => {
+    expect(distFiles.length).toBeGreaterThan(0);
+
+    const offenders: string[] = [];
+    for (const file of distFiles) {
+      const text = await fs.readFile(file, 'utf8');
+      if (matchesEagerNodeSqliteLoad(text)) offenders.push(relative(distDir, file));
     }
 
     expect(offenders).toEqual([]);

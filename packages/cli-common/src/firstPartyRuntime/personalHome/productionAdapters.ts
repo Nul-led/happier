@@ -51,6 +51,7 @@ import {
   resolveInstalledPersonalHomeSqliteMigrationPaths,
   type PersonalHomeMigrationProcessRunner,
 } from './stagedMigrationFrontier.js';
+import { openPersonalHomeSqliteDatabase } from './sqlite.js';
 
 function pathApi(platform: NodeJS.Platform) {
   return platform === 'win32' ? win32 : posix;
@@ -162,8 +163,7 @@ export async function resolveCanonicalPersonalHomeRuntimeLayout(params: Readonly
 }
 
 export async function createPersonalHomeSqliteMaintenance(databasePath: string): Promise<PersonalHomeSqliteMaintenance> {
-  const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(databasePath);
+  const database = openPersonalHomeSqliteDatabase(databasePath);
   let closed = false;
   return {
     checkpoint: async () => {
@@ -189,8 +189,7 @@ export async function createPersonalHomeSqliteMaintenance(databasePath: string):
 }
 
 export async function readPersonalHomeIdentityValueFromSqlite(databasePath: string): Promise<Pick<PersonalHomeIdentityFacts, 'homeServerIdentityId'>> {
-  const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const database = openPersonalHomeSqliteDatabase(databasePath, { readOnly: true });
   try {
     const identity = database.prepare('SELECT value FROM SimpleCache WHERE key = ?').get('server.identity.v1') as
       | Readonly<{ value?: unknown }>
@@ -203,8 +202,7 @@ export async function readPersonalHomeIdentityValueFromSqlite(databasePath: stri
 }
 
 export async function readPersonalHomeDataCountsFromSqlite(databasePath: string): Promise<Readonly<{ accountCount: number; sessionCount: number }>> {
-  const { DatabaseSync } = await import('node:sqlite');
-  const database = new DatabaseSync(databasePath, { readOnly: true });
+  const database = openPersonalHomeSqliteDatabase(databasePath, { readOnly: true });
   try {
     const account = database.prepare('SELECT COUNT(*) AS count FROM "Account"').get() as Readonly<{ count?: unknown }> | undefined;
     const session = database.prepare('SELECT COUNT(*) AS count FROM "Session"').get() as Readonly<{ count?: unknown }> | undefined;

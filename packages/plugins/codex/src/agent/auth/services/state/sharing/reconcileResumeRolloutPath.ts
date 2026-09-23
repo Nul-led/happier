@@ -30,7 +30,9 @@ type SqliteDatabase = Readonly<{
 function openSqliteDatabase(path: string): SqliteDatabase {
   const require = createRequire(import.meta.url);
   const isBunRuntime = typeof (globalThis as { Bun?: unknown }).Bun !== 'undefined';
-  const moduleName = isBunRuntime ? 'bun:sqlite' : 'node:sqlite';
+  // Keep the runtime-selected specifier opaque to pkgroll so neither provider
+  // is hoisted into every packaged CLI entrypoint before this path is used.
+  const moduleName = [isBunRuntime ? 'bun' : 'node', 'sqlite'].join(':');
   const loaded = require(moduleName) as unknown;
   if (!loaded || typeof loaded !== 'object') {
     throw new Error(`Failed to load SQLite module: ${moduleName}`);
