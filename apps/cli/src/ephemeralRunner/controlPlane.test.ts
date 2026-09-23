@@ -89,6 +89,14 @@ function harness(input?: Readonly<{ allow?: boolean }>) {
       onConnectionState: (listener: (state: 'connected' | 'reconnecting') => void) => { connectionListener = listener; return () => { connectionListener = null; }; },
       close: vi.fn(async () => { events.push('connection.close'); }),
     })),
+    prepareReviewedPluginAcquisition: vi.fn(async () => {
+      events.push('plugin.prepare');
+      return {
+        review: null,
+        apply: vi.fn(async () => { events.push('plugin.apply'); }),
+        release: vi.fn(async () => { events.push('plugin.release'); }),
+      };
+    }),
     prepareAgent: vi.fn(async () => { events.push('prepare'); return { command: '/managed/codex' }; }),
     releasePreparation: vi.fn(async () => { events.push('preparation.release'); }),
     checkNonInferenceReadiness: vi.fn(async () => { events.push('readiness'); return { status: 'ready' as const, readiness: {} as never }; }),
@@ -194,10 +202,10 @@ describe('ephemeral Runner endpoint control plane', () => {
 
     await expect(running).resolves.toMatchObject({ status: 'completed' });
     expect(h.events).toEqual([
-      'claim', 'facts', 'review', 'consent', 'prepare',
+      'claim', 'facts', 'review', 'plugin.prepare', 'plugin.apply', 'consent', 'prepare',
       'progress.checking_ai_access', 'readiness', 'readiness.publish',
       'materialize', 'start',
-      'runtime.stop', 'materialized.release', 'preparation.release', 'connection.close', 'state.dispose',
+      'runtime.stop', 'materialized.release', 'preparation.release', 'plugin.release', 'connection.close', 'state.dispose',
     ]);
     expect(h.phases).toContain('running:reconnecting');
     expect(h.phases.at(-1)).toBe('completed:connected');
@@ -217,7 +225,7 @@ describe('ephemeral Runner endpoint control plane', () => {
     });
 
     await expect(controller.run()).resolves.toEqual({ status: 'declined' });
-    expect(h.events).toEqual(['claim', 'facts', 'review', 'decline', 'connection.close', 'state.dispose']);
+    expect(h.events).toEqual(['claim', 'facts', 'review', 'plugin.prepare', 'decline', 'plugin.release', 'connection.close', 'state.dispose']);
     expect(h.deps.prepareAgent).not.toHaveBeenCalled();
     expect(h.deps.materialize).not.toHaveBeenCalled();
   });
@@ -624,9 +632,9 @@ describe('ephemeral Runner endpoint control plane', () => {
 
     await expect(controller.run()).resolves.toMatchObject({ status: 'failed' });
     expect(h.events).toEqual([
-      'claim', 'facts', 'review', 'consent', 'prepare',
+      'claim', 'facts', 'review', 'plugin.prepare', 'plugin.apply', 'consent', 'prepare',
       'progress.checking_ai_access', 'decline',
-      'preparation.release', 'connection.close', 'state.dispose',
+      'preparation.release', 'plugin.release', 'connection.close', 'state.dispose',
     ]);
     expect(h.deps.materialize).not.toHaveBeenCalled();
     expect(h.deps.startSession).not.toHaveBeenCalled();
@@ -637,6 +645,12 @@ describe('ephemeral Runner endpoint control plane', () => {
     expect(h.snapshots.at(-1)).toMatchObject({ phase: 'failed', canRetry: false });
     expect(h.ui.requestFailureRecovery).toHaveBeenCalledWith(
       expect.objectContaining({ canRetry: false }),
+    );
+    // No Session, Machine or AccessKey was ever created here, so the endpoint
+    // must not send the user to an ordinary Session that does not exist.
+    expect(h.snapshots.at(-1)?.failure).toEqual({ kind: 'before_session_terminal' });
+    expect(h.ui.requestFailureRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ failure: { kind: 'before_session_terminal' } }),
     );
   });
 
@@ -657,6 +671,7 @@ describe('ephemeral Runner endpoint control plane', () => {
     await expect(controller.run()).resolves.toEqual({ status: 'retry_requested' });
     expect(h.events).not.toContain('decline');
     expect(h.snapshots.at(-1)).toMatchObject({ phase: 'failed', canRetry: true });
+    expect(h.snapshots.at(-1)?.failure).toEqual({ kind: 'before_session' });
   });
 
   it('zeroizes activation signing custody when bounded local-state cleanup fails', async () => {
@@ -715,5 +730,125 @@ describe('ephemeral Runner endpoint control plane', () => {
     expect(h.events).toContain('materialized.release');
     expect(h.events.indexOf('runtime.stop')).toBeLessThan(h.events.indexOf('materialized.release'));
     expect(h.snapshots.at(-1)).toMatchObject({ phase: 'failed', canRetry: false });
+    // A Session really does exist on this path, so pointing at it is truthful.
+    expect(h.snapshots.at(-1)?.failure).toEqual({ kind: 'session_runtime_or_stop' });
+  });
+
+  it('shows the running window the Session runtime transport, not the activation connection', async () => {
+    const f = fixture();
+    const h = harness();
+    let publishRuntimeConnection: ((state: 'connected' | 'reconnecting') => void) | null = null;
+    vi.mocked(h.deps.startSession).mockImplementation(async ({ onRuntimeStopReady, onRuntimeConnectionState }) => {
+      onRuntimeStopReady(async () => { h.events.push('runtime.stop'); });
+      publishRuntimeConnection = onRuntimeConnectionState;
+      h.events.push('start');
+      return { terminal: h.terminal, stop: async () => { h.events.push('runtime.stop'); } };
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => { h.events.push('state.dispose'); }) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.snapshots.at(-1)).toMatchObject({ phase: 'running', connection: 'connected' }));
+
+    publishRuntimeConnection!('reconnecting');
+    expect(h.snapshots.at(-1)).toMatchObject({ phase: 'running', connection: 'reconnecting' });
+    publishRuntimeConnection!('connected');
+    expect(h.snapshots.at(-1)).toMatchObject({ phase: 'running', connection: 'connected' });
+
+    h.settleTerminal({ status: 'completed' });
+    await expect(running).resolves.toMatchObject({ status: 'completed' });
+  });
+
+  it('reviews and installs the exact committed external plugin generation before consent is signed', async () => {
+    const f = fixture();
+    const h = harness();
+    const pluginReview = { pluginId: 'acme.reviewed-external', displayName: 'Reviewed External', version: '1.2.3' };
+    const apply = vi.fn(async () => { h.events.push('plugin.apply'); });
+    const release = vi.fn(async () => { h.events.push('plugin.release'); });
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition).mockImplementation(async ({ homeDirectory }) => {
+      h.events.push(`plugin.prepare:${homeDirectory}`);
+      return { review: pluginReview as never, apply, release };
+    });
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+
+    const running = controller.run();
+    await vi.waitFor(() => expect(h.events).toContain('start'));
+    h.settleTerminal({ status: 'completed' });
+    await expect(running).resolves.toEqual({ status: 'completed' });
+
+    // The acquisition is prepared against the activation-local Home, its review
+    // reaches the one consent surface, and the install lands before the consent
+    // signature — so a failed install can still decline cleanly.
+    expect(h.events).toContain('plugin.prepare:/runner/home');
+    expect(h.ui.reviewAndRequestConsent).toHaveBeenCalledWith(
+      expect.objectContaining({ pluginInstallation: pluginReview }),
+    );
+    expect(h.events.indexOf('plugin.apply')).toBeGreaterThan(h.events.indexOf('review'));
+    expect(h.events.indexOf('plugin.apply')).toBeLessThan(h.events.indexOf('consent'));
+    expect(h.events.indexOf('plugin.apply')).toBeLessThan(h.events.indexOf('prepare'));
+  });
+
+  it('declines without installing when the endpoint refuses the reviewed plugin', async () => {
+    const f = fixture();
+    const h = harness({ allow: false });
+    const apply = vi.fn(async () => { h.events.push('plugin.apply'); });
+    const release = vi.fn(async () => { h.events.push('plugin.release'); });
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition).mockImplementation(async () => ({
+      review: { pluginId: 'acme.reviewed-external' } as never,
+      apply,
+      release,
+    }));
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+
+    await expect(controller.run()).resolves.toEqual({ status: 'declined' });
+    expect(apply).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalled();
+    expect(h.events).toContain('decline');
+    expect(h.events).not.toContain('consent');
+  });
+
+  it('declines the activation when the committed generation cannot be installed', async () => {
+    const f = fixture();
+    const h = harness();
+    vi.mocked(h.deps.prepareReviewedPluginAcquisition).mockImplementation(async () => ({
+      review: { pluginId: 'acme.reviewed-external' } as never,
+      apply: vi.fn(async () => { throw new Error('runner_reviewed_plugin_acquisition_failed'); }),
+      release: vi.fn(async () => { h.events.push('plugin.release'); }),
+    }));
+    const controller = createEphemeralRunnerController({
+      activation: f,
+      home: { v: 1, homeServerIdentityId: 'srv_runner_home', canonicalServerUrl: 'https://home.example.test', revision: 1, endpoints: [{ kind: 'https', url: 'https://home.example.test' }] },
+      localState: { homeDirectory: '/runner/home', endpointHomeDirectory: '/endpoint/home', environment: {}, unsetEnvironmentVariables: [], dispose: vi.fn(async () => undefined) },
+      installation: f.installation,
+      dependencies: h.deps,
+      ui: h.ui,
+    });
+
+    await expect(controller.run()).resolves.toMatchObject({
+      status: 'failed',
+      error: expect.objectContaining({ message: 'runner_reviewed_plugin_acquisition_failed' }),
+    });
+    expect(h.events).toContain('decline');
+    expect(h.events).not.toContain('consent');
+    expect(h.deps.prepareAgent).not.toHaveBeenCalled();
   });
 });

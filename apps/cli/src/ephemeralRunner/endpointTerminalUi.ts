@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises';
 
 import type { RunnerLaunchManifestV1 } from '@happier-dev/protocol/ephemeralRunner/launchManifest';
 import type { RunnerArtifactIdentityV1 } from '@happier-dev/protocol/ephemeralRunner/runnerArtifact';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 
 import { promptInput, isInteractiveTerminal } from '@/terminal/prompts/promptInput';
 import { promptMultipleChoice } from '@/terminal/prompts/promptMultipleChoice';
@@ -40,6 +41,7 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'close.runningTitle': 'The Agent is still running',
   'close.consequence': "Stopping ends the Session on this computer and revokes this Runner's access. Keeping Happier Runner open leaves the Agent working and Stop Session available.",
   'failure.beforeSession': 'The request could not be prepared. Check the activation and try again.',
+  'failure.beforeSessionTerminal': 'The request could not be prepared, so nothing was started on this computer. Ask for a new package in Happier.',
   'failure.afterSession': 'The local Agent has stopped. Open the ordinary Session in Happier for details.',
   'failure.fallback': 'The Runner stopped before it could finish.',
   'failure.question': 'Retry this activation or exit?',
@@ -97,6 +99,19 @@ const ENDPOINT_COPY_EN = Object.freeze({
   'review.aiSourceId': 'AI source ID',
   'review.aiResource': 'AI resource ID',
   'review.brokerMachine': 'Broker Machine',
+  'review.pluginPackage': 'Plugin to install',
+  'review.pluginIntegrity': 'Plugin integrity',
+  'review.pluginPublisher': 'Plugin publisher',
+  'review.pluginUpdateChannel': 'Plugin update channel',
+  'review.pluginCuration': 'Plugin review status',
+  'review.pluginExecutableCode': 'Plugin executable code',
+  'review.pluginRequiredAccess': 'Plugin required host access',
+  'review.pluginOptionalAccess': 'Plugin optional host access',
+  'review.pluginSignature': 'Plugin signature',
+  'review.pluginProvenance': 'Plugin provenance',
+  'review.pluginRequestInterceptors': 'Plugin network interception',
+  'review.pluginRawCredentialAccess': 'Plugin raw credential access',
+  'review.none': 'None',
   'review.prompt': 'Prompt',
   'review.references': 'References',
   'review.initialAccess': 'Initial access',
@@ -143,6 +158,7 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'close.runningTitle': 'L’Agent est toujours en cours d’exécution',
   'close.consequence': 'Arrêter met fin à la session sur cet ordinateur et révoque l’accès de ce Runner. Garder Happier Runner ouvert laisse l’Agent travailler et maintient l’action Arrêter la session disponible.',
   'failure.beforeSession': 'La demande n’a pas pu être préparée. Vérifiez l’activation et réessayez.',
+  'failure.beforeSessionTerminal': 'La demande n’a pas pu être préparée, donc rien n’a démarré sur cet ordinateur. Demandez un nouveau paquet dans Happier.',
   'failure.afterSession': 'L’Agent local s’est arrêté. Ouvrez la session ordinaire dans Happier pour plus de détails.',
   'failure.fallback': 'Le Runner s’est arrêté avant de pouvoir terminer.',
   'failure.question': 'Réessayer cette activation ou quitter ?',
@@ -200,6 +216,19 @@ const ENDPOINT_COPY_FR = Object.freeze({
   'review.aiSourceId': 'ID de la source d’IA',
   'review.aiResource': 'ID de la ressource d’IA',
   'review.brokerMachine': 'Machine de courtage',
+  'review.pluginPackage': 'Plugin à installer',
+  'review.pluginIntegrity': 'Intégrité du plugin',
+  'review.pluginPublisher': 'Éditeur du plugin',
+  'review.pluginUpdateChannel': 'Canal de mise à jour du plugin',
+  'review.pluginCuration': 'Statut de revue du plugin',
+  'review.pluginExecutableCode': 'Code exécutable du plugin',
+  'review.pluginRequiredAccess': 'Accès hôte requis par le plugin',
+  'review.pluginOptionalAccess': 'Accès hôte facultatif du plugin',
+  'review.pluginSignature': 'Signature du plugin',
+  'review.pluginProvenance': 'Provenance du plugin',
+  'review.pluginRequestInterceptors': 'Interception réseau du plugin',
+  'review.pluginRawCredentialAccess': 'Accès du plugin aux identifiants bruts',
+  'review.none': 'Aucun',
   'review.prompt': 'Invite',
   'review.references': 'Références',
   'review.initialAccess': 'Accès initial',
@@ -364,6 +393,17 @@ export function resolveEphemeralRunnerActiveClosePresentation(input: Readonly<{
   });
 }
 
+/**
+ * The one failure-kind-to-copy mapping. Both the recovery prompt and the
+ * endpoint presentation read it, so a new kind cannot render one way here and
+ * another way there.
+ */
+const FAILURE_COPY_KEYS = {
+  before_session: 'failure.beforeSession',
+  before_session_terminal: 'failure.beforeSessionTerminal',
+  session_runtime_or_stop: 'failure.afterSession',
+} as const satisfies Record<EphemeralRunnerEndpointFailure['kind'], EndpointCopyKey>;
+
 /** The terminal or retryable failure and the recovery the endpoint may choose. */
 export type EphemeralRunnerFailureRecoveryPresentation = Readonly<{
   documentLanguage: EphemeralRunnerEndpointLocale;
@@ -381,7 +421,7 @@ export function resolveEphemeralRunnerFailureRecoveryPresentation(input: Readonl
   const t = createEndpointTranslator(locale);
   return Object.freeze({
     documentLanguage: locale,
-    message: t(input.failure.kind === 'before_session' ? 'failure.beforeSession' : 'failure.afterSession'),
+    message: t(FAILURE_COPY_KEYS[input.failure.kind]),
     question: t('failure.question'),
     retryLabel: t('action.retry'),
     exitLabel: t('action.exit'),
@@ -445,7 +485,7 @@ export function resolveEphemeralRunnerEndpointPresentation(
   const status = reconnecting ? t('connection.reconnecting') : t(PHASE_COPY_KEYS[input.phase]);
   const detail = failed
     ? input.failure
-      ? t(input.failure.kind === 'before_session' ? 'failure.beforeSession' : 'failure.afterSession')
+      ? t(FAILURE_COPY_KEYS[input.failure.kind])
       : t('failure.fallback')
     : reconnecting
       ? t('connection.reconnectingDetail')
@@ -580,9 +620,108 @@ function section(
   return Object.freeze({ id, title, facts: Object.freeze([...facts]) });
 }
 
+/**
+ * The plugin-acquisition facts a present endpoint user decides on, taken
+ * verbatim from the canonical `PluginInstallationReview` the plugin change
+ * owner produced. Absent when nothing is being installed, so a bundled Agent
+ * never shows an empty install block.
+ */
+/**
+ * Host-access disclosure, including the normalized scope the canonical review
+ * carries. A capability name without its scope is not the same disclosure the
+ * settings surface makes, and this endpoint user carries the consequence.
+ */
+function hostAccessLines(
+  access: readonly Readonly<{
+    id: string;
+    capability: string;
+    reason: string;
+    normalizedScope: Readonly<Record<string, unknown>>;
+  }>[],
+  t: EndpointTranslator,
+): string {
+  if (access.length === 0) return t('review.none');
+  return access
+    .map((entry) => {
+      const scope = Object.keys(entry.normalizedScope).length > 0
+        ? ` ${JSON.stringify(entry.normalizedScope)}`
+        : '';
+      return `${entry.capability} (${entry.id}): ${entry.reason}${scope}`;
+    })
+    .join('\n');
+}
+
+function pluginInstallationFacts(
+  review: PluginInstallationReview | null,
+  t: EndpointTranslator,
+): readonly EphemeralRunnerConsentReviewFact[] {
+  if (!review) return [];
+  const publisher = review.publisherIdentity.status === 'unverified'
+    ? `${review.publisherIdentity.displayName} (${review.publisherIdentity.id})`
+    : t('review.unknown');
+  const updateChannel = review.updateChannel.kind === 'npm'
+    ? `${review.updateChannel.packageName} · ${review.updateChannel.registryOrigin}`
+    : `${review.updateChannel.kind} · ${review.updateChannel.locator}`;
+  const curation = review.curation.status === 'notApplicable'
+    ? review.curation.status
+    : `${review.curation.status} · ${review.curation.sourceId}`;
+  return Object.freeze([
+    fact('plugin_package', t('review.pluginPackage'), [
+      `${review.displayName} ${review.version}`,
+      `${review.pluginId}`,
+      `${review.packageIdentity.name ?? review.pluginId}@${review.packageIdentity.version}`,
+    ].join('\n')),
+    fact('plugin_integrity', t('review.pluginIntegrity'), review.source.kind === 'path'
+      ? review.source.locator
+      : `${review.source.integrity} (${review.source.integrityBasis})`),
+    fact('plugin_publisher', t('review.pluginPublisher'), publisher),
+    fact('plugin_update_channel', t('review.pluginUpdateChannel'), updateChannel),
+    fact('plugin_curation', t('review.pluginCuration'), curation),
+    fact('plugin_signature', t('review.pluginSignature'), review.signature.status === 'notProvided'
+      ? review.signature.status
+      : `${review.signature.status} · ${review.signature.keyId}`),
+    fact('plugin_provenance', t('review.pluginProvenance'), review.provenance.status === 'declaredUnverified'
+      ? `${review.provenance.status} · ${review.provenance.predicateType}`
+      : review.provenance.status === 'retrievedUnverified'
+        ? `${review.provenance.status} · ${review.provenance.predicateTypes.join(', ')}`
+        : review.provenance.status === 'unavailable'
+          ? `${review.provenance.status} · ${review.provenance.code}`
+          : review.provenance.status),
+    fact('plugin_executable_code', t('review.pluginExecutableCode'),
+      review.executableRealms.length > 0 ? review.executableRealms.join(', ') : t('review.unknown')),
+    fact('plugin_required_access', t('review.pluginRequiredAccess'),
+      hostAccessLines(review.requiredHostAccess, t)),
+    // Optional access is disclosed even though this endpoint grants none of it,
+    // so the person whose machine runs the code knows what the plugin asked for
+    // and what it did not receive.
+    fact('plugin_optional_access', t('review.pluginOptionalAccess'),
+      hostAccessLines(review.optionalHostAccess, t)),
+    fact('plugin_request_interceptors', t('review.pluginRequestInterceptors'),
+      review.requestInterceptors.length > 0
+        ? review.requestInterceptors
+          .map((interceptor) => [
+            `${interceptor.id}: ${interceptor.origins.join(', ')}`,
+            interceptor.methods && interceptor.methods.length > 0 ? ` [${interceptor.methods.join(', ')}]` : '',
+          ].join(''))
+          .join('\n')
+        : t('review.none')),
+    fact('plugin_raw_credential_access', t('review.pluginRawCredentialAccess'),
+      review.rawCredentialAccess.length > 0
+        ? review.rawCredentialAccess
+          .map((access) => [
+            `${access.contribution.localId} (${access.realm}/${access.phase})`,
+            `${access.credentialSlot.title} · ${access.credentialSlot.purpose}`,
+          ].join(': '))
+          .join('\n')
+        : t('review.none')),
+  ]);
+}
+
 export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<{
   manifest: RunnerLaunchManifestV1;
   directory: string;
+  /** Canonical installation review for the plugin this endpoint must acquire. */
+  pluginInstallation?: PluginInstallationReview | null;
   locale?: string | null;
 }>): EphemeralRunnerConsentReviewPresentation {
   const locale = resolveEphemeralRunnerEndpointLocale(input);
@@ -653,6 +792,7 @@ export function resolveEphemeralRunnerConsentReviewPresentation(input: Readonly<
         fact('ai_source_id', t('review.aiSourceId'), `${sourceIdentity.pluginId}/${sourceIdentity.localId}`),
         fact('ai_resource', t('review.aiResource'), selection.resourceId),
         fact('broker_machine', t('review.brokerMachine'), selection.brokerMachineId),
+        ...pluginInstallationFacts(input.pluginInstallation ?? null, t),
       ]),
       section('request', t('review.section.request'), [
         fact('prompt', t('review.prompt'), displayValue(prepared.composer.text, t)),
@@ -718,6 +858,7 @@ export function resolveEphemeralRunnerReviewedRuntimeFacts(input: Readonly<{
 export function formatEphemeralRunnerConsentReview(input: Readonly<{
   manifest: RunnerLaunchManifestV1;
   directory: string;
+  pluginInstallation?: PluginInstallationReview | null;
   locale?: string | null;
 }>): string {
   const presentation = resolveEphemeralRunnerConsentReviewPresentation(input);
@@ -846,14 +987,14 @@ export function createEphemeralRunnerTerminalUi(input: Readonly<{
         throw new EphemeralRunnerNativeDirectoryPickerUnavailableError();
       }
     },
-    reviewAndRequestConsent: async ({ review, signal }) => {
+    reviewAndRequestConsent: async ({ review, pluginInstallation, signal }) => {
       if (!interactive) throw new Error('runner_interactive_terminal_required');
       reviewedRuntimeSummary = resolveEphemeralRunnerReviewedRuntimeFacts({
         manifest: review.manifest,
         directory: review.directory,
         locale,
       });
-      write(formatEphemeralRunnerConsentReview({ ...review, locale }));
+      write(formatEphemeralRunnerConsentReview({ ...review, pluginInstallation, locale }));
       const result = await readChoice({
         message: t('consent.question'),
         defaultId: 'decline',

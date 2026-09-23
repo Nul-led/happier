@@ -959,9 +959,15 @@ export async function recordTeamCredentialExternalTerminalUsageEventInTx(
         },
         select: { id: true },
     });
-    for (const { teamGroupId } of admission.teamCredentialGroupAttributions) {
-        await tx.usageEventTeamCredentialGroupAttribution.create({
-            data: { usageEventId: created.id, teamGroupId },
+    // This branch owns a freshly created event, so its attribution rows cannot
+    // collide with a concurrent writer the way the shared-`usageEventId`
+    // admission upsert above deliberately tolerates. One statement writes them.
+    if (admission.teamCredentialGroupAttributions.length > 0) {
+        await tx.usageEventTeamCredentialGroupAttribution.createMany({
+            data: admission.teamCredentialGroupAttributions.map(({ teamGroupId }) => ({
+                usageEventId: created.id,
+                teamGroupId,
+            })),
         });
     }
     return { id: created.id, created: true };

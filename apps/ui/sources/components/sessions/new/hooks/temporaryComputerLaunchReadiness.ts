@@ -15,7 +15,9 @@ export type TemporaryComputerLaunchBlock =
  * Ordered by which recovery the user can actually perform.
  *
  * A missing unattended install recipe cannot be fixed from the model picker, so
- * it is reported before any credential gap; an entitled-resource problem is
+ * it is reported before any credential gap, and an Agent whose plugin has no
+ * published release to install is reported next for the same reason; an
+ * entitled-resource problem is
  * reported before "nothing selected yet", because selecting the same unusable
  * resource again would not help.
  */
@@ -29,6 +31,7 @@ const LAUNCH_BLOCK_PRIORITY = [
     'authoring_runtimeDescriptorV1_unsupported',
     'authoring_automation_unsupported',
     'agent_managed_install_undeclared',
+    'agent_plugin_distribution_unacquirable',
     'team_credential_resource_unavailable',
     'team_credential_model_unselected',
     'broker_selection_unavailable',

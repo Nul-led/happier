@@ -1,23 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
-// This fixture stages a Home directly instead of running connectionManager's
-// restore lifecycle, so nothing ever publishes an applied active Home and
-// `getActiveServerAccountScope()` returns null for every request. Everything
-// else in the connection owner stays real; only the two applied-runtime facts
-// the lifecycle would have produced are supplied, the same way the direct-Sync
-// fixtures do (`sync.optimisticThinking.test.ts`, `sync.sessionMissingServerScope.test.ts`).
-vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
-    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
-    return {
-        getAppliedActiveServerSnapshot: () => getActiveServerSnapshot(),
-        getAppliedActiveServerId: () => getActiveServerSnapshot().serverId,
-        isAppliedActiveServerRuntimeAvailable: () => true,
-        subscribeAppliedActiveServer: () => () => {},
-        subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
-        subscribeApplyingActiveServer: () => () => {},
-    };
-});
-
 beforeAll(async () => {
     // Load the real scoped store once; repeated graph transforms obscure the
     // HTTP contract and can outlive a test while the shared VM is busy.
@@ -55,8 +37,20 @@ async function loadClient(params?: Readonly<{
     throwForPath?: (path: string) => unknown;
 }>) {
     vi.stubEnv('EXPO_PUBLIC_HAPPY_STORAGE_SCOPE', `api-token-${crypto.randomUUID()}`);
+    // A case that stages several clients staged the previous one's credential
+    // store too; the real switch below consults it, so restore it first. The
+    // Home is applied with an intact store and the store's behaviour under
+    // test is installed afterwards, which is the real order of events.
+    vi.restoreAllMocks();
     const { upsertAndActivateServer } = await import('@/sync/domains/server/serverRuntime');
     const profile = await upsertAndActivateServer({ serverUrl: 'https://server.example', name: 'Token test Home' });
+    // Apply the Home through the real connection owner rather than staging the
+    // applied-runtime facts it publishes. The credential store is still empty
+    // here, so this runs the genuine switch lifecycle without starting
+    // authenticated Sync or issuing network requests — the same composition
+    // `pendingQueueV2.testHelpers.ts#activatePendingQueueScope` relies on.
+    const { switchConnectionToActiveServer } = await import('@/sync/runtime/orchestration/connectionManager');
+    await switchConnectionToActiveServer();
     const { storage } = await import('@/sync/domains/state/storageStore');
     storage.getState().activateProfileScope({ serverId: profile.id, accountId: 'account-a' });
     const { retireActiveServerAccountScopeLifetime } = await import('@/sync/domains/scope/activeServerAccountScope');

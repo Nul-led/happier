@@ -377,3 +377,92 @@ describe('Runner prepared authoring commitment', () => {
     expect(computeRunnerAuthoringCommitmentV1(parsed)).not.toBe(computeRunnerAuthoringCommitmentV1(input));
   });
 });
+
+function externalListingFixture() {
+  return {
+    source: {
+      id: 'marketplace:community-npm',
+      kind: 'community-npm',
+      sourceUrl: 'https://registry.npmjs.org/',
+    },
+    pluginId: 'acme.reviewed-external',
+    publisher: { id: 'acme', displayName: 'Acme' },
+    packageName: '@acme/reviewed-external',
+    registryOrigin: 'https://registry.npmjs.org',
+    version: '1.2.3',
+    integrity: `sha512-${'A'.repeat(86)}==`,
+    manifestDigest: `sha256:${'b'.repeat(64)}`,
+    review: { status: 'unreviewed', reviewedAt: null },
+    updatePolicy: 'pinned',
+  };
+}
+
+function externalPreparedFixture() {
+  const prepared = preparedFixture();
+  return {
+    ...prepared,
+    authoring: {
+      ...prepared.authoring,
+      agentTarget: { kind: 'agent', identity: { pluginId: 'acme.reviewed-external', localId: 'assistant' } },
+      modelSelection: {
+        ...prepared.authoring.modelSelection,
+        ref: { ...prepared.authoring.modelSelection.ref, agentTargetKey: 'agent:acme.reviewed-external/assistant' },
+      },
+    },
+    agentPluginDistribution: externalListingFixture(),
+  };
+}
+
+describe('Runner reviewed external Agent plugin distribution', () => {
+  it('commits the exact reviewed distribution for an external agent-target plugin', () => {
+    const input = externalPreparedFixture();
+    const parsed = RunnerPreparedAuthoringV1Schema.parse(input);
+    expect(parsed.agentPluginDistribution).toMatchObject({
+      pluginId: 'acme.reviewed-external',
+      packageName: '@acme/reviewed-external',
+      version: '1.2.3',
+      integrity: input.agentPluginDistribution.integrity,
+      manifestDigest: input.agentPluginDistribution.manifestDigest,
+    });
+    // A substituted distribution must move the one commitment the activation
+    // binding already carries, so it fails before the endpoint consent surface.
+    const substituted = {
+      ...input,
+      agentPluginDistribution: { ...input.agentPluginDistribution, version: '1.2.4' },
+    };
+    expect(computeRunnerAuthoringCommitmentV1(substituted))
+      .not.toBe(computeRunnerAuthoringCommitmentV1(input));
+  });
+
+  it('treats an absent distribution as the bundled case and still commits it explicitly', () => {
+    const bundled = RunnerPreparedAuthoringV1Schema.parse(preparedFixture());
+    expect(bundled.agentPluginDistribution).toBeNull();
+    expect(computeRunnerAuthoringCommitmentV1(preparedFixture()))
+      .toBe(computeRunnerAuthoringCommitmentV1({ ...preparedFixture(), agentPluginDistribution: null }));
+  });
+
+  it('rejects a distribution that does not name the reviewed Agent plugin', () => {
+    const input = externalPreparedFixture();
+    expect(RunnerPreparedAuthoringV1Schema.safeParse({
+      ...input,
+      agentPluginDistribution: { ...input.agentPluginDistribution, pluginId: 'acme.other-plugin' },
+    }).success).toBe(false);
+    // A bundled Agent target may not smuggle an external acquisition either.
+    expect(RunnerPreparedAuthoringV1Schema.safeParse({
+      ...preparedFixture(),
+      agentPluginDistribution: externalListingFixture(),
+    }).success).toBe(false);
+  });
+
+  it('rejects a creator-selected private registry profile', () => {
+    const input = externalPreparedFixture();
+    expect(RunnerPreparedAuthoringV1Schema.safeParse({
+      ...input,
+      agentPluginDistribution: {
+        ...input.agentPluginDistribution,
+        source: { id: 'acme-catalog', kind: 'user', sourceUrl: 'https://catalog.acme.test/index.json' },
+        registryProfileId: 'acme-private',
+      },
+    }).success).toBe(false);
+  });
+});

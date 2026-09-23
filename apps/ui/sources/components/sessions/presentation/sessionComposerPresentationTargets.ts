@@ -62,6 +62,7 @@ import {
 } from '@/sync/domains/scope/serverAccountScope';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
 import { storage } from '@/sync/domains/state/storage';
+import { isSessionRetiredForServer } from '@/sync/store/domains/sessions';
 import { subscribeSessionDraft } from '@/sync/ops/sessionDrafts/sessionDraftRepository';
 import type { PluginUiComposerAttachmentProjection } from '@/sync/domains/plugins/ui/projection';
 import type { PluginLocalizedTextResolver } from '@/sync/domains/plugins/ui/i18n';
@@ -76,7 +77,7 @@ type ComposerMentionRef = ComposerSnapshotV1['references'][number];
  */
 export type ComposerPresentationAdmittedContributor = Readonly<{
     identity: PluginContributionIdentityV1;
-    immutableGenerationId: string;
+    occurrenceId: string;
 }>;
 
 /**
@@ -86,7 +87,7 @@ export type ComposerPresentationAdmittedContributor = Readonly<{
  */
 export type ComposerPresentationHostOwner = Readonly<{
     identity: PluginContributionIdentityV1;
-    immutableGenerationId: string;
+    occurrenceId: string;
     surfaceInstanceKey: string;
 }>;
 
@@ -147,7 +148,7 @@ export type ComposerPresentationTransactionApplier = Readonly<{
 
 type ComposerPresentationAttachmentAuthority = Readonly<{
     identity: PluginContributionIdentityV1;
-    immutableGenerationId: string;
+    occurrenceId: string;
     typeLabel: string;
     cardinality: 'one' | 'many';
     valueValidator: PluginUiComposerAttachmentProjection['valueValidator'];
@@ -342,7 +343,8 @@ function isPersistentSessionDraftCurrent(
     sessionId: string,
 ): boolean {
     const state = storage.getState();
-    return state.deletedSessionIds[sessionId] !== true
+    // A same-id Session retired on another Home is not this draft's Session.
+    return !isSessionRetiredForServer(state.deletedSessionIds, sessionId, scope.serverId)
         && areServerAccountScopesEqual(state.sessionLocalStateScope, scope)
         && areServerAccountScopesEqual(getActiveServerAccountScope(), scope);
 }
@@ -704,15 +706,15 @@ function createAttachmentAuthorityResolver(input: Readonly<{
             || entry.id !== qualifiedId
             || entry.pluginId !== identity.pluginId
             || entry.definition.id !== identity.localId
-            || typeof entry.immutableGenerationId !== 'string'
-            || entry.immutableGenerationId.trim().length === 0
+            || typeof entry.occurrenceId !== 'string'
+            || entry.occurrenceId.trim().length === 0
             || !typeLabel
         ) {
             continue;
         }
         authoritiesByQualifiedId.set(qualifiedId, Object.freeze({
             identity: Object.freeze({ ...identity }),
-            immutableGenerationId: entry.immutableGenerationId,
+            occurrenceId: entry.occurrenceId,
             typeLabel,
             cardinality: entry.definition.cardinality,
             valueValidator: entry.valueValidator,
@@ -728,7 +730,7 @@ function createAttachmentAuthorityResolver(input: Readonly<{
         if (
             !authority
             || authority.identity.pluginId !== admittedContributor.identity.pluginId
-            || authority.immutableGenerationId !== admittedContributor.immutableGenerationId
+            || authority.occurrenceId !== admittedContributor.occurrenceId
         ) {
             return null;
         }
@@ -1595,16 +1597,16 @@ function normalizeComposerPresentationHostOwner(
 ): ComposerPresentationHostOwner | null {
     const pluginId = typeof raw?.identity?.pluginId === 'string' ? raw.identity.pluginId.trim() : '';
     const localId = typeof raw?.identity?.localId === 'string' ? raw.identity.localId.trim() : '';
-    const immutableGenerationId = typeof raw?.immutableGenerationId === 'string'
-        ? raw.immutableGenerationId.trim()
+    const occurrenceId = typeof raw?.occurrenceId === 'string'
+        ? raw.occurrenceId.trim()
         : '';
     const surfaceInstanceKey = typeof raw?.surfaceInstanceKey === 'string'
         ? raw.surfaceInstanceKey.trim()
         : '';
-    if (!pluginId || !localId || !immutableGenerationId || !surfaceInstanceKey) return null;
+    if (!pluginId || !localId || !occurrenceId || !surfaceInstanceKey) return null;
     return Object.freeze({
         identity: Object.freeze({ pluginId, localId }),
-        immutableGenerationId,
+        occurrenceId,
         surfaceInstanceKey,
     });
 }
@@ -1687,7 +1689,7 @@ export function createComposerPresentationHostHandlers(
     const targetObservers = new Map<string, Readonly<{ dispose: () => void }>>();
     const admittedContributor: ComposerPresentationAdmittedContributor = Object.freeze({
         identity: activeOwner.identity,
-        immutableGenerationId: activeOwner.immutableGenerationId,
+        occurrenceId: activeOwner.occurrenceId,
     });
     const composerMediaExecutionTarget = readComposerMediaExecutionTarget(input.executionTarget);
     const composerMediaTransactionApplier = input.transactionApplier;

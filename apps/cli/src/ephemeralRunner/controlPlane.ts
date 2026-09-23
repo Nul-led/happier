@@ -17,6 +17,7 @@ import {
 } from '@happier-dev/protocol/ephemeralRunner/endpoint';
 import { signRunnerConsentV1, type RunnerConsentV1 } from '@happier-dev/protocol/ephemeralRunner/consent';
 import type { RunnerReadinessV1 } from '@happier-dev/protocol/ephemeralRunner/readiness';
+import type { PluginInstallationReview } from '@happier-dev/protocol/marketplace/internal';
 import type { RunnerActivationProgressPhaseV1 } from '@happier-dev/protocol/ephemeralRunner/progress';
 import tweetnacl from 'tweetnacl';
 
@@ -39,9 +40,21 @@ export type EphemeralRunnerEndpointPhase =
 
 export type EphemeralRunnerConnectionState = 'connected' | 'reconnecting';
 
+/**
+ * What the endpoint user is told went wrong, as a closed classification.
+ *
+ * The sentence itself belongs to the localized presentation owner
+ * (`endpointTerminalUi`), which is why there is no message here: a failure the
+ * controller phrased in English would never be rendered or translated.
+ *
+ * `before_session` is the retryable pre-materialization failure.
+ * `before_session_terminal` is the same phase without a usable recovery — no
+ * Session, Machine or AccessKey was ever created, so the user must not be sent
+ * to an ordinary Session that does not exist. `session_runtime_or_stop` is the
+ * only kind that may name one, because by then it really exists.
+ */
 export type EphemeralRunnerEndpointFailure = Readonly<{
-  kind: 'before_session' | 'session_runtime_or_stop';
-  message: string;
+  kind: 'before_session' | 'before_session_terminal' | 'session_runtime_or_stop';
 }>;
 
 export type EphemeralRunnerEndpointSnapshot = Readonly<{
@@ -89,6 +102,24 @@ export type EphemeralRunnerRuntimeHandle = Readonly<{
   stop(): Promise<void>;
 }>;
 
+/**
+ * The endpoint's answer for the exact reviewed Agent plugin generation.
+ *
+ * Both kinds take this one path: a bundled Agent the Runner artifact already
+ * carries resolves to `review: null` with no-op apply/release, and an Agent
+ * contributed by an installed external plugin carries the canonical
+ * installation review a present endpoint user decides on. The endpoint gains no
+ * Runner-specific registry, trust tier or installer: the acquisition is
+ * performed by the canonical plugin change owner in the activation-local Home.
+ */
+export type ReviewedRunnerPluginAcquisition = Readonly<{
+  review: PluginInstallationReview | null;
+  /** Installs and trusts the exact committed generation. A no-op for a bundled Agent. */
+  apply(input: Readonly<{ signal: AbortSignal }>): Promise<void>;
+  /** Releases an undecided prepared candidate on every terminal path. Idempotent. */
+  release(): Promise<void>;
+}>;
+
 export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = Readonly<{
   createConnection(input: Readonly<{
     home: HomeConnectionDescriptorV1;
@@ -99,6 +130,16 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
     installation: MachineInstallationIdentityV1;
     signal: AbortSignal;
   }>): Promise<EphemeralRunnerControlPlaneConnection<Manifest>>;
+  /**
+   * Prepares the reviewed Agent plugin generation against the activation-local
+   * Home, before the endpoint is asked to allow anything. It never installs:
+   * the returned `apply` is called only after an affirmative decision.
+   */
+  prepareReviewedPluginAcquisition(input: Readonly<{
+    manifest: Manifest;
+    homeDirectory: string;
+    signal: AbortSignal;
+  }>): Promise<ReviewedRunnerPluginAcquisition>;
   prepareAgent(input: Readonly<{
     manifest: Manifest;
     environment: NodeJS.ProcessEnv;
@@ -149,6 +190,16 @@ export type EphemeralRunnerDependencies<Manifest, Materialized, Preparation> = R
     signal: AbortSignal;
     /** The ordinary Session/process terminal owner, exposed before Agent admission. */
     onRuntimeStopReady(stop: () => Promise<void>): void;
+    /**
+     * The running Session's own transport connectivity, from the canonical
+     * runtime owner. Before the Session exists the window reflects the
+     * activation control connection; once it is running, that connection is no
+     * longer what the user is waiting on, so a live Session outage must be able
+     * to move the window to Reconnecting instead of showing a stale
+     * "connected". This is the same shape `onRuntimeStopReady` establishes: the
+     * runtime hands its fact over, and the endpoint stays the single presenter.
+     */
+    onRuntimeConnectionState(state: EphemeralRunnerConnectionState): void;
   }>): Promise<EphemeralRunnerRuntimeHandle>;
   /** Releases process-local bootstrap custody after the ordinary Session runtime has terminated. */
   releaseMaterialized(input: Readonly<{
@@ -160,6 +211,11 @@ export type EphemeralRunnerEndpointUi<Manifest> = Readonly<{
   selectDirectory(input: Readonly<{ signal: AbortSignal }>): Promise<string | null>;
   reviewAndRequestConsent(input: Readonly<{
     review: VerifiedEphemeralRunnerReview<Manifest>;
+    /**
+     * The canonical installation review for the reviewed Agent's plugin, when
+     * the endpoint must acquire it. `null` means nothing is being installed.
+     */
+    pluginInstallation: PluginInstallationReview | null;
     signal: AbortSignal;
   }>): Promise<boolean>;
   confirmActiveClose(input: Readonly<{
@@ -175,6 +231,12 @@ export type EphemeralRunnerEndpointUi<Manifest> = Readonly<{
     requestStop(): Promise<'kept_open' | 'stopped'>;
   }>): () => void;
   present(snapshot: EphemeralRunnerEndpointSnapshot): void;
+  /**
+   * Releases whatever process resources this surface holds — a native shell's
+   * stdin reader, for instance. Called by the endpoint application on every
+   * terminal outcome and before a retry builds a replacement. Idempotent.
+   */
+  dispose?(): void;
 }>;
 
 export type EphemeralRunnerControllerResult =
@@ -187,16 +249,17 @@ function asError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Ephemeral Runner failed');
 }
 
-function endpointFailure(canRetry: boolean): EphemeralRunnerEndpointFailure {
-  return canRetry
-    ? Object.freeze({
-        kind: 'before_session',
-        message: 'The request could not be prepared. Check the activation and try again.',
-      })
-    : Object.freeze({
-        kind: 'session_runtime_or_stop',
-        message: 'The local Agent has stopped. Open the ordinary Session in Happier for details.',
-      });
+const FAILURE_BEFORE_SESSION = Object.freeze({ kind: 'before_session' as const });
+const FAILURE_BEFORE_SESSION_TERMINAL = Object.freeze({ kind: 'before_session_terminal' as const });
+const FAILURE_SESSION_RUNTIME_OR_STOP = Object.freeze({ kind: 'session_runtime_or_stop' as const });
+
+function endpointFailure(input: Readonly<{
+  canRetry: boolean;
+  /** A Session, Machine and AccessKey exist only once materialization succeeded. */
+  sessionExists: boolean;
+}>): EphemeralRunnerEndpointFailure {
+  if (input.canRetry) return FAILURE_BEFORE_SESSION;
+  return input.sessionExists ? FAILURE_SESSION_RUNTIME_OR_STOP : FAILURE_BEFORE_SESSION_TERMINAL;
 }
 
 export function createEphemeralRunnerController<Manifest, Materialized, Preparation>(input: Readonly<{
@@ -224,6 +287,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
   let runtimeStopPromise: Promise<void> | null = null;
   let materialized: Materialized | null = null;
   let preparation: Preparation | null = null;
+  let pluginAcquisition: ReviewedRunnerPluginAcquisition | null = null;
   let activeClaim: RunnerClaimV1 | null = null;
   let runPromise: Promise<EphemeralRunnerControllerResult> | null = null;
   let stopPromise: Promise<void> | null = null;
@@ -241,7 +305,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
       phase,
       connection: connectionState,
       ...(nextPhase === 'failed' && canRetry !== undefined
-        ? { failure: endpointFailure(canRetry) }
+        ? { failure: endpointFailure({ canRetry, sessionExists: materialized !== null }) }
         : {}),
       ...(canRetry !== undefined ? { canRetry } : {}),
     }));
@@ -257,6 +321,11 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         releasePreparationPromise ??= input.dependencies.releasePreparation({ preparation });
         await releasePreparationPromise.catch(() => undefined);
       }
+      // Idempotent at its owner: an applied acquisition has no candidate left
+      // to release, and a declined or failed one must not leave a prepared
+      // candidate behind in the activation-local Home.
+      await pluginAcquisition?.release().catch(() => undefined);
+      pluginAcquisition = null;
       await connection?.close().catch(() => undefined);
       connection = null;
       try {
@@ -486,11 +555,30 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         if (review.authoringCommitment !== input.activation.binding.authoringCommitment) {
           throw new Error('Reviewed authoring does not match the activation commitment');
         }
-        const allowed = await input.ui.reviewAndRequestConsent({ review, signal: lifetime.signal });
+        // The reviewed Agent's plugin generation is prepared — never installed —
+        // before the endpoint is asked to allow anything, so its canonical
+        // installation review is part of the one consent decision.
+        pluginAcquisition = await input.dependencies.prepareReviewedPluginAcquisition({
+          manifest: review.manifest,
+          homeDirectory: input.localState.homeDirectory,
+          signal: lifetime.signal,
+        });
+        const allowed = await input.ui.reviewAndRequestConsent({
+          review,
+          pluginInstallation: pluginAcquisition.review,
+          signal: lifetime.signal,
+        });
         if (!allowed) {
           await connection.decline({ claim, signal: lifetime.signal });
           return { status: 'declined' };
         }
+        // Allow installs the exact committed generation before the consent
+        // signature exists, so a refused or failed acquisition still declines
+        // this activation cleanly instead of consenting to a launch that
+        // cannot run.
+        present('installing_agent');
+        await pluginAcquisition.apply({ signal: lifetime.signal });
+        lifetime.signal.throwIfAborted();
         const consentInstallationKey = decodeBase64(input.installation.privateKey, 'base64url');
         let consent: RunnerConsentV1;
         try {
@@ -567,6 +655,16 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
               void stopRuntimeOnce();
             }
           },
+          onRuntimeConnectionState: (next) => {
+            // The activation control connection stops being the truth the
+            // moment the Session runs, so its subscription is released and the
+            // runtime becomes the one connectivity source the window shows.
+            unsubscribeConnection?.();
+            unsubscribeConnection = null;
+            if (connectionState === next) return;
+            connectionState = next;
+            input.ui.present(Object.freeze({ phase, connection: connectionState }));
+          },
         });
         if (lifetime.signal.aborted) {
           await stopRuntimeOnce();
@@ -612,7 +710,7 @@ export function createEphemeralRunnerController<Manifest, Materialized, Preparat
         // declined that activation, so a second run can only be rejected.
         // Offering Retry there is an invitation into a guaranteed failure loop.
         const canRetry = materialized === null && activeClaim === null;
-        const publicFailure = endpointFailure(canRetry);
+        const publicFailure = endpointFailure({ canRetry, sessionExists: materialized !== null });
         present('failed', canRetry);
         const recovery = await input.ui.requestFailureRecovery({
           failure: publicFailure,

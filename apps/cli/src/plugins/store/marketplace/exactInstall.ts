@@ -8,7 +8,7 @@ import {
 } from '@happier-dev/protocol';
 
 import {
-  COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
+  projectExpectedMarketplaceListing,
   type ExpectedMarketplaceListingV1,
 } from '@happier-dev/protocol/marketplace/internal';
 
@@ -18,6 +18,12 @@ import {
   createMarketplaceIndexService,
   type MarketplaceIndexSourceConfig,
 } from './service';
+
+// The commitment projector lives with its result type so the daemon's exact
+// install path and the Temporary-computer creator that seals a reviewed
+// external Agent cannot drift apart. Re-exported here because this module is
+// the CLI's established import site for it.
+export { projectExpectedMarketplaceListing };
 
 /** The CLI's user-facing copy for each shared Protocol install block. */
 function marketplaceInstallBlockMessage(block: MarketplaceListingInstallBlockV1): string {
@@ -73,63 +79,6 @@ export type ExactMarketplaceListingResolution = Readonly<{
   listing: MarketplaceIndexItemV1;
   registryProfileId: string | null;
 }>;
-
-export function projectExpectedMarketplaceListing(
-  listing: MarketplaceIndexItemV1,
-  registryProfileId: string | null,
-): ExpectedMarketplaceListingV1 {
-  const distribution = {
-    pluginId: listing.pluginId,
-    publisher: listing.publisher,
-    packageName: listing.distribution.packageName,
-    registryOrigin: listing.distribution.registryOrigin,
-    version: listing.distribution.version,
-    integrity: listing.distribution.integrity,
-    manifestDigest: listing.manifestDigest,
-  } as const;
-  if (listing.source.kind === 'curated') {
-    return {
-      source: { id: listing.source.id, kind: 'curated', sourceUrl: listing.source.sourceUrl },
-      ...distribution,
-      ...(registryProfileId ? { registryProfileId } : {}),
-      review: {
-        status: 'approved',
-        reviewedAt: listing.review.reviewedAt!,
-        ...(listing.review.reason !== undefined ? { reason: listing.review.reason } : {}),
-      },
-      updatePolicy: listing.updatePolicy,
-    };
-  }
-  // The unreviewed listing's declared policy travels unchanged: first-install
-  // trust comes from the mandatory Install and Trust review, not from
-  // curation, so every declared policy — including `reviewSensitiveChanges`
-  // for later explicit updates — is submitted exactly as published.
-  const review = {
-    review: { status: 'unreviewed', reviewedAt: null },
-    updatePolicy: listing.updatePolicy,
-  } as const;
-  if (listing.source.kind === 'community-npm') {
-    // Community npm is the one synthesized source, never a persisted row, so
-    // it carries the constant id and no private registry binding.
-    return {
-      source: {
-        id: COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
-        kind: 'community-npm',
-        sourceUrl: listing.source.sourceUrl,
-      },
-      ...distribution,
-      ...review,
-    };
-  }
-  return {
-    source: { id: listing.source.id, kind: 'user', sourceUrl: listing.source.sourceUrl },
-    ...distribution,
-    // The persisted host binding travels with every persisted source kind: a
-    // user catalog can name a private registry just as a curated one can.
-    ...(registryProfileId ? { registryProfileId } : {}),
-    ...review,
-  };
-}
 
 export function marketplaceListingMatchesExpected(
   expected: ExpectedMarketplaceListingV1,

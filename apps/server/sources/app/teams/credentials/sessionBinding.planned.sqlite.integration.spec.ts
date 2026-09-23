@@ -86,7 +86,17 @@ describe("planned Session Team credential selection (SQLite)", () => {
     it("validates personal, Team-context, and exact Team-visibility policy without a placeholder Session", async () => {
         const personal = await fixture("personal_allowed");
         await expect(personal.validate({ primaryTeamId: null, teamVisibilityTeamIds: [] }))
-            .resolves.toMatchObject({ ok: true, binding: { resourceId: personal.resource.id } });
+            .resolves.toMatchObject({
+                ok: true,
+                binding: { resourceId: personal.resource.id },
+                custodianAccountId: personal.custodian.id,
+                sourceBinding: {
+                    v: 1,
+                    kind: "provider_connection",
+                    connectionId: "pc_runner",
+                    credentialSlotId: "apiKey",
+                },
+            });
 
         const contextual = await fixture("team_context_required");
         await expect(contextual.validate({ primaryTeamId: null, teamVisibilityTeamIds: [] }))
@@ -175,6 +185,31 @@ describe("planned Session Team credential selection (SQLite)", () => {
             where: { id: session.id },
             select: { metadataVersion: true, agentStateVersion: true },
         })).resolves.toEqual({ metadataVersion: 0, agentStateVersion: 0 });
+
+        // Exact consent and matching revision, rejected by a check that only
+        // runs after the grant is written: the grant must not survive either.
+        await db.teamCredentialResource.update({
+            where: { id: current.resource.id },
+            data: { enabled: false },
+        });
+        await expect(updateSessionMetadataEnvelopeTuple({
+            ...mutation,
+            teamVisibilityGrantConsent: { teamId: current.team.id },
+        })).resolves.toEqual({
+            ok: false,
+            error: "session_team_credential_binding_rejected",
+            reason: "disabled",
+        });
+        await expect(db.sessionTeamGrant.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await expect(db.sessionTeamCredentialBinding.count({ where: { sessionId: session.id } })).resolves.toBe(0);
+        await expect(db.session.findUniqueOrThrow({
+            where: { id: session.id },
+            select: { metadataVersion: true, agentStateVersion: true },
+        })).resolves.toEqual({ metadataVersion: 0, agentStateVersion: 0 });
+        await db.teamCredentialResource.update({
+            where: { id: current.resource.id },
+            data: { enabled: true },
+        });
 
         const result = await updateSessionMetadataEnvelopeTuple({
             ...mutation,
@@ -311,6 +346,53 @@ describe("planned Session Team credential selection (SQLite)", () => {
 
         const { selectedBrokerMachineId: _unselected, ...withoutSelection } = input;
         await expect(inTx(tx => resolvePlannedRunnerCredentialSelectionBindingInTx(tx, withoutSelection)))
+            .resolves.toEqual({ ok: false, reason: "broker_unavailable" });
+    });
+
+    // 11.03 §B3: an established target travels with its operation, so later
+    // Pool membership edits never re-ACL it. The exact Machine's own resource,
+    // source and revocation authority still applies, and no other member is
+    // ever silently substituted for it.
+    it("admits an established Pool target after the Pool empties and refuses it once revoked", async () => {
+        const current = await fixture("personal_allowed");
+        const pool = await db.machinePool.create({ data: {
+            id: crypto.randomUUID(),
+            accountId: current.broker.accountId,
+            name: "Established brokers",
+            members: { create: { machineId: current.broker.id, priorityTier: 0, enabled: true } },
+        } });
+        await db.teamCredentialResource.update({
+            where: { id: current.resource.id },
+            data: { brokerMachineId: null, brokerPoolId: pool.id },
+        });
+        const established = {
+            accountId: current.creator.id,
+            resourceId: current.resource.id,
+            expectedResourceRevision: current.resource.revision,
+            deliveryMode: "brokered",
+            expectedBrokerMachineId: current.broker.id,
+            brokerSelection: "established",
+            plannedSession: { primaryTeamId: null, teamVisibilityTeamIds: [] },
+            authentication: TEST_AUTHENTICATION,
+        } as const;
+
+        await db.machinePoolMember.deleteMany({ where: { poolId: pool.id } });
+        await expect(inTx(tx => validatePlannedSessionTeamCredentialResourceInTx(tx, established)))
+            .resolves.toMatchObject({ ok: true, binding: { resourceId: current.resource.id } });
+
+        const successor = await db.machine.create({ data: {
+            id: crypto.randomUUID(),
+            accountId: current.broker.accountId,
+            active: true,
+            kind: "persistent",
+            metadata: "{}",
+            metadataVersion: 1,
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await db.machinePoolMember.create({ data: { poolId: pool.id, machineId: successor.id, priorityTier: 0, enabled: true } });
+        await db.machine.update({ where: { id: current.broker.id }, data: { revokedAt: new Date() } });
+        await expect(inTx(tx => validatePlannedSessionTeamCredentialResourceInTx(tx, established)))
             .resolves.toEqual({ ok: false, reason: "broker_unavailable" });
     });
 

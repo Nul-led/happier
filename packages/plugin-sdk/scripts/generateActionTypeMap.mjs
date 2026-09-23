@@ -44,12 +44,10 @@ export function createActionTypeMapTimingReporter({
 
 /**
  * Recursive aliases which TypeScript intentionally keeps named while printing
- * the canonical Action maps. The Action-owned aliases are public structural
- * closures; shared SDK types are imported from their existing public entries.
- * Generated SDK declarations must not depend on a private Protocol path or a
- * validator-library alias.
+ * the canonical Action maps. Generated SDK declarations must not depend on a
+ * private Protocol path or a validator-library alias.
  */
-const PUBLIC_ACTION_TYPE_CLOSURE = [
+const ACTION_TYPE_CLOSURE = [
   'export type PluginAgentExternalSessionLinkDataArray = readonly PluginAgentExternalSessionLinkDataValue[];',
   'export type PluginAgentExternalSessionLinkDataObject = { readonly [key: string]: PluginAgentExternalSessionLinkDataValue };',
   'export type PluginAgentExternalSessionLinkDataValue = null | boolean | number | string | PluginAgentExternalSessionLinkDataArray | PluginAgentExternalSessionLinkDataObject;',
@@ -104,6 +102,16 @@ const TYPE_PROJECTIONS = [
     relativePath: 'packages/protocol/src/workflows/workflowV1.ts',
     name: 'WorkflowBlock',
     outputName: 'PluginActionWorkflowBlockV1',
+    export: true,
+    rewriteReferences: true,
+  },
+  // Authored ingress blocks accept prompt-only shorthand at any block-list
+  // position; executable blocks do not. Project the canonical ingress union
+  // through the same rewrite path so Action inputs stay exact and recursive.
+  {
+    relativePath: 'packages/protocol/src/workflows/workflowV1.ts',
+    name: 'WorkflowIngressBlock',
+    outputName: 'PluginActionWorkflowIngressBlockV1',
     export: true,
     rewriteReferences: true,
   },
@@ -245,9 +253,83 @@ export function canonicalizeGeneratedTypeOrder(sourceText) {
  * the canonical Action catalog, caller policy, or invocation behavior.
  */
 function renderPublicActionProjectionType(typeText) {
-  return typeText
+  return inlinePrivateProtocolObjectProjections(typeText)
     .replaceAll(RUNTIME_ACTION_SCHEMA, 'unknown')
     .replace(OPAQUE_VALIDATOR_BRANDED_STRING, 'string');
+}
+
+function typeReferenceName(node) {
+  return ts.isIdentifier(node.typeName) ? node.typeName.text : undefined;
+}
+
+function withoutTopLevelUndefined(node) {
+  if (node.kind === ts.SyntaxKind.UndefinedKeyword) {
+    return Object.freeze({ optional: true, type: ts.factory.createKeywordTypeNode(ts.SyntaxKind.NeverKeyword) });
+  }
+  if (!ts.isUnionTypeNode(node)) return Object.freeze({ optional: false, type: node });
+  const retained = node.types.filter((member) => member.kind !== ts.SyntaxKind.UndefinedKeyword);
+  if (retained.length === node.types.length) return Object.freeze({ optional: false, type: node });
+  return Object.freeze({
+    optional: true,
+    type: retained.length === 0
+      ? ts.factory.createKeywordTypeNode(ts.SyntaxKind.NeverKeyword)
+      : retained.length === 1
+        ? retained[0]
+        : ts.factory.createUnionTypeNode(retained),
+  });
+}
+
+export function inlinePrivateProtocolObjectProjections(typeText) {
+  if (!typeText.includes('ProtocolObjectProjection')) return typeText;
+  const source = ts.createSourceFile(
+    'actionTypeMap.privateProjection.ts',
+    `type ActionProjection = ${typeText};`,
+    ts.ScriptTarget.ES2022,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const alias = source.statements[0];
+  if (!ts.isTypeAliasDeclaration(alias)) throw new Error('Action projection did not parse as a type alias.');
+
+  const transformed = ts.transform(alias.type, [
+    (context) => {
+      const visit = (node) => {
+        if (!ts.isTypeReferenceNode(node) || typeReferenceName(node) !== 'ProtocolObjectProjection') {
+          return ts.visitEachChild(node, visit, context);
+        }
+        const [shape, projection] = node.typeArguments ?? [];
+        const projectionName = projection && ts.isLiteralTypeNode(projection)
+          && ts.isStringLiteral(projection.literal)
+          ? projection.literal.text
+          : undefined;
+        if (!shape || !ts.isTypeLiteralNode(shape) || (projectionName !== 'input' && projectionName !== 'output')) {
+          throw new Error('ProtocolObjectProjection must retain a structural shape and input/output projection.');
+        }
+        const projectionIndex = projectionName === 'input' ? 0 : 1;
+        return ts.factory.createTypeLiteralNode(shape.members.map((member) => {
+          if (!ts.isPropertySignature(member) || !member.type
+            || !ts.isTypeReferenceNode(member.type)
+            || typeReferenceName(member.type) !== 'ProtocolComposableSchema'
+            || member.type.typeArguments?.length !== 2) {
+            throw new Error('ProtocolObjectProjection contains a non-composable property.');
+          }
+          const selected = withoutTopLevelUndefined(member.type.typeArguments[projectionIndex]);
+          return ts.factory.createPropertySignature(
+            undefined,
+            member.name,
+            selected.optional ? ts.factory.createToken(ts.SyntaxKind.QuestionToken) : undefined,
+            ts.visitNode(selected.type, visit),
+          );
+        }));
+      };
+      return (root) => ts.visitNode(root, visit);
+    },
+  ]);
+  try {
+    return printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], source);
+  } finally {
+    transformed.dispose();
+  }
 }
 
 export function renderActionTypeProjection(name, typeText) {
@@ -478,7 +560,7 @@ export function renderStructuralModule(onPhase = () => {}) {
     "import type { AgentExternalSessionTranscriptRawRecord } from '../externalSessions.js';",
     "import type { PluginUiDeclarativeNodeV2 as PluginDeclarativeNodeV2, PluginUiJsonValueV1 } from '../ui/publicContract.js';",
     '',
-    ...PUBLIC_ACTION_TYPE_CLOSURE,
+    ...ACTION_TYPE_CLOSURE,
     '',
     'export type PluginJsonSchemaV2 = PluginJsonSchema;',
     '',

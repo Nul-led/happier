@@ -15,6 +15,10 @@ import { sessionRoutes } from "@/app/api/routes/session/sessionRoutes";
 import { createAuthenticatedTestApp } from "@/app/api/testkit/sqliteFastify";
 import { db } from "@/storage/db";
 import { inTx } from "@/storage/inTx";
+import {
+    initializeSessionSystemRecordsProtocolV1Activation,
+    resetSessionSystemRecordsProtocolV1ActivationForTests,
+} from "@/app/session/systemRecords/sessionSystemRecordProtocolContract";
 import { createSignedAccountContentBinding } from "@/testkit/accountEncryption";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
@@ -44,11 +48,15 @@ import { registerTeamRoutes } from "./registerTeamRoutes";
  *   HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED (Team-shared Sessions appear in a listing)
  *   HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED       (auto-Follow, read tracking, attention)
  *   HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED   (discussions and mentions)
+ *   HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED           (Board items, views and the surface wakeup)
  * plus HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY=optional so an E2EE Session
  * can be created on a Home whose policy does not force one mode.
  *
- * The mail transport is the only stubbed boundary; it is a real external
- * system and every decision beneath it runs against the database.
+ * Two boundaries are substituted and nothing else: the mail transport, a real
+ * external system; and authentication, which `createAuthenticatedTestApp`
+ * replaces with the `x-test-user-id` header so each request carries a known
+ * Account. Every decision beneath them — admission, capability resolution,
+ * transactions, projections — runs for real against the database.
  */
 describe("Composed two-Account Teams journey (SQLite integration)", () => {
     let harness: LightSqliteHarness;
@@ -72,6 +80,8 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         sessionId: string;
         discussionId: string | null;
         discussionMessageSeq: number | null;
+        boardItemRevision: string | null;
+        boardLayoutRevision: string | null;
     } = {
         aId: "",
         bId: "",
@@ -80,6 +90,8 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         sessionId: "",
         discussionId: null,
         discussionMessageSeq: null,
+        boardItemRevision: null,
+        boardLayoutRevision: null,
     };
 
     const headers = (accountId: string) => ({
@@ -90,6 +102,19 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         app.inject({ method: "POST", url, headers: headers(accountId), payload: payload as Record<string, unknown> });
     const get = (url: string, accountId: string) =>
         app.inject({ method: "GET", url, headers: headers(accountId) });
+    const put = (url: string, accountId: string, payload: unknown) =>
+        app.inject({ method: "PUT", url, headers: headers(accountId), payload: payload as Record<string, unknown> });
+    // The System Record reads are the client's refresh path; V1 addresses are
+    // only served to a caller that asks for the V1 protocol.
+    const readSystemRecord = (accountId: string, query: Record<string, string>) =>
+        app.inject({
+            method: "GET", url: `/v2/sessions/${state.sessionId}/system-records/record`,
+            headers: { ...headers(accountId), "x-happier-session-system-records-protocol": "1" },
+            query,
+        });
+    const BOARD_ITEM_ID = "journey-note";
+    const boardItemQuery = { owner: "host", namespace: "surface", kind: "item.v1", localId: BOARD_ITEM_ID };
+    const boardLayoutQuery = { owner: "host", namespace: "surface", kind: "layout.v1", localId: "layout" };
 
     async function e2eeAccount(input: Readonly<{ homeRole: "owner" | "member"; contentPublicKey?: Uint8Array }>) {
         const binding = createSignedAccountContentBinding(input.contentPublicKey);
@@ -115,9 +140,13 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
                 HAPPIER_FEATURE_SESSIONS_FILTERED_LISTING__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_FOLLOWING__ENABLED: "1",
                 HAPPIER_FEATURE_SESSIONS_CONVERSATIONS__ENABLED: "1",
+                HAPPIER_FEATURE_SESSIONS_BOARD__ENABLED: "1",
                 HAPPIER_FEATURE_ENCRYPTION__STORAGE_POLICY: "optional",
             },
         });
+        // The Board bit depends on the System Records v1 contract being active
+        // on this database, exactly as it does on a running Home.
+        await expect(initializeSessionSystemRecordsProtocolV1Activation(db)).resolves.toBe(true);
 
         const a = await e2eeAccount({ homeRole: "owner" });
         const b = await e2eeAccount({ homeRole: "member", contentPublicKey: bContentKeys.publicKey });
@@ -161,6 +190,7 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
 
     afterAll(async () => {
         if (app) await app.close();
+        resetSessionSystemRecordsProtocolV1ActivationForTests();
         if (harness) await harness.close();
     });
 
@@ -457,7 +487,73 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         expect(quiet.json().session.viewer.relevance.reasons).toContain("mentioned_in_discussion");
     });
 
-    it("step 11 — A withdraws the Team grant; B loses access and the envelope leaves the projection", async () => {
+    it("step 11 — A's Agent creates a Board item and its view atomically; the E2EE content stays opaque and B is woken content-free", async () => {
+        const boardUrl = `/v2/sessions/${state.sessionId}/board`;
+        const itemContent = { t: "encrypted", c: "sealed-journey-item" };
+        const layoutContent = { t: "encrypted", c: "sealed-journey-layout" };
+        const created = await put(boardUrl, state.aId, {
+            operation: "upsert_item", itemId: BOARD_ITEM_ID, itemContent, expectedItemRevision: null,
+            placement: { layoutContent, expectedLayoutRevision: null },
+        });
+        expect(created.statusCode, created.body).toBe(200);
+        expect(created.json()).toMatchObject({ operation: "upsert_item", outcome: "created", itemId: BOARD_ITEM_ID });
+        state.boardItemRevision = created.json().itemRevision;
+        state.boardLayoutRevision = created.json().layoutRevision;
+
+        // Item and placement commit together on the Session owner's tuple, and
+        // the server stores the two envelopes byte for byte: it never opens,
+        // re-serializes or interprets Board content on an E2EE Session.
+        const stored = await db.sessionSystemRecord.findMany({
+            where: { sessionId: state.sessionId }, select: { accountId: true, localId: true, content: true },
+        });
+        expect(stored).toHaveLength(2);
+        expect(new Set(stored.map(row => row.accountId))).toEqual(new Set([state.aId]));
+        expect(stored.find(row => row.localId === BOARD_ITEM_ID)?.content).toEqual(itemContent);
+        expect(stored.find(row => row.localId === "layout")?.content).toEqual(layoutContent);
+
+        // B's wakeup is the surface hint, which carries no Board content.
+        const woken = await db.accountChange.findMany({
+            where: { entityId: state.sessionId, kind: "session" }, select: { accountId: true, hint: true },
+        });
+        const surfaceHints = woken.filter(row => (row.hint as { sessionSurfaces?: boolean } | null)?.sessionSurfaces === true);
+        expect(new Set(surfaceHints.map(row => row.accountId))).toEqual(new Set([state.aId, state.bId]));
+        expect(surfaceHints.map(row => row.hint)).toEqual(surfaceHints.map(() => ({ v: 1, sessionSurfaces: true })));
+    });
+
+    it("step 12 — B refreshes through the System Record reads and both viewers converge on one shared Board", async () => {
+        const item = await readSystemRecord(state.bId, boardItemQuery);
+        expect(item.statusCode, item.body).toBe(200);
+        expect(item.json().record).toMatchObject({
+            revision: state.boardItemRevision,
+            content: { t: "encrypted", c: "sealed-journey-item" },
+        });
+        const layout = await readSystemRecord(state.bId, boardLayoutQuery);
+        expect(layout.statusCode, layout.body).toBe(200);
+        expect(layout.json().record.revision).toBe(state.boardLayoutRevision);
+
+        // B is an editor, so B's own layout change is admitted at the revision
+        // B just read, and A converges on exactly that one shared order —
+        // there is no second per-viewer Board tuple.
+        const reordered = await put(`/v2/sessions/${state.sessionId}/board`, state.bId, {
+            operation: "update_layout", layoutContent: { t: "encrypted", c: "sealed-journey-layout-2" },
+            expectedLayoutRevision: state.boardLayoutRevision,
+        });
+        expect(reordered.statusCode, reordered.body).toBe(200);
+        state.boardLayoutRevision = reordered.json().layoutRevision;
+        const stale = await put(`/v2/sessions/${state.sessionId}/board`, state.aId, {
+            operation: "update_layout", layoutContent: { t: "encrypted", c: "sealed-journey-layout-3" },
+            expectedLayoutRevision: layout.json().record.revision,
+        });
+        expect(stale.statusCode, stale.body).toBe(409);
+        const converged = await readSystemRecord(state.aId, boardLayoutQuery);
+        expect(converged.statusCode, converged.body).toBe(200);
+        expect(converged.json().record).toMatchObject({
+            revision: state.boardLayoutRevision,
+            content: { t: "encrypted", c: "sealed-journey-layout-2" },
+        });
+    });
+
+    it("step 13 — A withdraws the Team grant; B loses access and the envelope leaves the projection", async () => {
         const removed = await post("/v2/sessions/access-grants/remove", state.aId, {
             sessionId: state.sessionId, subject: { kind: "team", teamId: state.teamId },
         });
@@ -475,6 +571,28 @@ describe("Composed two-Account Teams journey (SQLite integration)", () => {
         expect(listed.json().sessions).toEqual([]);
         const follow = await get(`/v2/sessions/${state.sessionId}/follow`, state.bId);
         expect([follow.statusCode, follow.json()]).toEqual([404, { error: "session_not_found" }]);
+
+        // The Board retires with the access: B can neither read the records nor
+        // write the view any more, while A's Board is untouched.
+        // The record read conceals rather than refuses, exactly like the
+        // Session read above: B is told nothing about a Board it can no
+        // longer reach.
+        const retiredItem = await readSystemRecord(state.bId, boardItemQuery);
+        expect(retiredItem.statusCode, retiredItem.body).toBe(404);
+        expect(retiredItem.json()).toMatchObject({ code: "plugin_session_not_found" });
+        expect(retiredItem.body).not.toContain("sealed-journey-item");
+        const retiredWrite = await put(`/v2/sessions/${state.sessionId}/board`, state.bId, {
+            operation: "update_layout", layoutContent: { t: "encrypted", c: "sealed-after-revocation" },
+            expectedLayoutRevision: state.boardLayoutRevision,
+        });
+        expect(retiredWrite.statusCode, retiredWrite.body).toBe(403);
+        expect(retiredWrite.json()).toEqual({ error: "session_board_forbidden" });
+        const ownerBoard = await readSystemRecord(state.aId, boardLayoutQuery);
+        expect(ownerBoard.statusCode, ownerBoard.body).toBe(200);
+        expect(ownerBoard.json().record).toMatchObject({
+            revision: state.boardLayoutRevision,
+            content: { t: "encrypted", c: "sealed-journey-layout-2" },
+        });
 
         // A: the responsibility is released with the access and the envelope
         // collection projects only the audience that remains. The stored tuple

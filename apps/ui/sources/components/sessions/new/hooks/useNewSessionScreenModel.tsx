@@ -32,6 +32,7 @@ import {
     buildNewSessionAutomationHandoffSeed,
     storeNewSessionAutomationHandoffSeed,
 } from '@/sync/domains/workflows/newSessionAutomationHandoffSeed';
+import type { NewSessionAutomationDraft } from '@/sync/domains/automations/automationDraft';
 import { readBackendNewSessionOptionStateByTargetKey } from '@/utils/sessions/backendNewSessionOptionState';
 import { fireAndForget } from '@/utils/system/fireAndForget';
 import { runAfterInteractionsWithFallback } from '@/utils/timing/runAfterInteractionsWithFallback';
@@ -264,6 +265,7 @@ import {
 import {
     acceptRunnerCreatorActivationBinding,
     beginRunnerCreatorAttachmentStagingCustody,
+    RunnerCreatorLaunchCustodyUnavailableError,
     getOrCreateRunnerMaterializationRequest,
     readAcceptedRunnerCreatorActivationBinding,
     readPreparedRunnerCreatorLaunchCustody,
@@ -280,6 +282,7 @@ import {
 import { createServerRequestForServerAccountScope } from '@/sync/runtime/orchestration/serverScopedRpc/createServerRequestWithServerScope';
 import type { RunnerActivationProjectionV1 } from '@happier-dev/protocol/ephemeralRunner/projection';
 import type { RunnerCredentialSelectionBindingV1 } from '@happier-dev/protocol/ephemeralRunner/review';
+import type { ExpectedMarketplaceListingV1 } from '@happier-dev/protocol/marketplace/internal';
 import { RunnerPreparedAuthoringV1Schema, type RunnerLaunchManifestV1 } from '@happier-dev/protocol/ephemeralRunner/launchManifest';
 import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
 import type { AgentState } from '@/sync/domains/state/storageTypes';
@@ -351,6 +354,9 @@ function resolvePersistedWindowsLaunchOverrideForMachine(
         : null;
 }
 
+/** One frozen empty projection record, so an absent projection keeps a stable identity. */
+const EMPTY_PLUGIN_PROJECTION_RECORD = Object.freeze({}) as Readonly<Record<string, never>>;
+
 export type TemporaryComputerCreatorDependencies = Readonly<{
     /**
      * Exact Lane 10 + endpoint authoring decision. It is responsible for the
@@ -366,6 +372,17 @@ export type TemporaryComputerCreatorDependencies = Readonly<{
         backendTargetKey: string;
         agentTarget: NonNullable<ReturnType<typeof resolveAgentExecutionTargetForBackendTarget>>;
     }>) => boolean;
+    /**
+     * Exact reviewed distribution for an Agent contributed by an installed
+     * external plugin, resolved from the marketplace index of the machine whose
+     * Agent catalog this screen shows. `null` means the Runner artifact already
+     * carries the reviewed generation, or that no exact commitment exists — the
+     * producer records that gap and the launch fails closed.
+     */
+    resolveAgentPluginDistribution: (params: Readonly<{
+        agentTarget: NonNullable<ReturnType<typeof resolveAgentExecutionTargetForBackendTarget>>;
+        signal?: AbortSignal;
+    }>) => Promise<ExpectedMarketplaceListingV1 | null>;
     resolveCredentialSelectionBinding: (params: Readonly<{
         projection: RunnerActivationProjectionV1;
         preparedAuthoring: Awaited<ReturnType<typeof readPreparedRunnerCreatorLaunchCustody>>;
@@ -639,22 +656,6 @@ export function useNewSessionScreenModel(input?: Readonly<{
     React.useEffect(() => {
         setSelectedTeamCredentialModel(null);
     }, [targetServerId]);
-    // The mounted authoring owner is the canonical composition point for the
-    // Temporary-computer creator producers: it already holds the Agent catalog,
-    // the entitled Team credential catalog and the current model selection, so
-    // composing here keeps one store instead of a second parallel loader. An
-    // explicit override stays available for harnesses that must substitute a
-    // producer, but production no longer runs with these absent.
-    const composedTemporaryComputerCreator = React.useMemo(() => (
-        createTemporaryComputerCreatorDependencies({
-            teamCredentialResources: teamCredentialCatalog.resources,
-            currentTeamCredentialResourceKeys: teamCredentialCatalog.currentResourceKeys,
-            teamCredentialServerId: targetServerId,
-            selectedTeamCredentialModel,
-        })
-    ), [selectedTeamCredentialModel, targetServerId, teamCredentialCatalog.currentResourceKeys, teamCredentialCatalog.resources]);
-    const temporaryComputerCreator: TemporaryComputerCreatorDependencies =
-        input?.temporaryComputerCreatorDependencies ?? composedTemporaryComputerCreator.dependencies;
     const externalSessionsFeatureEnabled = useFeatureEnabled('sessions.direct', { scopeKind: 'spawn', serverId: targetServerId });
     const useMachinePickerSearch = useSetting('useMachinePickerSearch');
     const usePathPickerSearch = useSetting('usePathPickerSearch');
@@ -919,6 +920,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
     const {
         executionTarget,
         selectedMachineId,
+        agentCatalogMachineId,
         setSelectedMachineId,
         setSelectedMachineTarget,
         setTemporaryComputerTarget,
@@ -944,10 +946,15 @@ export function useNewSessionScreenModel(input?: Readonly<{
         cacheScopeKey: capabilityServerId,
     });
     const selectionOrigin = executionTarget?.kind === 'machine' ? executionTarget.selectionOrigin : undefined;
+    // The Agent catalog is a machine's open plugin projection. For a machine
+    // target that is the selected machine; for a Temporary computer, which has
+    // no machine of its own, it is the creator's focused machine, so an
+    // externally installed Agent can be chosen for it at all. Consumers that
+    // need a real execution machine keep their own `selectedMachineId` guard.
     const daemonMergedProjection = useDaemonMergedProjectionInputs({
-        machineId: selectedMachineId,
+        machineId: agentCatalogMachineId,
         serverId: targetServerId,
-        enabled: Boolean(selectedMachineId),
+        enabled: Boolean(agentCatalogMachineId),
     });
     // New Session currentness gate: inputs retained while the selected
     // machine's projection is loading/errored/unsupported are inert metadata.
@@ -959,6 +966,35 @@ export function useNewSessionScreenModel(input?: Readonly<{
     // do not depend on this projection and remain usable.
     const projectionCurrent = daemonMergedProjection.phase === 'ready';
     const currentProjectionInputs = projectionCurrent ? daemonMergedProjection.inputs : null;
+    // The mounted authoring owner is the canonical composition point for the
+    // Temporary-computer creator producers: it already holds the Agent catalog,
+    // the entitled Team credential catalog and the current model selection, so
+    // composing here keeps one store instead of a second parallel loader. An
+    // explicit override stays available for harnesses that must substitute a
+    // producer, but production no longer runs with these absent.
+    const composedTemporaryComputerCreator = React.useMemo(() => (
+        createTemporaryComputerCreatorDependencies({
+            teamCredentialResources: teamCredentialCatalog.resources,
+            currentTeamCredentialResourceKeys: teamCredentialCatalog.currentResourceKeys,
+            teamCredentialServerId: targetServerId,
+            selectedTeamCredentialModel,
+            // The machine whose open Agent catalog this screen shows also owns
+            // the marketplace index that resolves an installed Agent's exact
+            // distribution, so both answers come from one machine.
+            agentCatalogMachineId,
+            projectedAgentsById: currentProjectionInputs?.pluginProjectionV2?.agentsById ?? EMPTY_PLUGIN_PROJECTION_RECORD,
+            installedPluginPackagesById: currentProjectionInputs?.pluginProjectionV2?.installedPackagesById ?? EMPTY_PLUGIN_PROJECTION_RECORD,
+        })
+    ), [
+        agentCatalogMachineId,
+        currentProjectionInputs?.pluginProjectionV2,
+        selectedTeamCredentialModel,
+        targetServerId,
+        teamCredentialCatalog.currentResourceKeys,
+        teamCredentialCatalog.resources,
+    ]);
+    const temporaryComputerCreator: TemporaryComputerCreatorDependencies =
+        input?.temporaryComputerCreatorDependencies ?? composedTemporaryComputerCreator.dependencies;
     // New Session draft records have no generation field. Revalidate them
     // only against the exact current machine/account projection; retained
     // inputs during a target/account transition are intentionally inert.
@@ -1707,22 +1743,27 @@ export function useNewSessionScreenModel(input?: Readonly<{
     const readExactTurn = React.useCallback((sourceSessionId: string) => (
         readExactActiveParentTurn(storage.getState().sessions[sourceSessionId])
     ), []);
+    // The shared Automation editor handoff is built further down, from the live
+    // composer and authoring draft; the draft owner reaches it after render.
+    const openAutomationEditorRef = React.useRef<((automation: NewSessionAutomationDraft) => void) | null>(null);
+    const handOffLegacyAutomation = React.useCallback((automation: NewSessionAutomationDraft) => {
+        openAutomationEditorRef.current?.(automation);
+    }, []);
     const {
         promptStore,
         setSessionPrompt,
         automationDraft,
-        setAutomationDraft,
         automationRequestedByRoute,
     } = useNewSessionPromptAutomationState({
         prompt,
         dataId,
         automationParam,
-        automationFeatureEnabled,
         persistedDraftEntryIntent: scopedPersistedDraft?.entryIntent,
         hydratedTempAuthoringDraft,
         hydratedPersistedAuthoringDraft: hydratedPersistedContentAuthoringDraft,
         exactTurnRetargetRequest: input?.automationExactTurnRetarget ?? null,
         readExactTurn,
+        handOffLegacyAutomation: automationFeatureEnabled ? handOffLegacyAutomation : null,
     });
     const [isCreatingLocally, setIsCreating] = React.useState(false);
     const temporaryComputerAvailability = useTemporaryComputerAvailability({
@@ -2065,17 +2106,35 @@ export function useNewSessionScreenModel(input?: Readonly<{
         refreshMachineEnvPresence,
     });
 
-    const selectMachineTarget = React.useCallback((machine: Machine, serverId: string | null) => {
-        if (!serverId) return;
-        if (serverId === targetServerId) {
+    /**
+     * The one commit for "this exact Machine is the authoring target", with
+     * optional Pool provenance. The default working directory is not supplied
+     * here: the path owner decides whether this is a qualified target change and
+     * therefore whether the authored folder may be reconciled at all.
+     */
+    const commitExactMachineTarget = React.useCallback((target: Readonly<{
+        serverId: string | null;
+        machineId: string;
+        poolId?: string;
+    }>) => {
+        if (!target.serverId) return;
+        if (target.serverId === targetServerId) {
             setSelectedMachineTarget({
-                machineId: machine.id,
-                selectionOrigin: null,
-                path: getBestPathForMachine(machine.id),
+                machineId: target.machineId,
+                selectionOrigin: target.poolId ? { kind: 'machine_pool', poolId: target.poolId } : null,
             });
         }
-        router.setParams({ machineId: machine.id, machinePoolId: undefined, spawnServerId: serverId, directory: undefined, path: undefined });
-    }, [getBestPathForMachine, router, setSelectedMachineTarget, targetServerId]);
+        router.setParams({
+            machineId: target.machineId,
+            machinePoolId: target.poolId,
+            spawnServerId: target.serverId,
+            directory: undefined,
+            path: undefined,
+        });
+    }, [router, setSelectedMachineTarget, targetServerId]);
+    const selectMachineTarget = React.useCallback((machine: Machine, serverId: string | null) => {
+        commitExactMachineTarget({ serverId, machineId: machine.id });
+    }, [commitExactMachineTarget]);
     const selectTemporaryComputer = React.useCallback((
         artifactTarget: Extract<NonNullable<typeof executionTarget>, { kind: 'temporary_computer' }>['artifactTarget'],
         workspace: Extract<NonNullable<typeof executionTarget>, { kind: 'temporary_computer' }>['workspace'],
@@ -2108,21 +2167,8 @@ export function useNewSessionScreenModel(input?: Readonly<{
         poolId: string;
         machineId: string;
     }>) => {
-        if (target.serverId === targetServerId) {
-            setSelectedMachineTarget({
-                machineId: target.machineId,
-                selectionOrigin: { kind: 'machine_pool', poolId: target.poolId },
-                path: getBestPathForMachine(target.machineId),
-            });
-        }
-        router.setParams({
-            machineId: target.machineId,
-            machinePoolId: target.poolId,
-            spawnServerId: target.serverId,
-            directory: undefined,
-            path: undefined,
-        });
-    }, [getBestPathForMachine, router, setSelectedMachineTarget, targetServerId]);
+        commitExactMachineTarget(target);
+    }, [commitExactMachineTarget]);
     const toggleFavoriteMachine = React.useCallback((machine: Machine) => {
         setFavoriteMachines(favoriteMachines.includes(machine.id)
             ? favoriteMachines.filter((id) => id !== machine.id)
@@ -2239,12 +2285,14 @@ export function useNewSessionScreenModel(input?: Readonly<{
         onRememberEngineSelection: rememberEngineSelection,
         onExplicitBackendTargetSelection: clearBackendTargetRouteParamsAfterExplicitSelection,
         refreshProbe: cliAvailabilityProbe ?? null,
+        providerProjection: providerModelProjection,
         experimentalConfirmation: confirmExperimentalProviderModel,
     });
 
     const {
         authoringContext: newSessionAuthoringContext,
         currentAuthoringDraft,
+        buildCurrentAuthoringDraft,
         effectiveAutomationDraft,
         canCreate: canCreateFromAuthoring,
         buildCurrentPersistedDraft,
@@ -2417,17 +2465,29 @@ export function useNewSessionScreenModel(input?: Readonly<{
     // New Session's Automation entry transfers the composed draft to the one
     // shared Automation editor instead of embedding a second settings surface.
     // The source draft is not cleared: Back or cancel returns to it intact.
-    const openAutomationEditorWithComposedDraft = React.useCallback(() => {
+    const openAutomationEditor = React.useCallback((automation: NewSessionAutomationDraft) => {
+        // Read the live composer and rebuild the draft here, not from the last
+        // render: the model does not rerender per keystroke, so a chip press
+        // straight after typing would otherwise transfer older text and the
+        // destination could save or run a prompt nobody saw. The snapshot goes
+        // over whole — ranges, staged bytes, caret — for the destination's
+        // composer custody; the handoff derives the portable draft from it.
+        const composerSnapshot = newSessionComposerDocument.readCurrentDocumentSnapshot();
         const seedId = storeNewSessionAutomationHandoffSeed(buildNewSessionAutomationHandoffSeed({
             draftId: `workflow-new-session-${randomUUID()}`,
-            authoring: currentAuthoringDraft,
-            automation: effectiveAutomationDraft,
+            authoring: buildCurrentAuthoringDraft(automation),
+            automation,
+            ...(composerSnapshot === null ? {} : { composer: composerSnapshot }),
         }));
         navigateWithBlurOnWeb(() => router.push({
             pathname: '/automations/new',
             params: { newSessionDraftSeedId: seedId },
         } as never));
-    }, [currentAuthoringDraft, effectiveAutomationDraft, router]);
+    }, [buildCurrentAuthoringDraft, newSessionComposerDocument, router]);
+    openAutomationEditorRef.current = openAutomationEditor;
+    const openAutomationEditorWithComposedDraft = React.useCallback(() => {
+        openAutomationEditor(effectiveAutomationDraft);
+    }, [effectiveAutomationDraft, openAutomationEditor]);
     const onLaunchUserAttemptIdChange = React.useCallback((nextUserAttemptId: string | null) => {
         const normalized = typeof nextUserAttemptId === 'string' && nextUserAttemptId.trim().length > 0
             ? nextUserAttemptId.trim()
@@ -2723,6 +2783,13 @@ export function useNewSessionScreenModel(input?: Readonly<{
                     decryptSecretValue: readReviewedSecret,
                 });
                 context.assertCurrent();
+                // The reviewed Agent's exact distribution is resolved here, from
+                // the same machine catalog the Agent was chosen in, so the sealed
+                // submission commits to bytes the endpoint can acquire. A bundled
+                // Agent resolves to null: the Runner artifact already carries it.
+                const agentPluginDistribution = await temporaryComputerCreator
+                    .resolveAgentPluginDistribution({ agentTarget: canonicalAgentTarget, signal });
+                context.assertCurrent();
                 prepared = await prepareTemporaryComputerActivation({
                     client: availability.client,
                     custody,
@@ -2740,6 +2807,7 @@ export function useNewSessionScreenModel(input?: Readonly<{
                     actionsSettings: normalizeActionsSettingsV1(exactAccountSettings?.actionsSettingsV1),
                     mcpMaterial,
                     selectedAgentProviderOwnedEnvironmentKeys,
+                    agentPluginDistribution,
                     authorizeUnattendedTeamAccess: temporaryComputerTeamAccessForActivationRef.current,
                     signal,
                 });
@@ -2896,6 +2964,27 @@ export function useNewSessionScreenModel(input?: Readonly<{
             activeRequest,
         }));
     }, [targetServerId, targetServerProfile, temporaryComputerTargetScope]);
+    /**
+     * The one answer to "may this device act as the creator for this activation?".
+     *
+     * Creator custody is deliberately device-local and unsynchronized, so the
+     * custody owner already decides it — by refusing to produce the prepared
+     * authoring or the accepted binding. A device of the same Account that did
+     * not create the package is an observer, not a failure: it inspects and
+     * cancels, and the creator work is simply not available here. Translating
+     * that one typed refusal into the controller's existing unavailable
+     * vocabulary is what keeps a healthy launch from presenting as `failed` on
+     * the second device.
+     */
+    const asCreatorUnavailable = React.useCallback(<T,>(
+        dependency: 'review' | 'materialization',
+        run: () => Promise<T>,
+    ): Promise<T> => run().catch((error: unknown) => {
+        if (error instanceof RunnerCreatorLaunchCustodyUnavailableError) {
+            throw new TemporaryComputerLaunchDependencyUnavailableError(dependency);
+        }
+        throw error;
+    }), []);
     const prepareTemporaryComputerReview = React.useCallback(
         async (projection: RunnerActivationProjectionV1, signal: AbortSignal): Promise<void> => {
             if (!temporaryComputerTargetScope || !temporaryComputerActivationTransport) {
@@ -2998,8 +3087,28 @@ export function useNewSessionScreenModel(input?: Readonly<{
         },
         [temporaryComputerActivationTransport, temporaryComputerCreator, temporaryComputerTargetScope],
     );
+    /**
+     * The composer's own Send, registered by whichever panel owns submission.
+     *
+     * "Create new package" is a fresh submission, not a controller restart: the
+     * closed activation already released this draft's creator settlement
+     * custody, and only the Send owner allocates another one.
+     */
+    const temporaryComputerReplacementLaunchRef = React.useRef<(() => void) | null>(null);
+    const registerTemporaryComputerReplacementLaunch = React.useCallback((send: () => void) => {
+        temporaryComputerReplacementLaunchRef.current = send;
+        return () => {
+            if (temporaryComputerReplacementLaunchRef.current === send) {
+                temporaryComputerReplacementLaunchRef.current = null;
+            }
+        };
+    }, []);
+    const requestTemporaryComputerReplacementLaunch = React.useCallback(() => {
+        temporaryComputerReplacementLaunchRef.current?.();
+    }, []);
     const temporaryComputerLaunchController = useTemporaryComputerLaunch({
         client: temporaryComputerActivationTransport,
+        requestReplacementLaunch: requestTemporaryComputerReplacementLaunch,
         // The activation is owned by the *target* Home, not the Home the draft
         // is synchronized in. Waking on the draft Home would leave a cross-Home
         // launch permanently stale.
@@ -3011,17 +3120,33 @@ export function useNewSessionScreenModel(input?: Readonly<{
         existingPublicRef: existingTemporaryComputerActivationRef,
         prepareActivation: prepareTemporaryActivation,
         persistPublicRef: persistTemporaryComputerActivationRef,
-        prepareReview: prepareTemporaryComputerReview,
-        materialize: materializeTemporaryComputer,
+        prepareReview: (projection, signal) => asCreatorUnavailable(
+            'review',
+            () => prepareTemporaryComputerReview(projection, signal),
+        ),
+        materialize: (projection) => asCreatorUnavailable(
+            'materialization',
+            () => materializeTemporaryComputer(projection),
+        ),
         onClaimed: async (claimed) => {
             if (!temporaryComputerTargetScope) {
                 throw new TemporaryComputerLaunchDependencyUnavailableError('activation');
             }
-            const expectedBinding = await readAcceptedRunnerCreatorActivationBinding(
-                temporaryComputerTargetScope,
-                claimed.activationId,
-                claimed,
-            );
+            let expectedBinding;
+            try {
+                expectedBinding = await readAcceptedRunnerCreatorActivationBinding(
+                    temporaryComputerTargetScope,
+                    claimed.activationId,
+                    claimed,
+                );
+            } catch (error) {
+                // A device that never held this activation's signing key has
+                // nothing to retire. Treating that as a failure is what turned
+                // an otherwise healthy launch into a `failed` screen on every
+                // other device of the same Account.
+                if (error instanceof RunnerCreatorLaunchCustodyUnavailableError) return;
+                throw error;
+            }
             await retireRunnerActivationKeyCustodyAfterVerifiedClaim({
                 scope: temporaryComputerTargetScope,
                 expectedBinding,
@@ -3038,7 +3163,10 @@ export function useNewSessionScreenModel(input?: Readonly<{
     });
     React.useEffect(() => {
         const projection = temporaryComputerLaunchController.projection;
-        if (!projection || projection.state !== 'pending' || !temporaryComputerTargetScope) return;
+        // Every non-idle state, not only `pending`: custody outlives the pending
+        // window, and a remount on the creating device — or a first open on any
+        // other device — must be able to tell those two apart at a claim.
+        if (!projection || !temporaryComputerTargetScope) return;
         const activationId = projection.activationId;
         if (temporaryLocalLaunchRef.current?.key.activationId === activationId) {
             setTemporaryPackageCustodyState({ activationId, status: 'available' });
@@ -3273,8 +3401,6 @@ export function useNewSessionScreenModel(input?: Readonly<{
         resumeSessionId,
         agentNewSessionOptions,
         currentAuthoringDraft: effectiveCurrentAuthoringDraft,
-        automationsEnabled: automationFeatureEnabled,
-        onAutomationDraftChange: setAutomationDraft,
         mcpSelection,
         windowsRemoteSessionLaunchModeOverride,
         machineEnvPresence,
@@ -3417,9 +3543,6 @@ export function useNewSessionScreenModel(input?: Readonly<{
         draftChangeKey: launchIntentSignature,
     });
 
-    const submitAccessibilityLabel = newSessionAuthoringContext.submitAccessibilityLabelKey
-        ? t(newSessionAuthoringContext.submitAccessibilityLabelKey)
-        : undefined;
     const launchStatusBadges = React.useMemo(
         () => buildNewSessionLaunchStatusBadges({ isCreating, translate: t }),
         [isCreating],
@@ -3574,13 +3697,13 @@ export function useNewSessionScreenModel(input?: Readonly<{
             composerDocument: newSessionComposerDocument,
             setSessionPrompt,
             handleCreateSession,
+            registerTemporaryComputerReplacementLaunch,
             canCreate: canCreateWithoutActiveTemporaryLaunch,
             isCreating,
             pendingLaunchAttempt,
             launchPendingPreviewVisible: launchPresentation === 'machine',
             providerLaunchError,
             retryProviderLaunch,
-            submitAccessibilityLabel,
             emptyAutocompleteKinds,
             emptyAutocompleteSuggestions,
             connectionStatus,
@@ -3624,13 +3747,13 @@ export function useNewSessionScreenModel(input?: Readonly<{
             composerDocument: newSessionComposerDocument,
             setSessionPrompt,
             handleCreateSession,
+            registerTemporaryComputerReplacementLaunch,
             canCreate: canCreateWithoutActiveTemporaryLaunch,
             isCreating,
             pendingLaunchAttempt,
             launchPendingPreviewVisible: launchPresentation === 'machine',
             providerLaunchError,
             retryProviderLaunch,
-            submitAccessibilityLabel,
             emptyAutocompleteKinds,
             emptyAutocompleteSuggestions,
             sessionPromptInputMaxHeight,

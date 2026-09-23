@@ -5,14 +5,18 @@ import { usePaneFocusMode } from '@/components/appShell/panes/focusMode/usePaneF
 import { useSessionCompanionPlacement } from '@/components/sessions/companion/layout/useSessionCompanionPlacement';
 import { useSessionCompanionPreference } from '@/components/sessions/companion/state/useSessionCompanionPreference';
 import { useSessionScreenIsFocused } from '@/components/sessions/shell/useSessionScreenIsFocused';
-import type { SessionBoardPrimaryMountResolver } from '@/sync/domains/session/board';
 import type { SessionAddress } from '@/sync/domains/session/sessionAddress';
 
-import { isSessionBoardVisibleInDetails } from './sessionBoardDetailsVisibility';
+import {
+    isGenericSessionBoardVisibleInDetails,
+    isSessionBoardVisibleInDetails,
+    listVisibleSessionBoardDetailsExpandedItemIds,
+} from './sessionBoardDetailsVisibility';
 import {
     resolveSessionBoardItemPrimaryMountHost,
     resolveSessionBoardHostVisibility,
     type SessionBoardHostVisibility,
+    type SessionBoardPlacementPrimaryMountResolver,
 } from './sessionBoardHostVisibility';
 
 /**
@@ -51,6 +55,12 @@ export function useSessionBoardHostVisibility(input: Readonly<{
                 // The typed Details-workspace view, split groups included — not a
                 // guess from "Details is open".
                 detailsShowsBoard: isSessionBoardVisibleInDetails(scopeState.details),
+                // Only the generic Board grid can draw an arbitrary item; an expanded
+                // `board:<itemId>` tab draws exactly one.
+                detailsShowsGenericBoard: isGenericSessionBoardVisibleInDetails(scopeState.details),
+                // Which items are ALSO presented in their own expanded destination, so
+                // two visible Details copies of one executable item can be told apart.
+                detailsExpandedItemIds: listVisibleSessionBoardDetailsExpandedItemIds(scopeState.details),
                 detailsFocusModeActive: paneFocusMode.active,
                 rightOpen: scopeState.right?.isOpen === true,
                 rightActiveTabId: scopeState.right?.activeTabId ?? null,
@@ -66,7 +76,7 @@ export function useSessionBoardPrimaryMountResolver(input: Readonly<{
     paneScopeId: string;
     presented?: boolean;
     mobileSurface?: 'board' | 'companion' | null;
-}>): SessionBoardPrimaryMountResolver {
+}>): SessionBoardPlacementPrimaryMountResolver {
     const visibility = useSessionBoardHostVisibility(input);
     const { preference } = useSessionCompanionPreference({
         sessionId: input.address?.sessionId ?? null,
@@ -76,8 +86,10 @@ export function useSessionBoardPrimaryMountResolver(input: Readonly<{
         preference.items.flatMap((item) => item.kind === 'widget' ? [item.widgetId] : []),
     ), [preference.items]);
 
-    return React.useCallback((itemId: string) => resolveSessionBoardItemPrimaryMountHost({
+    return React.useCallback((itemId, destination) => resolveSessionBoardItemPrimaryMountHost({
         visibility,
         itemVisibleInCompanion: companionWidgetIds.has(itemId),
+        itemId,
+        ...(destination ? { detailsDestination: destination } : {}),
     }), [companionWidgetIds, visibility]);
 }

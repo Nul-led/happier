@@ -7,6 +7,7 @@ import { createSessionTranscriptShareableWhere, isSessionTranscriptShareable, SE
 import { SESSION_CAPABILITY_RULES, SESSION_ACCESS_LEVEL_ORDER, buildSessionAccessMembershipWhere, isSessionCollaborationEnabled, type SessionCapability } from "./sessionAccess";
 import {
     qualifySessionTeamAuthenticationInTx,
+    resolveQualifiedSessionTeamIdsInTx,
     type SessionAccessAuthentication,
 } from "./sessionAccessAuthentication";
 import { verifyCurrentMaterializedRunnerPrincipalInTx } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
@@ -22,6 +23,7 @@ export type EffectiveAccessWhereInput = AccessWhereInput & {
 
 const SESSION_COLLECTIVE_ACCESS_MEMBERSHIP_SELECT = {
     id: true,
+    accountId: true,
     teamId: true,
     role: true,
     sessionAccessStartsAt: true,
@@ -159,26 +161,68 @@ function collectiveGrantBucket(
 async function resolveSessionCollectiveAccessSnapshotInTx(
     input: EffectiveAccessWhereInput,
 ): Promise<SessionCollectiveAccessSnapshot> {
-    if (!isSessionCollaborationEnabled()) {
-        return { accountId: input.accountId, memberships: [], qualifiedTeamIds: new Set() };
+    const snapshots = await resolveSessionCollectiveAccessSnapshotsInTx(input.tx, {
+        accountIds: [input.accountId],
+        authentication: input.authentication,
+    });
+    return snapshots.get(input.accountId)
+        ?? { accountId: input.accountId, memberships: [], qualifiedTeamIds: new Set() };
+}
+
+/**
+ * One membership and credential view for a set of Accounts sharing one
+ * credential context.
+ *
+ * Background badge refresh asks for this on behalf of every recipient of one
+ * batch, so the memberships behind them are read once for the set and the Team
+ * qualification is taken once for the credential they share — not once per
+ * Account and once per membership inside the transaction. A credential-bearing
+ * caller resolves exactly one Account, which is the same single decision it
+ * already took.
+ */
+export async function resolveSessionCollectiveAccessSnapshotsInTx(
+    tx: Tx,
+    input: Readonly<{ accountIds: readonly string[]; authentication: SessionAccessAuthentication }>,
+): Promise<ReadonlyMap<string, SessionCollectiveAccessSnapshot>> {
+    const accountIds = [...new Set(input.accountIds)];
+    const snapshots = new Map<string, SessionCollectiveAccessSnapshot>();
+    // A Session runtime principal carries no collective membership view — the
+    // forward predicate answers it from the principal alone — so it reads none.
+    if (input.authentication.sessionRuntimePrincipal
+        || !isSessionCollaborationEnabled()
+        || accountIds.length === 0) {
+        for (const accountId of accountIds) {
+            snapshots.set(accountId, { accountId, memberships: [], qualifiedTeamIds: new Set() });
+        }
+        return snapshots;
     }
-    const memberships = await input.tx.teamMembership.findMany({
+    const memberships = await tx.teamMembership.findMany({
         where: {
-            ...buildSessionAccessMembershipWhere([input.accountId], true),
+            ...buildSessionAccessMembershipWhere(accountIds, true),
             team: { archivedAt: null },
         },
         select: SESSION_COLLECTIVE_ACCESS_MEMBERSHIP_SELECT,
     });
-    const qualifiedTeamIds = new Set<string>();
-    for (const membership of memberships) {
-        const qualification = await qualifySessionTeamAuthenticationInTx(input.tx, {
-            accountId: input.accountId,
-            team: { id: membership.teamId, authenticationPolicy: membership.team.authenticationPolicy },
-            authentication: input.authentication,
+    const qualifiedTeamIds = await resolveQualifiedSessionTeamIdsInTx(tx, {
+        accountIds,
+        teams: memberships.map((membership) => ({
+            id: membership.teamId,
+            authenticationPolicy: membership.team.authenticationPolicy,
+        })),
+        authentication: input.authentication,
+    });
+    for (const accountId of accountIds) {
+        const own = memberships.filter((membership) => membership.accountId === accountId);
+        snapshots.set(accountId, {
+            accountId,
+            memberships: own,
+            // An Account's qualified Teams stay its own memberships' Teams; the
+            // batch only shares how the qualification was read.
+            qualifiedTeamIds: new Set(own.flatMap((membership) =>
+                qualifiedTeamIds.has(membership.teamId) ? [membership.teamId] : [])),
         });
-        if (qualification.status === "satisfied") qualifiedTeamIds.add(membership.teamId);
     }
-    return { accountId: input.accountId, memberships, qualifiedTeamIds };
+    return snapshots;
 }
 
 /** One compiler for current collective grants, including audience and exact history queries. */

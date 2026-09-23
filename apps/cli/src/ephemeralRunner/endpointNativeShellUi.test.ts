@@ -104,6 +104,7 @@ describe('ephemeral Runner native-shell adapter', () => {
         authoringCommitment: 'authoring-commitment',
         directory: '/workspace/exact',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     })).resolves.toBe(true);
 
@@ -177,7 +178,7 @@ describe('ephemeral Runner native-shell adapter', () => {
     await ui.selectDirectory({ signal });
     await ui.confirmActiveClose({ phase: 'running', signal });
     await ui.requestFailureRecovery({
-      failure: { kind: 'before_session', message: 'The request could not be prepared. Check the activation and try again.' },
+      failure: { kind: 'before_session' },
       canRetry: true,
       signal,
     });
@@ -195,7 +196,7 @@ describe('ephemeral Runner native-shell adapter', () => {
     });
     expect(requests[2]).toMatchObject({
       recovery: resolveEphemeralRunnerFailureRecoveryPresentation({
-        failure: { kind: 'before_session', message: 'The request could not be prepared. Check the activation and try again.' },
+        failure: { kind: 'before_session' },
       }),
     });
     // The exact reviewed failure text reaches the shell, not a shell-side rewrite.
@@ -223,7 +224,7 @@ describe('ephemeral Runner native-shell adapter', () => {
     await expect(ui.confirmActiveClose({ phase: 'running', signal: new AbortController().signal }))
       .resolves.toBe('stop');
     await expect(ui.requestFailureRecovery({
-      failure: { kind: 'session_runtime_or_stop', message: 'The Runner stopped before it could finish.' },
+      failure: { kind: 'session_runtime_or_stop' },
       canRetry: true,
       signal: new AbortController().signal,
     })).resolves.toBe('exit');
@@ -235,6 +236,7 @@ describe('ephemeral Runner native-shell adapter', () => {
         authoringCommitment: 'a',
         directory: '/workspace/exact',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     })).resolves.toBe(false);
     expect(request).not.toHaveBeenCalled();
@@ -281,6 +283,7 @@ describe('ephemeral Runner native-shell adapter', () => {
         authoringCommitment: 'authoring-commitment',
         directory: '/workspace/exact',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     });
     ui.present({ phase: 'running', connection: 'connected' });

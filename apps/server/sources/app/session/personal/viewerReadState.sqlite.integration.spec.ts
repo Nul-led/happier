@@ -44,6 +44,8 @@ describe("private viewer read state (SQLite integration)", () => {
 
     afterEach(async () => {
         await harness.resetDbTables([
+            () => db.sessionDiscussionReadState.deleteMany(),
+            () => db.sessionDiscussion.deleteMany(),
             () => db.accountSessionReadState.deleteMany(),
             () => db.sessionShare.deleteMany(),
             () => db.accountChange.deleteMany(),
@@ -144,6 +146,36 @@ describe("private viewer read state (SQLite integration)", () => {
             accountId: collaborator.id, sessionId: session.id, operation: { kind: "mark-read" }, authentication,
         });
         expect(read).toMatchObject({ ok: true, didChange: true, readState: "read", lastViewedSessionSeq: 5 });
+    });
+
+    it("seeds only the main frontier when an untracked reader marks a Session that has Discussions", async () => {
+        const { owner, collaborator, session } = await createSharedSession({ seq: 5 });
+        await db.sessionShare.updateMany({ where: { sessionId: session.id, sharedWithUserId: collaborator.id }, data: { accessLevel: "view" } });
+        await db.sessionDiscussion.create({
+            data: {
+                sessionId: session.id,
+                creationLocalId: crypto.randomUUID(),
+                creationEqualityEvidenceV1: { kind: "plainDigest", digest: crypto.randomUUID() },
+                createdByAccountId: owner.id,
+                titleContent: { t: "plain", v: { v: 1, title: "Topic" } },
+                messageSeq: 1,
+                lastMessageAt: new Date(),
+            },
+        });
+
+        const marked = await applyViewerReadCursorOperation({
+            accountId: collaborator.id,
+            sessionId: session.id,
+            operation: { kind: "mark-unread" },
+            authentication,
+        });
+
+        expect(marked).toMatchObject({ ok: true, didChange: true, lastViewedSessionSeq: 4 });
+        // A cursor-only mark is not an inactive-to-active tracking transition, so the
+        // Discussion baseline owner — reserved for Follow entry — must not run.
+        expect(await db.sessionDiscussionReadState.count({
+            where: { accountId: collaborator.id, discussion: { sessionId: session.id } },
+        })).toBe(0);
     });
 
     it("never enrolls an untracked reader through an automatic advance or a composed acknowledgement", async () => {

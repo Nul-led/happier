@@ -1,6 +1,7 @@
 import * as React from 'react';
 
 import { storage } from '@/sync/domains/state/storage';
+import { isSessionRetiredForServer } from '@/sync/store/domains/sessions';
 import type { ActiveServerAccountScopeLifetime } from '@/sync/domains/scope/activeServerAccountScope';
 
 const EMPTY_DISMISSED_ACTIVITY_IDS: ReadonlySet<string> = new Set();
@@ -86,7 +87,7 @@ function createDismissalOwner(): PluginTranscriptActivityDismissalOwner {
     const unsubscribeSessionRetirement = storage.subscribe((state) => {
         for (const accountEntries of entriesByAccountLifetime.values()) {
             for (const [key, entry] of accountEntries.entries) {
-                if (!state.deletedSessionIds[entry.sessionId]) continue;
+                if (!isSessionRetiredForServer(state.deletedSessionIds, entry.sessionId, entry.serverId)) continue;
                 disposeEntry(entry);
                 accountEntries.entries.delete(key);
             }
@@ -98,7 +99,7 @@ function createDismissalOwner(): PluginTranscriptActivityDismissalOwner {
             if (
                 disposed
                 || !binding.accountLifetime.isCurrent()
-                || storage.getState().deletedSessionIds[binding.sessionId] === true
+                || isSessionRetiredForServer(storage.getState().deletedSessionIds, binding.sessionId, binding.serverId)
             ) return null;
 
             const key = bindingKey(binding);

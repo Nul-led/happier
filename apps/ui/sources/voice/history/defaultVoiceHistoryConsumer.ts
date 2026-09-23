@@ -183,7 +183,7 @@ export type DefaultVoiceHistoryRuntime = Readonly<{
     sessionId: string,
     authority: ServerAccountRequestAuthority,
   ): Promise<SessionDeleteResult>;
-  retireLocalSession(sessionId: string): void;
+  retireLocalSession(sessionId: string, serverId: string | null): void;
 }>;
 
 export function createDefaultVoiceHistoryConsumerFromRuntime(
@@ -254,7 +254,7 @@ export function createDefaultVoiceHistoryConsumerFromRuntime(
     },
     deleteSession: (sessionId, scope) =>
       runtime.deleteSession(sessionId, scope.authority),
-    retireLocalSession: runtime.retireLocalSession,
+    retireLocalSession: (sessionId, scope) => runtime.retireLocalSession(sessionId, scope.authority.scope.serverId),
     runCarrierOperation: runVoiceTranscriptHistoryCarrierOperation,
     now: () => new Date(),
   });
@@ -310,7 +310,7 @@ export function createDefaultVoiceHistoryConsumer() {
     // unrelated session's write costs a revision comparison and stops there.
     subscribeMessages: (listener) => storage.subscribe(() => { listener(); }),
     deleteSession: sessionDeleteWithServerAccountAuthority,
-    retireLocalSession: (sessionId) => sync.retireLocalSession(sessionId),
+    retireLocalSession: (sessionId, serverId) => sync.retireLocalSession(sessionId, serverId),
   };
   return createDefaultVoiceHistoryConsumerFromRuntime(runtime, providerRegistry);
 }

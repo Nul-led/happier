@@ -1,4 +1,6 @@
 import { resolveSessionViewerProjectionUpdate } from '@/sync/domains/session/readState/sessionViewer';
+import type { AuthCredentials } from '@/auth/storage/tokenStorage';
+import { resolveRunnerMachineContentKeyTrustV1 } from '@/sync/domains/machines/runnerMachineContentKeyTrust';
 import {
     isSessionAccessOwner,
     normalizeSessionAccessProjection,
@@ -507,13 +509,23 @@ const transcriptStreamSegmentSocketQueueController = createTranscriptStreamSegme
  * Sync injects this into its common deletion owner so local retirement has the
  * same delete-wins fence as an eventual delete/share-revoke socket echo.
  */
-export function dropSocketSessionWork(sessionId: string, sourceServerId?: string | null): void {
+export function dropSocketSessionWork(
+    sessionId: string,
+    sourceServerId?: string | null,
+    retireActiveCarrier: boolean = true,
+): void {
     const normalizedSessionId = String(sessionId ?? '').trim();
     if (!normalizedSessionId) return;
 
-    const sessionIds = [normalizedSessionId];
-    socketSessionApplyCoalescer.dropSessionIds(sessionIds);
-    socketMessageApplyCoalescer.dropSessionIds(sessionIds);
+    // The apply coalescers and the transcript-stream queue are keyed by bare id, so
+    // they hold the ACTIVE carrier's work whichever Home was addressed. Only the
+    // deletion that retires that carrier may drop them; a same-id deletion on
+    // another Home clears its own addresses below and leaves the carrier alone.
+    if (retireActiveCarrier) {
+        const sessionIds = [normalizedSessionId];
+        socketSessionApplyCoalescer.dropSessionIds(sessionIds);
+        socketMessageApplyCoalescer.dropSessionIds(sessionIds);
+    }
     dropSocketRawMessageNormalizationState(normalizedSessionId, sourceServerId);
     const address = resolveSocketProjectionAddress(normalizedSessionId, sourceServerId);
     if (address) {
@@ -522,7 +534,9 @@ export function dropSocketSessionWork(sessionId: string, sourceServerId?: string
         activityRenderableProjectionPatchCoalescer.dropAddresses([address]);
         cacheOnlySessionUpdateSeqByAddress.delete(sessionAddressKey(address));
     }
-    transcriptStreamSegmentSocketQueueController.drop(normalizedSessionId);
+    if (retireActiveCarrier) {
+        transcriptStreamSegmentSocketQueueController.drop(normalizedSessionId);
+    }
 }
 
 function normalizeProjectionSeq(value: unknown): number | null {
@@ -1077,6 +1091,13 @@ function shouldHydrateEncryptedAgentStateForHiddenSession(params: Readonly<{
 export async function handleSocketUpdate(params: {
     update: unknown;
     encryption: Encryption | null;
+    /**
+     * Needed to classify a Machine independently of the Home that sent this
+     * update: the `new-machine` hint seeds Machine encryption, and its own
+     * `kind` field must never be what decides whether a published key is
+     * accepted.
+     */
+    credentials?: AuthCredentials | null;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
     settingsScope?: AccountSettingsScope | null;
@@ -1165,6 +1186,7 @@ export async function handleSocketUpdate(params: {
     await handleUpdateContainer({
         updateData,
         encryption,
+        credentials: params.credentials ?? null,
         settingsSecretsKey: params.settingsSecretsKey,
         settingsSecretsReadKeys: params.settingsSecretsReadKeys,
         settingsScope,
@@ -1209,6 +1231,7 @@ export async function handleSocketUpdate(params: {
 export async function handleUpdateContainer(params: {
     updateData: ApiUpdateContainer;
     encryption: Encryption | null;
+    credentials?: AuthCredentials | null;
     settingsSecretsKey?: Uint8Array | null;
     settingsSecretsReadKeys?: ReadonlyArray<Uint8Array | null | undefined>;
     settingsScope?: AccountSettingsScope | null;
@@ -1535,13 +1558,13 @@ export async function handleUpdateContainer(params: {
         handleDeleteSessionSocketUpdate({
             sessionId: updateData.body.sid,
             serverId: projectionServerId,
-            dropSocketSessionWork: (sessionId) => dropSocketSessionWork(sessionId, projectionServerId),
+            dropSocketSessionWork: (sessionId, retireActiveCarrier) => dropSocketSessionWork(sessionId, projectionServerId, retireActiveCarrier),
             invalidateSessionHydration,
             resetSessionTranscriptState,
             deleteSession: (sessionId, serverId) => storage.getState().deleteSession(sessionId, serverId),
             removeSessionEncryption: (sessionId) => encryption?.removeSessionEncryption(sessionId),
             removeProjectManagerSession: (sessionId) => projectManager.removeSession(sessionId),
-            clearScmStatusForSession: (sessionId) => scmStatusSync.clearForSession(sessionId),
+            clearScmStatusForSession: (sessionId, carrierServerId) => scmStatusSync.clearForSession(sessionId, carrierServerId),
             log,
         });
     } else if (updateData.body.t === 'pending-changed') {
@@ -1922,6 +1945,16 @@ export async function handleUpdateContainer(params: {
                 // may recover it, but this socket hint must never fall back.
             }
         }
+        // The hint seeds Machine encryption before the full refresh, so it runs
+        // the same trusted classification that refresh does: a Home relabelling
+        // a Runner `persistent` here must not slip a key it chose into the cache.
+        const runnerTrust = params.credentials
+            ? resolveRunnerMachineContentKeyTrustV1({
+                credentials: params.credentials,
+                homeServerIdentityId: params.sourceServerId,
+                machineId,
+            })
+            : null;
         const keyResolution = resolvePublishedMachineDataEncryptionKeyV1({
             machine: {
                 id: machineId,
@@ -1933,6 +1966,8 @@ export async function handleUpdateContainer(params: {
                 runnerContentKeyBinding: machineUpdate.runnerContentKeyBinding,
             },
             openedDataEncryptionKey: decryptedDataKey,
+            ...(runnerTrust ? { expectedRunnerBinding: runnerTrust.expectedRunnerBinding } : {}),
+            ...(runnerTrust?.trustedMachineKind ? { trustedMachineKind: runnerTrust.trustedMachineKind } : {}),
         });
         if (!shouldContinue()) return;
         if (encryption) {
@@ -2152,13 +2187,13 @@ export async function handleUpdateContainer(params: {
         handleDeleteSessionSocketUpdate({
             sessionId,
             serverId: projectionServerId,
-            dropSocketSessionWork: (targetSessionId) => dropSocketSessionWork(targetSessionId, projectionServerId),
+            dropSocketSessionWork: (targetSessionId, retireActiveCarrier) => dropSocketSessionWork(targetSessionId, projectionServerId, retireActiveCarrier),
             invalidateSessionHydration,
             resetSessionTranscriptState,
             deleteSession: (targetSessionId, targetServerId) => storage.getState().deleteSession(targetSessionId, targetServerId),
             removeSessionEncryption: (targetSessionId) => encryption?.removeSessionEncryption(targetSessionId),
             removeProjectManagerSession: (targetSessionId) => projectManager.removeSession(targetSessionId),
-            clearScmStatusForSession: (targetSessionId) => scmStatusSync.clearForSession(targetSessionId),
+            clearScmStatusForSession: (targetSessionId, carrierServerId) => scmStatusSync.clearForSession(targetSessionId, carrierServerId),
             log,
         });
     } else if (
@@ -2413,7 +2448,12 @@ export function handleEphemeralSocketUpdate(params: {
     } else if (updateData.type === 'execution-run-updated') {
         if (!shouldContinue()) return Promise.resolve();
         const address = normalizeSessionAddress(sourceServerId, updateData.sessionId);
-        if (address) notifyExecutionRunActivity(address);
+        // The ephemeral carries the exact Run it is about, so a surface mounted
+        // on one Run is not woken by its siblings.
+        const updatedRunId = typeof updateData.run?.runId === 'string' && updateData.run.runId.trim().length > 0
+            ? updateData.run.runId.trim()
+            : null;
+        if (address) notifyExecutionRunActivity(address, { runId: updatedRunId });
     } else if (updateData.type === 'external-session-transcript-invalidated') {
         if (!shouldContinue()) return Promise.resolve();
         return Promise.resolve(updateExternalSessionTranscript?.(updateData as ExternalSessionTranscriptUpdatedEphemeralUpdate));

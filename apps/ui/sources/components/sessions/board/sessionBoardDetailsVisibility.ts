@@ -22,18 +22,58 @@ export type SessionBoardDetailsVisibilityInput = Readonly<{
  * A group is only "showing the Board" when the Board destination is its ACTIVE
  * tab: a background tab in a split group is not on screen.
  */
+function visibleActiveTabKeys(
+    details: SessionBoardDetailsVisibilityInput,
+): readonly (string | null)[] {
+    // A maximized group is the only one on screen; otherwise every group shows its
+    // own active tab beside the workspace-level one.
+    if (details.maximizedGroupId) {
+        return [details.groups?.find((group) => group.id === details.maximizedGroupId)?.activeTabKey ?? null];
+    }
+    return [details.activeTabKey, ...(details.groups ?? []).map((group) => group.activeTabKey)];
+}
+
+const BOARD_ITEM_TAB_PREFIX = `${SESSION_DETAILS_BOARD_TAB_KEY}:`;
+
 export function isSessionBoardVisibleInDetails(
     details: SessionBoardDetailsVisibilityInput | null | undefined,
 ): boolean {
     if (!details?.isOpen) return false;
-    const isBoardKey = (key: string | null): boolean => (
-        key === SESSION_DETAILS_BOARD_TAB_KEY || (key !== null && key.startsWith(`${SESSION_DETAILS_BOARD_TAB_KEY}:`))
-    );
-    if (details.maximizedGroupId) {
-        return isBoardKey(
-            details.groups?.find((group) => group.id === details.maximizedGroupId)?.activeTabKey ?? null,
-        );
-    }
-    if (isBoardKey(details.activeTabKey)) return true;
-    return (details.groups ?? []).some((group) => isBoardKey(group.activeTabKey));
+    return visibleActiveTabKeys(details).some((key) => (
+        key === SESSION_DETAILS_BOARD_TAB_KEY || (key !== null && key.startsWith(BOARD_ITEM_TAB_PREFIX))
+    ));
+}
+
+/**
+ * Is the GENERIC Board destination visible, as opposed to only an item's own
+ * expanded `board:<itemId>` destination?
+ *
+ * The generic tab draws the selected view's placements; an expanded tab draws one
+ * item. Only the generic tab makes Details a candidate host for an arbitrary item,
+ * so the mount election needs the two answers apart.
+ */
+export function isGenericSessionBoardVisibleInDetails(
+    details: SessionBoardDetailsVisibilityInput | null | undefined,
+): boolean {
+    if (!details?.isOpen) return false;
+    return visibleActiveTabKeys(details).some((key) => key === SESSION_DETAILS_BOARD_TAB_KEY);
+}
+
+/**
+ * Which items have their own expanded Board destination on screen right now.
+ *
+ * The generic Board tab and an item's `board:<itemId>` tab are deliberately
+ * different destinations, so a split workspace can present both at once. Both
+ * draw the same item at full density, and an executable source may run in only
+ * one physical placement — this is the fact that tells the two copies apart.
+ */
+export function listVisibleSessionBoardDetailsExpandedItemIds(
+    details: SessionBoardDetailsVisibilityInput | null | undefined,
+): readonly string[] {
+    if (!details?.isOpen) return [];
+    return [...new Set(visibleActiveTabKeys(details).flatMap((key) => (
+        key !== null && key.startsWith(BOARD_ITEM_TAB_PREFIX)
+            ? [key.slice(BOARD_ITEM_TAB_PREFIX.length)]
+            : []
+    )))];
 }

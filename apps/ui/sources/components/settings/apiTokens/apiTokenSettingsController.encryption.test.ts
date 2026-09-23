@@ -8,24 +8,6 @@ import {
 import { createEncryptionFromAuthCredentials } from '@/auth/encryption/createEncryptionFromAuthCredentials';
 import { encodeBase64, decodeBase64 } from '@/encryption/base64';
 
-// This fixture stages a Home directly instead of running connectionManager's
-// restore lifecycle, so nothing ever publishes an applied active Home and
-// `getActiveServerAccountScope()` returns null for every request. Everything
-// else in the connection owner stays real; only the two applied-runtime facts
-// the lifecycle would have produced are supplied, the same way the direct-Sync
-// fixtures do (`sync.optimisticThinking.test.ts`, `sync.sessionMissingServerScope.test.ts`).
-vi.mock('@/sync/runtime/orchestration/connectionManager', async () => {
-    const { getActiveServerSnapshot } = await import('@/sync/domains/server/serverRuntime');
-    return {
-        getAppliedActiveServerSnapshot: () => getActiveServerSnapshot(),
-        getAppliedActiveServerId: () => getActiveServerSnapshot().serverId,
-        isAppliedActiveServerRuntimeAvailable: () => true,
-        subscribeAppliedActiveServer: () => () => {},
-        subscribeAppliedActiveServerRuntimeAvailability: () => () => {},
-        subscribeApplyingActiveServer: () => () => {},
-    };
-});
-
 // The real store and Action graph need a longer cold-transform budget on shared workers.
 beforeAll(async () => {
     await import('@/sync/domains/state/storageStore');
@@ -39,6 +21,13 @@ async function harness(options: { failure?: 'network' | 'mismatch' | 'unsupporte
     const { setServerProfileIdentityForUrl } = await import('@/sync/domains/server/serverProfiles');
     const profile = await upsertAndActivateServer({ serverUrl: 'https://token-ui.example', name: 'Token Home' });
     await setServerProfileIdentityForUrl(profile.serverUrl, 'srv_token-ui');
+    // Apply the Home through the real connection owner rather than staging the
+    // applied-runtime facts it publishes. The credential store is still empty
+    // here, so this runs the genuine switch lifecycle without starting
+    // authenticated Sync or issuing network requests — the same composition
+    // `pendingQueueV2.testHelpers.ts#activatePendingQueueScope` relies on.
+    const { switchConnectionToActiveServer } = await import('@/sync/runtime/orchestration/connectionManager');
+    await switchConnectionToActiveServer();
     const { storage } = await import('@/sync/domains/state/storageStore');
     storage.getState().activateProfileScope({ serverId: 'srv_token-ui', accountId: 'account-a' });
     const credentials = {
@@ -163,6 +152,25 @@ describe('trusted token UI encryption lifecycle', () => {
             recoveryTokenId: null,
             reveal: { token: expect.stringMatching(/^hap_v1_/), apiToken: { hasEncryptionAccess: false } },
         });
+        controller.retire();
+    }, 180_000);
+
+    it('admits ordinary creation while the optional availability read is still in flight', async () => {
+        let finish!: () => void;
+        const holdCurrentness = new Promise<void>((resolve) => { finish = resolve; });
+        const { controller, requests } = await harness({ holdCurrentness });
+        const availability = controller.refreshEncryptionAvailability();
+        await vi.waitFor(() => expect(requests.some((request) => request.path.endsWith('/currentness'))).toBe(true));
+
+        // The optional read is not a mutation: pressing Create must not return
+        // silently with no pending state, no error and no notice.
+        await controller.createToken();
+        expect(controller.getState()).toMatchObject({
+            createError: null,
+            reveal: { token: expect.stringMatching(/^hap_v1_/) },
+        });
+        finish();
+        await availability;
         controller.retire();
     }, 180_000);
 

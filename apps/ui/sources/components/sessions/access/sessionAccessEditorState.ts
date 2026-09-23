@@ -47,11 +47,22 @@ export type SessionAccessEncryptionPreparation =
         kind:'failed';
         /**
          * Which read failed. Only a pass that followed a committed mutation may say
-         * the access was saved; a failed opening discovery proves nothing about a save.
+         * the access was saved; a failed opening discovery proves nothing about a save,
+         * and a pass the manager started themselves saved nothing at all.
          */
-        origin:'discovery'|'pass';
+        origin:SessionAccessEncryptionReadOrigin;
         error:SessionAccessUiError;
     }>;
+/**
+ * Which read produced an encryption observation.
+ *
+ * `discovery` is a collection read — the opening one, a `Show all people` page, or a
+ * re-read after a wake. `pass` is the preparation run that followed a committed grant
+ * mutation, and `manual` is the same run started by the manager with no mutation behind
+ * it. The distinction is the same one the failure copy already made; it is written once
+ * here so both the copy and the reducer's admission rule read the same fact.
+ */
+export type SessionAccessEncryptionReadOrigin='discovery'|'pass'|'manual';
 const IDLE_PREPARATION: SessionAccessEncryptionPreparation = Object.freeze({kind:'idle'});
 
 /**
@@ -124,8 +135,8 @@ export type SessionAccessEditorEvent =
     | Readonly<{type:'operation';scopeKey:string;key:string;operation:SessionAccessGrantOperationState}>
     | Readonly<{type:'confirm';scopeKey:string;key:string|null}>
     | Readonly<{type:'preparing';scopeKey:string;preparedCount:number;actionableTotal:number|null}>
-    | Readonly<{type:'prepared';scopeKey:string;preparation:SessionAccessEncryptionPreparation}>
-    | Readonly<{type:'preparationFailed';scopeKey:string;origin:'discovery'|'pass';error:SessionAccessUiError}>
+    | Readonly<{type:'prepared';scopeKey:string;origin:SessionAccessEncryptionReadOrigin;preparation:SessionAccessEncryptionPreparation}>
+    | Readonly<{type:'preparationFailed';scopeKey:string;origin:SessionAccessEncryptionReadOrigin;error:SessionAccessUiError}>
     | Readonly<{type:'recipientsLoading';scopeKey:string;view:SessionAccessEncryptionRecipientsView}>
     | Readonly<{type:'recipientsPage';scopeKey:string;view:SessionAccessEncryptionRecipientsView;rows:readonly SessionDataKeyEnvelopeItemV1[];nextCursor:string|null;append:boolean}>
     | Readonly<{type:'recipientsFailed';scopeKey:string;view:SessionAccessEncryptionRecipientsView;error:SessionAccessUiError}>;
@@ -159,16 +170,38 @@ function reconcileOperations(
     return next??operations;
 }
 
+/**
+ * Preparation and recipient rows are the key owner's answer about the Session's
+ * whole audience, which only a manager may read. They are therefore admitted only
+ * while the current authoritative snapshot still says this viewer manages access:
+ * a manager-era page that settles after a downgrade is as inadmissible as one that
+ * arrives after an outright denial.
+ */
+function isManagerOnlyDiagnosticEvent(type:SessionAccessEditorEvent['type']):boolean {
+    return type==='preparing'||type==='prepared'||type==='preparationFailed'
+        ||type==='recipientsLoading'||type==='recipientsPage'||type==='recipientsFailed';
+}
+
+function managesAccess(snapshot:SessionAccessGrantsListResponseV1|null):boolean {
+    return snapshot?.effectiveAccess.capabilities.manageAccess === true;
+}
+
 export function reduceSessionAccessEditorState(state:SessionAccessEditorState,event:SessionAccessEditorEvent):SessionAccessEditorState {
     if (event.type === 'reset') return createSessionAccessEditorState(event.scopeKey);
     if (event.scopeKey !== state.scopeKey) return state;
+    if (isManagerOnlyDiagnosticEvent(event.type) && !managesAccess(state.snapshot)) return state;
     switch (event.type) {
         case 'refresh': return {...state,refreshing:true,issue:null};
         // An authoritative grant refresh can have changed the audience, so an open
         // all-people view is discarded rather than left describing the previous one;
         // the last discovered exceptions stay until discovery replaces them.
+        // Losing `manageAccess` is the same privacy fact as an outright denial for the
+        // audience detail: the authoritative answer now says this viewer may not read
+        // it, so it goes with the snapshot that proved it rather than lingering.
         case 'snapshot': return {...state,snapshot:event.snapshot,refreshing:false,issue:null,
-            recipients:state.recipients.view==='all'?DISCOVERED_EXCEPTIONS:state.recipients,
+            ...(managesAccess(event.snapshot)
+                ? {recipients:state.recipients.view==='all'?DISCOVERED_EXCEPTIONS:state.recipients}
+                : {preparation:IDLE_PREPARATION,recipients:DISCOVERED_EXCEPTIONS}),
             operations:reconcileOperations(state.operations,event.snapshot)};
         // Losing access clears the audience detail this viewer may no longer see,
         // including whatever the key owner last said about its recipients.
@@ -176,7 +209,14 @@ export function reduceSessionAccessEditorState(state:SessionAccessEditorState,ev
         case 'operation': return {...state,operations:{...state.operations,[event.key]:event.operation}};
         case 'confirm': return {...state,confirmingRemoval:event.key};
         case 'preparing': return {...state,preparation:{kind:'preparing',preparedCount:event.preparedCount,actionableTotal:event.actionableTotal}};
-        case 'prepared': return {...state,preparation:event.preparation};
+        // A collection page reports what the Home currently holds; it is not an
+        // operation transition. It may settle an idle or already-settled section, but a
+        // running pass's committed progress and a failed pass's recovery reason both
+        // belong to the operation and are replaced only by that operation's own result.
+        case 'prepared': return event.origin==='discovery'
+            && (state.preparation.kind==='preparing'||state.preparation.kind==='failed')
+            ? state
+            : {...state,preparation:event.preparation};
         case 'preparationFailed': return {...state,preparation:{kind:'failed',origin:event.origin,error:event.error}};
         // Asking for a different view clears the rows it is about to replace; a
         // continuation within the current view keeps them while the page loads.

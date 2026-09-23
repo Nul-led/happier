@@ -1,4 +1,4 @@
-import { inTx } from "@/storage/inTx";
+import { inTx, type Tx } from "@/storage/inTx";
 import {
     QUIET_SESSION_PERSONAL_ATTENTION_V1,
     projectViewerReadStateV1,
@@ -7,7 +7,10 @@ import {
     type ViewerReadStateV1,
 } from "@happier-dev/protocol";
 
-import { resolveEffectiveSessionAccessWhere } from "@/app/session/access/sessionAccessWhere";
+import {
+    resolveEffectiveSessionAccessWhere,
+    resolveSessionCollectiveAccessSnapshotsInTx,
+} from "@/app/session/access/sessionAccessWhere";
 import {
     countSessionPersonalAttentionRowsForAccountsInTx,
     type SessionPersonalAttentionAccountAdmission,
@@ -207,40 +210,58 @@ async function computeAccountActivityBadgeCountsForAuthentication(
     accountIds: ReadonlyArray<string>,
     authentication: SessionAccessAuthentication,
 ): Promise<Map<string, number>> {
+    return await inTx(async (tx) => await computeAccountActivityBadgeCountsInTx(tx, accountIds, authentication));
+}
+
+/**
+ * The counting owner itself, for a caller that already holds the transaction the
+ * count must be consistent with.
+ */
+export async function computeAccountActivityBadgeCountsInTx(
+    tx: Tx,
+    accountIds: ReadonlyArray<string>,
+    authentication: SessionAccessAuthentication,
+): Promise<Map<string, number>> {
     const ids = [...new Set(accountIds.filter(id => id.trim().length > 0))];
     const counts = new Map(ids.map((accountId) => [accountId, 0]));
     if (ids.length === 0) return counts;
 
-    return await inTx(async (tx) => {
-        const activeAccounts = await tx.account.findMany({
-            where: { id: { in: ids }, status: "active" },
-            select: { id: true },
-        });
-        const activeAccountIds = activeAccounts.map((account) => account.id);
-        if (activeAccountIds.length === 0) return counts;
-
-        const admissions: SessionPersonalAttentionAccountAdmission[] = [];
-        for (const accountId of activeAccountIds) {
-            const access = await resolveEffectiveSessionAccessWhere({
-                tx,
-                accountId,
-                capability: "readTranscript",
-                mode: "effective_access_v1",
-                authentication,
-            });
-            admissions.push({
-                accountId,
-                accessWhere: access.where,
-                qualifiedTeamIds: access.qualifiedTeamIds,
-            });
-        }
-
-        const grouped = await countSessionPersonalAttentionRowsForAccountsInTx(tx, {
-            admissions,
-        });
-        for (const accountId of activeAccountIds) {
-            counts.set(accountId, grouped.get(accountId) ?? 0);
-        }
-        return counts;
+    const activeAccounts = await tx.account.findMany({
+        where: { id: { in: ids }, status: "active" },
+        select: { id: true },
     });
+    const activeAccountIds = activeAccounts.map((account) => account.id);
+    if (activeAccountIds.length === 0) return counts;
+
+    // One batch is one credential context, so its memberships and Team
+    // qualification are read once here instead of once per Account below.
+    const collectiveAccessSnapshots = await resolveSessionCollectiveAccessSnapshotsInTx(tx, {
+        accountIds: activeAccountIds,
+        authentication,
+    });
+    const admissions: SessionPersonalAttentionAccountAdmission[] = [];
+    for (const accountId of activeAccountIds) {
+        const collectiveAccessSnapshot = collectiveAccessSnapshots.get(accountId);
+        const access = await resolveEffectiveSessionAccessWhere({
+            tx,
+            accountId,
+            capability: "readTranscript",
+            mode: "effective_access_v1",
+            authentication,
+            ...(collectiveAccessSnapshot ? { collectiveAccessSnapshot } : {}),
+        });
+        admissions.push({
+            accountId,
+            accessWhere: access.where,
+            qualifiedTeamIds: access.qualifiedTeamIds,
+        });
+    }
+
+    const grouped = await countSessionPersonalAttentionRowsForAccountsInTx(tx, {
+        admissions,
+    });
+    for (const accountId of activeAccountIds) {
+        counts.set(accountId, grouped.get(accountId) ?? 0);
+    }
+    return counts;
 }

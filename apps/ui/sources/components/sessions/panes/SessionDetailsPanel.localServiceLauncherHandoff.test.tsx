@@ -21,7 +21,7 @@ vi.mock('@/components/appShell/panes/details/surfaces', () => ({
 
 vi.mock('@/components/appShell/panes/details/workspace/DetailsSplitWorkspace', () => ({
     DetailsSplitWorkspace: (props: {
-        renderTabContent?: (tab: unknown) => React.ReactNode;
+        renderTabContent?: (tab: unknown, presentation: Readonly<{ active: boolean }>) => React.ReactNode;
     }) => React.createElement(
         React.Fragment,
         null,
@@ -36,7 +36,7 @@ vi.mock('@/components/appShell/panes/details/workspace/DetailsSplitWorkspace', (
             },
             isPinned: true,
             isPreview: false,
-        }),
+        }, { active: true }),
     ),
 }));
 

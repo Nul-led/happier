@@ -28,7 +28,10 @@ import {
     subscribeSavedSecretCatalogSnapshots,
     type SavedSecretReferenceResolution,
 } from '@/sync/store/settings/savedSecretCatalogSnapshot';
-import { deleteSavedSecretResource } from '@/sync/ops/settings/savedSecretResourceOperations';
+import {
+    deleteSavedSecretResource,
+    type SavedSecretResourceDeleteResult,
+} from '@/sync/ops/settings/savedSecretResourceOperations';
 
 type SavedSecretCatalogCorruptOwnerEntry = Extract<
     SavedSecretCatalogCorruptEntryV1,
@@ -49,7 +52,12 @@ export type SavedSecretCatalogProjection = Readonly<{
     entries: readonly SavedSecretCatalogEntryV1[];
     sharedEntries: readonly SavedSecretCatalogEntryV1[];
     corruptEntries: readonly SavedSecretCatalogCorruptEntryV1[];
-    deleteCorruptResource: (entry: SavedSecretCatalogCorruptOwnerEntry) => Promise<boolean>;
+    /**
+     * The repair carries the owner reference census's own answer, so a resource
+     * the owner's Settings still bind is reported as in use rather than as a
+     * nameless failure the person cannot act on.
+     */
+    deleteCorruptResource: (entry: SavedSecretCatalogCorruptOwnerEntry) => Promise<SavedSecretResourceDeleteResult>;
     materializedSecrets: readonly SavedSecret[];
     usableSecrets: readonly SavedSecret[];
     resolveReference: (ref: string) => SavedSecretReferenceResolution;
@@ -195,19 +203,26 @@ export function useSavedSecretCatalog(options?: Readonly<{
         if (scope && sharedEnabled) await refreshSavedSecretCatalog(scope);
     }, [collidingPersonalSecret, scope, sharedEnabled]);
 
-    const deleteCorruptResource = React.useCallback(async (entry: SavedSecretCatalogCorruptOwnerEntry) => {
-        if (!scope || !sharedEnabled || entry.repair.kind !== 'delete_resource') return false;
+    const deleteCorruptResource = React.useCallback(async (entry: SavedSecretCatalogCorruptOwnerEntry): Promise<SavedSecretResourceDeleteResult> => {
+        if (!scope || !sharedEnabled || entry.repair.kind !== 'delete_resource') {
+            return { ok: false, reason: 'unavailable' };
+        }
+        // The owner reference census reads this Account's own current Settings,
+        // so an unknown version fails the repair closed rather than deleting a
+        // resource other Settings may still reference.
+        if (settingsVersion === null) return { ok: false, reason: 'unavailable' };
         const result = await deleteSavedSecretResource({
             scope,
             resourceId: entry.repair.resourceId,
             expectedRevision: entry.repair.expectedRevision,
+            expectedSettingsVersion: settingsVersion,
             confirmedByPresentUser: true,
         });
         if (result.ok || result.reason === 'outcome_unknown') {
             await refreshSavedSecretCatalog(scope).catch(() => undefined);
         }
-        return result.ok;
-    }, [scope, sharedEnabled]);
+        return result;
+    }, [scope, settingsVersion, sharedEnabled]);
 
     const commitPersonalMutation = React.useCallback(async (
         mutate: (current: Readonly<Record<string, unknown>>) => Readonly<Record<string, unknown>>,

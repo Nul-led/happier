@@ -4,6 +4,8 @@ import { dirname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   ensureWorkspacePackagesBuiltByName,
+  readNewestWorkspaceBuildInputChangeTimeNs,
+  readWorkspaceBuildInputs,
 } from '../../../scripts/workspaces/ensureWorkspacePackagesBuilt.mjs';
 import {
   collectPackageBuildOutputTargets,
@@ -35,12 +37,8 @@ import {
 } from '../../../scripts/workspaces/workspaceBundlePublication.mjs';
 import { hasMissingLocalImportsSync } from '../../../scripts/workspaces/distLocalImports.mjs';
 import {
-  assertBundledPluginArtifactsMatchInventory,
-  compareBundledPluginPackageTreeToInventory,
-  formatBundledPluginArtifactVerification,
-  isBundledPluginPublishedRuntimeRelativePath,
-  readBundledPluginArtifactInventory,
-} from './verifyBundledPluginArtifacts.mjs';
+  assertBundledPluginPackageCorrespondence,
+} from './build-owned/bundledPluginPackageCorrespondence.mjs';
 import {
   resolveCliSharedDepsBuildLockPath,
   withOptionalCliSharedDepsBuildLock,
@@ -218,6 +216,7 @@ export async function runCanonicalBundledPluginArtifactPublisher({
   mode = String(env?.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1' ? 'check' : 'write',
   aggregateOnly = false,
   compilerInputsOnly = false,
+  targetOwnedOnly = false,
 }) {
   const generatorPath = resolve(repoRoot, BUNDLED_PLUGIN_GENERATOR_RELATIVE_PATH);
   if (!existsSync(generatorPath)) {
@@ -238,7 +237,10 @@ export async function runCanonicalBundledPluginArtifactPublisher({
       ? ['--compiler-inputs']
       : aggregateOnly
         ? ['--aggregate']
-        : workspaceNames.flatMap((workspaceName) => ['--workspace', workspaceName])),
+        : [
+            ...workspaceNames.flatMap((workspaceName) => ['--workspace', workspaceName]),
+            ...(targetOwnedOnly ? ['--target-owned-only'] : []),
+          ]),
   ];
   await new Promise((resolvePromise, reject) => {
     let stderr = '';
@@ -368,69 +370,13 @@ function resolveSelectedBundledPluginWorkspaceNames({ repoRoot, workspaceNames }
   );
 }
 
-/**
- * Names the bundled plugin workspaces whose published `dist` tree no longer matches
- * the generated source-artifact integrity inventory.
- *
- * The compiler owns `<plugin>/dist/**` and the publisher owns `<plugin>/.happier-plugin/**`;
- * a build or an out-of-band deletion can leave either tree ahead of, or short of, the last
- * publication while the package still looks NEWER than its source, so the mtime staleness
- * heuristic reports it current and schedules neither a rebuild nor the republication that
- * would repair it. The inventory is the single generated record of what the canonical
- * publisher installed, so exact runtime path set, byte length, and digest determine
- * divergence here just as they do at the final packaging gate.
- */
-function collectDivergedBundledPluginWorkspaceNames({
-  repoRoot,
-  workspaceNames,
-  readInventory = readBundledPluginArtifactInventory,
-}) {
-  const selectedWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({ repoRoot, workspaceNames });
-  if (selectedWorkspaceNames.length === 0) return [];
-
-  let artifacts = null;
-  try {
-    artifacts = readInventory({ repoRoot });
-  } catch {
-    // An unreadable inventory is the packaging verifier's failure to report, never a
-    // reason to skip this run's shared-dependency synchronization.
-    return [];
-  }
-  if (!Array.isArray(artifacts) || artifacts.length === 0) return [];
-  const artifactsByPackageName = new Map(
-    artifacts.map((artifact) => [String(artifact?.packageName ?? ''), artifact]),
-  );
-
-  const divergedWorkspaceNames = [];
-  for (const workspaceName of selectedWorkspaceNames) {
-    const artifact = artifactsByPackageName.get(`@happier-dev/${workspaceName}`);
-    if (!artifact) continue;
-    const packageDir = resolveBundledWorkspacePackageDir({ repoRoot, workspaceName });
-    const result = compareBundledPluginPackageTreeToInventory({
-      artifact,
-      packageDir,
-      includeRelativePath: isBundledPluginPublishedRuntimeRelativePath,
-    });
-    if (
-      result.packageDirMissing
-      || result.missing.length > 0
-      || result.mismatched.length > 0
-      || result.unexpected.length > 0
-    ) {
-      divergedWorkspaceNames.push(workspaceName);
-    }
-  }
-  return normalizeSourceDevSharedDepsWorkspaceNames(divergedWorkspaceNames);
-}
-
-function collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+function collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
   repoRoot,
   workspaceNames,
 }) {
   const selectedWorkspaceNames = resolveSelectedBundledPluginWorkspaceNames({ repoRoot, workspaceNames });
   if (selectedWorkspaceNames.length === 0) return [];
   const admission = createBundledPluginPreparedPackageValidator({ repoRoot });
-  if (!admission) return [];
 
   const cliPackageJsonPath = resolve(repoRoot, 'apps', 'cli', 'package.json');
   return selectedWorkspaceNames.filter((workspaceName) => {
@@ -556,6 +502,7 @@ export async function publishBundledPluginArtifactsAfterWorkspaceBuild(opts = {}
         ? 'check'
         : 'write'),
     aggregateOnly: opts.bundledPluginArtifactPublication?.aggregateOnly === true,
+    targetOwnedOnly: opts.bundledPluginArtifactPublication?.targetOwnedOnly === true,
   });
   if (published === false) {
     throw new Error('Canonical bundled plugin artifact publisher did not complete');
@@ -563,7 +510,7 @@ export async function publishBundledPluginArtifactsAfterWorkspaceBuild(opts = {}
   return true;
 }
 
-async function rebuildWorkspacesInvalidatedByBundledPluginPublication(opts = {}) {
+export async function rebuildWorkspacesInvalidatedByBundledPluginPublication(opts = {}) {
   const workspaceNames = normalizeSourceDevSharedDepsWorkspaceNames(opts.workspaceNames);
   const staleBuilds = collectStaleSourceDevWorkspaceBuilds({
     repoRoot: resolveRepoRootOption(opts.repoRoot),
@@ -935,21 +882,6 @@ function resolveSourceDevWorkspaceNames({
   return resolveCliBundledWorkspacePackageNames({ repoRoot, exists });
 }
 
-function readStatsSignature(path, { exists = existsSync, stat = statSync } = {}) {
-  if (!exists(path)) return { exists: false };
-  try {
-    const stats = stat(path);
-    return {
-      exists: true,
-      type: stats.isDirectory() ? 'dir' : stats.isFile() ? 'file' : 'other',
-      size: Number(stats.size ?? 0),
-      mtimeMs: Number(stats.mtimeMs ?? 0),
-    };
-  } catch {
-    return { exists: false };
-  }
-}
-
 function readSmallFileSignature(path, { exists = existsSync, readFile = readFileSync } = {}) {
   if (!exists(path)) return { exists: false };
   try {
@@ -1096,49 +1028,6 @@ function readRuntimeDistTreeSignature(rootPath, fsOps = {}) {
   };
 }
 
-function shouldIgnoreBuildFreshnessSourcePath(path) {
-  return /\.(?:test|spec|integration|e2e|slow)\.[cm]?[jt]sx?$/.test(path);
-}
-
-function readRuntimeSourceTreeSignature(rootPath, fsOps = {}) {
-  const signature = readTreeSignature(rootPath, fsOps);
-  return {
-    ...signature,
-    entries: signature.entries
-      .filter(([relativePath, entryType]) =>
-        entryType !== 'dir'
-        && !shouldIgnoreBuildFreshnessSourcePath(String(relativePath).replaceAll('\\', '/'))),
-  };
-}
-
-function readNewestPathMtimeMs(path, { exists = existsSync, readDir = readdirSync, stat = statSync } = {}) {
-  if (shouldIgnoreBuildFreshnessSourcePath(path)) return 0;
-  if (!exists(path)) return 0;
-
-  try {
-    const stats = stat(path);
-    if (!stats.isDirectory()) return Number(stats.mtimeMs ?? 0);
-
-    let newestMtimeMs = 0;
-    for (const entry of readDir(path, { withFileTypes: true })) {
-      newestMtimeMs = Math.max(
-        newestMtimeMs,
-        readNewestPathMtimeMs(resolve(path, entry.name), { exists, readDir, stat }),
-      );
-    }
-    return newestMtimeMs > 0 ? newestMtimeMs : Number(stats.mtimeMs ?? 0);
-  } catch {
-    return 0;
-  }
-}
-
-function readNewestPathsMtimeMs(paths, fsOps = {}) {
-  return paths.reduce(
-    (newestMtimeMs, candidatePath) => Math.max(newestMtimeMs, readNewestPathMtimeMs(candidatePath, fsOps)),
-    0,
-  );
-}
-
 function readOldestExistingPathMtimeMs(paths, { exists = existsSync, stat = statSync } = {}) {
   let oldestMtimeMs = Number.POSITIVE_INFINITY;
   for (const candidatePath of paths) {
@@ -1200,7 +1089,7 @@ function isSourceDevWorkspaceBuildStale({
   readDir = readdirSync,
   stat = statSync,
 }) {
-  if (!exists(resolve(packageDir, 'src'))) {
+  if (!exists(resolve(packageDir, 'src')) && !exists(resolve(packageDir, 'sources'))) {
     return false;
   }
 
@@ -1230,11 +1119,9 @@ function isSourceDevWorkspaceBuildStale({
     return true;
   }
 
-  const newestSourceMtimeMs = readNewestPathsMtimeMs([
-    resolve(packageDir, 'src'),
-    resolve(packageDir, 'package.json'),
-    resolve(packageDir, 'tsconfig.json'),
-  ], { exists, readDir, stat });
+  const newestSourceMtimeMs = Number(readNewestWorkspaceBuildInputChangeTimeNs(packageDir, {
+    readDir, stat,
+  }) ?? 0n) / 1e6;
   if (newestSourceMtimeMs <= 0) {
     return false;
   }
@@ -1290,9 +1177,7 @@ export function computeSourceDevSharedDepsSignature(opts = {}) {
       const packageDir = resolveBundledWorkspacePackageDir({ repoRoot, workspaceName });
       return {
         workspaceName,
-        source: readRuntimeSourceTreeSignature(resolve(packageDir, 'src'), { exists, readDir, stat }),
-        tsconfig: readStatsSignature(resolve(packageDir, 'tsconfig.json'), { exists, stat }),
-        packageJson: readStatsSignature(resolve(packageDir, 'package.json'), { exists, stat }),
+        buildInputs: readWorkspaceBuildInputs(packageDir, { readDir, stat }),
         rootRuntimeTargets: readPublishedPackageRootTargetSignatures(packageDir, {
           exists,
           readFile,
@@ -1322,9 +1207,7 @@ function createSourceDevBuildInputSignature(signature, workspaceNames) {
       .filter((pkg) => !selectedWorkspaceNames || selectedWorkspaceNames.has(String(pkg.workspaceName)))
       .map((pkg) => ({
         workspaceName: pkg.workspaceName,
-        source: pkg.source,
-        tsconfig: pkg.tsconfig,
-        packageJson: pkg.packageJson,
+        buildInputs: pkg.buildInputs,
       })),
   };
 }
@@ -1807,7 +1690,7 @@ export function inspectSourceDevSharedDepsForSourceDev(opts = {}) {
     includeRuntimeDependencies,
   });
   if (!current) return { current: false, reason: 'not-current' };
-  if (collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+  if (collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
     repoRoot,
     workspaceNames,
   }).length > 0) {
@@ -1984,7 +1867,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       stat,
       includeRuntimeDependencies,
     })
-    && collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+    && collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
       repoRoot,
       workspaceNames,
     }).length === 0
@@ -2138,15 +2021,6 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   });
   const bundledPluginWorkspaceNamesToPublish = normalizeSourceDevSharedDepsWorkspaceNames([
     ...rebuiltPluginWorkspaceNames,
-    ...(shouldPublishBundledPluginArtifacts
-      ? collectDivergedBundledPluginWorkspaceNames({
-        repoRoot,
-        workspaceNames,
-        ...(opts.readBundledPluginArtifactInventoryImpl
-          ? { readInventory: opts.readBundledPluginArtifactInventoryImpl }
-          : {}),
-      })
-      : []),
   ]).filter((workspaceName) => (
     !sourceChangedWorkspaceNames.has(workspaceName)
     && !failedPluginWorkspaceNames.has(workspaceName)
@@ -2155,9 +2029,8 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
   let rebuiltGeneratedSourceWorkspaces = [];
   // The compiler and publisher have disjoint outputs: compilation owns `dist/**`,
   // while the publisher owns `.happier-plugin/**` plus the coherent generated
-  // inventory/projections describing the package. A rebuilt or externally changed
-  // compiled tree still invalidates those projections, so refresh publication after
-  // a selected plugin rebuild or detected inventory divergence. The publisher's own
+  // projections describing the package. A rebuilt compiled tree invalidates those
+  // projections, so refresh publication after a selected plugin rebuild. The publisher's own
   // re-entrant dependency sync (`publishBundledPluginArtifacts: false`) is exempt.
   if (
     shouldPublishBundledPluginArtifacts
@@ -2171,8 +2044,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
       repoRoot,
       // E2 reports the actual rebuilt closure after its package locks and
       // post-lock currentness checks, so a plugin another owner made current
-      // while we waited is not treated as changed. The diverged set adds back
-      // only the plugins whose installed artifact contradicts the inventory.
+      // while we waited is not treated as changed.
       pluginWorkspaceNames: bundledPluginWorkspaceNamesToPublish,
       syncId: `source-dev-publish.${process.pid}`,
       syncBundledWorkspaceDistImpl: opts.syncBundledWorkspaceDistImpl,
@@ -2184,10 +2056,11 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
         ?? (String(childBuildEnv.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
           ? {
               // A one-way dev-target replica owns the ignored plugin build trees
-              // consumed by its daemon. Publish the matching generated CLI
-              // projection on that replica just as the UI preflight already does
-              // for its target-local Metro projections.
+              // consumed by its daemon. Publish only the matching target-owned
+              // inventories; source-synchronized projections remain validation
+              // inputs and must not be repaired by a replica writer.
               mode: 'write',
+              targetOwnedOnly: true,
             }
           : undefined),
       publishBundledPluginArtifactsImpl: opts.publishBundledPluginArtifactsImpl,
@@ -2318,7 +2191,7 @@ export async function syncSharedDepsForSourceDev(opts = {}) {
         readDir,
         stat,
       }),
-      ...collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+      ...collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
         repoRoot,
         workspaceNames,
       }),
@@ -2504,10 +2377,9 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
       force: publishesArtifact || mustRebuildBootstrapOutputs,
     },
   });
-  // The inventory must describe both packages compiled by this run and plugin runtime
-  // trees changed by another canonical compiler since their last publication. Package
-  // currentness intentionally avoids recompiling a newer `dist`, so it cannot by itself
-  // decide whether the generated plugin projection still describes those bytes.
+  // Publication consumes exactly the plugin packages compiled by this run. Direct
+  // source-to-installed correspondence below owns runtime-tree currentness without
+  // a second committed output inventory.
   const failedPluginWorkspaceNames = new Set(
     buildResult.failedPluginBuilds.map(({ workspaceName }) => workspaceName),
   );
@@ -2515,16 +2387,7 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
     repoRoot: resolvedRepoRoot,
     workspaceNames: publishesArtifact
       ? workspaceNames
-      : [
-        ...buildResult.builtWorkspaceNames,
-        ...collectDivergedBundledPluginWorkspaceNames({
-          repoRoot: resolvedRepoRoot,
-          workspaceNames,
-          ...(opts.readBundledPluginArtifactInventoryImpl
-            ? { readInventory: opts.readBundledPluginArtifactInventoryImpl }
-            : {}),
-        }),
-      ],
+      : buildResult.builtWorkspaceNames,
   }).filter((workspaceName) => !failedPluginWorkspaceNames.has(workspaceName));
 
   return {
@@ -2537,22 +2400,17 @@ export async function prepareBundledWorkspaceDependenciesForCli(opts = {}) {
 }
 
 function createBundledPluginPreparedPackageValidator({ repoRoot }) {
-  const artifacts = readBundledPluginArtifactInventory({ repoRoot });
-  if (artifacts === null) return null;
-  const artifactsByPackageName = new Map(
-    artifacts.map((artifact) => [String(artifact.packageName), artifact]),
-  );
-
   const verifyPackage = ({ packageName, packageDir }) => {
-    const artifact = artifactsByPackageName.get(String(packageName));
-    if (!artifact) {
-      throw new Error(
-        `[verify-bundled-plugin-artifacts] Missing bundled plugin inventory entry for ${String(packageName)}`,
-      );
-    }
-    const result = compareBundledPluginPackageTreeToInventory({ artifact, packageDir });
-    const failure = formatBundledPluginArtifactVerification([result]);
-    if (failure) throw new Error(failure);
+    const workspaceName = String(packageName).replace(/^@happier-dev\//u, '');
+    assertBundledPluginPackageCorrespondence({
+      packageName,
+      sourceDir: resolveBundledWorkspacePackageDir({ repoRoot, workspaceName }),
+      packageDir,
+      // Live refresh admission is about the publisher-owned daemon runtime. The
+      // compiler owns `dist`; a failed current compile must not invalidate an
+      // otherwise coherent last-green daemon package.
+      runtimeRoots: ['.happier-plugin'],
+    });
   };
   return {
     validatePreparedPackage: verifyPackage,
@@ -2687,9 +2545,10 @@ async function publishPreparedBundledWorkspaceDependenciesForCli(prepared, opts 
         ?? (String(publicationEnv.HAPPIER_DEV_TARGET_EXECUTION ?? '').trim() === '1'
           ? {
               // A one-way execution replica owns the ignored build and installed-package
-              // trees consumed by this run. Keep their generated projection coherent on
-              // that replica; the source checkout remains the upstream sync authority.
+              // trees consumed by this run. Keep only its excluded installed artifacts
+              // and inventories coherent; source-synchronized projections remain read-only.
               mode: 'write',
+              targetOwnedOnly: true,
             }
           : undefined),
       publishBundledPluginArtifactsImpl: opts.publishBundledPluginArtifactsImpl,
@@ -2824,7 +2683,7 @@ export async function main(options = {}) {
         readDir,
         stat,
       }),
-      ...collectInstalledBundledPluginWorkspaceNamesDivergingFromInventory({
+      ...collectInstalledBundledPluginWorkspaceNamesDivergingFromSource({
         repoRoot: buildRepoRoot,
         workspaceNames,
       }),
@@ -2845,25 +2704,9 @@ export async function main(options = {}) {
       syncBundledRuntimeDependencies,
     });
     syncCliDependencies({ repoRoot: buildRepoRoot, ...cliCommonWorkspacesModule });
-    // Verify the installed plugin tree selected from the CLI manifest, rather than
-    // assuming it lives under apps/cli/node_modules. The publisher that keeps the
-    // inventory current is scoped to the plugin workspaces THIS run rebuilt, so a
-    // plugin rebuilt by any other path leaves the inventory describing bytes that no
-    // longer exist and the daemon dies with empty generations. Prove those resolved
-    // bytes and the inventory agree before stamping the closure daemon-ready.
-    const assertBundledPluginArtifacts = options.assertBundledPluginArtifactsMatchInventoryImpl
-      ?? assertBundledPluginArtifactsMatchInventory;
-    assertBundledPluginArtifacts({
-      repoRoot: buildRepoRoot,
-      resolvePackageDir: (packageName) => resolveInstalledRuntimePackage({
-        packageName,
-        resolveFromPackageJsonPath: resolve(buildRepoRoot, 'apps', 'cli', 'package.json'),
-        dereferenceRootDir: buildRepoRoot,
-      }).packageDir,
-    });
-    // Live/dev preparation keeps a plugin package whose installed bytes still match the
-    // inventory, so a watch loop survives one incoherent plugin. A publication build has
-    // no last-green: the artifact must carry this run's outputs for every included plugin.
+    // Live/dev preparation keeps a coherent installed package through one failed
+    // refresh. A publication build has no last-green: the artifact must carry
+    // this run's outputs for every included plugin.
     const unrecoveredPluginFailures = publishesArtifact
       ? pluginSyncFailures
       : pluginSyncFailures.filter(({ retainedLastGreen }) => !retainedLastGreen);

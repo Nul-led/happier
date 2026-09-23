@@ -1,5 +1,5 @@
 import { db } from "@/storage/db";
-import { resolveSessionAccessForOperation, type EffectiveSessionAccess } from "@/app/session/access/sessionAccess";
+import { resolveSessionAccessForAccountsInTx, type EffectiveSessionAccess } from "@/app/session/access/sessionAccess";
 import { backgroundDeliveryAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import type { Tx } from "@/storage/inTx";
 
@@ -15,22 +15,23 @@ import { listRelevantAccountIdsForSessionBadgeRefresh } from "./readState";
  * evidence background delivery actually has (none), so owner, direct and
  * inherited-authentication arms admit exactly as before while a restricted Team
  * admits a recipient only while it qualifies without evidence.
+ *
+ * One event reaches every recipient of one Session, so the decision is taken
+ * set-oriented: the access row is read once for a bounded batch of recipients
+ * and the Team qualification once for the credential context they share.
  */
 export async function admitSessionBackgroundDeliveryInTx(
     tx: Tx,
     params: Readonly<{ sessionId: string; accountIds: readonly string[] }>,
 ): Promise<ReadonlyMap<string, EffectiveSessionAccess>> {
-    const authentication = backgroundDeliveryAuthentication();
+    const accesses = await resolveSessionAccessForAccountsInTx(tx, {
+        sessionId: params.sessionId,
+        accountIds: params.accountIds,
+        authentication: backgroundDeliveryAuthentication(),
+    });
     const admitted = new Map<string, EffectiveSessionAccess>();
-    for (const accountId of params.accountIds) {
-        const decision = await resolveSessionAccessForOperation(tx, {
-            accountId,
-            sessionId: params.sessionId,
-            authentication,
-        });
-        if (decision.status === "allowed" && decision.access.capabilities.readTranscript) {
-            admitted.set(accountId, decision.access);
-        }
+    for (const [accountId, access] of accesses) {
+        if (access.capabilities.readTranscript) admitted.set(accountId, access);
     }
     return admitted;
 }

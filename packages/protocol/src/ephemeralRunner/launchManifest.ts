@@ -17,6 +17,7 @@ import {
   type ConnectedServiceBindingsV2,
 } from '../connect/connectedServiceBindings.js';
 import { ActionsSettingsV1Schema } from '../actions/actionSettings.js';
+import { ExpectedMarketplaceListingV1Schema } from '../marketplace/expectedMarketplaceListingV1.js';
 import { RunnerActivationBindingV1Schema, RunnerResourceIdSchema, RunnerSha256CommitmentSchema } from './activation.js';
 import { RunnerEndpointFactsContentV1Schema } from './endpoint.js';
 import { RunnerMachineContentKeyBindingV1Schema } from './machineContentKeyBindingSchema.js';
@@ -200,6 +201,19 @@ export const RunnerPreparedAuthoringV1Schema = z.object({
   /** Exact creator-resolved MCP material; null is the simple no-managed-server case. */
   mcpMaterial: RunnerMcpMaterialV1Schema.nullable(),
   authoring: RunnerStrictAuthoringV1Schema,
+  /**
+   * The exact reviewed distribution the endpoint must acquire before the
+   * reviewed Agent can run, for an Agent contributed by an installed external
+   * plugin. `null` is the bundled case: the Runner artifact already carries
+   * that generation and the endpoint acquires nothing.
+   *
+   * It reuses the marketplace listing commitment the canonical plugin change
+   * preparer already revalidates, so the endpoint gains no second distribution
+   * vocabulary. Because the field sits inside the prepared submission, it is
+   * covered by `computeRunnerAuthoringCommitmentV1` and therefore by the
+   * activation binding the endpoint compares before consent.
+   */
+  agentPluginDistribution: ExpectedMarketplaceListingV1Schema.nullable().default(null),
   composer: ComposerSnapshotV1Schema.pick({ text: true, references: true }).extend({
     attachments: z.array(ReviewedComposerAttachmentV1Schema).max(MAX_COMPOSER_ATTACHMENT_INSTANCES_V1),
   }).strict(),
@@ -218,6 +232,26 @@ export const RunnerPreparedAuthoringV1Schema = z.object({
   for (const file of value.files) {
     if (ids.has(file.id)) context.addIssue({ code: 'custom', path: ['files'], message: 'Reviewed file identities must be unique' });
     ids.add(file.id);
+  }
+  const distribution = value.agentPluginDistribution;
+  if (distribution === null) return;
+  const agentTarget = value.authoring.agentTarget;
+  if (agentTarget?.kind !== 'agent' || agentTarget.identity.pluginId !== distribution.pluginId) {
+    context.addIssue({
+      code: 'custom',
+      path: ['agentPluginDistribution', 'pluginId'],
+      message: 'Reviewed plugin distribution must name the reviewed Agent target plugin',
+    });
+  }
+  if (distribution.registryProfileId !== undefined) {
+    // Private-registry authentication is an endpoint-side selection: a creator
+    // that named one would hand the endpoint credentials authority nobody
+    // granted, so the commitment carrying it fails closed here.
+    context.addIssue({
+      code: 'custom',
+      path: ['agentPluginDistribution', 'registryProfileId'],
+      message: 'Reviewed plugin distribution must not select an endpoint registry profile',
+    });
   }
 });
 export type RunnerPreparedAuthoringV1 = z.infer<typeof RunnerPreparedAuthoringV1Schema>;

@@ -74,6 +74,7 @@ const preparedAuthoring: RunnerPreparedAuthoringV1 = {
         primaryTeamId: null,
         organizationPlacement: { folderId: null, tagIds: [] },
     },
+    agentPluginDistribution: null,
     composer: { text: 'Inspect this', references: [], attachments: [] },
     files: [{
         id: 'file-a',

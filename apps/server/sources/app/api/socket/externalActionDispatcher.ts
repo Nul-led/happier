@@ -30,6 +30,7 @@ import {
     type createSessionPublisherPresence,
 } from "@/app/presence/sessionPublisherPresence";
 import { db } from "@/storage/db";
+import { getAccountSessionSocketRoom } from "@/app/api/socketRooms";
 import { getOrCreateServerIdentityId } from "@/app/serverIdentity/serverIdentity";
 
 import { forwardRpcCall, type RpcForwardResult } from "./rpc/forwardRpcCall";
@@ -192,8 +193,16 @@ async function resolveSessionMachineFromServer(params: Readonly<{
     if (!params.presence) return null;
     let sockets: readonly SocketDataCarrier[];
     try {
+        // The per-account Session room is the exact set of this Account's
+        // sockets scoped to this Session, and it is what every Session-scoped
+        // client joins — including a restricted Runner, which is deliberately
+        // kept out of the Account-wide `user:` room. Resolving a Session
+        // target from that Account-wide room therefore missed exactly the
+        // publisher a Session target names.
         // Socket.IO's RemoteSocket has more fields than this resolver needs.
-        sockets = await params.io.in(`user:${params.accountId}`).fetchSockets() as SocketDataCarrier[];
+        sockets = await params.io
+            .in(getAccountSessionSocketRoom(params.accountId, params.sessionId))
+            .fetchSockets() as SocketDataCarrier[];
     } catch {
         return null;
     }

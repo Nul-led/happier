@@ -46,6 +46,7 @@ import { useHomeTeamCredentialModelCatalog } from '@/hooks/teams/useHomeTeamCred
 import { useFeatureEnabled } from '@/hooks/server/useFeatureEnabled';
 import { peekTempData, type NewSessionData } from '@/utils/sessions/tempDataStore';
 import { useServerCredentialAccountScopeResolution } from '@/sync/domains/scope/useServerCredentialAccountScopes';
+import { motionTokens } from '@/components/ui/motion/motionTokens';
 
 function useMachinePickerScreenOptions(params: Readonly<{
     title: string;
@@ -58,7 +59,7 @@ function useMachinePickerScreenOptions(params: Readonly<{
         <Pressable
             onPress={params.onBack}
             hitSlop={10}
-            style={({ pressed }) => ({ padding: 2, opacity: pressed ? 0.7 : 1 })}
+            style={({ pressed }) => ({ padding: 2, opacity: pressed ? motionTokens.press.opacity : 1 })}
             accessibilityRole="button"
             accessibilityLabel={t('common.back')}
         >
@@ -209,6 +210,13 @@ export function useMachinePickerScreenModel() {
             // The picker never launches, so it holds no model selection. Only the
             // Agent/artifact/broker intersection decides whether the row is real.
             selectedTeamCredentialModel: null,
+            // This route resolves its Agent target from route params alone, so
+            // it can only ever hold a bundled contribution identity; an
+            // installed Agent's catalog and marketplace index belong to the New
+            // Session screen's focused machine.
+            agentCatalogMachineId: null,
+            projectedAgentsById: {},
+            installedPluginPackagesById: {},
         })
     ), [pickerTeamCredentialCatalog.currentResourceKeys, pickerTeamCredentialCatalog.resources, selectedServerId]);
     const temporaryComputerAvailability = useTemporaryComputerAvailability({

@@ -206,8 +206,8 @@ async function seedViewerReadStateAtCurrentCeilingInTx(
 
 /**
  * The single tracking-entry seam. The Follow owner calls it inside its own
- * Follow transition transaction (§4.2); the actor-scoped explicit mark calls it
- * for a reader that has no frontier yet.
+ * Follow transition transaction (§4.2). A cursor-only mark by a reader with no
+ * frontier is not such a transition and seeds the main frontier directly.
  *
  * `wasTracked` is derived by the caller from the canonical predicate *before*
  * the relation write and is never trusted from a client: an already tracked
@@ -511,7 +511,11 @@ export async function applyViewerReadCursorOperation(params: Readonly<{
                 const admitted = await admitViewerReadCursorOperation(tx, { accountId, sessionId, authentication: params.authentication });
                 if (!admitted.ok) return admitted;
                 if (admitted.current === null) {
-                    await beginViewerReadTrackingOnFollowEntryInTx({ tx, accountId, sessionId, wasTracked: false });
+                    // A cursor-only mark is not a Follow transition: it gives this reader
+                    // its own main frontier and nothing else. The combined tracking entry,
+                    // which also baselines every Discussion cursor, stays reserved for the
+                    // Follow owner that can prove an inactive-to-active transition.
+                    await seedViewerReadStateAtCurrentCeilingInTx(tx, { accountId, sessionId });
                 }
             }
             return await applyViewerReadCursorOperationInTx(tx, {

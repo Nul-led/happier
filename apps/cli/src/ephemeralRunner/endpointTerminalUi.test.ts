@@ -269,6 +269,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
         authoringCommitment: 'authoring',
         directory: '/Users/bob/Projects/widget',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     })).resolves.toBe(false);
     await expect(ui.confirmActiveClose({ phase: 'running', signal: new AbortController().signal }))
@@ -309,7 +310,6 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
       connection: 'connected',
       failure: {
         kind: 'before_session',
-        message: 'The request could not be prepared. Check the activation and try again.',
       },
       canRetry: true,
     })).toEqual(expect.objectContaining({
@@ -326,7 +326,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
     expect(resolveEphemeralRunnerEndpointPresentation({
       phase: 'failed',
       connection: 'connected',
-      failure: { kind: 'before_session', message: 'The request could not be prepared. Check the activation and try again.' },
+      failure: { kind: 'before_session' },
       canRetry: true,
     }).actions).toEqual([
       { id: 'retry', label: 'Retry' },
@@ -382,6 +382,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
         authoringCommitment: 'authoring',
         directory: '/Users/bob/Projects/widget',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     })).resolves.toBe(true);
     writes.length = 0;
@@ -537,7 +538,6 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
     const failure = resolveEphemeralRunnerFailureRecoveryPresentation({
       failure: {
         kind: 'before_session',
-        message: 'The request could not be prepared. Check the activation and try again.',
       },
       locale,
     });
@@ -602,6 +602,7 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
         launchManifestCommitment: 'launch',
         authoringCommitment: 'authoring',
       },
+      pluginInstallation: null,
       signal: new AbortController().signal,
     })).resolves.toBe(false);
     ui.present({ phase: 'running', connection: 'connected' });
@@ -612,5 +613,104 @@ describe('ephemeral Runner terminal endpoint presentation', () => {
     ]));
     expect(writes.join('\n')).toContain('L’Agent est en cours d’exécution');
     expect(writes.join('\n')).toContain('[ Arrêter la session ]');
+  });
+
+  it('carries the canonical plugin installation review into the one consent projection', () => {
+    const pluginInstallation = {
+      pluginId: 'acme.reviewed-external',
+      displayName: 'Reviewed External',
+      version: '1.2.3',
+      packageIdentity: { name: '@acme/reviewed-external', version: '1.2.3' },
+      publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
+      source: { kind: 'npm', locator: '@acme/reviewed-external@1.2.3', integrity: `sha512-${'A'.repeat(86)}==`, integrityBasis: 'expected' },
+      updateChannel: { kind: 'npm', packageName: '@acme/reviewed-external', registryOrigin: 'https://registry.npmjs.org' },
+      signature: { status: 'notProvided' },
+      provenance: { status: 'notProvided' },
+      curation: { status: 'unreviewed', sourceId: 'marketplace:community-npm' },
+      executableRealms: ['daemon'],
+      contributions: [{ family: 'agents', count: 1 }],
+      requestInterceptors: [],
+      uiArtifacts: { status: 'none', contributionIds: [] },
+      requiredHostAccess: [{ id: 'files.read', capability: 'files', reason: 'Reads the workspace', authorizationClass: 'cooperativeDisclosure', normalizedScope: {} }],
+      optionalHostAccess: [],
+      rawCredentialAccess: [],
+      compatibility: { runtimeApiVersion: 1 },
+      updatePolicy: 'pinned',
+    } as never;
+    const input = { manifest, directory: '/Users/bob/Projects/widget', pluginInstallation };
+    const presentation = resolveEphemeralRunnerConsentReviewPresentation(input);
+    const facts = presentation.sections.flatMap((section) => section.facts);
+    const valueOf = (id: string) => facts.find((fact) => fact.id === id)?.value;
+
+    expect(valueOf('plugin_package')).toContain('@acme/reviewed-external');
+    expect(valueOf('plugin_package')).toContain('1.2.3');
+    expect(valueOf('plugin_integrity')).toContain('sha512-');
+    expect(valueOf('plugin_publisher')).toContain('Acme');
+    expect(valueOf('plugin_update_channel')).toContain('registry.npmjs.org');
+    expect(valueOf('plugin_curation')).toContain('unreviewed');
+    expect(valueOf('plugin_executable_code')).toContain('daemon');
+    expect(valueOf('plugin_required_access')).toContain('files');
+
+    // The same closed projection is what the terminal renders, so no plugin
+    // fact can appear on one endpoint surface and be missing on the other.
+    const rendered = formatEphemeralRunnerConsentReview(input);
+    for (const fact of facts) expect(rendered).toContain(fact.value);
+
+    // A bundled Agent installs nothing and must not show an empty install block.
+    const bundled = resolveEphemeralRunnerConsentReviewPresentation({
+      manifest,
+      directory: '/Users/bob/Projects/widget',
+    });
+    expect(bundled.sections.flatMap((section) => section.facts).map((fact) => fact.id))
+      .not.toContain('plugin_package');
+  });
+
+  it('discloses every canonical installation-review fact the settings surface shows', () => {
+    const pluginInstallation = {
+      pluginId: 'acme.reviewed-external',
+      displayName: 'Reviewed External',
+      version: '1.2.3',
+      packageIdentity: { name: '@acme/reviewed-external', version: '1.2.3' },
+      publisherIdentity: { status: 'unverified', id: 'acme', displayName: 'Acme' },
+      source: { kind: 'npm', locator: '@acme/reviewed-external@1.2.3', integrity: `sha512-${'A'.repeat(86)}==`, integrityBasis: 'expected' },
+      updateChannel: { kind: 'npm', packageName: '@acme/reviewed-external', registryOrigin: 'https://registry.npmjs.org' },
+      signature: { status: 'verified', keyId: 'key-7' },
+      provenance: { status: 'declaredUnverified', predicateType: 'https://slsa.dev/provenance/v1' },
+      curation: { status: 'unreviewed', sourceId: 'marketplace:community-npm' },
+      executableRealms: ['daemon'],
+      contributions: [{ family: 'agents', count: 1 }],
+      requestInterceptors: [{ id: 'proxy.all', origins: ['https://api.example'], methods: ['POST'], priority: 10 }],
+      uiArtifacts: { status: 'none', contributionIds: [] },
+      requiredHostAccess: [{ id: 'files.read', capability: 'files', reason: 'Reads the workspace', authorizationClass: 'cooperativeDisclosure', normalizedScope: { roots: ['workspace'] } }],
+      optionalHostAccess: [{ id: 'clipboard.write', capability: 'clipboard', reason: 'Copies results', authorizationClass: 'hostResourceSelection', normalizedScope: {} }],
+      rawCredentialAccess: [{
+        accessMode: 'raw',
+        contribution: { pluginId: 'acme.reviewed-external', localId: 'acme-voice' },
+        credentialSlot: { id: 'apiKey', title: 'API key', purpose: 'voice' },
+        sourceClass: { kind: 'savedSecret' },
+        realm: 'daemon',
+        phase: 'session',
+        request: {},
+      }],
+      compatibility: { runtimeApiVersion: 1 },
+      updatePolicy: 'pinned',
+    } as never;
+    const presentation = resolveEphemeralRunnerConsentReviewPresentation({
+      manifest,
+      directory: '/Users/bob/Projects/widget',
+      pluginInstallation,
+    });
+    const facts = presentation.sections.flatMap((section) => section.facts);
+    const valueOf = (id: string) => facts.find((fact) => fact.id === id)?.value;
+
+    // The person whose machine runs this code must not decide on strictly less
+    // than a Happier settings user sees for the same canonical review.
+    expect(valueOf('plugin_signature')).toContain('key-7');
+    expect(valueOf('plugin_provenance')).toContain('slsa.dev');
+    expect(valueOf('plugin_request_interceptors')).toContain('api.example');
+    expect(valueOf('plugin_raw_credential_access')).toContain('acme-voice');
+    expect(valueOf('plugin_raw_credential_access')).toContain('API key');
+    expect(valueOf('plugin_optional_access')).toContain('clipboard.write');
+    expect(valueOf('plugin_required_access')).toContain('workspace');
   });
 });

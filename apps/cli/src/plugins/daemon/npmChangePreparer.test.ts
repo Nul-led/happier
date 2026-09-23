@@ -5,7 +5,11 @@ import { join } from 'node:path';
 import { Readable } from 'node:stream';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MarketplaceIndexSourceSnapshotV1 } from '@happier-dev/protocol';
+import {
+  createPluginCompatibilityProjectionV1,
+  PluginManifestV2Schema,
+  type MarketplaceIndexSourceSnapshotV1,
+} from '@happier-dev/protocol';
 
 import type { NpmRegistryHttpsClient } from '@/plugins/distribution/npm/httpsClient';
 import { createTestNpmTarball, sriSha512 } from '@/plugins/distribution/testkit/npmTarball';
@@ -46,7 +50,7 @@ function reportAdoptedGenerations(
   return Object.freeze(Object.fromEntries(
     candidate.changedPluginIds.map((pluginId) => [
       pluginId,
-      candidate.pluginGenerations[pluginId]?.immutableGenerationId ?? null,
+      candidate.pluginOccurrenceIds[pluginId]?.immutableGenerationId ?? null,
     ]),
   ));
 }
@@ -98,11 +102,10 @@ async function createNpmPackageFixture(params: Readonly<{
   };
   const compatibilityProjection = params.includeCompatibilityProjection === false
     ? undefined
-    : params.compatibilityProjection ?? {
-        version: 1,
-        manifest,
-        uiArtifacts: { version: 1, entries: [] },
-      };
+    : params.compatibilityProjection ?? createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse(manifest),
+        uiArtifacts: { version: 2, entries: [] },
+      });
   const manifestRaw = JSON.stringify(manifest);
   const archive = await createTestNpmTarball([
     {
@@ -229,7 +232,7 @@ function curatedListing(
     integrity: fixture.integrity,
     manifestDigest: fixture.manifestDigest,
     review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-    updatePolicy: 'reviewSensitiveChanges',
+    updatePolicy: 'allowed',
     ...overrides,
   } as ExpectedMarketplaceListingV1;
 }
@@ -263,7 +266,7 @@ function exactMarketplaceIndexSourceSnapshot(params: Readonly<{
   // kind: a user catalog can name one exactly as a curated catalog can.
   const registryProfileId = params.source.registryProfileId ?? null;
   const expectedUpdatePolicy = params.listingOverrides?.updatePolicy
-    ?? (curated ? 'reviewSensitiveChanges' : 'reviewEveryUpdate');
+    ?? 'allowed';
   return {
     source,
     freshness: { state: 'fresh', fetchedAtMs: 1 },
@@ -513,7 +516,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         source: {
           kind: 'npm',
@@ -531,7 +534,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     }
   });
 
-  it.each(['reviewEveryUpdate', 'reviewSensitiveChanges'] as const)(
+  it.each(['allowed'] as const)(
     'stages an exact unreviewed community npm candidate with its %s policy for one real Install and trust review',
     async (chosenPolicy) => {
       const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-community-npm-change-home-'));
@@ -577,7 +580,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       });
 
       expect(result).toMatchObject({
-        kind: 'reviewRequired',
+        kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
         review: {
           pluginId: 'acme.npm-candidate',
           version: fixture.version,
@@ -643,12 +646,12 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         pluginId: 'acme.npm-candidate',
         packageIdentity: { name: fixture.packageName, version: fixture.version },
@@ -673,7 +676,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         contributions: [],
         uiArtifacts: { status: 'none', contributionIds: [] },
         compatibility: { happier: '^0.2.0', runtimeApiVersion: 1 },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     });
     if (result.kind !== 'reviewRequired') throw new Error('Expected curated npm Install and trust review');
@@ -689,7 +692,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       install: {
         // Curation is discovery only: nothing about the marketplace source is
         // persisted as an update authority beside the trusted npm channel.
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
         trust: {
           distribution: {
             kind: 'npm',
@@ -741,7 +744,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
 
     activeClient = laterFixture.client;
     activeMarketplaceFixture = laterFixture;
-    // The same trusted channel, the same `reviewSensitiveChanges` listing, and
+    // The same trusted channel, the same `allowed` listing, and
     // no manifest change at all: a present user still acted on a listing, so
     // this is an install and it keeps its post-download review.
     const result = await requestCuratedUpdate({
@@ -780,6 +783,19 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       version: '1.2.4',
       hostAccess,
     });
+    const widenedFixture = await createNpmPackageFixture({
+      markerPath: join(happyHomeDir, 'widened'),
+      version: '1.2.5',
+      hostAccess: {
+        required: [],
+        optional: [{
+          id: 'session-read',
+          capability: 'sessions',
+          reason: 'Read and write the selected sessions',
+          scope: { access: ['read', 'write'] },
+        }],
+      },
+    });
     const marketplaceSource = (await createMarketplaceSourceRegistryStore({ happyHomeDir }).read()).sources[0]!;
     let activeClient = initialFixture.client;
     let activeMarketplaceFixture = initialFixture;
@@ -807,7 +823,15 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       source: marketplaceSource,
       optionalSelections: [{ accessId: 'session-read', selected: true }],
     });
-    const store = createPluginRegistryStateStore({ happyHomeDir });
+    const store = createPluginRegistryStateStore({
+      happyHomeDir,
+      runtimeLifecycle: {
+        prepare: async (candidate) => ({
+          abort: async () => undefined,
+          adopt: async () => reportAdoptedGenerations(candidate),
+        }),
+      },
+    });
     const beforeSnapshot = await store.readSnapshot();
     const before = beforeSnapshot.state.plugins['acme.npm-candidate']!;
     const beforePrincipalDigest = beforeSnapshot
@@ -844,6 +868,14 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(afterSnapshot.installReviewPrincipalPresentationsByPluginId['acme.npm-candidate'])
       .toEqual(beforePrincipalPresentation);
     expect(await candidateRoots(happyHomeDir)).toEqual([]);
+
+    activeClient = widenedFixture.client;
+    activeMarketplaceFixture = widenedFixture;
+    await expect(requestInstalledUpdate(service)).resolves.toMatchObject({
+      kind: 'reviewRequired',
+      reason: 'authorityExpansion',
+      authorityExpansion: expect.arrayContaining(['selectedOptionalHostAccess']),
+    });
   });
 
   it('reports a newer blocked version through the install review while downloading only the selected compatible artifact', async () => {
@@ -856,9 +888,8 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const incompatibleFixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'incompatible'),
       version: '1.2.5',
-      compatibilityProjection: {
-        version: 1,
-        manifest: {
+      compatibilityProjection: createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse({
           schemaVersion: 2,
           id: 'acme.npm-candidate',
           version: '1.2.5',
@@ -868,9 +899,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           entrypoints: { daemon: './dist/daemon.mjs' },
           hostAccess: { required: [], optional: [] },
           contributes: {},
-        },
-        uiArtifacts: { version: 1, entries: [] },
-      },
+        }),
+        uiArtifacts: { version: 2, entries: [] },
+      }),
     });
     const bodyRequests: string[] = [];
     const client: NpmRegistryHttpsClient = {
@@ -908,7 +939,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         version: compatibleFixture.version,
         compatibility: {
@@ -944,9 +975,8 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const incompatibleFixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'incompatible'),
       version: '1.2.5',
-      compatibilityProjection: {
-        version: 1,
-        manifest: {
+      compatibilityProjection: createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse({
           schemaVersion: 2,
           id: 'acme.npm-candidate',
           version: '1.2.5',
@@ -956,9 +986,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           entrypoints: { daemon: longDaemonEntry },
           hostAccess: { required: [], optional: [] },
           contributes: {},
-        },
-        uiArtifacts: { version: 1, entries: [] },
-      },
+        }),
+        uiArtifacts: { version: 2, entries: [] },
+      }),
     });
     const bodyRequests: string[] = [];
     const client: NpmRegistryHttpsClient = {
@@ -996,7 +1026,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         version: compatibleFixture.version,
         compatibility: {
@@ -1013,7 +1043,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(bodyRequests).toEqual([
       `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
-    if (result.kind !== 'reviewRequired') throw new Error('Expected a manual installation review');
+    if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     expect(PluginInstallationReviewSchema.safeParse(result.review).success).toBe(true);
     await expect(service.decidePluginChange({
       pendingChangeId: result.pendingChangeId,
@@ -1032,9 +1062,8 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const incompatibleFixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'incompatible'),
       version: '1.2.5',
-      compatibilityProjection: {
-        version: 1,
-        manifest: {
+      compatibilityProjection: createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse({
           schemaVersion: 2,
           id: 'acme.npm-candidate',
           version: '1.2.5',
@@ -1044,9 +1073,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           entrypoints: { daemon: './dist/daemon.mjs' },
           hostAccess: { required: [], optional: [] },
           contributes: {},
-        },
-        uiArtifacts: { version: 1, entries: [] },
-      },
+        }),
+        uiArtifacts: { version: 2, entries: [] },
+      }),
     });
     const bodyRequests: string[] = [];
     const client: NpmRegistryHttpsClient = {
@@ -1084,7 +1113,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         version: compatibleFixture.version,
         compatibility: {
@@ -1101,7 +1130,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(bodyRequests).toEqual([
       `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
-    if (result.kind !== 'reviewRequired') throw new Error('Expected a manual installation review');
+    if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     const diagnostic = result.review.compatibility.blockedNewerVersions?.[0]?.diagnostics[0];
     expect(diagnostic?.message).not.toContain(longHappierEngine);
     expect(diagnostic?.message.length).toBeLessThanOrEqual(32_768);
@@ -1119,13 +1148,12 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       markerPath: join(happyHomeDir, 'compatible'),
       version: '1.2.4',
     });
-    const longContributionId = `generated-ui-${'x'.repeat(32_769)}`;
+    const longHostUiApiRange = `>=999.0.0${' '.repeat(32_769)}<1000.0.0`;
     const incompatibleFixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'incompatible'),
       version: '1.2.5',
-      compatibilityProjection: {
-        version: 1,
-        manifest: {
+      compatibilityProjection: createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse({
           schemaVersion: 2,
           id: 'acme.npm-candidate',
           version: '1.2.5',
@@ -1135,25 +1163,24 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           entrypoints: { daemon: './dist/daemon.mjs' },
           hostAccess: { required: [], optional: [] },
           contributes: {},
-        },
+        }),
         uiArtifacts: {
-          version: 1,
+          version: 2,
           entries: [{
-            contributionId: longContributionId,
+            artifactId: 'generated-ui',
             tier: 'hostedWeb',
-            entry: 'web/index.html',
+            entry: 'hosted-web/generated-ui/index.html',
             files: [{
-              relativePath: 'web/index.html',
+              relativePath: 'hosted-web/generated-ui/index.html',
               digest: `sha256:${'a'.repeat(64)}`,
               byteSize: 1,
             }],
             digest: `sha256:${'b'.repeat(64)}`,
-            builtWith: { bundler: 'vite', version: '7.0.0' },
-            hostUiApiVersion: '999.0.0',
-            compat: {},
+            builtWith: { staging: 'staticDirectory' },
+            hostUiApiRange: longHostUiApiRange,
           }],
         },
-      },
+      }),
     });
     const bodyRequests: string[] = [];
     const client: NpmRegistryHttpsClient = {
@@ -1191,7 +1218,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         version: compatibleFixture.version,
         compatibility: {
@@ -1208,9 +1235,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(bodyRequests).toEqual([
       `https://registry.example.test/${encodeURIComponent(compatibleFixture.packageName)}/-/candidate-${compatibleFixture.version}.tgz`,
     ]);
-    if (result.kind !== 'reviewRequired') throw new Error('Expected a manual installation review');
+    if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') throw new Error('Expected a manual installation review');
     const diagnostic = result.review.compatibility.blockedNewerVersions?.[0]?.diagnostics[0];
-    expect(diagnostic?.message).not.toContain(longContributionId);
+    expect(diagnostic?.message).not.toContain(longHostUiApiRange);
     expect(diagnostic?.message.length).toBeLessThanOrEqual(32_768);
     expect(PluginInstallationReviewSchema.safeParse(result.review).success).toBe(true);
     await expect(service.decidePluginChange({
@@ -1246,7 +1273,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(result).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         version: fixture.version,
         compatibility: {
@@ -1256,7 +1283,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       },
     });
     expect(getBody).toHaveBeenCalledTimes(1);
-    if (result.kind !== 'reviewRequired') throw new Error('Expected a manual installation review');
+    if (result.kind !== 'reviewRequired' || result.reviewKind !== 'installation') {
+      throw new Error('Expected a manual installation review');
+    }
     expect(result.review.compatibility.happier).not.toContain(happierEngine);
     expect(PluginInstallationReviewSchema.safeParse(result.review).success).toBe(true);
     await expect(service.decidePluginChange({
@@ -1305,7 +1334,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       prepare: async (request) => await prepareUpdate(request, {
         installedUpdate: {
           pluginId: 'acme.npm-candidate',
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       }),
     });
@@ -1320,7 +1349,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect((await createPluginRegistryStateStore({ happyHomeDir }).read())
       .plugins['acme.npm-candidate']).toMatchObject({
         source: { resolvedVersion: '1.2.4' },
-        install: { updatePolicy: 'reviewSensitiveChanges' },
+        install: { updatePolicy: 'allowed' },
       });
   });
 
@@ -1368,7 +1397,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       prepare: async (request) => await prepareUpdate(request, {
         installedUpdate: {
           pluginId: 'acme.npm-candidate',
-          updatePolicy: 'reviewSensitiveChanges',
+          updatePolicy: 'allowed',
         },
       }),
     });
@@ -1428,9 +1457,8 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     roots.push(happyHomeDir);
     const fixture = await createNpmPackageFixture({
       markerPath: join(happyHomeDir, 'never'),
-      compatibilityProjection: {
-        version: 1,
-        manifest: {
+      compatibilityProjection: createPluginCompatibilityProjectionV1({
+        manifest: PluginManifestV2Schema.parse({
           schemaVersion: 2,
           id: 'acme.npm-candidate',
           version: '1.2.3',
@@ -1440,9 +1468,9 @@ describe('createDaemonNpmPluginChangePreparer', () => {
           entrypoints: { daemon: './dist/daemon.mjs' },
           hostAccess: { required: [], optional: [] },
           contributes: {},
-        },
-        uiArtifacts: { version: 1, entries: [] },
-      },
+        }),
+        uiArtifacts: { version: 2, entries: [] },
+      }),
     });
     const prepare = createDaemonNpmPluginChangePreparer({
       happyHomeDir,
@@ -1525,7 +1553,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     expect(afterSelections).toEqual([before.install.optionalAccess?.[0]]);
   });
 
-  it('requires review when the prior installed manifest version no longer matches its persisted release record', async () => {
+  it('uses the persisted release record when an installed manifest file no longer matches it', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-npm-prior-manifest-mismatch-home-'));
     roots.push(happyHomeDir);
     const initialFixture = await createNpmPackageFixture({
@@ -1562,10 +1590,10 @@ describe('createDaemonNpmPluginChangePreparer', () => {
 
     activeClient = updateFixture.client;
     activeMarketplaceFixture = updateFixture;
-    const result = await requestInstalledUpdate(service);
-    expect(result).toMatchObject({ kind: 'reviewRequired' });
-    if (result.kind !== 'reviewRequired') throw new Error('Expected unverifiable prior-manifest review');
-    await service.decidePluginChange({ pendingChangeId: result.pendingChangeId, decision: 'cancel' });
+    await expect(requestInstalledUpdate(service)).resolves.toMatchObject({
+      kind: 'committed',
+      pluginId: 'acme.npm-candidate',
+    });
   });
 
   it('requires review when a same-channel update widens required access but not for unselected optional access', async () => {
@@ -1671,7 +1699,12 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     activeClient = widenedRequiredFixture.client;
     activeMarketplaceFixture = widenedRequiredFixture;
     const requiredResult = await requestInstalledUpdate(service);
-    expect(requiredResult).toMatchObject({ kind: 'reviewRequired' });
+    expect(requiredResult).toMatchObject({
+      kind: 'reviewRequired',
+      reason: 'authorityExpansion',
+      currentVersion: '1.2.3',
+      authorityExpansion: ['requiredHostAccess'],
+    });
     if (requiredResult.kind !== 'reviewRequired') throw new Error('Expected widened required-access review');
     await service.decidePluginChange({ pendingChangeId: requiredResult.pendingChangeId, decision: 'cancel' });
 
@@ -1689,7 +1722,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       .toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
   });
 
-  it('requires review for an explicit update of a record under the manual update policy', async () => {
+  it('applies an authority-neutral explicit update without another review decision', async () => {
     const happyHomeDir = await mkdtemp(join(tmpdir(), 'happier-npm-manual-policy-update-home-'));
     roots.push(happyHomeDir);
     const initialFixture = await createNpmPackageFixture({
@@ -1703,7 +1736,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     const marketplaceSource = (await createMarketplaceSourceRegistryStore({ happyHomeDir }).read()).sources[0]!;
     let activeClient = initialFixture.client;
     let activeMarketplaceFixture = initialFixture;
-    const manualPolicy = { updatePolicy: 'reviewEveryUpdate' } as const;
+    const allowedPolicy = { updatePolicy: 'allowed' } as const;
     const service = createNpmPluginChangeService({
       happyHomeDir,
       prepare: createDaemonNpmPluginChangePreparer({
@@ -1715,7 +1748,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         marketplaceIndexService: exactMarketplaceIndexService(happyHomeDir, () => ({
           fixture: activeMarketplaceFixture,
           source: marketplaceSource,
-          listingOverrides: manualPolicy,
+          listingOverrides: allowedPolicy,
         })),
       }),
     });
@@ -1723,18 +1756,16 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       service,
       fixture: initialFixture,
       source: marketplaceSource,
-      listingOverrides: manualPolicy,
+      listingOverrides: allowedPolicy,
     });
     expect((await createPluginRegistryStateStore({ happyHomeDir }).read())
-      .plugins['acme.npm-candidate']?.install.updatePolicy).toBe('reviewEveryUpdate');
+      .plugins['acme.npm-candidate']?.install.updatePolicy).toBe('allowed');
 
     activeClient = updateFixture.client;
     activeMarketplaceFixture = updateFixture;
-    const manualResult = await requestInstalledUpdate(service);
+    const updateResult = await requestInstalledUpdate(service);
 
-    expect(manualResult).toMatchObject({ kind: 'reviewRequired' });
-    if (manualResult.kind !== 'reviewRequired') throw new Error('Expected manual-policy update review');
-    await service.decidePluginChange({ pendingChangeId: manualResult.pendingChangeId, decision: 'cancel' });
+    expect(updateResult).toMatchObject({ kind: 'committed', pluginId: 'acme.npm-candidate' });
   });
 
   it('requires review for npm channel or publisher-package substitution', async () => {
@@ -2004,7 +2035,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     });
     if (result.kind !== 'reviewRequired') throw new Error('Expected curated npm Install and trust review');
@@ -2058,7 +2089,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     });
     if (result.kind !== 'reviewRequired') throw new Error('Expected curated npm Install and trust review');
@@ -2104,7 +2135,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     })).rejects.toMatchObject({ code: 'source_changed' });
 
@@ -2175,7 +2206,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
       },
     } as const;
     const resolvedExactListing = await exactMarketplaceIndexService(happyHomeDir, { fixture, source: marketplaceSource })
@@ -2264,7 +2295,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
       selector: fixture.version,
     });
     expect(requested).toMatchObject({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: {
         updateChannel: {
           kind: 'npm',
@@ -2348,7 +2379,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
         integrity: fixture.integrity,
         manifestDigest: fixture.manifestDigest,
         review: { status: 'approved', reviewedAt: '2026-07-21T00:00:00.000Z' },
-        updatePolicy: 'reviewSensitiveChanges',
+        updatePolicy: 'allowed',
         ...override,
       },
     })).rejects.toThrow(/marketplace listing/i);
@@ -2388,7 +2419,7 @@ describe('createDaemonNpmPluginChangePreparer', () => {
     });
 
     expect(begun).toEqual(expect.objectContaining({
-      kind: 'reviewRequired',
+      kind: 'reviewRequired', reviewKind: 'installation', reason: 'firstInstall', currentVersion: null, authorityExpansion: [],
       review: expect.objectContaining({
         pluginId: 'acme.npm-candidate',
         version: fixture.version,

@@ -1451,7 +1451,8 @@ describe('createActionExecutor (approvals)', () => {
         kind: 'plugin',
         pluginId: 'acme.plugin',
         contributionLocalId: 'approval-queue',
-        immutableGenerationId: 'generation-1',
+        occurrenceId: 'plugin-occurrence-1',
+        sourceCustody: { kind: 'development', registeredRootId: 'plugin-root' },
       },
       defaultSessionId: 'requesting-session',
     });
@@ -1726,6 +1727,41 @@ describe('createActionExecutor (approvals)', () => {
     });
     expect(sessionSendMessage).toHaveBeenCalledOnce();
     expect(storedRequest.status).toBe('executing');
+  });
+
+  it('reports outcome unknown when the terminal persistence write throws a transport error', async () => {
+    let storedRequest = createApprovalRequest('approved');
+    const approvalsGet = vi.fn(async () => structuredClone(storedRequest));
+    const approvalsUpdate = vi.fn(async ({ request }: { request: ApprovalRequest }) => {
+      if (storedRequest.status === 'approved' && request.status === 'executing') {
+        storedRequest = structuredClone(request);
+        return { ok: true as const };
+      }
+      throw Object.assign(new Error('reset'), { code: 'ECONNRESET' });
+    });
+    let effects = 0;
+    const sessionSendMessage = vi.fn(async () => {
+      effects += 1;
+      return { status: 'accepted' as const, localId: 'local-1' };
+    });
+    const executor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+
+    await expect(executor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toEqual({
+      ok: false,
+      errorCode: 'approval_execution_outcome_unknown',
+      error: 'approval_execution_outcome_unknown',
+    });
+    expect(effects).toBe(1);
+    expect(storedRequest.status).toBe('executing');
+
+    // The claim stays persisted, so a replay of the same Artifact reports the
+    // same post-effect uncertainty rather than running the effect again.
+    const freshExecutor = createExecutor({ approvalsGet, approvalsUpdate, sessionSendMessage });
+    await expect(freshExecutor.replayApprovedApprovalRequest({ artifactId: 'a1' })).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'approval_execution_outcome_unknown',
+    });
+    expect(effects).toBe(1);
   });
 
   it('persists strict Board conflict details after deferred approval execution', async () => {

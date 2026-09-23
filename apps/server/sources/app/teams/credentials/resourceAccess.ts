@@ -133,14 +133,6 @@ export function projectTeamCredentialEntitlement(
     if (!membership?.effective || membership.teamId !== resource.teamId) {
         return { ok: false, reason: "access_removed" };
     }
-    if (!custodianMembership?.effective || custodianMembership.teamId !== resource.teamId
-        || custodianMembership.accountId !== resource.custodianAccountId) {
-        return { ok: false, reason: "source_owner_required" };
-    }
-    if (!resource.enabled) return { ok: false, reason: "disabled" };
-
-    const ceiling = TeamCredentialDisclosureCeilingV1Schema.safeParse(resource.disclosureCeiling);
-    if (!ceiling.success) return { ok: false, reason: "resource_corrupt" };
 
     const candidates = [
         ...(resource.allMembersDeliveryMode === null ? [] : [{
@@ -163,6 +155,21 @@ export function projectTeamCredentialEntitlement(
             matches: grant.teamMembershipId === membership.teamMembershipId,
         })),
     ];
+    // Custodian standing, enablement and the source owner's ceiling are the
+    // audience's business. A same-Team caller who matches no grant learns only
+    // that they have no access, exactly as the catalog read already decides.
+    if (!candidates.some((candidate) => candidate.matches)) {
+        return { ok: false, reason: "access_removed" };
+    }
+    if (!custodianMembership?.effective || custodianMembership.teamId !== resource.teamId
+        || custodianMembership.accountId !== resource.custodianAccountId) {
+        return { ok: false, reason: "source_owner_required" };
+    }
+    if (!resource.enabled) return { ok: false, reason: "disabled" };
+
+    const ceiling = TeamCredentialDisclosureCeilingV1Schema.safeParse(resource.disclosureCeiling);
+    if (!ceiling.success) return { ok: false, reason: "resource_corrupt" };
+
     const matchedGrants: TeamCredentialMatchedGrant[] = [];
     let mayBroker = false;
     let mayReceiveDirect = false;
@@ -176,7 +183,6 @@ export function projectTeamCredentialEntitlement(
         mayBroker ||= mode.data === "brokered" || mode.data === "both";
         mayReceiveDirect ||= mode.data === "direct" || mode.data === "both";
     }
-    if (matchedGrants.length === 0) return { ok: false, reason: "access_removed" };
     return {
         ok: true,
         resourceId: resource.id,

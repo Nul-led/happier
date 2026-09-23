@@ -20,6 +20,7 @@ import {
 } from './actions';
 import { createPluginActionCallerMaterializationFixture } from './actionCaller.testkit';
 import { createProductionPluginInvocationServiceOwners } from './production';
+import { createPluginRuntimeOccurrenceId } from '@/plugins/runtime/runtimeSlots';
 
 type TestActionExecutorOverrides = Partial<Pick<
     ActionExecutorDeps,
@@ -129,8 +130,7 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'plugin.example', version: '1.0.0' },
                 contribution: { id: 'action', qualifiedId: 'plugin.example/action' },
-                generation: 'generation-1',
-                immutableGenerationId: 'immutable-generation-1',
+                occurrenceId: 'immutable-occurrenceId-1', sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: 'plugin-call-1',
                 surface: 'plugin',
                 externalActionContext,
@@ -138,7 +138,7 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture('plugin.example')
                         .resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -166,12 +166,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'archive-team', qualifiedId: `${pluginId}/actions/archive-team` },
-                generation: 'generation-1',
-                immutableGenerationId: 'external-home-admin-generation',
+                occurrenceId: 'external-home-admin-occurrenceId', sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: 'external-home-admin-archive',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: {
                 execute: vi.fn(async () => ({
@@ -210,12 +209,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'archive-team', qualifiedId: `${pluginId}/actions/archive-team` },
-                generation: 'generation-1',
-                immutableGenerationId: 'external-home-admin-generation',
+                occurrenceId: 'external-home-admin-occurrenceId', sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: `external-home-admin-${errorCode}`,
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: {
                 execute: vi.fn(async () => ({ ok: false as const, errorCode, error: errorCode })),
@@ -262,12 +260,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'team-admin', qualifiedId: `${pluginId}/actions/team-admin` },
-                generation: 'generation-1',
-                immutableGenerationId: `${pluginId}-immutable-generation`,
+                occurrenceId: `${pluginId}-immutable-occurrenceId`, sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: `${pluginId}-lane01`,
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -388,12 +385,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'identity-admin', qualifiedId: `${pluginId}/actions/identity-admin` },
-                generation: 'generation-1',
-                immutableGenerationId: 'external-identity-generation',
+                occurrenceId: 'external-identity-occurrenceId', sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: 'external-identity',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -439,12 +435,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'admin', qualifiedId: `${pluginId}/actions/admin` },
-                generation: 'generation-1',
-                immutableGenerationId: `${pluginId}-immutable-generation`,
+                occurrenceId: `${pluginId}-immutable-occurrenceId`, sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: `${pluginId}-preview`,
                 surface: 'cli',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -484,12 +479,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'identity-read', qualifiedId: `${pluginId}/actions/identity-read` },
-                generation: 'generation-1',
-                immutableGenerationId: `${pluginId}-immutable-generation`,
+                occurrenceId: `${pluginId}-immutable-occurrenceId`, sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: `${pluginId}-github-app-list`,
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -513,7 +507,10 @@ describe('plugin invocation ActionsService', () => {
 
     it('gives bundled and trusted external installed plugins the same Lane 10 resource Actions', async () => {
         const resultByActionId = new Map<string, unknown>([
-            ['teams.credentials.list', { resources: [], viewer: { manageCredentials: false, offerOwnCredential: false } }],
+            // The canonical page schemas carry `nextCursor`, so the parity
+            // expectation is the parsed page a plugin actually receives — not
+            // a cursor-free shape the production parser would never produce.
+            ['teams.credentials.list', { resources: [], viewer: { manageCredentials: false, offerOwnCredential: false }, nextCursor: null }],
             ['teams.credentials.sources.list', {
                 candidates: [],
                 supportedKinds: ['connected_account', 'connected_pool', 'provider_connection'],
@@ -524,7 +521,7 @@ describe('plugin invocation ActionsService', () => {
                     eligiblePools: [],
                 },
             }],
-            ['teams.credentials.entitled.list', { resources: [] }],
+            ['teams.credentials.entitled.list', { resources: [], nextCursor: null }],
             ['teams.credentials.externalKeys.list', { keys: [] }],
             ['secrets.shared.list', { resources: [] }],
         ]);
@@ -543,12 +540,11 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture(pluginId)
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'credential-consumer', qualifiedId: `${pluginId}/actions/credential-consumer` },
-                generation: 'generation-1',
-                immutableGenerationId: `${pluginId}-immutable-generation`,
+                occurrenceId: `${pluginId}-immutable-occurrenceId`, sourceCustody: { kind: 'development', registeredRootId: 'fixture-root' },
                 correlationId: `${pluginId}-credentials`,
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -592,12 +588,12 @@ describe('plugin invocation ActionsService', () => {
                 id: 'credential-consumer',
                 qualifiedId: 'acme.external-installed/actions/credential-consumer',
             },
-            generation: 'generation-1',
-            immutableGenerationId: 'acme.external-installed-immutable-generation',
+            occurrenceId: createPluginRuntimeOccurrenceId('acme.external-installed'),
+            sourceCustody: { kind: 'development' as const, registeredRootId: 'fixture-root' },
             correlationId: 'lane10-approval',
             surface: 'background' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const input = {
             resourceId: 'resource-1',
@@ -645,7 +641,7 @@ describe('plugin invocation ActionsService', () => {
                 plugin: { id: 'acme.agent', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.agent').resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'retained-list-1',
                 surface: 'agent',
                 session: { id: 'session-1' },
@@ -655,8 +651,8 @@ describe('plugin invocation ActionsService', () => {
                     inputId: 'input-1', turnId: 'turn-1', userMessageSeq: 7, userMessageSeqs: [7],
                     callerPermissionMode: 'yolo',
                 }),
-                isGenerationCurrent: () => true,
-            }, owners.createOrdinaryServiceBinding('generation-1', 'retained-current-global-actions')).actions;
+                isOccurrenceCurrent: () => true,
+            }, owners.createOrdinaryServiceBinding('occurrenceId-1', 'retained-current-global-actions')).actions;
         await expect(service.execute('session.list', {})).rejects.toMatchObject({ code: 'unsupported_action' });
         expect(sessionList).not.toHaveBeenCalled();
     });
@@ -665,11 +661,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.automations', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.automations').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'automation-run-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: {
                 execute: vi.fn(async () => ({
@@ -706,10 +702,10 @@ describe('plugin invocation ActionsService', () => {
         const seed = {
             plugin: { id: 'acme.automations', version: '1.0.0' },
             resolveCurrentPluginMaterializationRef: materialization.resolveCurrentPluginMaterializationRef,
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             surface: 'background' as const,
             signal: new AbortController().signal,
-            isGenerationCurrent: () => true,
+            isOccurrenceCurrent: () => true,
         };
         const malformedStart = createPluginInvocationActionsService({
             seed,
@@ -774,10 +770,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.automations', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: materialization.resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => false,
+                isOccurrenceCurrent: () => false,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction: vi.fn(),
@@ -792,10 +788,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.automations', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: materialization.resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => ++currentnessChecks < 3,
+                isOccurrenceCurrent: () => ++currentnessChecks < 3,
             },
             actionExecutor: {
                 execute: vi.fn(async () => ({
@@ -818,10 +814,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.automations', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: materialization.resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -857,12 +853,12 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.interactions', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.interactions').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'interaction-1',
                 surface: 'ui',
                 session: { id: 'session-bound' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: createActionExecutorForTest({
                 sessionUserActionAnswer,
@@ -902,11 +898,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'happier.channels', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('happier.channels').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'connection-transfer-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: createActionExecutorForTest({ pluginWebhookAction }),
             invokeContributedAction: vi.fn(),
@@ -967,11 +963,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'happier.channels', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('happier.channels').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'connection-transfer-2',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: createActionExecutorForTest({ pluginWebhookAction }),
             invokeContributedAction: vi.fn(),
@@ -1044,10 +1040,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.browser', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.browser').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'cli',
                 signal: retirement.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor,
             invokeContributedAction: vi.fn(),
@@ -1090,13 +1086,13 @@ describe('plugin invocation ActionsService', () => {
                 resolveCurrentPluginMaterializationRef:
                     callerMaterialization.resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'search', qualifiedId: 'acme.memory/actions/search' },
-                generation: 'generation-1',
-                immutableGenerationId: 'memory-immutable-generation-a',
+                occurrenceId: 'memory-occurrence-a',
+                sourceCustody: { kind: 'development', registeredRootId: 'memory-root' },
                 correlationId: 'correlation-1',
                 surface: 'cli',
                 session: { id: 'session-1' },
                 signal: retirement.signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -1132,7 +1128,8 @@ describe('plugin invocation ActionsService', () => {
                     pluginId: 'acme.memory',
                     contributionLocalId: 'search',
                     materialization: callerMaterialization.materialization,
-                    immutableGenerationId: 'memory-immutable-generation-a',
+                    occurrenceId: 'memory-occurrence-a',
+                    sourceCustody: { kind: 'development', registeredRootId: 'memory-root' },
                 },
                 actionRequestId: 'correlation-1:memory.search:1',
                 signal: retirement.signal,
@@ -1156,7 +1153,7 @@ describe('plugin invocation ActionsService', () => {
                     createPluginActionCallerMaterializationFixture('acme.agent')
                         .resolveCurrentPluginMaterializationRef,
                 contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 correlationId: 'invocation-1',
                 surface: 'agent',
                 session: { id: 'session-1' },
@@ -1169,7 +1166,7 @@ describe('plugin invocation ActionsService', () => {
                     causalPermissionAuthority,
                     callerPermissionMode: 'yolo',
                 }),
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -1213,7 +1210,7 @@ describe('plugin invocation ActionsService', () => {
                 createPluginActionCallerMaterializationFixture('acme.agent')
                     .resolveCurrentPluginMaterializationRef,
             contribution: { id: 'agent', qualifiedId: 'acme.agent/agents/agent' },
-            generation: 'generation-1',
+            occurrenceId: 'occurrenceId-1',
             correlationId: 'invocation-1',
             surface: 'agent',
             session: { id: 'session-1' },
@@ -1226,8 +1223,8 @@ describe('plugin invocation ActionsService', () => {
                 causalPermissionAuthority,
                 callerPermissionMode: 'yolo',
             }),
-            isGenerationCurrent: () => true,
-        }, owners.createOrdinaryServiceBinding('generation-1', 'composed-witness-actions')).actions;
+            isOccurrenceCurrent: () => true,
+        }, owners.createOrdinaryServiceBinding('occurrenceId-1', 'composed-witness-actions')).actions;
 
         await expect(service.execute('session.list', {})).resolves.toEqual({ sessions: [] });
         expect(execute).toHaveBeenCalledWith(
@@ -1252,10 +1249,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.memory', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.memory').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'cli',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: {
                 execute: async () => ({ ok: true, result: { privateMemoryRows: [] } }),
@@ -1274,10 +1271,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.memory', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.memory').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'cli',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: {
                 execute: async () => ({ ok: false, errorCode: 'action_disabled', error: 'action_disabled' }),
@@ -1311,10 +1308,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.channels', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.channels').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -1338,10 +1335,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.hook', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.hook').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'background',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
                 bypassActionInterception: true,
             },
             actionExecutor: { execute },
@@ -1370,11 +1367,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.caller').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 session: { id: 'session-7' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor,
             invokeContributedAction: vi.fn(),
@@ -1420,10 +1417,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.caller').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: createPermissionActionExecutor(pluginPermissionGrantAction),
             invokeContributedAction: vi.fn(),
@@ -1465,13 +1462,12 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 session: { id: 'session-1' },
                 signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1490,7 +1486,7 @@ describe('plugin invocation ActionsService', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 materialization: callerMaterialization.materialization,
                 originSurface: 'agent',
             },
@@ -1517,12 +1513,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: () => currentCaller,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1566,12 +1561,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             // Boundary fixture intentionally models a malformed richer result
@@ -1623,12 +1617,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction: vi.fn<InvokeContributedAction>(async () => Object.freeze({
@@ -1664,12 +1657,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction: vi.fn<InvokeContributedAction>(async () => (
@@ -1719,12 +1711,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1746,7 +1737,7 @@ describe('plugin invocation ActionsService', () => {
                 kind: 'plugin',
                 pluginId: 'acme.caller',
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                immutableGenerationId: 'caller-generation-1',
+                occurrenceId: 'caller-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'caller-root' },
                 materialization: callerMaterialization.materialization,
                 originSurface: 'agent',
             },
@@ -1780,11 +1771,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.caller/actions/caller' },
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'agent',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1825,12 +1816,11 @@ describe('plugin invocation ActionsService', () => {
                     id: 'gateway-supervisor',
                     qualifiedId: 'acme.background/backgroundServices/gateway-supervisor',
                 },
-                generation: 'generation-1',
-                immutableGenerationId: 'background-generation-1',
+                occurrenceId: 'background-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'background-root' },
                 surface: 'background',
                 resolveCurrentPluginMaterializationRef: callerMaterialization.resolveCurrentPluginMaterializationRef,
                 signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1852,7 +1842,7 @@ describe('plugin invocation ActionsService', () => {
                     id: 'gateway-supervisor',
                     qualifiedId: 'acme.background/backgroundServices/gateway-supervisor',
                 },
-                immutableGenerationId: 'background-generation-1',
+                occurrenceId: 'background-occurrence-1', sourceCustody: { kind: 'development', registeredRootId: 'background-root' },
                 materialization: callerMaterialization.materialization,
                 originSurface: 'background',
             },
@@ -1869,10 +1859,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.unbound', version: '1.0.0' },
                 contribution: { id: 'caller', qualifiedId: 'acme.unbound/actions/caller' },
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'agent',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: vi.fn() },
             invokeContributedAction,
@@ -1891,10 +1881,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.caller').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -1934,11 +1924,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.caller').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 session: { id: 'session-bound' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -1963,11 +1953,11 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.caller', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.caller').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 session: { id: 'session-bound' },
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute: unavailableExecute },
             invokeContributedAction: vi.fn(),
@@ -1999,10 +1989,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.browser', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.browser').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'ui',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => true,
+                isOccurrenceCurrent: () => true,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -2024,7 +2014,7 @@ describe('plugin invocation ActionsService', () => {
         expect(execute).toHaveBeenCalledTimes(1);
     });
 
-    it('composes caller cancellation with generation retirement and rejects late publication', async () => {
+    it('composes caller cancellation with occurrenceId retirement and rejects late publication', async () => {
         let current = true;
         const retirement = new AbortController();
         const caller = new AbortController();
@@ -2043,10 +2033,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.memory', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.memory').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'cli',
                 signal: retirement.signal,
-                isGenerationCurrent: () => current,
+                isOccurrenceCurrent: () => current,
             },
             actionExecutor: { execute },
             invokeContributedAction: vi.fn(),
@@ -2060,7 +2050,7 @@ describe('plugin invocation ActionsService', () => {
         });
     });
 
-    it('rechecks generation authority immediately before invoking the host Action executor', async () => {
+    it('rechecks occurrenceId authority immediately before invoking the host Action executor', async () => {
         let currentnessReads = 0;
         const execute = vi.fn(async () => ({
             ok: true as const,
@@ -2070,10 +2060,10 @@ describe('plugin invocation ActionsService', () => {
             seed: {
                 plugin: { id: 'acme.memory', version: '1.0.0' },
                 resolveCurrentPluginMaterializationRef: createPluginActionCallerMaterializationFixture('acme.memory').resolveCurrentPluginMaterializationRef,
-                generation: 'generation-1',
+                occurrenceId: 'occurrenceId-1',
                 surface: 'agent',
                 signal: new AbortController().signal,
-                isGenerationCurrent: () => {
+                isOccurrenceCurrent: () => {
                     currentnessReads += 1;
                     return currentnessReads === 1;
                 },

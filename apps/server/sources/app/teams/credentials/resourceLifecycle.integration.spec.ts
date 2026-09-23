@@ -369,10 +369,12 @@ describe("Team credential resource lifecycle", () => {
             patch: { resourceId: resource.id, expectedRevision: 0, enabled: false,
                 disclosureCeiling: "brokered_only" },
         }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 1 });
+        // Narrowing the ceiling removes the direct audience; it never converts
+        // a direct grant into broker authority the custodian never granted.
         await expect(db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).resolves.toMatchObject({
             enabled: false,
             disclosureCeiling: "brokered_only",
-            allMembersDeliveryMode: "brokered",
+            allMembersDeliveryMode: null,
             sessionUsePolicy: "personal_allowed",
         });
         await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
@@ -385,6 +387,102 @@ describe("Team credential resource lifecycle", () => {
             authentication: TEST_AUTHENTICATION,
             patch: { resourceId: resource.id, expectedRevision: 1, enabled: true },
         }))).resolves.toEqual({ ok: false, error: "resource_forbidden" });
+    });
+
+    it("lets a source custodian withdraw through a broker Machine that is no longer usable", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const team = await db.team.create({ data: { name: "Broken broker withdrawal" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "member" } });
+        const broker = await db.machine.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, active: true, kind: "persistent",
+            metadata: "{}", metadataVersion: 1,
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: custodian.id, displayName: "Brokered source",
+            disclosureCeiling: "direct_allowed", sessionUsePolicy: "personal_allowed",
+            allMembersDeliveryMode: "both",
+            brokerMachineId: broker.id,
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection",
+                connectionSecurityFingerprint: "connection-security:v1:test:broken-broker", credentialSlotId: "apiKey" }),
+        } });
+        await db.machine.update({ where: { id: broker.id }, data: { revokedAt: new Date() } });
+
+        // Disabling and narrowing take authority away from exactly the Machine
+        // that is gone, so its unusability must not block the withdrawal.
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: resource.id, expectedRevision: 0, enabled: false },
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 1 });
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: resource.id, expectedRevision: 1, disclosureCeiling: "brokered_only" },
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 2 });
+
+        // Selecting a new placement is still a selection and is validated.
+        const replacement = await db.machine.create({ data: {
+            id: crypto.randomUUID(), accountId: custodian.id, active: true, kind: "persistent",
+            metadata: "{}", metadataVersion: 1,
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: {
+                resourceId: resource.id, expectedRevision: 2,
+                brokerPlacement: { kind: "machine", machineId: replacement.id },
+            },
+        }))).resolves.toMatchObject({ ok: false });
+    });
+
+    // Child 01 §7.1 rule 5: narrowing the ceiling is a withdrawal of consent to
+    // direct disclosure, not a grant of broker authority an ordinary custodian
+    // may not create. `both` keeps its broker half; `direct` ends.
+    it("ends direct-only grants when the ceiling narrows instead of converting them to brokered", async () => {
+        const custodian = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const directMember = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const bothMember = await db.account.create({ data: { encryptionMode: "plain", publicKey: null } });
+        const team = await db.team.create({ data: { name: "Ceiling narrowing" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "member" } });
+        const directMembership = await db.teamMembership.create({ data: { teamId: team.id, accountId: directMember.id, role: "member" } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: bothMember.id, role: "member" } });
+        const group = await db.teamGroup.create({ data: { teamId: team.id, name: "Both", nameKey: "both" } });
+        const broker = await db.machine.create({ data: {
+            id: `narrowing-broker-${custodian.id}`,
+            accountId: custodian.id,
+            metadata: "{}",
+            kind: "persistent",
+            operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+            operationProtocolCapabilitiesRevision: 1,
+        } });
+        const resource = await db.teamCredentialResource.create({ data: {
+            teamId: team.id, custodianAccountId: custodian.id, displayName: "Narrowing source",
+            disclosureCeiling: "direct_allowed", sessionUsePolicy: "personal_allowed",
+            allMembersDeliveryMode: "direct", brokerMachineId: broker.id,
+            sourceBindingJson: JSON.stringify({ v: 1, kind: "provider_connection", connectionId: "connection",
+                connectionSecurityFingerprint: "connection-security:v1:test:narrowing", credentialSlotId: "apiKey" }),
+            memberGrants: { create: { teamMembershipId: directMembership.id, deliveryMode: "direct" } },
+            groupGrants: { create: { teamGroupId: group.id, deliveryMode: "both" } },
+        } });
+
+        await expect(inTx(tx => updateTeamCredentialResourceInTx(tx, {
+            actorAccountId: custodian.id,
+            authentication: TEST_AUTHENTICATION,
+            patch: { resourceId: resource.id, expectedRevision: 0, disclosureCeiling: "brokered_only" },
+        }))).resolves.toEqual({ ok: true, resourceId: resource.id, revision: 1 });
+
+        await expect(db.teamCredentialResource.findUniqueOrThrow({ where: { id: resource.id } })).resolves.toMatchObject({
+            disclosureCeiling: "brokered_only",
+            allMembersDeliveryMode: null,
+            revision: 1,
+        });
+        await expect(db.teamCredentialMemberGrant.findMany({ where: { resourceId: resource.id } })).resolves.toEqual([]);
+        await expect(db.teamCredentialGroupGrant.findMany({
+            where: { resourceId: resource.id }, select: { teamGroupId: true, deliveryMode: true },
+        })).resolves.toEqual([{ teamGroupId: group.id, deliveryMode: "brokered" }]);
     });
 
     it("keeps exact broker Machine selection under the source custodian authority", async () => {

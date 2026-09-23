@@ -112,6 +112,9 @@ export function useTeamSignInHome(params: Readonly<{
     const carrier = params.carrier ?? null;
     const serverId = params.serverId ?? null;
     const linkTarget = usePortableHomeLinkTarget(carrier);
+    // The carrier branch's freshness now comes from the link-target owner itself.
+    // This generation still serves the carrier-less `serverId` branch below, which
+    // reads `getServerProfileById` directly, so it is not redundant here.
     const profilesGeneration = useServerProfilesGeneration();
     return React.useMemo(
         () => resolveTeamSignInHome({ carrier, linkTarget, serverId }),

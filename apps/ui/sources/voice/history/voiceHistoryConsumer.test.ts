@@ -467,7 +467,10 @@ describe('createVoiceHistoryConsumer', () => {
       'voice-history-session',
       { key: 'server-a/account-a' },
     );
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
     expect(consumer.read()).toMatchObject({ sessionId: null, rows: [] });
   });
 
@@ -667,7 +670,10 @@ describe('createVoiceHistoryConsumer', () => {
       sessionId: 'voice-history-old',
     });
     await expect(consumer.clear()).resolves.toEqual({ cleared: true });
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-old');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-old',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
 
     // The direct-media acquisition owner, not History, canonically recreates
     // the fixed tag. History must not retain or reuse the deleted session id.
@@ -761,7 +767,10 @@ describe('createVoiceHistoryConsumer', () => {
       'voice-history-session',
       expect.objectContaining({ key: 'server-a/account-a' }),
     );
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
     expect(consumer.read()).toMatchObject({
       sessionId: null,
       rows: [],
@@ -794,7 +803,10 @@ describe('createVoiceHistoryConsumer', () => {
     expect(consumer.read().rows).toHaveLength(1);
 
     await expect(consumer.clear()).resolves.toEqual({ cleared: true });
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
     expect(consumer.read()).toMatchObject({ sessionId: null, rows: [] });
   });
 
@@ -829,7 +841,10 @@ describe('createVoiceHistoryConsumer', () => {
 
     deleteSession.mockResolvedValueOnce({ success: true } as never);
     await expect(consumer.clear()).resolves.toEqual({ cleared: true });
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
   });
 
   it('keeps an unclassified clear failure retryable without retiring local history', async () => {
@@ -926,7 +941,10 @@ describe('createVoiceHistoryConsumer', () => {
     await expect(staleClear).rejects.toMatchObject({
       name: 'VoiceHistoryOperationSupersededError',
     });
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      expect.objectContaining({ key: 'server-a/account-a' }),
+    );
     expect(consumer.read()).toMatchObject({
       sessionId: null,
       rows: [],

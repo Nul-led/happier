@@ -109,13 +109,21 @@ const FORWARDED_REQUEST_HEADERS = new Set([
     "user-agent",
 ]);
 
+/**
+ * Caller headers that must never reach a broker request.
+ *
+ * Reverse-proxy forwarding headers are deliberately absent: the documented
+ * self-hosted deployment puts Nginx in front of this route and adds
+ * `Forwarded`/`X-Forwarded-*`/`X-Real-IP`, and `trustProxy` already owns the
+ * client address they carry. The forward allowlist above is what keeps proxy
+ * metadata out of the broker DTO, so rejecting the request would only make the
+ * public API unusable on its own documented deployment.
+ */
 function isRejectedCallerHeader(name: string): boolean {
     return name.startsWith("x-happier-")
         || name === "cookie"
         || name === "set-cookie"
-        || name === "proxy-authorization"
-        || name === "forwarded"
-        || name.startsWith("x-forwarded-");
+        || name === "proxy-authorization";
 }
 
 function forwardHeaders(

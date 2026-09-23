@@ -19,7 +19,7 @@ installSessionDetailsPanelCommonModuleMocks();
 const openDetailsTabSpy = vi.hoisted(() => vi.fn());
 const detailsSplitWorkspaceSpy = vi.hoisted(() => vi.fn((props: {
     renderHeaderActions?: (() => React.ReactNode) | null;
-    renderTabContent?: ((tab: unknown) => React.ReactNode) | null;
+    renderTabContent?: ((tab: unknown, presentation: Readonly<{ active: boolean }>) => React.ReactNode) | null;
 }) => React.createElement(React.Fragment, null, props.renderHeaderActions?.())));
 
 vi.mock('@/components/appShell/panes/details/workspace/DetailsSplitWorkspace', () => ({
@@ -212,6 +212,7 @@ describe('SessionDetailsPanel browser product mount', () => {
         const placement = {
             id: 'surfacePlacement:com.example.viewer:workspace-file',
             pluginId: 'com.example.viewer',
+            occurrenceId: 'com-example-viewer-occurrence',
             contributionKind: 'surfacePlacement' as const,
             descriptorId: 'workspace-file',
             binding,
@@ -354,7 +355,17 @@ describe('SessionDetailsPanel browser product mount', () => {
         const workspaceProps = detailsSplitWorkspaceSpy.mock.calls.at(-1)?.[0];
         expect(workspaceProps?.renderTabContent).toBeTypeOf('function');
 
-        const panelScreen = await renderScreen(<>{workspaceProps?.renderTabContent?.(launchpadTab)}</>);
+        // The retained-tab fact the group supplies reaches the surface host: a tab
+        // nobody is looking at must not mount editors or executable frames.
+        const retainedScreen = await renderScreen(
+            <>{workspaceProps?.renderTabContent?.(launchpadTab, { active: false })}</>,
+        );
+        expect((retainedScreen.root.findByType('DetailsSurfaceHostMock' as never)
+            .props.props as { active?: unknown }).active).toBe(false);
+
+        const panelScreen = await renderScreen(
+            <>{workspaceProps?.renderTabContent?.(launchpadTab, { active: true })}</>,
+        );
         const detailsHost = panelScreen.root.findByType('DetailsSurfaceHostMock' as never);
         const detailsHostProps = detailsHost.props.props as {
             renderers: ReadonlyArray<{

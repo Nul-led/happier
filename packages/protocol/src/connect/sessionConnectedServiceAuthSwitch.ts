@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 import {
-  ConnectedAccountServiceKeySchema,
+  ConnectedAccountServiceKeyIngressSchema,
   ConnectedServiceBindingsV2IngressSchema,
 } from './connectedServiceBindings.js';
 import { SessionTeamCredentialBindingIntentsV1Schema } from '../teams/credentials/sessionBindingIntentV1.js';
@@ -12,9 +12,12 @@ export const SessionConnectedServiceAuthSwitchRpcParamsSchema = z.object({
   // Current callers write V2. Released V1 callers remain a required
   // new-daemon/old-client ingress and normalize before domain logic.
   bindings: ConnectedServiceBindingsV2IngressSchema,
-  rematerializeServiceId: ConnectedAccountServiceKeySchema.optional(),
+  // Released V1 callers name the same services by scalar id in these adjacent
+  // fields too, so they normalize through the one Connected Account service
+  // key ingress rather than requiring the qualified key `bindings` accepts.
+  rematerializeServiceId: ConnectedAccountServiceKeyIngressSchema.optional(),
   expectedGroupGenerationByServiceId: z.record(
-    ConnectedAccountServiceKeySchema,
+    ConnectedAccountServiceKeyIngressSchema,
     z.number().int().nonnegative(),
   ).optional(),
   teamCredentialBindings: SessionTeamCredentialBindingIntentsV1Schema.min(1).optional(),

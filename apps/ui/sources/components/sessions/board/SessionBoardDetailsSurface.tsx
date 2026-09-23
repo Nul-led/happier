@@ -6,7 +6,7 @@ import type { CallerHostedHtmlRuntime } from '@/components/ui/surfaces/hostedHtm
 import type { SessionBoardMountHost } from '@/sync/domains/session/board';
 
 import { SessionBoardPane } from './SessionBoardPane';
-import type { SessionBoardPrimaryMountResolver } from '@/sync/domains/session/board';
+import type { SessionBoardPlacementPrimaryMountResolver } from './sessionBoardHostVisibility';
 
 const NO_PRIMARY_MOUNT = () => null;
 
@@ -31,8 +31,18 @@ export const SessionBoardDetailsSurface = React.memo(function SessionBoardDetail
     focusedItemId?: string;
     onLeaveFocusedItem?: () => void;
     onReadFullItem?: (itemId: string) => void;
-    resolvePrimaryHost?: SessionBoardPrimaryMountResolver;
+    resolvePrimaryHost?: SessionBoardPlacementPrimaryMountResolver;
 }>) {
+    // The generic Board destination and an item's expanded destination are both the
+    // `details` host and can be presented side by side in two split groups. Each one
+    // says which destination it is, so the shared owner selects ONE physical copy to
+    // run the item and the other draws a truthful preview of the same card.
+    const destinationItemId = props.focusedItemId ?? null;
+    const resolvePrimaryHost = props.resolvePrimaryHost;
+    const resolveForDestination = React.useCallback(
+        (itemId: string) => resolvePrimaryHost?.(itemId, { detailsDestinationItemId: destinationItemId }) ?? null,
+        [destinationItemId, resolvePrimaryHost],
+    );
     return (
         <SessionBoardPane
             sessionId={props.sessionId}
@@ -41,7 +51,7 @@ export const SessionBoardDetailsSurface = React.memo(function SessionBoardDetail
             host={props.host}
             // A background Details tab is not on screen, so it never runs content
             // even when the shared owner named this host.
-            resolvePrimaryHost={props.active ? (props.resolvePrimaryHost ?? NO_PRIMARY_MOUNT) : NO_PRIMARY_MOUNT}
+            resolvePrimaryHost={props.active ? resolveForDestination : NO_PRIMARY_MOUNT}
             // The same fact, one step further: the Details workspace keeps every
             // tab mounted for content, scroll and view continuity, so a retained
             // pane must keep drawing its Board while owning no interaction. Left

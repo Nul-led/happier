@@ -13,6 +13,7 @@ import { setActiveServerId, upsertServerProfile } from '@/sync/domains/server/se
 import { getPendingMessageVisualState } from '@/components/sessions/pending/pendingMessageVisualState';
 import { SessionStoredMessageContentSchema } from '@happier-dev/protocol';
 import { getActiveServerAccountScope } from '@/sync/domains/scope/activeServerAccountScope';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { settingsParse } from '@/sync/domains/settings/settings';
 import { saveAccountSettings } from '@/sync/domains/state/accountSettingsPersistence';
 
@@ -26,7 +27,7 @@ import {
     sendPendingDeliveryAsNewV2,
     retryPendingOutboxOperationV2,
 } from './pendingQueueV2';
-import { buildSession, createPendingQueueEncryption, currentPendingEnqueueAck, getSessionEncryptionOrThrow, resetPendingQueueState } from './pendingQueueV2.testHelpers';
+import { activatePendingQueueScope, buildSession, createPendingQueueEncryption, currentPendingEnqueueAck, getSessionEncryptionOrThrow, resetPendingQueueState } from './pendingQueueV2.testHelpers';
 it('refreshes only the exact target and keeps sibling Pending rows intact', async () => {
     await resetPendingQueueState();
     const sessionId = 'target-isolation';
@@ -162,9 +163,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const remoteServer = await upsertServerProfile({ serverUrl: 'https://enqueue-remote.example.test' });
         const activeScope = { serverId: activeServer.id, accountId: 'active-account' };
         const remoteScope = { serverId: remoteServer.id, accountId: 'remote-account' };
-        await setActiveServerId(activeServer.id, { scope: 'device' });
-        storage.getState().activateProfileScope(activeScope);
-        storage.getState().activateSettingsScope(activeScope);
+        await activatePendingQueueScope(activeScope);
         storage.getState().applySettings(settingsParse({ claudeRemoteMaxThinkingTokens: 8192 }), 1);
         saveAccountSettings(remoteScope, settingsParse({ claudeRemoteMaxThinkingTokens: 4096 }), 1);
         storage.getState().applySessions([buildSession({ sessionId, overrides: {
@@ -225,6 +224,46 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         expect(bodies).toHaveLength(1);
     });
 
+    it('keeps the replacement Home projection when a held delete settles after its owner retires', async () => {
+        const sessionId = 'delete-owner-retired';
+        const scopeA = { serverId: 'delete-home-a', accountId: 'account-a' } as const;
+        const scopeB = { serverId: 'delete-home-b', accountId: 'account-b' } as const;
+        await resetPendingQueueState();
+        storage.getState().applySessions([buildSession({ sessionId, overrides: { encryptionMode: 'plain' } })]);
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: 'row-1', localId: 'row-1', createdAt: 1, updatedAt: 1, text: 'A row',
+            rawRecord: null, source: 'server_pending', pendingOutboxScope: scopeA,
+        });
+        let release!: () => void;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        let ownerCurrent = true;
+        const deletion = deletePendingMessageV2({
+            sessionId,
+            pendingId: 'row-1',
+            outboxScope: scopeA,
+            isOutboxScopeCurrent: () => ownerCurrent,
+            request: async () => {
+                await held;
+                return Response.json({});
+            },
+        });
+        // The Home is replaced while the DELETE is in flight, and the next
+        // Home's bag carries a row with the same Session and pending id.
+        ownerCurrent = false;
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: 'row-1', localId: 'row-1', createdAt: 3, updatedAt: 3, text: 'B row',
+            rawRecord: null, source: 'server_pending', pendingOutboxScope: scopeB,
+        });
+        release();
+
+        // The committed server delete still resolves; only the replacement
+        // Home's projection is left alone.
+        await expect(deletion).resolves.toBeUndefined();
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([
+            expect.objectContaining({ id: 'row-1', text: 'B row', pendingOutboxScope: scopeB }),
+        ]);
+    });
+
     it('keeps exact Home quarantined input out of another Home pending bag', async () => {
         const activeScope = { serverId: 'quarantine-active', accountId: 'active-account' };
         const remoteScope = { serverId: 'quarantine-remote', accountId: 'remote-account' };
@@ -257,8 +296,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const firstServer = await upsertServerProfile({ serverUrl: 'https://enqueue-first.example.test' });
         const nextServer = await upsertServerProfile({ serverUrl: 'https://enqueue-next.example.test' });
         const firstScope = { serverId: firstServer.id, accountId: 'first-account' };
-        await setActiveServerId(firstServer.id, { scope: 'device' });
-        storage.getState().activateProfileScope(firstScope);
+        await activatePendingQueueScope(firstScope);
         storage.getState().applySessions([buildSession({ sessionId, overrides: {
             serverId: firstServer.id, encryptionMode: 'plain',
         } })]);
@@ -269,8 +307,9 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             encryption: null, serverWireMode: 'pending_input_v1' as const,
             request: async () => {
                 switched = true;
-                await setActiveServerId(nextServer.id, { scope: 'device' });
-                storage.getState().activateProfileScope({ serverId: nextServer.id, accountId: 'next-account' });
+                const nextScope = { serverId: nextServer.id, accountId: 'next-account' };
+                await activatePendingQueueScope(nextScope);
+                expect(getActiveServerAccountScope()).toEqual(nextScope);
                 storage.setState({ sessions: { [sessionId]: buildSession({ sessionId, overrides: {
                     serverId: nextServer.id, encryptionMode: 'plain', optimisticThinkingAt: 123,
                 } }) }, sessionPending: {} });
@@ -348,8 +387,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://async-scope.example.test', name: 'Async scope' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         const encryption = await Encryption.create(new Uint8Array(32).fill(6));
         let releaseNewer!: () => void;
         const newerGate = new Promise<void>((resolve) => { releaseNewer = resolve; });
@@ -386,7 +424,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         await newerRefresh!;
     });
 
-    it('rejects a held A response after active server changes while profile scope is still A', async () => {
+    it('rejects a held A response after the applied Home changes while profile scope is still A', async () => {
         const sessionId = 'transition-gap-session';
         const localId = 'transition-gap-local';
         const serverA = await upsertServerProfile({ serverUrl: 'https://transition-a.example.test', name: 'A' });
@@ -394,8 +432,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const scopeA = { serverId: serverA.id, accountId: 'account-a' } as const;
         const scopeB = { serverId: serverB.id, accountId: 'account-b' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(serverA.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scopeA);
+        await activatePendingQueueScope(scopeA);
         let release!: () => void;
         const held = new Promise<void>((resolve) => { release = resolve; });
         const encryption = await Encryption.create(new Uint8Array(32).fill(7));
@@ -410,6 +447,10 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         });
 
         await setActiveServerId(serverB.id, { scope: 'device' });
+        expect(getActiveServerAccountScope()).toEqual(scopeA);
+        await switchConnectionToActiveServer();
+        expect(storage.getState().profileScope).toEqual(scopeA);
+        expect(getActiveServerAccountScope()).toBeNull();
         (await persist({ sessionId, localId, text: 'scope B durable', scope: scopeB, operation: 'enqueue' }));
         release();
         await refresh;
@@ -425,8 +466,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://local-only.example.test', name: 'Local only' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'local durable custody', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(8));
 
@@ -457,8 +497,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://pending.example.test', name: 'Pending' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'same canonical content', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(9));
 
@@ -488,8 +527,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://discarded.example.test', name: 'Discarded' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'durable cancel', scope, operation: 'cancel' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(8));
 
@@ -529,8 +567,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://conflict.example.test', name: 'Conflict' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'stale local envelope', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(10));
 
@@ -580,8 +617,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const scope = { serverId: server.id, accountId: 'account' } as const;
         const rawRecord = { role: 'user', content: { type: 'text', text: 'same content' }, meta: {} } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await savePendingOutboxMessage({
             sessionId,
             localId,
@@ -623,8 +659,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://action-conflict.example.test', name: 'Action conflict' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' }));
 
         await fetchAndApplyPendingMessagesV2({
@@ -652,8 +687,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://server-delivery-mode.example.test', name: 'Server delivery mode' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await persist({ sessionId, localId, text: 'same content', scope, operation: 'enqueue' }));
         const encryption = await Encryption.create(new Uint8Array(32).fill(13));
 
@@ -691,8 +725,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             }),
         } as unknown as Encryption;
         storage.getState().applySessions([buildSession({ sessionId })]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         (await savePendingOutboxMessage({
             sessionId,
             localId,
@@ -744,8 +777,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         const server = await upsertServerProfile({ serverUrl: 'https://ambiguous.example.test', name: 'Ambiguous' });
         const scope = { serverId: server.id, accountId: 'account' } as const;
         storage.getState().applySessions([{ ...buildSession({ sessionId }), encryptionMode: 'plain' }]);
-        await setActiveServerId(server.id, { scope: 'device' });
-        storage.getState().activateProfileScope(scope);
+        await activatePendingQueueScope(scope);
         const encryption = await Encryption.create(new Uint8Array(32).fill(11));
 
         await expect(enqueuePendingMessageV2({
@@ -1439,7 +1471,7 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
         ]);
     });
 
-    it('does not preserve an unresolved external handoff owned by another server-account scope', async () => {
+    it('keeps an unresolved external handoff from another Account intact during a scoped refresh', async () => {
         const sessionId = 'external-handoff-cross-scope';
         const localId = 'external-handoff-cross-scope-local';
         const scope = { serverId: 'external-server', accountId: 'current-account' } as const;
@@ -1451,6 +1483,13 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             rawRecord: { role: 'user', content: { type: 'text', text: 'other account' }, meta: {} },
         });
 
+        const otherScopeMessage = storage.getState().sessionPending[sessionId]?.messages[0];
+        storage.getState().upsertPendingMessage(sessionId, {
+            id: 'current-account-row', localId, createdAt: 1, updatedAt: 1,
+            source: 'server_pending', pendingOutboxScope: scope, text: 'current account',
+            rawRecord: { role: 'user', content: { type: 'text', text: 'current account' }, meta: {} },
+        });
+
         await fetchAndApplyPendingMessagesV2({
             sessionId,
             encryption: await Encryption.create(new Uint8Array(32).fill(13)),
@@ -1459,7 +1498,8 @@ describe('pendingQueueV2 scoped refresh reconciliation', () => {
             request: async () => Response.json({ pending: [] }),
         });
 
-        expect(storage.getState().sessionPending[sessionId]?.messages ?? []).toEqual([]);
+        expect(storage.getState().sessionPending[sessionId]?.messages).toEqual([otherScopeMessage]);
+        expect(storage.getState().sessionPending[sessionId]?.messages[0]).toBe(otherScopeMessage);
     });
 
     it('reallocates retained external-handoff and legacy-unscoped projections across server collection id collisions', async () => {

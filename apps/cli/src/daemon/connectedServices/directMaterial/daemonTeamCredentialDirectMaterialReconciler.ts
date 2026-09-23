@@ -54,21 +54,27 @@ async function listOwnedResources(input: Readonly<{
     const parsedPage = TeamsPageV1Schema.safeParse(page);
     if (!parsedPage.success) return resources;
     for (const team of parsedPage.data.items) {
-      const listed = await input.homeDomainAction({
-        actionId: 'teams.credentials.list',
-        input: { teamId: team.id },
-        context: { surface: 'cli' },
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-      if (isActionFailure(listed)) continue;
-      const parsedListed = TeamCredentialResourcePageV1Schema.safeParse(listed);
-      if (!parsedListed.success) continue;
-      resources.push(...parsedListed.data.resources.filter((resource) => (
-        resource.custodianAccountId === input.accountId
-        && resource.enabled
-        && resource.disclosureCeiling === 'direct_allowed'
-        && resource.source !== null
-      )));
+      // The administration list is paginated and carries no custodian filter,
+      // so every page is drained before the owned direct rows are selected.
+      let resourceCursor: string | undefined;
+      do {
+        const listed = await input.homeDomainAction({
+          actionId: 'teams.credentials.list',
+          input: { teamId: team.id, ...(resourceCursor ? { cursor: resourceCursor } : {}) },
+          context: { surface: 'cli' },
+          ...(input.signal ? { signal: input.signal } : {}),
+        });
+        if (isActionFailure(listed)) break;
+        const parsedListed = TeamCredentialResourcePageV1Schema.safeParse(listed);
+        if (!parsedListed.success) break;
+        resources.push(...parsedListed.data.resources.filter((resource) => (
+          resource.custodianAccountId === input.accountId
+          && resource.enabled
+          && resource.disclosureCeiling === 'direct_allowed'
+          && resource.source !== null
+        )));
+        resourceCursor = parsedListed.data.nextCursor ?? undefined;
+      } while (resourceCursor);
     }
     cursor = parsedPage.data.nextCursor;
   } while (cursor);

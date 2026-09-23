@@ -7,6 +7,7 @@ import { buildSessionReadableAccountWhereInTx } from "./sessionAccessWhere";
 import { verifyCurrentMaterializedRunnerPrincipalInTx } from "@/app/ephemeralRunner/materializedRunnerPrincipalCurrentness";
 import {
     qualifySessionTeamAuthenticationInTx,
+    resolveQualifiedSessionTeamIdsInTx,
     type SessionAccessAuthentication,
 } from "./sessionAccessAuthentication";
 
@@ -439,6 +440,61 @@ export async function assertSessionTeamReadableGrantInTx(input: {
         select: SESSION_TRANSCRIPT_PUBLICATION_SELECT,
     });
     return session && isSessionTranscriptShareable(session) ? { ok: true } : { ok: false, reason: "unavailable" };
+}
+
+/**
+ * The set-oriented sibling of `resolveSessionAccessForOperation`: one Session,
+ * many Accounts, one credential context.
+ *
+ * It reads the same projection row the per-Account decision reads — once per
+ * bounded Account batch rather than once per Account — and projects it through
+ * the same pure `projectEffectiveSessionAccess`, so admission, level and
+ * capabilities are the per-Account answer. Team qualification is likewise taken
+ * once for the credential context instead of once per recipient.
+ *
+ * The one deliberate difference is explanatory, not decisive: the per-operation
+ * path answers an owner from an entitlement projection with Team and Group
+ * grants stripped, so an owner who also holds a Team grant on their own Session
+ * is described here with that Team in `relationshipKinds`/`audienceContext`.
+ * Ownership already carries every capability, so the admission is identical.
+ *
+ * A Session runtime principal authorizes one exact Session for one exact
+ * Account, so it is never a set; that caller keeps the per-Account decision.
+ */
+export async function resolveSessionAccessForAccountsInTx(tx: Tx, input: Readonly<{
+    sessionId: string;
+    accountIds: readonly string[];
+    authentication: SessionAccessAuthentication;
+}>): Promise<ReadonlyMap<string, EffectiveSessionAccess>> {
+    const admitted = new Map<string, EffectiveSessionAccess>();
+    const accountIds = [...new Set(input.accountIds)];
+    if (accountIds.length === 0) return admitted;
+    if (input.authentication.sessionRuntimePrincipal) {
+        throw new Error("A Session runtime principal authorizes exactly one Account");
+    }
+    // Same conservative bind boundary as the structural reader below: this
+    // chunks transport parameters, never the authorized result set.
+    for (let offset = 0; offset < accountIds.length; offset += 100) {
+        const batch = accountIds.slice(offset, offset + 100);
+        const row = await tx.session.findUnique({
+            where: { id: input.sessionId },
+            select: buildSessionAccessProjectionSelectForAccounts(batch),
+        });
+        if (!row || row.id !== input.sessionId) continue;
+        const qualifiedTeamIds = await resolveQualifiedSessionTeamIdsInTx(tx, {
+            accountIds: batch,
+            teams: [
+                ...row.teamGrants.map(grant => ({ id: grant.teamId, authenticationPolicy: grant.team.authenticationPolicy })),
+                ...row.groupGrants.map(grant => ({ id: grant.teamGroup.teamId, authenticationPolicy: grant.teamGroup.team.authenticationPolicy })),
+            ],
+            authentication: input.authentication,
+        });
+        for (const accountId of batch) {
+            const access = projectEffectiveSessionAccess(row, accountId, { qualifiedTeamIds });
+            if (access) admitted.set(accountId, access);
+        }
+    }
+    return admitted;
 }
 
 export async function resolveStructuralSessionAccessForAccountsInTx(tx: SessionAccessReader, input: {

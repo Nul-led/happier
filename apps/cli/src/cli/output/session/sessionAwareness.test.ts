@@ -153,6 +153,29 @@ describe('projectCliSessionAwarenessV1', () => {
     expect(awareness.operational.reasons).toContain('archived');
   });
 
+  it('reports unreadable Plain metadata as unavailable work currentness rather than nothing to do', () => {
+    // The wire field is required, so an empty or unparsable string is admitted and
+    // decodes to no metadata at all: the work state is unknown, not absent.
+    const unreadable = project({
+      id: 'session-metadata-unreadable', encryptionMode: 'plain', metadata: '',
+      active: true, activeAt: NOW_MS, latestTurnStatus: null,
+      pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0,
+      pendingRequestObservedAt: NOW_MS,
+    } as never);
+    expect(unreadable.currentWork).toBeUndefined();
+    expect(unreadable.availability).toBe('partial');
+
+    // Readable metadata that simply carries no work state stays complete.
+    const readable = project({
+      id: 'session-metadata-empty', encryptionMode: 'plain', metadata: '{}',
+      active: true, activeAt: NOW_MS, latestTurnStatus: null,
+      pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0,
+      pendingRequestObservedAt: NOW_MS,
+    } as never);
+    expect(readable.currentWork).toBeUndefined();
+    expect(readable.availability).toBe('complete');
+  });
+
   it('keeps absent lifecycle evidence incomplete even when pending evidence is available', () => {
     const awareness = project({
       id: 'lifecycle-unavailable', encryptionMode: 'plain', metadata: '{}',
@@ -170,6 +193,67 @@ describe('projectCliSessionAwarenessV1', () => {
       pendingPermissionRequestCount: 0,
     });
     expect(awareness.availability).toBe('partial');
+  });
+
+  it('keeps a published ready sequence as lifecycle evidence when the row carries no live facts', () => {
+    const published = project({
+      id: 'session-published-ready', encryptionMode: 'plain', metadata: '{}',
+      latestTurnStatus: undefined, archivedAt: null,
+      latestReadyEventSeq: 10, latestReadyEventAt: NOW_MS - 1_000,
+      pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0,
+    } as never);
+    expect(published.operational.primary).toBe('ready');
+
+    const withoutSequence = project({
+      id: 'session-no-ready-sequence', encryptionMode: 'plain', metadata: '{}',
+      latestTurnStatus: undefined, archivedAt: null,
+      pendingPermissionRequestCount: 0, pendingUserActionRequestCount: 0,
+    } as never);
+    expect(withoutSequence.operational.primary).not.toBe('ready');
+    expect(withoutSequence.availability).toBe('partial');
+  });
+
+  it('forwards authorized terminal control serviceability so an unservable host suppresses liveness', () => {
+    const unservable = project({
+      id: 'session-unservable-terminal', encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        terminal: {
+          mode: 'tmux',
+          controlServiceabilityV1: { v: 1, state: 'recoverable_unservable', observedAt: NOW_MS - 1_000 },
+        },
+      }),
+      active: true, activeAt: NOW_MS - 1_000, latestTurnStatus: 'completed',
+      latestTurnStatusObservedAt: NOW_MS - 1_000,
+      pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
+      pendingRequestObservedAt: NOW_MS - 1_000,
+    } as never);
+    expect(unservable.runtime).toBe('offline');
+    expect(unservable.operational.primary).not.toBe('permission_required');
+
+    // Genuinely absent evidence stays unknown rather than asserting a servable host.
+    const withoutEvidence = project({
+      id: 'session-no-terminal-evidence', encryptionMode: 'plain',
+      metadata: JSON.stringify({ terminal: { mode: 'tmux' } }),
+      active: true, activeAt: NOW_MS - 1_000, latestTurnStatus: 'completed',
+      latestTurnStatusObservedAt: NOW_MS - 1_000,
+      pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
+      pendingRequestObservedAt: NOW_MS - 1_000,
+    } as never);
+    expect(withoutEvidence.runtime).toBe('unknown');
+    expect(withoutEvidence.operational.primary).toBe('permission_required');
+
+    // A malformed or foreign-version envelope is no evidence, never a fabricated state.
+    const malformed = project({
+      id: 'session-malformed-terminal-evidence', encryptionMode: 'plain',
+      metadata: JSON.stringify({
+        terminal: { mode: 'tmux', controlServiceabilityV1: { v: 2, state: 'recoverable_unservable' } },
+      }),
+      active: true, activeAt: NOW_MS - 1_000, latestTurnStatus: 'completed',
+      latestTurnStatusObservedAt: NOW_MS - 1_000,
+      pendingPermissionRequestCount: 1, pendingUserActionRequestCount: 0,
+      pendingRequestObservedAt: NOW_MS - 1_000,
+    } as never);
+    expect(malformed.runtime).toBe('unknown');
   });
 
   it('reports incomplete rather than safe when a producer projected no pending state', () => {

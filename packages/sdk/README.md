@@ -315,11 +315,17 @@ present in development source. A loaded end-to-end SDK journey through both the
 direct-daemon and server-relay origins has not yet been certified, and this
 contract has not shipped in a public release.
 
-Protected delivery to a restricted Runner is not available. That route remains
-fail-closed until the Runner Machine envelope can be authenticated independently
-of the configured Home; the SDK does not accept a key supplied by that same Home
-as proof of its own Machine claim. Use an ordinary authorized Account daemon for
-protected calls in this preview.
+Protected delivery to a restricted Runner works when the call names that
+**Machine** as its target. The SDK resolves the Runner's published data
+encryption key through the bootstrap projection, checks the creator-signed
+binding against the Home, Account and Machine pinned in its own credential, and
+seals the request with the resolved Runner content key; it never downgrades a
+Runner target to plaintext or to Account-only sealing, and a substituted
+binding, verifier fact, envelope or Machine fails the call with
+`invalid_encrypted_envelope`. The SDK still does not accept a key supplied by
+the configured Home as proof of a Machine claim on its own. A **Session**-targeted
+protected call to a Runner is not implemented yet: bind the Runner's Machine, or
+use an ordinary authorized Account daemon.
 
 With `hapc_v1`, the SDK sends only the embedded bearer in Authorization. It
 retrieves that token's wrapped content key, checks the locally pinned Home,

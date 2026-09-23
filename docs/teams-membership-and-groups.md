@@ -225,7 +225,7 @@ an initial import or a source revocation is never observable as partially commit
 
 | Adapter | Contract |
 |---|---|
-| `applyExternalTeamMembershipInTx` | Activate, suspend, reactivate, or remove the lifetime **this source owns**. A native or differently-sourced membership is reported as `management_conflict` and left untouched. Directory activation always admits at `member`. |
+| `applyExternalTeamMembershipInTx` | Activate, suspend, reactivate, or remove the lifetime **this source owns**. A native or differently-sourced membership is reported as `managed_elsewhere` with its id and left untouched; an offboarding observation for it is `unchanged`. `management_conflict` is kept for a corrupt binding — an identity whose manager pointer names somebody else's row. Directory activation always admits at `member`. |
 | `applyExternalGroupContributionInTx` | Add or remove one exact contribution, after validating the binding against both its Team and its Group. |
 | `applyExternalManagedGroupInTx` | Archive, restore, or rename a Group a `directory_created` binding owns. A contributing binding is refused. |
 | `revokeExternalSourceFactsInTx` | Remove every native fact one source owns, atomically, returning only once they are all ineffective. |
@@ -253,11 +253,14 @@ adding contributions for the currently projected members and removing the ones t
 disappeared. `directorySourceAdministration.ts` calls `revokeExternalSourceFactsInTx` when
 an administrator removes a source.
 
-The reconciler deliberately does not treat `management_conflict` as a failure: a native or
+The reconciler deliberately does not treat `managed_elsewhere` as a failure: a native or
 differently-managed membership is left exactly as it is, which is the no-seizure rule seen
-from the caller's side. It does raise a projection invariant error when a source, binding,
-or Group target it just read has disappeared, because that is a torn read rather than a
-policy outcome.
+from the caller's side, and the source's own Group contributions are still materialized
+against that membership. Two directories may therefore contribute to one Group roster for
+one person while exactly one of them — or native administration — owns the Team lifetime.
+It does raise a projection invariant error for `management_conflict` and when a source,
+binding, or Group target it just read has disappeared, because those are corrupt or torn
+reads rather than policy outcomes.
 
 ### Management transfer
 

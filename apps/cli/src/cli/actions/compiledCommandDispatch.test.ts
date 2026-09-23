@@ -391,6 +391,41 @@ describe('compiled Action CLI command dispatch', () => {
     expect(nested[0]!.input).not.toHaveProperty('recipient');
   });
 
+  it('overlays friendly flags onto canonical whole-input JSON and rejects a duplicate source', async () => {
+    const partialBase = await run(['session', 'send'], [
+      '--input-json', '{"sessionId":"session_1"}', '--message', 'Hello',
+    ]);
+    expect(partialBase).toHaveLength(1);
+    expect(partialBase[0]!.input).toMatchObject({ sessionId: 'session_1', message: 'Hello' });
+
+    const completeBase = await run(['session', 'send'], [
+      '--input-json', '{"sessionId":"session_1","message":"Hello"}', '--run', 'run1',
+    ]);
+    expect(completeBase).toHaveLength(1);
+    expect(completeBase[0]!.input).toMatchObject({
+      sessionId: 'session_1',
+      message: 'Hello',
+      recipient: { kind: 'execution_run', runId: 'run1' },
+    });
+
+    // A canonical field the binder normalizes out of a friendly flag is still
+    // one source: supplying both is rejected, never silently resolved.
+    const output = captureConsoleText();
+    let duplicate: readonly Execution[];
+    try {
+      duplicate = await run(['session', 'send'], [
+        '--input-json',
+        '{"sessionId":"session_1","message":"Hello","recipient":{"kind":"execution_run","runId":"run0"}}',
+        '--run', 'run1',
+      ]);
+    } finally {
+      output.restore();
+    }
+    expect(duplicate).toEqual([]);
+    expect(output.text()).toContain('recipient');
+    process.exitCode = undefined;
+  });
+
   it('binds --run and the compatibility positional to the same strict recipient', async () => {
     const flagged = await run(['session', 'send'], ['session_1', 'Focus.', '--run', 'run_9']);
     const compatibility = await run(['session', 'run', 'send'], ['session_1', 'run_9', 'Focus.']);

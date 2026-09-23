@@ -914,7 +914,10 @@ Use the daemon-local transport when you need direct local delivery.
   A protected Action that targets a Temporary computer is sealed with that
   machine's published content key. The SDK verifies the Runner key binding
   against the credential's own pins before sealing and refuses a target whose
-  key does not verify, so a Home cannot substitute the key.
+  key does not verify, so a Home cannot substitute the key. Bind the Temporary
+  computer itself: a protected call that names only the Session does not yet
+  resolve that machine's key, so target the machine or use an ordinary
+  authorized daemon.
 </Callout>
 
 `connect({ endpoint, token })` also accepts a versioned encryption-capable

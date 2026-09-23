@@ -92,6 +92,7 @@ export type PluginUiSessionHeaderActionProjection = UnknownRecord & Readonly<{
 export type PluginUiSearchProviderProjection = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
+    occurrenceId: string;
     contributionKind: 'searchProvider';
     descriptorId: string;
     identity: PluginContributionIdentityV1;
@@ -101,6 +102,7 @@ export type PluginUiSearchProviderProjection = UnknownRecord & Readonly<{
 export type PluginUiHostedWebProjection = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
+    occurrenceId: string;
     contributionKind: 'hostedWeb';
     contributionId: string;
 }>;
@@ -137,6 +139,8 @@ export type PluginUiPageHeaderActionProjection = Readonly<{
 type PluginUiSurfacePlacementProjectionFields = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
+    /** Exact process-local occurrence projected with this contribution row. */
+    occurrenceId: string;
     contributionKind: 'surfacePlacement';
     descriptorId: string;
     /**
@@ -238,6 +242,7 @@ export type PluginUiDestinationProjection =
 export type PluginUiTranscriptActivityProjection = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
+    occurrenceId: string;
     contributionKind: 'transcriptActivity';
     descriptorId: string;
     resource: Readonly<{ pluginId: string; localId: string }>;
@@ -262,7 +267,7 @@ export type PluginUiSessionInfoSectionProjection = UnknownRecord & Readonly<{
 export type PluginVoiceProviderProjection = UnknownRecord & Readonly<{
     id: string;
     pluginId: string;
-    generation: number;
+    occurrenceId: string;
     contributionKey: string;
     definition: VoiceProviderContribution;
     recipientContract?: import('@happier-dev/protocol').RecipientContractV1;
@@ -468,10 +473,11 @@ function resolveSearchProvider(entry: UnknownRecord): PluginUiSearchProviderProj
     if (entry.contributionKind !== 'searchProvider') return null;
     const id = readString(entry.id);
     const pluginId = readString(entry.pluginId);
+    const occurrenceId = readString(entry.occurrenceId);
     const descriptorId = readString(entry.descriptorId);
     const identity = PluginContributionIdentityV1Schema.safeParse(entry.identity);
     const action = PluginUiQualifiedActionReferenceV1Schema.safeParse(entry.action);
-    if (id === null || pluginId === null || descriptorId === null || !identity.success || !action.success) return null;
+    if (id === null || pluginId === null || occurrenceId === null || descriptorId === null || !identity.success || !action.success) return null;
     if (
         id !== `searchProvider:${pluginId}:${descriptorId}`
         || identity.data.pluginId !== pluginId
@@ -484,6 +490,7 @@ function resolveSearchProvider(entry: UnknownRecord): PluginUiSearchProviderProj
         // materialization; reconstructing the descriptor without them makes a
         // valid selected Search provider look originless and drops it.
         ...entry,
+        occurrenceId,
         id,
         pluginId,
         contributionKind: 'searchProvider' as const,
@@ -547,6 +554,7 @@ function isHostedWeb(entry: UnknownRecord): entry is PluginUiHostedWebProjection
     return entry.contributionKind === 'hostedWeb'
         && readString(entry.id) !== null
         && readString(entry.pluginId) !== null
+        && readString(entry.occurrenceId) !== null
         && readString(entry.contributionId) !== null;
 }
 
@@ -590,6 +598,7 @@ function isSurfacePlacement(entry: UnknownRecord): entry is PluginUiPhysicalSurf
     return entry.contributionKind === 'surfacePlacement'
         && readString(entry.id) !== null
         && readString(entry.pluginId) !== null
+        && readString(entry.occurrenceId) !== null
         && readString(entry.descriptorId) !== null
         // The CLI projection has one already-admitted binding. Do not call a
         // client-side normalizer here: the daemon projection owns that
@@ -805,13 +814,13 @@ export function normalizePluginUiProjection(
             const pluginId = readString(entry?.pluginId);
             const id = readString(entry?.id);
             const contributionKey = readString(entry?.contributionKey);
-            const generation = entry?.generation;
+            const occurrenceId = readString(entry?.occurrenceId);
             const definition = VoiceProviderContributionSchema.safeParse(entry?.definition);
             const recipientContract = entry?.recipientContract === undefined
                 ? null
                 : RecipientContractV1Schema.safeParse(entry.recipientContract);
             const recipientContractDigest = readString(entry?.recipientContractDigest);
-            if (!pluginId || !id || !contributionKey || typeof generation !== 'number' || !definition.success) continue;
+            if (!pluginId || !id || !occurrenceId || !contributionKey || !definition.success) continue;
             const expectedKey = buildQualifiedPluginContributionKey(createPluginContributionIdentity({
                 pluginId,
                 localId: definition.data.id,
@@ -819,7 +828,6 @@ export function normalizePluginUiProjection(
             if (
                 id !== expectedKey
                 || contributionKey !== expectedKey
-                || generation !== projection.generation
                 // The daemon stamped `recipientContractDigest` from this same
                 // contract with this same function, so recomputing it here can
                 // only agree — and a disagreement would silently drop a Voice
@@ -835,7 +843,7 @@ export function normalizePluginUiProjection(
                 ...entry,
                 id,
                 pluginId,
-                generation,
+                occurrenceId,
                 contributionKey,
                 definition: definition.data,
                 ...(recipientContract?.success && recipientContractDigest

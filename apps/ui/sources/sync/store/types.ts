@@ -78,7 +78,8 @@ export interface SessionsDomainSlice {
      * holding a durable pointer to a session reads this rather than inferring gone-ness from a
      * cache miss. Written only by `deleteSession`. See `SessionsDomain` for the full note.
      */
-    deletedSessionIds: Record<string, true>;
+    /** Session id → the Home whose carrier was retired, or `true` when no Home was addressed. */
+    deletedSessionIds: Record<string, string | true>;
     sessionListRenderableDelta: SessionListRenderableDelta;
     sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
     ordinarySessionListMembershipByServerId: Readonly<Record<string, readonly string[] | undefined>>;

@@ -2,6 +2,7 @@ import type { AuthTokenAuthenticationEvidenceV1 } from "@happier-dev/protocol";
 
 import {
     qualifyTeamAuthenticationInTx,
+    qualifyTeamAuthenticationsInTx,
     type TeamAuthenticationQualificationV1,
 } from "@/app/auth/entry/qualifyTeamAuthentication";
 import type { Tx } from "@/storage/inTx";
@@ -92,4 +93,47 @@ export async function qualifySessionTeamAuthenticationInTx(
         verifiedCredentialEvidence: authentication.authenticationEvidence,
         operationContext: { kind: authentication.authority },
     });
+}
+
+/**
+ * The Team ids that currently qualify for one credential context, for a
+ * set-oriented reader that answers many Accounts from one read.
+ *
+ * Qualification depends on an Account only through the evidence that Account's
+ * credential presented, so a set of Accounts shares one answer exactly while no
+ * evidence is presented — background delivery, where a Team qualifies only by
+ * inheriting the Home's methods. A credential belongs to exactly one Account,
+ * so a presented one resolves exactly one Account here and a mistaken batch
+ * fails closed rather than answering one recipient with another's credential.
+ * The decision itself stays the canonical qualifier's.
+ */
+export async function resolveQualifiedSessionTeamIdsInTx(
+    tx: Tx,
+    input: Readonly<{
+        accountIds: readonly string[];
+        teams: readonly Readonly<{ id: string; authenticationPolicy: unknown }>[];
+        authentication: SessionAccessAuthentication;
+    }>,
+): Promise<ReadonlySet<string>> {
+    const authentication = input.authentication;
+    const accountIds = [...new Set(input.accountIds)];
+    if ((authentication.authenticationEvidence?.length ?? 0) > 0 && accountIds.length > 1) {
+        throw new Error("Presented credential evidence qualifies Teams for exactly one Account");
+    }
+    const qualified = new Set<string>();
+    if (accountIds.length === 0 || input.teams.length === 0) return qualified;
+    // A batch of more than one presents no evidence by the invariant above, and
+    // evidence is the only way an Account reaches this decision, so the Account
+    // named here is the exact one whenever it matters.
+    const qualifications = await qualifyTeamAuthenticationsInTx(tx, {
+        env: authentication.env,
+        teams: input.teams,
+        accountId: accountIds[0],
+        verifiedCredentialEvidence: authentication.authenticationEvidence,
+        operationContext: { kind: authentication.authority },
+    });
+    for (const [teamId, qualification] of qualifications) {
+        if (qualification.status === "satisfied") qualified.add(teamId);
+    }
+    return qualified;
 }

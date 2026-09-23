@@ -85,17 +85,57 @@ function selection(revision = 7, deliveryMode: 'brokered' | 'direct' = 'brokered
     });
 }
 
+const EXTERNAL_AGENT = { pluginId: 'acme.reviewed-external', localId: 'assistant' } as const;
+const EXTERNAL_AGENT_TARGET_KEY = 'agent:acme.reviewed-external/assistant';
+
+/** The exact listing shape `daemon.marketplaceIndex.query` answers with. */
+function marketplaceListing(overrides: Readonly<{ sourceKind?: 'curated' | 'community-npm' | 'user' }> = {}) {
+    const sourceKind = overrides.sourceKind ?? 'community-npm';
+    return {
+        pluginId: EXTERNAL_AGENT.pluginId,
+        publisher: { id: 'acme', displayName: 'Acme' },
+        display: { title: 'Reviewed External', description: null },
+        distribution: {
+            kind: 'npm',
+            registryOrigin: 'https://registry.npmjs.org',
+            packageName: '@acme/reviewed-external',
+            version: '1.2.3',
+            integrity: `sha512-${'A'.repeat(86)}==`,
+        },
+        manifestDigest: `sha256:${'b'.repeat(64)}`,
+        compatibility: { platforms: ['linux', 'darwin'] },
+        summary: { contributions: ['agent'], requiredHostAccess: [], optionalHostAccess: [], executableRealms: ['daemon'] },
+        review: { status: sourceKind === 'curated' ? 'approved' : 'unreviewed', reviewedAt: sourceKind === 'curated' ? '2026-01-02T03:04:05.000Z' : null },
+        updatePolicy: 'pinned',
+        source: {
+            id: sourceKind === 'community-npm' ? 'marketplace:community-npm' : 'acme-catalog',
+            title: 'Acme',
+            kind: sourceKind,
+            sourceUrl: 'https://registry.npmjs.org/',
+        },
+        artifactAccess: { state: 'available', registryProfileId: null },
+    };
+}
+
 function compose(params: Readonly<{
     serverId?: string | null;
     resources?: readonly TeamCredentialResourceCatalogEntryV1[];
     currentKeys?: ReadonlySet<string>;
     selected?: ReturnType<typeof selection> | null;
+    agentCatalogMachineId?: string | null;
+    projectedAgentsById?: Readonly<Record<string, unknown>>;
+    installedPluginPackagesById?: Readonly<Record<string, unknown>>;
+    queryMarketplaceIndex?: (input: Readonly<{ machineId: string; pluginId: string; signal?: AbortSignal }>) => Promise<unknown>;
 }> = {}) {
     return createTemporaryComputerCreatorDependencies({
         teamCredentialServerId: params.serverId === undefined ? 'srv-runner' : params.serverId,
         teamCredentialResources: params.resources ?? [catalogEntry()],
         currentTeamCredentialResourceKeys: params.currentKeys ?? new Set(['team-1:resource-1']),
         selectedTeamCredentialModel: params.selected ?? null,
+        agentCatalogMachineId: params.agentCatalogMachineId === undefined ? 'machine-1' : params.agentCatalogMachineId,
+        projectedAgentsById: (params.projectedAgentsById ?? {}) as never,
+        installedPluginPackagesById: (params.installedPluginPackagesById ?? {}) as never,
+        ...(params.queryMarketplaceIndex ? { queryMarketplaceIndex: params.queryMarketplaceIndex as never } : {}),
     });
 }
 
@@ -430,5 +470,140 @@ describe('createTemporaryComputerCreatorDependencies', () => {
 
         await expect(composed.dependencies.resolveMaterializationInput({ projection, custody }))
             .resolves.toBeNull();
+    });
+});
+
+describe('createTemporaryComputerCreatorDependencies external Agent acquisition', () => {
+    const projectedExternalAgent = {
+        id: 'assistant',
+        identity: EXTERNAL_AGENT,
+        providerOwnedEnvironmentKeys: [],
+        cli: { install: { managed: { kind: 'managed_package' } } },
+    };
+    const externalCatalogEntry = () => TeamCredentialResourceCatalogEntryV1Schema.parse({
+        ...catalogEntry(),
+        providerModels: [{
+            ...catalogEntry().providerModels[0],
+            selection: { ...catalogEntry().providerModels[0]!.selection, agentTargetKey: EXTERNAL_AGENT_TARGET_KEY },
+            application: { ...catalogEntry().providerModels[0]!.application, agentTargetKey: EXTERNAL_AGENT_TARGET_KEY },
+        }],
+    });
+
+    it('admits an externally installed Agent that declares a managed CLI install and came from npm', () => {
+        const composed = compose({
+            resources: [externalCatalogEntry()],
+            projectedAgentsById: { assistant: projectedExternalAgent },
+            installedPluginPackagesById: {
+                'acme.reviewed-external': {
+                    id: 'acme.reviewed-external',
+                    displayName: 'Reviewed External',
+                    version: '1.2.3',
+                    enabled: true,
+                    source: { kind: 'package', locator: '@acme/reviewed-external' },
+                },
+            },
+        });
+
+        expect(composed.dependencies.isAuthoringCompatible({
+            backendTargetKey: EXTERNAL_AGENT_TARGET_KEY,
+            agentTarget: { kind: 'agent', identity: EXTERNAL_AGENT },
+        })).toBe(true);
+        expect(composed.readGaps()).toEqual([]);
+    });
+
+    it.each(['path', 'archive'] as const)(
+        'refuses an externally installed Agent installed from a %s, which has no marketplace listing',
+        (sourceKind) => {
+            const composed = compose({
+                resources: [externalCatalogEntry()],
+                projectedAgentsById: { assistant: projectedExternalAgent },
+                installedPluginPackagesById: {
+                    'acme.reviewed-external': {
+                        id: 'acme.reviewed-external',
+                        displayName: 'Reviewed External',
+                        version: '1.2.3',
+                        enabled: true,
+                        source: { kind: sourceKind, locator: '/home/alice/plugins/reviewed-external' },
+                    },
+                },
+            });
+
+            expect(composed.dependencies.isAuthoringCompatible({
+                backendTargetKey: EXTERNAL_AGENT_TARGET_KEY,
+                agentTarget: { kind: 'agent', identity: EXTERNAL_AGENT },
+            })).toBe(false);
+            expect(composed.readGaps()).toContain('agent_plugin_distribution_unacquirable');
+        },
+    );
+
+    it('resolves the exact commitment from the focused machine marketplace index', async () => {
+        const queryMarketplaceIndex = vi.fn(async () => ({ items: [marketplaceListing()], nextCursor: null, revision: 1 }));
+        const composed = compose({
+            resources: [externalCatalogEntry()],
+            projectedAgentsById: { assistant: projectedExternalAgent },
+            installedPluginPackagesById: {
+                'acme.reviewed-external': {
+                    id: 'acme.reviewed-external',
+                    displayName: 'Reviewed External',
+                    version: '1.2.3',
+                    enabled: true,
+                    source: { kind: 'package', locator: '@acme/reviewed-external' },
+                },
+            },
+            queryMarketplaceIndex,
+        });
+
+        const resolved = await composed.dependencies.resolveAgentPluginDistribution({
+            agentTarget: { kind: 'agent', identity: EXTERNAL_AGENT },
+            signal: new AbortController().signal,
+        });
+
+        expect(queryMarketplaceIndex).toHaveBeenCalledWith(expect.objectContaining({
+            machineId: 'machine-1',
+            pluginId: 'acme.reviewed-external',
+        }));
+        expect(resolved).toMatchObject({
+            pluginId: 'acme.reviewed-external',
+            packageName: '@acme/reviewed-external',
+            version: '1.2.3',
+            source: { kind: 'community-npm' },
+        });
+        expect(resolved).not.toHaveProperty('registryProfileId');
+    });
+
+    it('fails closed when the focused machine index carries no listing for the installed Agent', async () => {
+        const queryMarketplaceIndex = vi.fn(async () => ({ items: [], nextCursor: null, revision: 1 }));
+        const composed = compose({
+            resources: [externalCatalogEntry()],
+            projectedAgentsById: { assistant: projectedExternalAgent },
+            installedPluginPackagesById: {
+                'acme.reviewed-external': {
+                    id: 'acme.reviewed-external',
+                    displayName: 'Reviewed External',
+                    version: '1.2.3',
+                    enabled: true,
+                    source: { kind: 'package', locator: '@acme/reviewed-external' },
+                },
+            },
+            queryMarketplaceIndex,
+        });
+
+        await expect(composed.dependencies.resolveAgentPluginDistribution({
+            agentTarget: { kind: 'agent', identity: EXTERNAL_AGENT },
+            signal: new AbortController().signal,
+        })).resolves.toBeNull();
+        expect(composed.readGaps()).toContain('agent_plugin_distribution_unacquirable');
+    });
+
+    it('acquires nothing for a bundled Agent the Runner artifact already carries', async () => {
+        const queryMarketplaceIndex = vi.fn();
+        const composed = compose({ queryMarketplaceIndex: queryMarketplaceIndex as never });
+
+        await expect(composed.dependencies.resolveAgentPluginDistribution({
+            agentTarget: { kind: 'agent', identity: MANAGED_INSTALL_AGENT },
+            signal: new AbortController().signal,
+        })).resolves.toBeNull();
+        expect(queryMarketplaceIndex).not.toHaveBeenCalled();
+        expect(composed.readGaps()).toEqual([]);
     });
 });

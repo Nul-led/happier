@@ -104,9 +104,17 @@ export type SessionDiscussionRepositoryThreadSnapshot = Readonly<{
     incomplete: boolean;
 }>;
 
+/**
+ * Whether this Session has any archived Discussion at all. `unknown` is the
+ * honest answer before a read settles and after one is refused; a reader must
+ * never present it as emptiness.
+ */
+export type SessionDiscussionArchivedExistence = 'unknown' | 'empty' | 'present';
+
 export type SessionDiscussionRepositorySnapshot = Readonly<{
     address: SessionAddress;
     lists: Readonly<Record<'active' | 'archived', SessionDiscussionRepositoryListSnapshot>>;
+    archivedExistence: SessionDiscussionArchivedExistence;
     threads: Readonly<Record<string, SessionDiscussionRepositoryThreadSnapshot>>;
     mutations: Readonly<Record<string, SessionDiscussionRepositoryMutation>>;
 }>;
@@ -220,6 +228,7 @@ export function createSessionDiscussionRepository(options: Readonly<{
     let snapshot: SessionDiscussionRepositorySnapshot = {
         address: options.address,
         lists: { active: EMPTY_LIST, archived: EMPTY_LIST },
+        archivedExistence: 'unknown',
         threads: {},
         mutations: {},
     };
@@ -240,6 +249,7 @@ export function createSessionDiscussionRepository(options: Readonly<{
         publish({
             address: options.address,
             lists: { active: revoked, archived: revoked },
+            archivedExistence: 'unknown',
             threads: {},
             mutations: {},
         });
@@ -262,16 +272,27 @@ export function createSessionDiscussionRepository(options: Readonly<{
         const { artifactId: _artifactId, errorCode: _errorCode, recovery: _recovery, ...retained } = current;
         updateMutation(localId, { ...retained, status: 'observed_success' });
     };
+    const updateArchivedExistence = (value: SessionDiscussionArchivedExistence) => {
+        if (snapshot.archivedExistence === value) return;
+        publish({ ...snapshot, archivedExistence: value });
+    };
     const applyListPages = (state: 'active' | 'archived', status: SessionDiscussionRepositoryStatus, errorCode: string | null) => {
         const pages = listPages[state];
         const current = snapshot.lists[state];
+        const items = flattenListPages(pages, current.items);
         updateList(state, {
-            items: flattenListPages(pages, current.items),
+            items,
             nextCursor: pages.at(-1)?.nextCursor ?? null,
             status,
             errorCode,
             incomplete: pages.some((page) => page.incomplete),
         });
+        // Loaded archived rows are a stronger answer than the bounded probe, so
+        // the list settling replaces it. A failed or still-loading read leaves
+        // the last proven answer alone rather than inventing emptiness.
+        if (state === 'archived' && (status === 'ready' || status === 'locked')) {
+            updateArchivedExistence(items.length > 0 ? 'present' : 'empty');
+        }
     };
     const applySummary = (row: SessionDiscussionOpenedSummaryV1) => {
         const state = row.archivedAt === null ? 'active' : 'archived';
@@ -313,6 +334,24 @@ export function createSessionDiscussionRepository(options: Readonly<{
         } satisfies ListPage };
     };
 
+    /**
+     * One bounded archived read taken beside the active refresh, so a reader can
+     * tell whether an archived Discussion exists before deciding to offer the
+     * archived disclosure. It loads no page: the archived list stays lazy and
+     * keeps its own pagination for when the reader actually opens it.
+     */
+    const probeArchivedExistence = async (signal?: AbortSignal): Promise<void> => {
+        if (listPages.archived.length > 0) return;
+        const operationEpoch = accessLossEpoch;
+        const outcome = await client.list({ state: 'archived', limit: 1 }, signal);
+        if (operationEpoch !== accessLossEpoch) return;
+        if (outcome.kind !== 'succeeded') {
+            if (outcome.kind === 'failed' && isExplicitAccessLoss(outcome.errorCode)) purgeAccessLost(outcome.errorCode);
+            return;
+        }
+        updateArchivedExistence(outcome.value.discussions.length > 0 ? 'present' : 'empty');
+    };
+
     const refreshList = async (state: 'active' | 'archived', signal?: AbortSignal): Promise<void> => {
         const operationEpoch = accessLossEpoch;
         const retained = snapshot.lists[state];
@@ -335,6 +374,7 @@ export function createSessionDiscussionRepository(options: Readonly<{
         }
         listPages[state] = replacement;
         applyListPages(state, replacement.some((page) => page.incomplete) ? 'locked' : 'ready', null);
+        if (state === 'active') await probeArchivedExistence(signal);
     };
 
     const loadMoreList = async (state: 'active' | 'archived', signal?: AbortSignal): Promise<void> => {
@@ -362,36 +402,64 @@ export function createSessionDiscussionRepository(options: Readonly<{
         const retained = snapshot.threads[discussionId] ?? emptyThread();
         updateThread(discussionId, { ...retained, status: 'loading', errorCode: null });
         let messages = retained.messages;
-        let hasMoreOlder = retained.hasMoreOlder;
         let messageSeq = retained.messageSeq;
-        let incomplete = retained.incomplete;
-        let afterSeq = messages.at(-1)?.seq;
+        let observedHasMoreOlder: boolean | null = null;
+        const received: SessionDiscussionOpenedMessageV1[] = [];
+        // A retained row the Session cipher could not open kept no ciphertext, so it
+        // is completed by asking the Discussion owner for it again under the current
+        // key rather than resuming after the highest retained sequence.
+        const firstLockedIndex = messages.findIndex((row) => row.content === null);
+        let afterSeq = firstLockedIndex >= 0
+            ? (firstLockedIndex === 0 ? undefined : messages[firstLockedIndex - 1]!.seq)
+            : messages.at(-1)?.seq;
         for (;;) {
             const outcome = await client.read(discussionId, afterSeq === undefined ? {} : { afterSeq }, signal);
             if (operationEpoch !== accessLossEpoch) return;
             if (outcome.kind !== 'succeeded') {
                 const code = outcome.kind === 'failed' ? outcome.errorCode : outcome.kind;
                 if (isExplicitAccessLoss(code)) purgeAccessLost(code);
-                else updateThread(discussionId, {
-                    ...(statusForFailure(code) === 'revoked' ? emptyThread() : retained),
-                    status: statusForFailure(code), errorCode: code,
-                });
+                else if (statusForFailure(code) === 'revoked') {
+                    updateThread(discussionId, { ...emptyThread(), status: 'revoked', errorCode: code });
+                } else {
+                    // Reporting this read's failure must not republish the thread as it
+                    // looked before the await: another surface may have loaded newer
+                    // messages, and the pages this read did receive are still valid.
+                    const failed = mergeSessionDiscussionMessages(
+                        (snapshot.threads[discussionId] ?? retained).messages,
+                        received,
+                    );
+                    updateThread(discussionId, {
+                        ...(snapshot.threads[discussionId] ?? retained),
+                        messages: failed,
+                        incomplete: failed.some((row) => row.content === null),
+                        status: statusForFailure(code), errorCode: code,
+                    });
+                }
                 return;
             }
-            const previousHighest = messages.at(-1)?.seq ?? 0;
+            received.push(...outcome.value.messages);
             messages = mergeSessionDiscussionMessages(messages, outcome.value.messages);
-            if (afterSeq === undefined) hasMoreOlder = outcome.value.hasMoreOlder;
-            messageSeq = outcome.value.messageSeq;
-            incomplete = incomplete || outcome.value.incomplete;
+            if (afterSeq === undefined) observedHasMoreOlder = outcome.value.hasMoreOlder;
+            messageSeq = Math.max(messageSeq, outcome.value.messageSeq);
             const highest = messages.at(-1)?.seq ?? 0;
-            if (highest >= messageSeq || highest <= previousHighest) break;
+            if (highest >= messageSeq
+                || outcome.value.messages.length === 0
+                || (afterSeq !== undefined && highest <= afterSeq)) {
+                break;
+            }
             afterSeq = highest;
         }
+        // Another mounted surface can publish newer rows while this read is in
+        // flight, so the response reconciles against the current thread instead of
+        // the snapshot it captured before awaiting.
+        const current = snapshot.threads[discussionId] ?? retained;
+        const merged = mergeSessionDiscussionMessages(current.messages, received);
+        const incomplete = merged.some((row) => row.content === null);
         updateThread(discussionId, {
-            ...retained,
-            messages,
-            hasMoreOlder,
-            messageSeq,
+            ...current,
+            messages: merged,
+            hasMoreOlder: observedHasMoreOlder ?? current.hasMoreOlder,
+            messageSeq: Math.max(current.messageSeq, messageSeq),
             status: incomplete ? 'locked' : 'ready',
             errorCode: null,
             incomplete,
@@ -399,7 +467,7 @@ export function createSessionDiscussionRepository(options: Readonly<{
         for (const intent of intents.values()) {
             if (intent.kind === 'post'
                 && intent.discussionId === discussionId
-                && messages.some((row) => row.localId === intent.localId)) {
+                && merged.some((row) => row.localId === intent.localId)) {
                 markMutationObservedSuccess(intent.localId);
             }
         }
@@ -434,17 +502,24 @@ export function createSessionDiscussionRepository(options: Readonly<{
         if (outcome.kind !== 'succeeded') {
             const code = outcome.kind === 'failed' ? outcome.errorCode : outcome.kind;
             if (isExplicitAccessLoss(code)) purgeAccessLost(code);
-            else updateThread(discussionId, { ...retained, status: statusForFailure(code), errorCode: code });
+            else updateThread(discussionId, {
+                ...(snapshot.threads[discussionId] ?? retained),
+                status: statusForFailure(code),
+                errorCode: code,
+            });
             return;
         }
+        const current = snapshot.threads[discussionId] ?? retained;
+        const merged = mergeSessionDiscussionMessages(current.messages, outcome.value.messages);
+        const incomplete = merged.some((row) => row.content === null);
         updateThread(discussionId, {
-            ...retained,
-            messages: mergeSessionDiscussionMessages(retained.messages, outcome.value.messages),
+            ...current,
+            messages: merged,
             hasMoreOlder: outcome.value.hasMoreOlder,
-            messageSeq: Math.max(retained.messageSeq, outcome.value.messageSeq),
-            status: outcome.value.incomplete || retained.incomplete ? 'locked' : 'ready',
+            messageSeq: Math.max(current.messageSeq, outcome.value.messageSeq),
+            status: incomplete ? 'locked' : 'ready',
             errorCode: null,
-            incomplete: retained.incomplete || outcome.value.incomplete,
+            incomplete,
         });
     };
 
@@ -491,41 +566,68 @@ export function createSessionDiscussionRepository(options: Readonly<{
         markMutationObservedSuccess(intent.localId);
     };
 
-    const reconcileCreate = async (intent: CreateIntent, signal?: AbortSignal): Promise<boolean> => {
-        const operationEpoch = accessLossEpoch;
+    const findCreatedDiscussionInList = async (
+        intent: CreateIntent,
+        state: 'active' | 'archived',
+        operationEpoch: number,
+        signal?: AbortSignal,
+    ): Promise<
+        | { kind: 'found'; row: SessionDiscussionOpenedSummaryV1 }
+        | { kind: 'absent' }
+        | { kind: 'unavailable' }
+    > => {
         let cursor: string | null = null;
         const visitedCursors = new Set<string>();
         for (;;) {
-            const outcome = await client.list({ state: 'active', ...(cursor ? { cursor } : {}) }, signal);
-            if (operationEpoch !== accessLossEpoch) return false;
+            const outcome = await client.list({ state, ...(cursor ? { cursor } : {}) }, signal);
+            if (operationEpoch !== accessLossEpoch) return { kind: 'unavailable' };
             if (outcome.kind !== 'succeeded') {
                 if (outcome.kind === 'failed' && isExplicitAccessLoss(outcome.errorCode)) purgeAccessLost(outcome.errorCode);
-                return false;
+                return { kind: 'unavailable' };
             }
             const found = outcome.value.discussions.find((row) => row.creationLocalId === intent.creationLocalId);
-            if (found) {
-                const messages = await client.read(found.id, { beforeSeq: 2 }, signal);
-                if (operationEpoch !== accessLossEpoch) return false;
-                if (messages.kind !== 'succeeded') {
-                    if (messages.kind === 'failed' && isExplicitAccessLoss(messages.errorCode)) purgeAccessLost(messages.errorCode);
-                    return false;
-                }
-                const firstMessage = messages.value.messages.find((row) => row.localId === intent.messageLocalId);
-                if (!firstMessage) return false;
-                completeCreate(intent, {
-                    v: 1,
-                    serverId: options.address.serverId,
-                    sessionId: options.address.sessionId,
-                    discussion: found,
-                    firstMessage,
-                });
-                return true;
-            }
+            if (found) return { kind: 'found', row: found };
             const nextCursor = outcome.value.nextCursor;
-            if (!nextCursor || visitedCursors.has(nextCursor)) return false;
+            if (!nextCursor || visitedCursors.has(nextCursor)) return { kind: 'absent' };
             visitedCursors.add(nextCursor);
             cursor = nextCursor;
         }
+    };
+
+    const reconcileCreate = async (intent: CreateIntent, signal?: AbortSignal): Promise<boolean> => {
+        const operationEpoch = accessLossEpoch;
+        // A create can commit and then be archived — by this Account elsewhere
+        // or by another collaborator — before the one-shot reconciler runs.
+        // Observing only the active projection reports a committed discussion
+        // as never created and leaves the attempt open for a duplicate resend,
+        // so both existing list projections are observed before concluding
+        // absence. Neither adds a route: this is the same paged list owner.
+        let found: SessionDiscussionOpenedSummaryV1 | null = null;
+        for (const state of ['active', 'archived'] as const) {
+            const outcome = await findCreatedDiscussionInList(intent, state, operationEpoch, signal);
+            if (outcome.kind === 'unavailable') return false;
+            if (outcome.kind === 'found') {
+                found = outcome.row;
+                break;
+            }
+        }
+        if (!found) return false;
+        const messages = await client.read(found.id, { beforeSeq: 2 }, signal);
+        if (operationEpoch !== accessLossEpoch) return false;
+        if (messages.kind !== 'succeeded') {
+            if (messages.kind === 'failed' && isExplicitAccessLoss(messages.errorCode)) purgeAccessLost(messages.errorCode);
+            return false;
+        }
+        const firstMessage = messages.value.messages.find((row) => row.localId === intent.messageLocalId);
+        if (!firstMessage) return false;
+        completeCreate(intent, {
+            v: 1,
+            serverId: options.address.serverId,
+            sessionId: options.address.sessionId,
+            discussion: found,
+            firstMessage,
+        });
+        return true;
     };
 
     const reconcilePost = async (intent: PostIntent, signal?: AbortSignal): Promise<boolean> => {
@@ -758,7 +860,7 @@ export function createSessionDiscussionRepository(options: Readonly<{
             listPages.active = [];
             listPages.archived = [];
             intents.clear();
-            publish({ address: options.address, lists: { active: EMPTY_LIST, archived: EMPTY_LIST }, threads: {}, mutations: {} });
+            publish({ address: options.address, lists: { active: EMPTY_LIST, archived: EMPTY_LIST }, archivedExistence: 'unknown', threads: {}, mutations: {} });
         },
     };
 }

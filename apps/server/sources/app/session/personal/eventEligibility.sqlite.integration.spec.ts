@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { db } from "@/storage/db";
+import type { Tx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
+import { admitSessionBackgroundDeliveryInTx } from "./backgroundDelivery";
 import { listSessionPersonalEventRecipients } from "./eventEligibility";
 
 describe("personal event recipients", () => {
@@ -83,5 +85,61 @@ describe("personal event recipients", () => {
         expect((await listSessionPersonalEventRecipients({
             sessionId: session.id, event: "discussion_mention", targetAccountIds: [inheritFollower.id],
         })).map(row => row.accountId)).toEqual([inheritFollower.id]);
+    });
+
+    /**
+     * One background event fans out to every recipient of one Session, so the
+     * admission reads that Session's access row once for the batch instead of
+     * once per recipient. The admitted set is the same credential-qualified
+     * answer: owner, direct and inherited arms in, a restricted-Team-only
+     * recipient out.
+     */
+    it("reads the Session access row once for a batch of recipients", async () => {
+        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
+        const owner = await db.account.create({ data: { publicKey: randomUUID() } });
+        const inheritFollower = await db.account.create({ data: { publicKey: randomUUID() } });
+        const directFollower = await db.account.create({ data: { publicKey: randomUUID() } });
+        const restrictedFollower = await db.account.create({ data: { publicKey: randomUUID() } });
+        const inheritTeam = await db.team.create({ data: { name: `batch-inherit-${randomUUID()}` } });
+        const restrictedTeam = await db.team.create({ data: {
+            name: `batch-restricted-${randomUUID()}`,
+            authenticationPolicy: { v: 1, mode: "restricted", accepted: [{ kind: "home_method", methodId: "github" }] },
+        } });
+        await db.teamMembership.createMany({ data: [
+            { teamId: inheritTeam.id, accountId: inheritFollower.id, role: "member" as const },
+            { teamId: restrictedTeam.id, accountId: restrictedFollower.id, role: "member" as const },
+        ] });
+        const session = await db.session.create({ data: { accountId: owner.id, tag: randomUUID(), metadata: "{}" } });
+        await db.sessionTeamGrant.createMany({ data: [inheritTeam, restrictedTeam].map(team => ({
+            sessionId: session.id, teamId: team.id, accessLevel: "view" as const, effectiveAt: new Date(0),
+        })) });
+        await db.sessionShare.create({ data: {
+            sessionId: session.id, sharedByUserId: owner.id, sharedWithUserId: directFollower.id, accessLevel: "view",
+        } });
+
+        let sessionRowReads = 0;
+        const reader = new Proxy(db, {
+            get(target, property, receiver) {
+                const value = Reflect.get(target, property, receiver);
+                if (property !== "session" || typeof value !== "object" || value === null) return value;
+                return new Proxy(value, {
+                    get(delegate, method, delegateReceiver) {
+                        const member = Reflect.get(delegate, method, delegateReceiver);
+                        if (method !== "findUnique" || typeof member !== "function") return member;
+                        return (...args: readonly unknown[]) => {
+                            sessionRowReads += 1;
+                            return Reflect.apply(member, delegate, args);
+                        };
+                    },
+                });
+            },
+        }) as unknown as Tx;
+
+        const admitted = await admitSessionBackgroundDeliveryInTx(reader, {
+            sessionId: session.id,
+            accountIds: [owner.id, inheritFollower.id, directFollower.id, restrictedFollower.id],
+        });
+        expect([...admitted.keys()].sort()).toEqual([owner.id, inheritFollower.id, directFollower.id].sort());
+        expect(sessionRowReads).toBe(1);
     });
 });

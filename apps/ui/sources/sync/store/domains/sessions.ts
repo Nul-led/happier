@@ -149,6 +149,29 @@ export function shouldRetireSessionCarrierForServer(
     return areServerProfileIdentifiersEquivalent(normalizedCarrierServerId, normalizedServerId);
 }
 
+/**
+ * The one reader of the retirement tombstone `deleteSession` writes.
+ *
+ * The tombstone records WHICH Home's carrier was retired, because the same Session
+ * id can exist on several Homes and one Home's deletion says nothing about another
+ * one's. `true` records a retirement that addressed no Home and therefore removed
+ * the id everywhere, so it answers for every caller; a Home-scoped tombstone
+ * answers only for that Home, and for a caller holding no Home at all — the same
+ * unqualified boundary the write side uses.
+ */
+export function isSessionRetiredForServer(
+    deletedSessionIds: Readonly<Record<string, string | true>>,
+    sessionId: string,
+    serverId: string | null | undefined,
+): boolean {
+    const tombstone = deletedSessionIds[sessionId];
+    if (tombstone === undefined) return false;
+    if (tombstone === true) return true;
+    const normalizedServerId = normalizeTrimmedString(serverId);
+    if (!normalizedServerId) return true;
+    return areServerProfileIdentifiersEquivalent(tombstone, normalizedServerId);
+}
+
 type SessionModelMode = NonNullable<Session['modelMode']>;
 type ScmOperationLogEntry = import('../../runtime/orchestration/projectManager').ScmProjectOperationLogEntry;
 type ScmInFlightOperation = import('../../runtime/orchestration/projectManager').ScmProjectInFlightOperation;
@@ -229,7 +252,7 @@ export type SessionsDomain = {
      * not-cached — a durable pointer such as a transcript session reference — reads this map
      * rather than inferring absence.
      */
-    deletedSessionIds: Record<string, true>;
+    deletedSessionIds: Record<string, string | true>;
     sessionListRenderableDelta: import('./sessionListIndexFinalization').SessionListRenderableDelta;
     /** Canonical qualified rows. Presence here does not imply ordinary-list membership. */
     sessionListRowsByServerId: Readonly<Record<string, Readonly<Record<string, SessionListRenderableSession>>>>;
@@ -3214,8 +3237,16 @@ export function createSessionsDomain<S extends SessionsDomain & SessionsDomainDe
                 // The only durable record that this id is gone rather than merely uncached.
                 // Another Home's deletion cannot tombstone this bare id: its hydrated
                 // carrier remains authoritative even when that carrier's list row is evicted.
+                // The value is the Home this retirement addressed, so a same-id carrier on
+                // another Home is not read as deleted; `true` means no Home was addressed
+                // and every Home's row went, which is what the loops above just did.
                 ...(retireActiveCarrier
-                    ? { deletedSessionIds: { ...state.deletedSessionIds, [sessionId]: true as const } }
+                    ? {
+                        deletedSessionIds: {
+                            ...state.deletedSessionIds,
+                            [sessionId]: targetServerId ?? (true as const),
+                        },
+                    }
                     : {}),
                 sessionMessages: remainingSessionMessages,
                 sessionMessagesHistoryStartLoaded: remainingHistoryStartLoaded,

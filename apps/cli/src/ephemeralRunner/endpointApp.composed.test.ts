@@ -44,6 +44,42 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
+async function writeActivationFile(
+  activationFilePath: string,
+  seedByte: number,
+  artifactSha256: string,
+): Promise<void> {
+  const activationKey = tweetnacl.sign.keyPair.fromSeed(new Uint8Array(32).fill(seedByte));
+  await writeFile(activationFilePath, JSON.stringify({
+    v: 1,
+    home: {
+      v: 1,
+      homeServerIdentityId: 'srv_runner_home',
+      canonicalServerUrl: 'https://home.example.test',
+      revision: 1,
+      endpoints: [{ kind: 'https', url: 'https://home.example.test' }],
+    },
+    activation: {
+      id: `00000000-0000-4000-8000-0000000000${seedByte}`,
+      signingPrivateKeyBase64Url: encodeBase64(activationKey.secretKey, 'base64url'),
+      creatorAccountId: 'creator-account',
+      creatorTokenEpoch: 4,
+      activationExpiresAt: null,
+      workspace: { kind: 'choose_on_endpoint' as const },
+      sessionId: 'runner-session',
+      machineId: 'runner-machine',
+      authoringCommitment: encodeBase64(new Uint8Array(32).fill(seedByte), 'base64url'),
+      artifact: {
+        product: 'happier-runner',
+        version: packageJson.version,
+        target: currentRunnerArtifactTarget(),
+        sha256: artifactSha256,
+      },
+      endpointFactsRecipient: { mode: 'plain', creatorAccountId: 'creator-account' },
+    },
+  }), { mode: 0o600 });
+}
+
 describe('shipped Happier Runner composition', () => {
   it('rejects an activation for a different Runner build before acquiring Home transport', async () => {
     const root = await mkdtemp(join(tmpdir(), 'happier-runner-build-mismatch-'));
@@ -149,6 +185,14 @@ describe('shipped Happier Runner composition', () => {
         onConnectionState: () => () => undefined,
         close: vi.fn(async () => { events.push('connection.close'); }),
       })),
+      prepareReviewedPluginAcquisition: vi.fn(async () => {
+        events.push('plugin.prepare');
+        return {
+          review: null,
+          apply: vi.fn(async () => undefined),
+          release: vi.fn(async () => undefined),
+        };
+      }),
       prepareAgent: vi.fn(async ({ homeDirectory }: { homeDirectory: string }) => {
         activationHome = homeDirectory;
         events.push('prepare');
@@ -196,6 +240,7 @@ describe('shipped Happier Runner composition', () => {
       'claim',
       'facts',
       'review',
+      'plugin.prepare',
       'consent',
       'prepare',
       'progress.checking_ai_access',
@@ -269,6 +314,61 @@ describe('shipped Happier Runner composition', () => {
       pluginId: 'acme.reviewed-external',
       localId: 'assistant',
     });
+  });
+
+  it('acquires nothing for a bundled Agent the Runner artifact already carries', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-runner-bundled-acquisition-'));
+    roots.push(root);
+    const activationFilePath = join(root, 'happier-runner.activation.json');
+    await writeActivationFile(activationFilePath, 67, 'd'.repeat(64));
+    const app = await createProductionEphemeralRunnerApplication({ activationFilePath });
+    const activationHome = await mkdtemp(join(root, 'activation-home-'));
+
+    const acquisition = await app.dependencies.prepareReviewedPluginAcquisition({
+      manifest: { preparedAuthoring: { agentPluginDistribution: null } } as never,
+      homeDirectory: activationHome,
+      signal: new AbortController().signal,
+    });
+
+    // Leg 4: the bundled and external kinds take the identical endpoint path
+    // and differ only in this result, so no install block reaches consent.
+    expect(acquisition.review).toBeNull();
+    await expect(acquisition.apply({ signal: new AbortController().signal })).resolves.toBeUndefined();
+    await expect(acquisition.release()).resolves.toBeUndefined();
+  });
+
+  it('refuses a committed distribution whose marketplace source the activation-local Home cannot bind', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-runner-unbindable-source-'));
+    roots.push(root);
+    const activationFilePath = join(root, 'happier-runner.activation.json');
+    await writeActivationFile(activationFilePath, 71, 'e'.repeat(64));
+    const app = await createProductionEphemeralRunnerApplication({ activationFilePath });
+    const activationHome = await mkdtemp(join(root, 'activation-home-'));
+
+    // A fresh Runner home knows only the seeded curated source and the one
+    // synthesized community npm source. A commitment naming the creator
+    // machine's own catalog is refused by the canonical preparer's source
+    // targeting, before any registry is contacted.
+    await expect(app.dependencies.prepareReviewedPluginAcquisition({
+      manifest: {
+        preparedAuthoring: {
+          agentPluginDistribution: {
+            source: { id: 'acme-catalog', kind: 'user', sourceUrl: 'https://catalog.acme.test/index.json' },
+            pluginId: 'acme.reviewed-external',
+            publisher: { id: 'acme', displayName: 'Acme' },
+            packageName: '@acme/reviewed-external',
+            registryOrigin: 'https://registry.npmjs.org',
+            version: '1.2.3',
+            integrity: `sha512-${'A'.repeat(86)}==`,
+            manifestDigest: `sha256:${'b'.repeat(64)}`,
+            review: { status: 'unreviewed', reviewedAt: null },
+            updatePolicy: 'pinned',
+          },
+        },
+      } as never,
+      homeDirectory: activationHome,
+      signal: new AbortController().signal,
+    })).rejects.toThrow();
   });
 
   it('binds the production Personal Home carrier to activation-local endpoint identity custody', async () => {

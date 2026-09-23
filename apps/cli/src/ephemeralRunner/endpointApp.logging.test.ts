@@ -93,6 +93,11 @@ describe('ephemeral Runner logging custody', () => {
             onConnectionState: () => () => undefined,
             close: vi.fn(async () => undefined),
           })),
+          prepareReviewedPluginAcquisition: vi.fn(async () => ({
+            review: null,
+            apply: vi.fn(async () => undefined),
+            release: vi.fn(async () => undefined),
+          })),
           prepareAgent: vi.fn(async ({ homeDirectory }: { homeDirectory: string }) => {
             activationHome = homeDirectory;
             loggerModule.logger.infoFile(

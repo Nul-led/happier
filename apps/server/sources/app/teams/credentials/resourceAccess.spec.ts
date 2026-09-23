@@ -63,6 +63,27 @@ describe("current Team credential audience entitlement", () => {
         }
     });
 
+    // A same-Team member outside the audience learns only that they have no
+    // access. Custodian standing, enablement and ceiling state belong to the
+    // audience, so the match decision comes first.
+    it("tells a same-Team non-audience caller nothing but access_removed", () => {
+        const outsideAudience = {
+            ...input.resource,
+            allMembersDeliveryMode: null,
+            groupGrants: [],
+            memberGrants: [],
+        };
+        expect(projectTeamCredentialEntitlement({
+            ...input, resource: { ...outsideAudience, enabled: false },
+        })).toEqual({ ok: false, reason: "access_removed" });
+        expect(projectTeamCredentialEntitlement({
+            ...input, resource: outsideAudience, custodianMembership: null,
+        })).toEqual({ ok: false, reason: "access_removed" });
+        expect(projectTeamCredentialEntitlement({
+            ...input, resource: { ...outsideAudience, disclosureCeiling: "unknown" },
+        })).toEqual({ ok: false, reason: "access_removed" });
+    });
+
     it("fails closed for disabled resources, malformed modes, and direct grants beyond the owner's ceiling", () => {
         expect(projectTeamCredentialEntitlement({ ...input, resource: { ...input.resource, enabled: false } }))
             .toEqual({ ok: false, reason: "disabled" });

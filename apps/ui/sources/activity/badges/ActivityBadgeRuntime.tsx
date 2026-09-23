@@ -201,14 +201,14 @@ export function ActivityBadgeRuntime(): React.ReactElement | null {
         // write: clearing to 0 here would wipe a correct badge on every launch.
         if (!localBadgeSnapshot.policyReady) return null;
         if (localBadgeSnapshot.channelDisabled) return localBadgeSnapshot.localBadgeState;
-        // A warm source is one Home answering for a corpus that may span several. The badge the
-        // OS already shows was written by whoever wrote last; replacing it with a number this
-        // app knows is short is worse than leaving it, so a multi-Home corpus waits for its
-        // coverage. One Home cannot be partial across Homes and never waits.
-        const warmSourceAnswersForEveryHome = badgeHomeServerIds.length <= 1
-            || personalSessionMembership.coverageComplete;
-        if (localBadgeSnapshot.isDataReady
-            || (localBadgeSnapshot.hasLocalActivitySource && warmSourceAnswersForEveryHome)) {
+        // Every source below answers for one Home: `isDataReady` is the active Home's own
+        // bootstrap flag, the warm local source is whatever has landed so far, and the server
+        // snapshot is fetched for the active Home alone. The badge the OS already shows was
+        // written by whoever wrote last; replacing it with a number this app knows is short is
+        // worse than leaving it, so a corpus spanning several Homes waits for its coverage.
+        // One Home cannot be partial across Homes and never waits.
+        if (badgeHomeServerIds.length > 1 && !personalSessionMembership.coverageComplete) return null;
+        if (localBadgeSnapshot.isDataReady || localBadgeSnapshot.hasLocalActivitySource) {
             return localBadgeSnapshot.localBadgeState;
         }
         if (

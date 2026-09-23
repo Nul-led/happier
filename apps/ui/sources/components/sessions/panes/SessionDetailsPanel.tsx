@@ -358,12 +358,20 @@ export const SessionDetailsPanel = React.memo((props: SessionDetailsPanelProps) 
         simulatorPreview,
     ]);
 
-    const renderTabContent = React.useCallback((tab: DetailsTabState) => {
+    const renderTabContent = React.useCallback((
+        tab: DetailsTabState,
+        presentation: Readonly<{ active: boolean }>,
+    ) => {
         return (
             <DetailsSurfaceHost
                 tab={tab}
                 scope={detailsSurfaceScope}
                 region="details"
+                // Every tab stays mounted for content, scroll and view continuity, so
+                // the incumbent group's own activity is the only truthful answer here.
+                // Defaulting it to `true` left a hidden Board pane owning the shared
+                // editor and re-registering the continuity draft guard.
+                active={presentation.active}
                 renderers={detailsSurfaceRenderers}
                 callbacks={detailsSurfaceCallbacks}
             />

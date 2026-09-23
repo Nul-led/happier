@@ -173,4 +173,162 @@ describe('resolveSessionBoardHostVisibility', () => {
             itemVisibleInCompanion: false,
         })).toBeNull();
     });
+
+    it('runs one Details copy when a Board and an item expansion are both presented', () => {
+        // Two split groups: the generic Board tab and `item-1`'s own expanded
+        // destination. Both are the `details` host and both draw `item-1` at full
+        // density, so "host === primaryHost" alone gave the one executable item two
+        // live frames.
+        const visibility = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsExpandedItemIds: ['item-1'],
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+        }));
+
+        const forDestination = (
+            itemId: string,
+            detailsDestinationItemId: string | null,
+        ) => resolveSessionBoardItemPrimaryMountHost({
+            visibility,
+            itemVisibleInCompanion: false,
+            itemId,
+            detailsDestination: { detailsDestinationItemId },
+        });
+
+        expect(forDestination('item-1', 'item-1')).toBe('details');
+        expect(forDestination('item-1', null)).toBeNull();
+        // Every other item keeps running in the generic destination.
+        expect(forDestination('item-2', null)).toBe('details');
+        expect(forDestination('item-2', 'item-1')).toBeNull();
+    });
+
+    it('hands the mount back to the Board when the expanded destination closes', () => {
+        const withExpansion = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsExpandedItemIds: ['item-1'],
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+        }));
+        const closed = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+        }));
+
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility: withExpansion,
+            itemVisibleInCompanion: false,
+            itemId: 'item-1',
+            detailsDestination: { detailsDestinationItemId: null },
+        })).toBeNull();
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility: closed,
+            itemVisibleInCompanion: false,
+            itemId: 'item-1',
+            detailsDestination: { detailsDestinationItemId: null },
+        })).toBe('details');
+    });
+
+    it('does not elect Details for an item no visible Details destination draws', () => {
+        // Details presents ONLY `board:item-a`. It draws nothing for item B, so
+        // electing `details` for B left B an inert preview with no live copy anywhere.
+        const expandedOnly = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsShowsGenericBoard: false,
+                detailsExpandedItemIds: ['item-a'],
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+            companionPlacement: { kind: 'reserved_rail', edge: 'trailing', widthPx: 280 },
+        }));
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility: expandedOnly,
+            itemVisibleInCompanion: true,
+            itemId: 'item-b',
+        })).toBe('companion');
+        // The expanded item itself still runs in the destination opened for it.
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility: expandedOnly,
+            itemVisibleInCompanion: true,
+            itemId: 'item-a',
+        })).toBe('details');
+
+        // Control: the generic Board grid draws every placement, so it wins again.
+        const genericBoard = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsShowsGenericBoard: true,
+                detailsExpandedItemIds: ['item-a'],
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+            companionPlacement: { kind: 'reserved_rail', edge: 'trailing', widthPx: 280 },
+        }));
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility: genericBoard,
+            itemVisibleInCompanion: true,
+            itemId: 'item-b',
+        })).toBe('details');
+    });
+
+    it('keeps focused Details from winning for an item it does not draw', () => {
+        const visibility = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: true,
+                detailsShowsGenericBoard: false,
+                detailsExpandedItemIds: ['item-a'],
+                detailsFocusModeActive: true,
+                rightOpen: true,
+                rightActiveTabId: 'board',
+            },
+        }));
+        expect(visibility.focusedHost).toBe('focusedDetails');
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility,
+            itemVisibleInCompanion: false,
+            itemId: 'item-b',
+        })).toBe('sidebar');
+    });
+
+    it('keeps a non-Details placement out of the destination selection', () => {
+        // The Companion renders its own ordered subset, so an expanded Details
+        // destination must not silently retire it.
+        const visibility = resolveSessionBoardHostVisibility(facts({
+            panes: {
+                detailsOpen: true,
+                detailsShowsBoard: false,
+                detailsExpandedItemIds: ['item-1'],
+                detailsFocusModeActive: false,
+                rightOpen: false,
+                rightActiveTabId: null,
+            },
+            companionPlacement: { kind: 'reserved_rail', edge: 'trailing', widthPx: 280 },
+        }));
+
+        expect(visibility.detailsExpandedItemIds).toEqual([]);
+        expect(resolveSessionBoardItemPrimaryMountHost({
+            visibility,
+            itemVisibleInCompanion: true,
+            itemId: 'item-1',
+        })).toBe('companion');
+    });
 });

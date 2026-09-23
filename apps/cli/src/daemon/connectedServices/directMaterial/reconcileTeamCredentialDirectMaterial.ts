@@ -75,12 +75,17 @@ export async function reconcileTeamCredentialDirectMaterial(input: Readonly<{
       if (computeTeamCredentialSourceMemberKeyV1(sourceSnapshot.currentness.sourceMember) !== input.sourceMemberKey) {
         return { ok: false, reason: 'source_changed', prepared };
       }
+      // The Home advances the resource's published source version on the first
+      // tuple this run stores, so the remaining recipients of the page are
+      // fenced against the version this run published rather than the one the
+      // page was captured at. Every other precondition stays exact.
+      let publishedSourceVersion = page.publishedSourceVersion;
       for (const recipient of page.recipients) {
         const result = await produceTeamCredentialDirectMaterial({
           sourceSnapshot,
           expected: {
             sourceMember: page.sourceMember,
-            publishedSourceVersion: page.publishedSourceVersion,
+            publishedSourceVersion,
             expectedResourceRevision: page.resourceRevision,
             expectedStoredSourceVersion: recipient.expectedStoredSourceVersion,
             recipientMode: recipient.recipientMode,
@@ -121,6 +126,7 @@ export async function reconcileTeamCredentialDirectMaterial(input: Readonly<{
           ...(input.signal ? { signal: input.signal } : {}),
         });
         if (!result.ok) return { ...result, prepared };
+        publishedSourceVersion = result.sourceVersion;
         prepared += 1;
       }
       cursor = page.nextCursor ?? undefined;

@@ -56,7 +56,6 @@ const payload: ProviderBrokerRouteGrantPayloadV1 = {
 const expectedBinding = {
   teamId: payload.teamId,
   resourceId: payload.resourceId,
-  expectedResourceRevision: payload.expectedResourceRevision,
   modelId: payload.modelId,
   sourceRevision: payload.sourceRevision,
   initiator: payload.initiator,
@@ -84,8 +83,10 @@ async function requestThroughApplicationTarget(input: Readonly<{
   localCapability: string;
   /** An Agent-supplied bearer. The target must never treat it as authority. */
   authority?: SignedProviderBrokerRouteGrantV1;
+  /** Overrides the default small JSON body; used to probe the ingress limit. */
+  body?: string;
 }>): Promise<string> {
-  const body = JSON.stringify({ model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }] });
+  const body = input.body ?? JSON.stringify({ model: 'gpt-5', messages: [{ role: 'user', content: 'hello' }] });
   const request = [
     'POST /v1/chat/completions HTTP/1.1',
     'Host: 127.0.0.1',
@@ -150,7 +151,7 @@ describe('Provider broker target application integration', () => {
       authenticatedRemoteEndpointId: payload.initiator.endpointId,
       authority: signedAuthority(),
       expected: expectedBinding,
-      streamLifetime: { acquireSource: vi.fn(), close },
+      streamLifetime: { acquireSource: vi.fn(), close, retire: close },
     } as const);
     try {
       const admission = new AbortController();
@@ -203,7 +204,7 @@ describe('Provider broker target application integration', () => {
         authenticatedRemoteEndpointId: payload.initiator.endpointId,
         authority: signedAuthority(),
         expected: expectedBinding,
-        streamLifetime: { acquireSource: vi.fn(), close: closeLifetime },
+        streamLifetime: { acquireSource: vi.fn(), close: closeLifetime, retire: closeLifetime },
       }, admission.signal);
       const response = requestThroughApplicationTarget({ ...target, authority: signedAuthority() });
       await started;
@@ -213,6 +214,36 @@ describe('Provider broker target application integration', () => {
       await vi.waitFor(() => expect(closeLifetime).toHaveBeenCalledOnce());
     } finally {
       finishHandler();
+      await server.close();
+    }
+  });
+
+  // The Agent's raw request reaches this parser before the Provider request
+  // policy, so the ingress must not be narrower than the canonical Provider
+  // decoded-body budget that policy enforces.
+  it('accepts an Agent request body above the inherited default parser limit', async () => {
+    const handler = vi.fn(async () => ({
+      ok: true as const,
+      response: {
+        ok: true as const, status: 200, statusText: 'OK', headers: Object.freeze({}), body: null,
+      },
+    }));
+    const server = await startProviderBrokerApplicationServer({ handler });
+    try {
+      const target = await server.createStreamTarget({
+        authenticatedRemoteEndpointId: payload.initiator.endpointId,
+        authority: signedAuthority(),
+        expected: expectedBinding,
+        streamLifetime: { acquireSource: vi.fn(), close: vi.fn(async () => {}), retire: vi.fn(async () => {}) },
+      });
+      const response = await requestThroughApplicationTarget({
+        ...target,
+        authority: signedAuthority(),
+        body: JSON.stringify({ model: 'gpt-5', context: 'x'.repeat(1_200_000) }),
+      });
+      expect(response).toContain('HTTP/1.1 200 OK');
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
       await server.close();
     }
   });
@@ -295,13 +326,15 @@ describe('Provider broker target application integration', () => {
   it('authenticates private close and awaits idempotent target lifetime retirement before acknowledging', async () => {
     const order: string[] = [];
     let retired = false;
+    const retire = vi.fn(async () => {
+      if (retired) return;
+      retired = true;
+      order.push('retired');
+    });
     const streamLifetime = {
       acquireSource: vi.fn(),
-      close: vi.fn(async () => {
-        if (retired) return;
-        retired = true;
-        order.push('retired');
-      }),
+      close: vi.fn(async () => {}),
+      retire,
     };
     const handler = createProviderBrokerRequestHandler({
       resolveTrustRoots: () => [{
@@ -336,6 +369,7 @@ describe('Provider broker target application integration', () => {
     let cleanupInFlight: Promise<void> | null = null;
     const streamLifetime = {
       acquireSource: vi.fn(),
+      retire: vi.fn(async () => {}),
       close: vi.fn(() => {
         if (released) return Promise.resolve();
         cleanupInFlight ??= (++cleanupAttempts <= 2

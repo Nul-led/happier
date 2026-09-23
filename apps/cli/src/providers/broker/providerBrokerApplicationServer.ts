@@ -2,6 +2,7 @@ import fastify, { type FastifyInstance, type FastifyReply } from 'fastify';
 import { Readable } from 'node:stream';
 import type { ManagedServiceRequest } from '@happier-dev/plugin-sdk/managed-services';
 import { decodeBase64 } from '@happier-dev/protocol/crypto/base64';
+import { PROVIDER_ENDPOINT_SAFETY_LIMITS } from '@happier-dev/protocol';
 import {
     TEAM_CREDENTIAL_EXTERNAL_PROVIDER_APPLICATION_HTTP_PATH_V1,
     TEAM_CREDENTIAL_EXTERNAL_PROVIDER_APPLICATION_ENVELOPE_MAX_BYTES_V1,
@@ -217,6 +218,10 @@ export async function startProviderBrokerApplicationServer(input: Readonly<{
     app.route({
         method: ['DELETE', 'GET', 'HEAD', 'OPTIONS', 'PATCH', 'POST', 'PUT'],
         url: '/v1/*',
+        // The Agent's raw request reaches this parser first, so the ingress
+        // reuses the canonical Provider decoded-body budget the request policy
+        // later enforces instead of Fastify's much smaller default.
+        bodyLimit: PROVIDER_ENDPOINT_SAFETY_LIMITS.maxDecodedBodyBytes,
         handler: async (request, reply) => {
             const remotePort = request.raw.socket.remotePort;
             const context = remotePort === undefined ? undefined : contextsByRemotePort.get(remotePort);

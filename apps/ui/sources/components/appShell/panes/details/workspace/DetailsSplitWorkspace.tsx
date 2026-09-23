@@ -118,7 +118,7 @@ export type DetailsSplitWorkspaceProps = Readonly<{
     testIds?: DetailsTabGroupPanelProps['testIds'];
     resolveTabIconName?: ((tab: DetailsTabState) => string | null | undefined) | null;
     resolveTabPresentation?: ((tab: DetailsTabState) => DetailsTabPresentation | null | undefined) | null;
-    renderTabContent: (tab: DetailsTabState) => React.ReactNode;
+    renderTabContent: DetailsTabGroupPanelProps['renderTabContent'];
     renderHeaderLeadingActions?: (() => React.ReactNode) | null;
     renderHeaderActions?: (() => React.ReactNode) | null;
     renderEmptyState?: (() => React.ReactNode) | null;
@@ -253,6 +253,9 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
                     testIds={groupPanelTestIds}
                     resolveTabIconName={props.resolveTabIconName}
                     resolveTabPresentation={props.resolveTabPresentation}
+                    // A maximized group is the only one on screen; its siblings stay
+                    // mounted for continuity and must not report their tabs presented.
+                    presented={!details.maximizedGroupId || group.id === details.maximizedGroupId}
                     renderTabContent={props.renderTabContent}
                     renderHeaderLeadingActions={isFocused ? props.renderHeaderLeadingActions : null}
                     renderHeaderActions={isFocused ? props.renderHeaderActions : null}
@@ -261,6 +264,7 @@ export const DetailsSplitWorkspace = React.memo((props: DetailsSplitWorkspacePro
             </View>
         );
     }, [
+        details.maximizedGroupId,
         props.forceEmptyState,
         groupPanelTestIds,
         props.headerPaddingTop,

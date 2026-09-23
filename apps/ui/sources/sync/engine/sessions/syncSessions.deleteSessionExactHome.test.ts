@@ -39,6 +39,9 @@ describe('handleDeleteSessionSocketUpdate Home scoping', () => {
         expect(spies.removeSessionEncryption).not.toHaveBeenCalled();
         expect(spies.removeProjectManagerSession).not.toHaveBeenCalled();
         expect(spies.clearScmStatusForSession).not.toHaveBeenCalled();
+        // The socket's bare-id queues belong to whichever Home owns the carrier, so a
+        // non-carrier deletion must not drop Home A's admitted-but-unflushed work.
+        expect(spies.dropSocketSessionWork).toHaveBeenCalledWith(SESSION_ID, false);
     });
 
     it('retires the carrier when the deleting Home owns it', () => {
@@ -51,7 +54,10 @@ describe('handleDeleteSessionSocketUpdate Home scoping', () => {
         expect(spies.resetSessionTranscriptState).toHaveBeenCalledWith(SESSION_ID);
         expect(spies.removeSessionEncryption).toHaveBeenCalledWith(SESSION_ID);
         expect(spies.removeProjectManagerSession).toHaveBeenCalledWith(SESSION_ID);
-        expect(spies.clearScmStatusForSession).toHaveBeenCalledWith(SESSION_ID);
+        // The SCM sync is registered under the carrier's exact Home key, so the
+        // canonical cleanup has to address that Home or the mapping survives.
+        expect(spies.clearScmStatusForSession).toHaveBeenCalledWith(SESSION_ID, HOME_A);
+        expect(spies.dropSocketSessionWork).toHaveBeenCalledWith(SESSION_ID, true);
     });
 
     it('retires the carrier for a Home-agnostic deletion', () => {
@@ -62,5 +68,8 @@ describe('handleDeleteSessionSocketUpdate Home scoping', () => {
         expect(spies.deleteSession).toHaveBeenCalledWith(SESSION_ID, null);
         expect(spies.resetSessionTranscriptState).toHaveBeenCalledWith(SESSION_ID);
         expect(spies.removeSessionEncryption).toHaveBeenCalledWith(SESSION_ID);
+        // No Home was addressed, so the carrier's own Home is the only key the
+        // SCM owner can be cleared under.
+        expect(spies.clearScmStatusForSession).toHaveBeenCalledWith(SESSION_ID, HOME_A);
     });
 });

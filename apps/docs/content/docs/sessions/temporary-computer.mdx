@@ -75,6 +75,14 @@ servers, connected services, session configuration, transcript storage, the prom
 itself, references, and any attached files with their sizes. Secret values are
 never shown: a sealed value appears as its name with **(value sealed)**.
 
+When the agent you chose comes from an installed plugin rather than one Happier
+ships, the review also names the exact plugin the temporary computer will install
+before anything runs: the package and version, its integrity value, its publisher,
+the update channel it came from, whether that listing has been reviewed, where its
+code runs, and the host access it requires. That is the same Install and Trust
+review Happier shows anywhere else a plugin is installed — Allow performs it,
+Decline installs nothing.
+
 The review also carries the warning that matters most, and Happier does not soften
 it: **The Agent runs with the current OS user's permissions. The selected folder
 is not a sandbox, and the Agent may access other files that this OS user can
@@ -114,6 +122,7 @@ finish** — and in every one of those cases nothing was created.
 | What you see | What to do |
 | --- | --- |
 | **This agent can't install itself on a temporary computer** | Choose another agent. |
+| **This agent can't be installed on a temporary computer** | The agent's plugin was installed from a folder or an archive, so there is no published release for a fresh computer to install. Choose an agent whose plugin came from a marketplace or npm package. |
 | **Choose a team model for this agent before sending** | Select a model the shared credential allows. |
 | **The selected team model isn't available for this agent** | Choose another model. |
 | **AI access for this temporary computer couldn't be prepared** | Try again; the request is preserved. |

@@ -2,10 +2,16 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { db } from "@/storage/db";
+import { backgroundDeliveryAuthentication } from "@/app/session/access/sessionAccessAuthentication";
 import { createPresentUserSessionAccessAuthentication } from "@/app/session/access/sessionAccessAuthentication.testkit";
+import { inTx, type Tx } from "@/storage/inTx";
 import { createLightSqliteHarness, type LightSqliteHarness } from "@/testkit/lightSqliteHarness";
 
-import { computeAccountActivityBadgeCounts, computeAuthenticatedAccountActivityBadgeCount } from "./accountActivityBadge";
+import {
+    computeAccountActivityBadgeCounts,
+    computeAccountActivityBadgeCountsInTx,
+    computeAuthenticatedAccountActivityBadgeCount,
+} from "./accountActivityBadge";
 
 describe("Account activity badge admission (SQLite)", () => {
     let harness: LightSqliteHarness;
@@ -70,5 +76,64 @@ describe("Account activity badge admission (SQLite)", () => {
             inheritFollower.id,
             createPresentUserSessionAccessAuthentication(),
         )).toBe(1);
+    });
+
+    /**
+     * One badge-refresh batch is one credential context — none — so the
+     * memberships behind every recipient's admission are read once for the
+     * batch, not once per Account inside the transaction.
+     */
+    it("reads Team memberships once for a batch of recipients", async () => {
+        vi.stubEnv("HAPPIER_FEATURE_SESSIONS_COLLABORATION__ENABLED", "1");
+        const owner = await db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } });
+        const followers = await Promise.all([0, 1, 2].map(() =>
+            db.account.create({ data: { publicKey: randomUUID(), encryptionMode: "plain" } })));
+        const team = await db.team.create({ data: { name: `badge-batch-${randomUUID()}` } });
+        await db.teamMembership.createMany({ data: followers.map(account => ({
+            teamId: team.id, accountId: account.id, role: "member" as const,
+        })) });
+        const session = await db.session.create({ data: {
+            accountId: owner.id, tag: randomUUID(), metadata: "{}", encryptionMode: "plain", seq: 4,
+        } });
+        await db.sessionTeamGrant.create({ data: {
+            sessionId: session.id, teamId: team.id, accessLevel: "view", effectiveAt: new Date(0),
+        } });
+        await db.accountSessionFollow.createMany({ data: followers.map(account => ({
+            sessionId: session.id, accountId: account.id, following: true, notificationLevel: "important" as const,
+        })) });
+        await db.accountSessionReadState.createMany({ data: followers.map(account => ({
+            sessionId: session.id, accountId: account.id, lastViewedSessionSeq: 0,
+        })) });
+
+        const counts = await inTx(async (tx) => {
+            let membershipReads = 0;
+            const reader = new Proxy(tx, {
+                get(target, property, receiver) {
+                    const value = Reflect.get(target, property, receiver);
+                    if (property !== "teamMembership" || typeof value !== "object" || value === null) return value;
+                    return new Proxy(value, {
+                        get(delegate, method, delegateReceiver) {
+                            const member = Reflect.get(delegate, method, delegateReceiver);
+                            if (method !== "findMany" || typeof member !== "function") return member;
+                            return (...args: readonly unknown[]) => {
+                                membershipReads += 1;
+                                return Reflect.apply(member, delegate, args);
+                            };
+                        },
+                    });
+                },
+            }) as Tx;
+            const resolved = await computeAccountActivityBadgeCountsInTx(
+                reader,
+                [owner.id, ...followers.map(account => account.id)],
+                backgroundDeliveryAuthentication(),
+            );
+            expect(membershipReads).toBe(1);
+            return resolved;
+        });
+        expect(counts).toEqual(new Map([
+            [owner.id, 0],
+            ...followers.map(account => [account.id, 1] as const),
+        ]));
     });
 });

@@ -584,7 +584,9 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
 
         await expect((sync as any).fetchMessages(sessionId)).resolves.toBeUndefined();
         await vi.waitFor(() => {
-            expect(storage.getState().deletedSessionIds[sessionId]).toBe(true);
+            // The tombstone names the Home whose answer proved the absence, so a same-id
+            // carrier cached from another Home is not retired by it.
+            expect(storage.getState().deletedSessionIds[sessionId]).toBe(server.id);
         });
 
         expect(sessionByIdPaths.length).toBeGreaterThan(0);
@@ -1521,6 +1523,133 @@ describe('sync.fetchMessages server-scoped known-session checks', () => {
         expect((sync as any).transcriptAuthorityKeyBySessionId.get(sessionId)).toBe(
             'unavailable:initial_partial_not_permitted',
         );
+    });
+
+    it('defers a hosted replacement when the live external reader detaches before commit', async () => {
+        const sessionId = 'detached_external_to_hosted_handoff';
+        const { sync } = await import('./sync');
+        installPlainRetirementEncryption(sync);
+        const internals = sync as unknown as {
+            fetchMessages(id: string): Promise<void>;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), encryptionMode: 'plain' }]);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue({ ok: true, items: [{ id: 'live-current', createdAtMs: 1,
+            raw: { role: 'user', content: { type: 'text', text: 'live current' } } }],
+            nextCursor: null, tailCursor: 'live-tail', hasMore: false });
+        await internals.fetchMessages(sessionId);
+        const accepted = storage.getState().sessionMessages[sessionId];
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' }]);
+        const started = createDeferred<void>();
+        const held = createDeferred<void>();
+        const hostedPage = () => Response.json({ messages: [{ id: 'accepted-hosted', seq: 10, localId: null, createdAt: 10,
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hosted' } } } }],
+            hasMore: false, nextBeforeSeq: null });
+        requestMock.mockImplementationOnce(async () => { started.resolve(); await held.promise; return hostedPage(); });
+        requestMock.mockImplementation(async () => hostedPage());
+        const pending = internals.fetchMessages(sessionId);
+        await started.promise;
+        sync.onSessionViewportChange(sessionId, { isPinned: false, offsetY: 123, shouldRestoreViewport: true });
+        held.resolve();
+        await pending;
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        expect(sync.hasDeferredNewerMessages(sessionId)).toBe(true);
+        sync.markSessionLiveTailIntent(sessionId);
+        await internals.fetchMessages(sessionId);
+        expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {}).map((message) => message.realID))
+            .toEqual(['accepted-hosted']);
+    });
+
+    it('replaces a cold hosted target window only after live-tail external authority admission', async () => {
+        const sessionId = 'cold_target_window_external_handoff';
+        const { sync } = await import('./sync');
+        installPlainRetirementEncryption(sync);
+        const internals = sync as unknown as {
+            fetchMessages(id: string): Promise<void>;
+            activeServerSessionIds: Set<string>; hasFetchedSessionsSnapshotForActiveServer: boolean;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' }]);
+        requestMock.mockResolvedValueOnce(Response.json({ messages: [{ id: 'hosted-target', seq: 20, localId: null, createdAt: 20,
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: 'hosted target' } } } }],
+            hasMore: true, nextBeforeSeq: 20 })).mockResolvedValueOnce(Response.json({ messages: [], hasMore: false, nextAfterSeq: null }));
+        await expect(sync.loadTargetWindowMessages(sessionId, { kind: 'seq', seq: 20 })).resolves.toMatchObject({ status: 'loaded' });
+        expect(storage.getState().sessionMessages[sessionId]?.isLoaded).toBe(false);
+        const accepted = storage.getState().sessionMessages[sessionId];
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), encryptionMode: 'plain' }]);
+        const livePage = { ok: true as const, items: [{ id: 'live-current', createdAtMs: 40,
+            raw: { role: 'user', content: { type: 'text', text: 'live current' } } }],
+            nextCursor: null, tailCursor: 'live-tail', hasMore: false };
+        machineExternalSessionTranscriptPageMock.mockResolvedValue(livePage);
+        await internals.fetchMessages(sessionId);
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        expect(sync.getSessionTargetWindowState(sessionId).isWindowMode).toBe(true);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue({ ok: false, error: 'temporarily unavailable' });
+        sync.markSessionLiveTailIntent(sessionId);
+        await expect(internals.fetchMessages(sessionId)).rejects.toThrow('temporarily unavailable');
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue(livePage);
+        await internals.fetchMessages(sessionId);
+        expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+            .filter((message) => message.kind === 'user-text').map((message) => message.text)).toEqual(['live current']);
+        expect(sync.getSessionTargetWindowState(sessionId).isWindowMode).toBe(false);
+        await expect(sync.loadOlderMessages(sessionId)).resolves.toMatchObject({ status: 'no_more' });
+    });
+
+    it.each(['initial', 'older', 'newer', 'target', 'sidechain', 'repair'] as const)('rejects a held hosted %s response after transcript authority becomes live-agent', async (direction) => {
+        const sessionId = `held_hosted_${direction}_authority_change`;
+        const { sync } = await import('./sync');
+        installPlainRetirementEncryption(sync);
+        const internals = sync as unknown as {
+            fetchMessages(id: string): Promise<void>;
+            activeServerSessionIds: Set<string>;
+            hasFetchedSessionsSnapshotForActiveServer: boolean;
+            refetchStaleTranscriptRegion(id: string, seq: number, ids: ReadonlySet<string>): Promise<ReadonlySet<string>>;
+        };
+        internals.activeServerSessionIds = new Set([sessionId]);
+        internals.hasFetchedSessionsSnapshotForActiveServer = true;
+        storage.getState().applyMachines([createMachine('machine-1')], false);
+        storage.getState().applySessions([{ ...createSession(sessionId), encryptionMode: 'plain' }]);
+        const hostedPage = (seq: number) => Response.json({ messages: [{ id: `hosted-${seq}`, seq, localId: null, createdAt: seq,
+            content: { t: 'plain', v: { role: 'user', content: { type: 'text', text: `hosted ${seq}` } } } }],
+            hasMore: true, nextBeforeSeq: seq, nextAfterSeq: seq });
+        if (direction !== 'initial') {
+            requestMock.mockResolvedValueOnce(hostedPage(10));
+            await internals.fetchMessages(sessionId);
+        }
+        const accepted = storage.getState().sessionMessages[sessionId];
+        const started = createDeferred<void>();
+        const held = createDeferred<void>();
+        requestMock.mockImplementationOnce(async () => { started.resolve(); await held.promise; return hostedPage(20); });
+        requestMock.mockImplementation(async () => hostedPage(30));
+        const oldRead = direction === 'initial' ? internals.fetchMessages(sessionId)
+            : direction === 'older' ? sync.loadOlderMessages(sessionId)
+            : direction === 'newer' ? sync.loadNewerMessages(sessionId)
+            : direction === 'target' ? sync.loadTargetWindowMessages(sessionId, { kind: 'seq', seq: 20 })
+            : direction === 'sidechain' ? sync.ensureSidechainMessagesLoaded(sessionId, 'sidechain-1')
+            : internals.refetchStaleTranscriptRegion(sessionId, 20, new Set(['hosted-20']));
+        await started.promise;
+        storage.getState().applySessions([{ ...createExternalSession(sessionId), encryptionMode: 'plain' }]);
+        held.resolve();
+        const oldResult = await oldRead;
+        if (direction === 'older' || direction === 'newer') expect(oldResult).toMatchObject({ loaded: 0, status: 'not_ready' });
+        if (direction === 'sidechain') expect(oldResult).toBe('not_ready');
+        if (direction === 'repair') expect(oldResult).toEqual(new Set());
+        expect(storage.getState().sessionMessages[sessionId]).toBe(accepted);
+        expect(sync.getSessionTargetWindowState(sessionId).isWindowMode).toBe(false);
+        machineExternalSessionTranscriptPageMock.mockResolvedValue({ ok: true, items: [{ id: 'live-current', createdAtMs: 40,
+            raw: { role: 'user', content: { type: 'text', text: 'live current' } } }],
+            nextCursor: null, tailCursor: 'live-tail', hasMore: false });
+        machineExternalSessionTranscriptReadAfterMock.mockResolvedValue({ ok: true, items: [], nextCursor: 'live-tail', hasMore: false });
+        await internals.fetchMessages(sessionId);
+        expect(Object.values(storage.getState().sessionMessages[sessionId]?.messagesById ?? {})
+            .filter((message) => message.kind === 'user-text').map((message) => message.text)).toEqual(['live current']);
+        expect(storage.getState().getSessionTailContiguousBoundary(sessionId)).toBeNull();
     });
 
     it('chooses authority before apply and replaces peer rows across live to accepted-prefix to live switches', async () => {

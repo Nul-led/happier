@@ -9,6 +9,7 @@ import {
     adoptHomeProfile,
     resolveServerProfileForPortableIdentity,
 } from '@/sync/domains/server/serverProfiles';
+import { useServerProfilesGeneration } from '@/hooks/server/useServerProfilesGeneration';
 
 /**
  * Which Home issued an invitation link.
@@ -165,6 +166,27 @@ export function resolvePortableHomeLinkTarget(
     };
 }
 
+/**
+ * Whether two resolutions are the same answer. Every variant is fully described
+ * by its kind plus the identity it names, and the descriptor is derived from the
+ * carrier, so this is structural identity rather than a cache.
+ */
+function isSamePortableHomeLinkTarget(
+    a: PortableHomeLinkTarget,
+    b: PortableHomeLinkTarget,
+): boolean {
+    if (a === b) return true;
+    if (a.kind !== b.kind) return false;
+    if (a.kind === 'resolved' && b.kind === 'resolved') return a.serverId === b.serverId;
+    if (a.kind === 'unknown_home' && b.kind === 'unknown_home') {
+        return a.homeServerIdentityId === b.homeServerIdentityId;
+    }
+    if (a.kind === 'acquisition_required' && b.kind === 'acquisition_required') {
+        return a.homeServerIdentityId === b.homeServerIdentityId;
+    }
+    return true;
+}
+
 export type PortableHomeAcquisitionOutcome =
     /** The Home proved its identity and now has a saved profile on this device. */
     | Readonly<{ kind: 'acquired'; serverId: string; target: HomeTargetInput }>
@@ -284,7 +306,21 @@ export type PortableHomeLinkTargetState =
 export function usePortableHomeLinkTarget(
     carrier: string | null | undefined,
 ): PortableHomeLinkTargetState {
-    const resolution = React.useMemo(() => resolvePortableHomeLinkTarget(carrier), [carrier]);
+    // `resolvePortableHomeLinkTarget` reads the device's saved Home profiles, so
+    // adding the missing Home from the `unknown_home` recovery must re-resolve the
+    // same link. The generation is the profiles owner's own change signal.
+    const profilesGeneration = useServerProfilesGeneration();
+    const previousResolution = React.useRef<PortableHomeLinkTarget | null>(null);
+    const resolution = React.useMemo(() => {
+        const next = resolvePortableHomeLinkTarget(carrier);
+        // An unchanged answer keeps its identity: this value keys the acquisition
+        // effect and the outcome association below, so a fresh object for the same
+        // answer would abort and restart an acquisition that is already in flight.
+        const previous = previousResolution.current;
+        const stable = previous && isSamePortableHomeLinkTarget(previous, next) ? previous : next;
+        previousResolution.current = stable;
+        return stable;
+    }, [carrier, profilesGeneration]);
     const [attempt, setAttempt] = React.useState(0);
     /**
      * The outcome is stored WITH the resolution it answered. `resolution` recomputes

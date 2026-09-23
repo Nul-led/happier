@@ -567,6 +567,73 @@ describe('Happier SDK client', () => {
     } finally { await client.close(); }
   });
 
+  it('keeps one caller out of another caller\'s shared Machine bootstrap cancellation', async () => {
+    const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
+    const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',
+      tokenId: '123e4567-e89b-42d3-a456-426614174000',
+      contentPublicKey: 'B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=' };
+    const wrappingSecret = new Uint8Array(32).fill(7);
+    const bearer = `hap_v1_${context.tokenId}_${encodeBase64(new Uint8Array(32).fill(8), 'base64url')}`;
+    const encryptionAccess = wrapApiTokenEncryptionAccessV1({ context, wrappingSecret,
+      contentPrivateKey: material.machineKey, randomBytes: (length) => new Uint8Array(length).fill(3) });
+    const token = formatAccountApiTokenCredentialV1({ bearer,
+      wrappingSecret: encodeBase64(wrappingSecret, 'base64url'), serverIdentityId: context.serverIdentityId,
+      accountId: context.accountId, contentPublicKey: context.contentPublicKey });
+    const target = { kind: 'machine' as const, machineId: 'machine-1' };
+    let machineReads = 0;
+    let releaseMachines = (): void => undefined;
+    const machinesHeld = new Promise<void>((resolve) => { releaseMachines = resolve; });
+    const fetch = vi.fn(async (url: URL | RequestInfo, init?: RequestInit) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith('/encryption-access')) {
+        return response({ v: 1, accountId: context.accountId, tokenId: context.tokenId, encryptionAccess });
+      }
+      if (path === '/v1/machines') {
+        machineReads += 1;
+        const signal = init?.signal ?? null;
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) { reject(signal.reason as Error); return; }
+          signal?.addEventListener('abort', () => reject(signal.reason as Error), { once: true });
+          void machinesHeld.then(resolve);
+        });
+        return response([]);
+      }
+      const request = ExternalActionRequestEnvelopeV2Schema.parse(JSON.parse(String(init?.body)));
+      const binding = { serverIdentityId: context.serverIdentityId, accountId: context.accountId,
+        credentialId: context.tokenId, actionId: 'action.spec.get', requestId: request.requestId, target };
+      return response(prepareExternalActionResponseV2({ binding, request, material,
+        randomBytes: (length) => new Uint8Array(length).fill(4), executedMachineId: target.machineId,
+        execution: { ok: true, result: { kind: 'approval_request_created',
+          artifactId: 'artifact-1', actionId: binding.actionId } } }).response);
+    });
+    vi.stubGlobal('fetch', fetch);
+
+    const client = connect({ endpoint: 'http://daemon', token });
+    try {
+      const initiator = new AbortController();
+      const follower = new AbortController();
+      const machine = client.machine('machine-1');
+      const first = machine.actions.execute('action.spec.get', { id: 'session.message.send' },
+        { signal: initiator.signal });
+      const second = machine.actions.execute('action.spec.get', { id: 'session.message.send' },
+        { signal: follower.signal });
+      const settled: string[] = [];
+      void first.then(() => settled.push('first:fulfilled'), () => settled.push('first:rejected'));
+      void second.then(() => settled.push('second:fulfilled'), () => settled.push('second:rejected'));
+      while (machineReads === 0) await new Promise<void>((resolve) => setTimeout(resolve, 1));
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+      initiator.abort(new Error('cancel one caller'));
+      await expect(first).rejects.toThrow('cancel one caller');
+      expect(settled).toEqual(['first:rejected']);
+
+      releaseMachines();
+      await expect(second).resolves.toEqual({ kind: 'approval_request_created',
+        artifactId: 'artifact-1', actionId: 'action.spec.get' });
+      expect(machineReads).toBe(1);
+    } finally { await client.close(); }
+  });
+
   it('preserves a complete encrypted approval outcome at the public SDK boundary', async () => {
     const material = { type: 'dataKey' as const, machineKey: Uint8Array.from({ length: 32 }, (_, i) => i + 1) };
     const context = { serverIdentityId: 'srv_sdk', accountId: 'account-1',

@@ -445,12 +445,15 @@ It does not independently authenticate that signing key when an unpinned Home lo
 can substitute the whole binding. This preserves the existing Account trust boundary;
 it does not establish cross-user key transparency or out-of-band verification.
 
-That distinction keeps protected SDK delivery to a restricted Runner fail-closed.
-The current bootstrap cannot use a signing key returned by the Home to authenticate
-a Runner Machine envelope claimed by that same Home. The ordinary authorized
-Account-daemon carrier remains the implemented development path; restricted-Runner
-activation requires an independently authenticated key producer and verification
-lifecycle before it can be documented as available.
+That distinction is why a Runner Machine envelope is never authenticated by an
+unpinned Home lookup alone. Protected SDK delivery to a restricted Runner is
+implemented on exactly that footing: the independently authenticated producer is
+the creator-generated activation signing identity, and the SDK verifies the
+published binding against the Home, creator Account and Machine taken from its
+own locally pinned credential before it seals anything. The Machine-targeted
+carrier is described under "Machine metadata + daemon state" below; a **Session**-targeted
+protected call to a Runner is the remaining half of that work and is not
+implemented yet.
 
 The development server's `accountRecipientEnvelopeReadiness.ts` derives recipient
 readiness from that Account currentness owner. Healthy Plain Accounts remain unavailable
@@ -817,19 +820,64 @@ sequenceDiagram
   `runnerContentKeyBinding`; a Plain endpoint must carry no binding at all. The feature
   remains unreleased, and its composed release checks do not make this implemented path
   absent.
+- Which branch a published Machine key takes is never decided by the Home's own `kind`.
+  `resolvePublishedMachineDataEncryptionKeyV1` classifies a Machine as a Runner when the
+  reader supplies a Home-independent `trustedMachineKind` — creator-device custody,
+  resolved for *every* Machine by
+  `apps/ui/sources/sync/domains/machines/runnerMachineContentKeyTrust.ts` rather than only
+  for rows the Home labels a Runner — **or** when the row carries a
+  `runnerContentKeyBinding` at all, the field the server writes only at Runner
+  materialization. Either fact makes the released absent-envelope Account-key fallback
+  unreachable, so relabelling a Runner `persistent`, or omitting `kind` entirely, fails
+  closed instead of disclosing a Home-chosen key. A genuinely persistent Machine keeps
+  both released behaviours. Every reader shares that one decision owner: UI Machine sync,
+  the `new-machine` socket hint, the server-scoped exact-Machine RPC pool, the CLI daemon
+  reader and the SDK. None of them keeps a local "is this a Runner?" rule of its own.
+- **Accepted residual (ruled 2026-09-23): a device that did not create the Runner inherits
+  the released persistent-Machine trust level.** Such a device holds no device-local
+  creator custody, so it supplies no `trustedMachineKind`; it can open the creator-sealed
+  `runner_machine_content_key_verifier` fact with Account material, but that fact
+  identifies nothing until a binding names it. If a malicious Home strips **both** `kind`
+  and `runnerContentKeyBinding` from the row, that device sees an ordinary persistent
+  Machine and accepts an envelope the Home sealed to the Account content public key it
+  already publishes. The root cause is not Runner-specific: released
+  `encryptedDataKeyEnvelopeFormatV1` is one version byte plus a box bundle around exactly
+  one 32-byte key, with **no AAD and no `machineId`**, so nothing inside an opened
+  envelope says which Machine it was written for. Every Account-sealed per-Machine key has
+  this property. Blast radius: that one device would read and write that Machine's content
+  under a key the Home chose, which discloses what it sends for that Machine and lets the
+  Home forge what it reads. It does not reach the Runner or the creating device — the
+  Runner uses the key from its binding-verified bootstrap, the creating device classifies
+  from its own custody, and the server verifies the same binding before review and
+  materialization — so substituted key material cannot be laundered back into the
+  Runner's own content. The SDK degrades further to Account sealing on such a row
+  (denial of service, not disclosure), because its Runner path requires the row's kind.
+  Replicating the activation→Machine map into the client-sealed Account record was
+  considered and rejected: a released 0.2 writer can erase V2 fields during an unrelated
+  Settings write, silently locking every Temporary computer, and it would close only one
+  of the two identical doors the unbound envelope opens. Closing it properly means
+  binding the envelope format itself, which is a released-format change.
 - A protected external Action can target that Runner. The API Token-authenticated
   `GET /v1/machines` bootstrap projection names a Runner Machine with its kind, winning
   installation, Account-sealed `dataEncryptionKey` envelope and that same
   `runnerContentKeyBinding`; a persistent Machine keeps the released
   content-free projection. The SDK opens the envelope with its Account
-  `{ type: 'dataKey', machineKey }` material, resolves the key through
-  `resolvePublishedMachineDataEncryptionKeyV1` with the Home identity, creator Account
-  and exact Machine taken from its own locally pinned credential, and seals the V2
-  request with the resolved Runner content key. A substituted binding, verifier fact,
-  envelope or Machine fails closed with `invalid_encrypted_envelope`; the SDK never
-  downgrades a Runner target to plaintext or to Account-only sealing. The Runner opens
-  the request with the same key it received in its verified bootstrap and executes only
-  inside its own Session, so the Home relays bytes it cannot read in either direction.
+  `{ type: 'dataKey', machineKey }` material and resolves the key through
+  `resolvePublishedMachineDataEncryptionKeyV1`. The Home identity and creator Account
+  come from the SDK's own locally pinned credential (`encryption.pins`); the exact
+  Machine does not. A `machine` target names it directly, but a `session` target
+  selects the Runner row by the Home-authored `sessionId` correspondence
+  (`packages/sdk/src/machines.ts#resolveMachineProtectedActionMaterial`), so the
+  selected `machineId` is then re-proved against the creator-signed binding rather
+  than trusted. The worst a substituted row can do is name another Runner the same
+  Account's creator activated, which the receiving Runner refuses before opening
+  anything, and one activation owns exactly one Session and one Machine. The SDK then
+  seals the V2 request with the resolved Runner content key. A substituted binding,
+  verifier fact, envelope or Machine fails closed with `invalid_encrypted_envelope`;
+  the SDK never downgrades a Runner target to plaintext or to Account-only sealing. The
+  Runner opens the request with the same key it received in its verified bootstrap and
+  executes only inside its own Session, so the Home relays bytes it cannot read in either
+  direction.
   An endpoint that serves no bootstrap projection at all — a daemon-hosted Action API —
   keeps the released Account sealing, which discloses nothing and simply cannot be
   opened by a Runner.
@@ -1364,6 +1412,13 @@ record or the new shared record—not two mutable sources. E2EE resources use a 
 wrapped for eligible recipient Accounts; plain material uses the canonical server at-rest codec.
 Mixed plain/E2EE audiences are prepared per recipient, and one recipient's missing encryption
 readiness does not reinterpret encrypted material as plain.
+
+Deleting a shared Saved Secret runs the same owner-side reference census first. The Home cannot
+semantically inspect an E2EE owner's Settings, so the owner client refuses the delete while its own
+profile, Provider, Voice, MCP, ACP, plugin, or Connected Account bindings still name the resource and
+reports where it is used. That is client-enforced referential integrity for the owner's own
+document, not a server-side guarantee, and it says nothing about recipient Settings: a recipient's
+reference to a deleted resource simply resolves as deleted and offers replacement.
 
 Possessing an envelope or a previously disclosed value is not current authorization. Every read
 rechecks the current grant and Home-local Team/Group membership. Revocation stops later reads but

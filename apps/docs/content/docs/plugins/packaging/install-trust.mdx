@@ -5,8 +5,10 @@ description: Review plugin code before execution and let the daemon own installe
 
 `hdev plugins install` validates package and manifest facts before executing
 plugin code. When approval is required, an interactive terminal presents one
-**Install & Trust** decision for the whole package and its declared executable
-realms.
+concise install decision naming the trusted code, selected machine, executable
+realms, and authority or credential access being granted. Technical package,
+integrity, compatibility, and provenance evidence remains available in the
+details; it does not create another decision.
 
 ```bash
 hdev plugins install <path-or-archive>
@@ -31,31 +33,28 @@ hdev plugins reload
 
 When the package root is ambiguous or the command runs elsewhere, select the
 plugin explicitly: `hdev plugins reload com.example.my-plugin`. Both routes
-preserve the last accepted generation when validation rejects a change.
+preserve the last accepted process-local occurrence when validation rejects a
+change. A daemon restart evaluates current development source again; it does
+not restore that earlier occurrence from an immutable installation.
 
-### Trust a development source on the command line
+### Trust a local path on the command line
 
-An interactive terminal answers the source-root question with a prompt. When no
-present user can answer it — a CI job, a script, or an Agent Session driving the
-authoring loop — carry the same decision on the command line:
+Naming a local path in an explicit install command is the code-trust action, so
+Happier does not ask the same question again:
 
 ```bash
-hdev plugins install . --dev --trust --json
+hdev plugins install . --dev --json
 hdev plugins reload --json
 ```
 
-`--trust` is the only non-interactive approval Happier accepts. It is scoped to
-the one development source it names:
+That intent is scoped to the exact resolved path:
 
-- Valid only with `--dev` on a local path; any other request fails with
-  `plugin_explicit_trust_requires_development_path`.
-- Decides source-root trust and package trust for that one resolved path, and
-  records the decision as an explicit CLI trust flag rather than a prompt.
+- It decides source-root and package code trust for that resolved path.
 - Cancels the pending change with `plugin_explicit_trust_target_mismatch` when
   the daemon's prepared review names any other source, so a substituted source
   is refused instead of trusted.
 - Selects no optional host resources, and does not extend to consequential
-  updates or secrets. Those remain present-user decisions.
+  authority or credential grants. Those remain with their existing host owners.
 
 Once the source root is trusted, later requests for that root skip source-root
 review until the reviewed source identity changes.
@@ -95,26 +94,16 @@ run:
 hdev plugins update com.example.my-plugin
 ```
 
-Every installed plugin has one update policy, chosen in **Settings ->
-Plugins** under **Update policy**. There are exactly three, with no aliases:
+Every installed plugin has one update-eligibility setting under **Settings ->
+Plugins**:
 
 - **Pinned** — the update is refused until you choose another policy.
-- **Review every update** — the newest compatible candidate is staged and
-  presented to you for the same review as a first install.
-- **Review sensitive changes** — the update applies without a new review only
-  while every trust fact is unchanged: the same trusted npm registry origin,
-  package, and registry profile still authorize the candidate, and the
-  manifest changed nothing review-sensitive — no new executable realm, no
-  changed host access, Connected Account purpose access, declared
-  integrations, raw-credential disclosure, or request interceptors. The
-  candidate must also publish compatibility metadata; one that cannot be
-  evaluated is refused rather than silently taken. When any of these facts
-  changes, the full review reopens. A review-free update preserves the
-  already-reviewed registry/package principal; an unverified catalog publisher
-  label or a rotated registry signing key does not replace it.
+- **Updates allowed** — an authority-neutral update applies without another
+  prompt. Happier asks only when the canonical comparison finds new or widened
+  declared authority, and shows that delta. Identity, integrity, compatibility,
+  and trusted-channel checks still reject a candidate that cannot be admitted.
 
-`reviewSensitiveChanges` is an npm-only policy: archive and development
-sources offer **Pinned** and **Review every update**. No policy polls
+No setting polls
 registries or installs anything in the background — Happier selects and
 stages a newer release only when you run `plugins update` or request the
 update in **Settings -> Plugins**.
@@ -134,9 +123,8 @@ select yourself. Update requests carry no source of their own:
 `plugins update` rebuilds the artifact request from the plugin's trust record
 — the same saved archive path or URL, or the same npm registry origin, package,
 and registry profile it was trusted from — so it cannot be pointed at a different
-source. Widened executable realms,
-widened required host access, or any other review-sensitive change reopens
-the full review.
+source. New executable realms, widened required host access, or another
+declared authority expansion opens a delta-only decision.
 
 Restore the retained prior generation through the same daemon owner:
 
@@ -179,3 +167,30 @@ to replay that mutation.
 Settings -> Plugins lists the reviews the selected machine's daemon is still
 holding, so a review you no longer have an ID for stays decidable there for
 that daemon lifetime.
+
+## Temporary computers install through this same review
+
+A [Temporary computer](/sessions/temporary-computer) starts with no plugins
+beyond the ones the Happier Runner artifact already carries. When the session's
+agent is contributed by an installed plugin, the creator seals the exact
+distribution commitment — plugin id, package name, registry origin, version,
+integrity and manifest digest — into the reviewed launch material, taken from
+the marketplace index of the machine whose Agent catalog the agent was chosen
+in.
+
+The endpoint prepares that install through the same canonical change owner
+documented above, against the temporary computer's own activation-local Happier
+home, and renders the resulting installation review inside the one consent
+screen the endpoint user already decides on. Allow performs Install and Trust
+and yields one immutable generation; Decline installs nothing. There is no
+Runner-specific registry, trust tier, or installer, and an external plugin gets
+the same capabilities a bundled one does.
+
+Two boundaries follow from that:
+
+- A plugin installed from a working folder or a local archive has no published
+  listing, so no commitment exists for a fresh computer to acquire. Its agents
+  are shown as unavailable for a Temporary computer with that reason.
+- The activation-local home knows the default curated source and the community
+  npm source. A listing from a catalog source only the creator's machine has
+  configured is refused before any registry is contacted.

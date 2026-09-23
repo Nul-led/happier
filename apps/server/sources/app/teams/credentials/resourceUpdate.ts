@@ -513,13 +513,26 @@ export async function updateTeamCredentialResourceInTx(
         || (await tx.teamCredentialGroupGrant.count({ where: { resourceId: resource.id, deliveryMode: { in: ["brokered", "both"] } } })) > 0
         || (await tx.teamCredentialMemberGrant.count({ where: { resourceId: resource.id, deliveryMode: { in: ["brokered", "both"] } } })) > 0;
     if (existingBrokerAudience && brokerMachineId === null && brokerPoolId === null) return { ok: false, error: "broker_unavailable" };
-    if (brokerMachineId !== null) {
+    // Save readiness answers "may this placement be selected", so it is asked of
+    // a placement this patch actually selects. A patch that only takes authority
+    // away — disabling the resource, or narrowing its ceiling — keeps whatever
+    // placement is already stored, and must not be blocked by that placement's
+    // Machine having been revoked, replaced or removed: withdrawal is exactly
+    // the custodian's recovery when the broker is gone, and `resourceDelete`
+    // already works. Every other patch, and any newly selected placement, is
+    // validated normally.
+    const keepsStoredPlacement = brokerMachineId === resource.brokerMachineId
+        && brokerPoolId === resource.brokerPoolId;
+    const reducesAuthorityOnly = keepsStoredPlacement
+        && !isWideningDisclosure
+        && (patch.enabled === false || isLoweringDisclosure);
+    if (brokerMachineId !== null && !reducesAuthorityOnly) {
         const broker = await resolveTeamCredentialBrokerMachineForSaveInTx(tx, {
             custodianAccountId: resource.custodianAccountId, brokerMachineId,
         });
         if (!broker.ok) return broker;
     }
-    if (brokerPoolId !== null) {
+    if (brokerPoolId !== null && !reducesAuthorityOnly) {
         const poolExists = await acquireMachinePoolMutationFenceInTx({
             tx,
             accountId: resource.custodianAccountId,
@@ -545,21 +558,33 @@ export async function updateTeamCredentialResourceInTx(
         disclosureCeiling: ceiling.data, sessionUsePolicy: sessionPolicy.data,
         requestPolicyJson: nextRequestPolicy === null ? null : JSON.stringify(nextRequestPolicy),
         brokerMachineId, brokerPoolId, revision: nextRevision,
-        ...(isLoweringDisclosure
-            && (resource.allMembersDeliveryMode === "direct" || resource.allMembersDeliveryMode === "both")
+        // Narrowing the ceiling withdraws consent to direct disclosure. It
+        // keeps the broker half of a `both` audience and ends a direct-only
+        // one; it never mints broker authority the custodian never granted
+        // and a non-manager custodian could not create directly.
+        ...(isLoweringDisclosure && resource.allMembersDeliveryMode === "both"
             ? { allMembersDeliveryMode: "brokered" }
+            : {}),
+        ...(isLoweringDisclosure && resource.allMembersDeliveryMode === "direct"
+            ? { allMembersDeliveryMode: null }
             : {}),
     } });
     if (updated.count !== 1) return { ok: false, error: "resource_changed" };
     if (isLoweringDisclosure) {
         await Promise.all([
             tx.teamCredentialGroupGrant.updateMany({
-                where: { resourceId: resource.id, deliveryMode: { in: ["direct", "both"] } },
+                where: { resourceId: resource.id, deliveryMode: "both" },
                 data: { deliveryMode: "brokered" },
             }),
             tx.teamCredentialMemberGrant.updateMany({
-                where: { resourceId: resource.id, deliveryMode: { in: ["direct", "both"] } },
+                where: { resourceId: resource.id, deliveryMode: "both" },
                 data: { deliveryMode: "brokered" },
+            }),
+            tx.teamCredentialGroupGrant.deleteMany({
+                where: { resourceId: resource.id, deliveryMode: "direct" },
+            }),
+            tx.teamCredentialMemberGrant.deleteMany({
+                where: { resourceId: resource.id, deliveryMode: "direct" },
             }),
         ]);
     }

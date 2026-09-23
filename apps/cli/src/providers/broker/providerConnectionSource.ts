@@ -46,7 +46,7 @@ export type ProviderConnectionBrokerSourceSnapshot = Readonly<{
   connectionRevision: number;
   endpointSetFingerprint: string;
   grantFingerprint: string;
-  runtimeRegistryGeneration: number | null;
+  activationOccurrenceId: string | null;
   endpoint: Readonly<{
     endpointTemplateId: string;
     normalizedUrl: string;
@@ -219,7 +219,15 @@ export function resolveProviderConnectionBrokerSource(
       connectionRevision: record.connection.revision,
       endpointSetFingerprint: record.endpointSetFingerprint,
       grantFingerprint: record.authorization.grantFingerprint,
-      runtimeRegistryGeneration: input.registry.runtimeRegistryGeneration ?? null,
+      activationOccurrenceId:
+        input.registry.providerActivationOccurrenceIdsByPluginId?.get(record.source.pluginId)
+        ?? input.registry.providersByContributionKey.get(
+          record.source.contributionKey,
+        )?.managedRuntime?.activationOccurrenceId
+        ?? input.registry.providersByContributionKey.get(
+          record.source.contributionKey,
+        )?.catalogParsers?.activationOccurrenceId
+        ?? null,
       endpoint: {
         endpointTemplateId: endpoint.endpointTemplateId,
         normalizedUrl: endpoint.normalizedUrl,
@@ -289,7 +297,7 @@ function sameSnapshot(
     && left.provider.definitionRevision === right.provider.definitionRevision
     && left.endpointSetFingerprint === right.endpointSetFingerprint
     && left.grantFingerprint === right.grantFingerprint
-    && left.runtimeRegistryGeneration === right.runtimeRegistryGeneration
+    && left.activationOccurrenceId === right.activationOccurrenceId
     && left.endpoint.endpointTemplateId === right.endpoint.endpointTemplateId
     && left.endpoint.normalizedUrl === right.endpoint.normalizedUrl
     && left.endpoint.protocol === right.endpoint.protocol
@@ -471,6 +479,11 @@ export async function materializeProviderConnectionBrokerSource(input: Readonly<
     machineId: input.expected.machineId,
     endpointTemplateId: input.expected.endpoint.endpointTemplateId,
     protocol: input.expected.endpoint.protocol,
+    // The open and its currentness checks already carry the exact selected
+    // transport; final materialization must too, or a Provider publishing
+    // several runtime header transports for one protocol becomes ambiguous
+    // here and no request can be brokered.
+    expectedCredentialTransport: input.expected.credentialRef.transport,
     accountSettings: accountSnapshot.settings,
     ...(accountSnapshot.savedSecretResources
       ? { savedSecretResources: accountSnapshot.savedSecretResources }
@@ -682,7 +695,7 @@ export function createProviderConnectionBrokerSourceOpen(input: Readonly<{
           ? { localCandidateUrlsByConnectionId: input.localCandidateUrlsByConnectionId }
           : {}),
       });
-      return resolved.ok && resolved.snapshot.runtimeRegistryGeneration !== null
+      return resolved.ok && resolved.snapshot.activationOccurrenceId !== null
         ? resolved.snapshot
         : null;
     }).catch(() => null);

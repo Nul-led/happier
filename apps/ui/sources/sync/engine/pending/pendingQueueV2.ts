@@ -3108,6 +3108,8 @@ export async function updatePendingRequestedActionV2(params: {
     serverWireMode?: PendingInputServerWireMode;
     request: (path: string, init?: RequestInit) => Promise<Response>;
     outboxScope: ServerAccountScope;
+    /** Captured owner currentness; the local projection is this Home's alone. */
+    isOutboxScopeCurrent?: () => boolean | Promise<boolean>;
 }): Promise<void> {
     const localId = params.localId;
     (await assertCanonicalPendingLocalIdTransportable(params.sessionId, localId, params.outboxScope));
@@ -3155,7 +3157,11 @@ export async function updatePendingRequestedActionV2(params: {
     supersedePendingSnapshotRefreshForLocalWrite(params.outboxScope, params.sessionId);
     const current = (await findPendingOutboxMessage(params.sessionId, localId, params.outboxScope));
     const projection = findPendingProjectionByCanonicalLocalId(params.sessionId, localId, params.outboxScope);
-    if (projection) {
+    // Past the accepted PATCH a retired owner scope may only stop the LOCAL
+    // projection: the mounted bag now belongs to the replacement Home, and the
+    // committed server operation is never reported as failed.
+    const projectionOwnerCurrent = !params.isOutboxScopeCurrent || await params.isOutboxScopeCurrent();
+    if (projection && projectionOwnerCurrent) {
         storage.getState().upsertPendingMessage(params.sessionId, {
             ...projection,
             updatedAt: nowServerMs(),
@@ -3176,8 +3182,15 @@ export async function deletePendingMessageV2(params: {
     pendingId: string;
     request: (path: string, init?: RequestInit) => Promise<Response>;
     outboxScope: ServerAccountScope;
+    /** Captured owner currentness; the local projection is this Home's alone. */
+    isOutboxScopeCurrent?: () => boolean | Promise<boolean>;
 }): Promise<void> {
     const { sessionId, pendingId, request } = params;
+    // Past an accepted server operation a retired owner scope may only stop the
+    // LOCAL projection: the mounted bag now belongs to the replacement Home.
+    const isProjectionOwnerCurrent = async (): Promise<boolean> => (
+        !params.isOutboxScopeCurrent || await params.isOutboxScopeCurrent()
+    );
     const initialProjection = findCanonicalPendingProjection(sessionId, pendingId, params.outboxScope);
     if (initialProjection?.source === 'local_outbound' && initialProjection.deliveryStatus === 'queued') {
         markPendingCancellationRequested(params.outboxScope, sessionId, initialProjection.localId ?? initialProjection.id);
@@ -3212,7 +3225,11 @@ export async function deletePendingMessageV2(params: {
         if (existing.pendingDeliveryStatus === 'external_handoff' && cancellationRetired) {
             clearDeletedPendingLocalId(params.outboxScope, sessionId, localId);
         }
-        if (existing.pendingDeliveryStatus !== 'external_handoff' && cancellationRetired) {
+        if (
+            existing.pendingDeliveryStatus !== 'external_handoff'
+            && cancellationRetired
+            && await isProjectionOwnerCurrent()
+        ) {
             storage.getState().removePendingMessage(sessionId, existing.id);
         }
         return;
@@ -3266,7 +3283,9 @@ export async function deletePendingMessageV2(params: {
         return;
     }
     if (suppressStaleSnapshot) markPendingLocalIdDeleted(params.outboxScope, sessionId, localId);
-    if (existing) storage.getState().removePendingMessage(sessionId, existing.id);
+    if (existing && await isProjectionOwnerCurrent()) {
+        storage.getState().removePendingMessage(sessionId, existing.id);
+    }
 }
 
 export async function discardPendingMessageV2(params: {
@@ -3411,7 +3430,11 @@ export async function markPendingDeliveryHandledV2(params: {
         localId,
         params.outboxScope,
     );
-    if (existing) storage.getState().removePendingMessage(sessionId, existing.id);
+    // Same fence as the refresh below: past the accepted POST a retired owner
+    // scope may only stop the LOCAL projection, never the committed operation.
+    if (existing && (!params.isOutboxScopeCurrent || await params.isOutboxScopeCurrent())) {
+        storage.getState().removePendingMessage(sessionId, existing.id);
+    }
     await fetchAndApplyPendingMessagesV2({
         sessionId, recipient, encryption, request, outboxScope: params.outboxScope,
         isOutboxScopeCurrent: params.isOutboxScopeCurrent,

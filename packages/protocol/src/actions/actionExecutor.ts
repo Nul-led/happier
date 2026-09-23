@@ -86,6 +86,7 @@ import {
   ApprovalExecutionOriginV1Schema,
   ApprovalRequestOriginV1Schema,
   ApprovalRequestSchema,
+  type ApprovalExecutionOriginCallerV1,
   type ApprovalExecutionOriginV1,
   type ApprovalRequest,
   type ApprovalRequestOriginV1,
@@ -182,6 +183,7 @@ import {
   type QualifiedPluginActionId,
 } from '../plugins/actions/invocation.js';
 import { PluginIdSchema } from '../plugins/pluginId.js';
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 import {
   PluginSessionInputAttachmentsV1Schema,
   PluginSessionInputSourceV1Schema,
@@ -214,6 +216,10 @@ import {
 } from '../sessions/control/handoff/handoffSchemas.js';
 import {
   WorkspaceSyncConflictResolveActionInputV1Schema,
+  WorkspaceSyncConflictsListActionInputV1Schema,
+  WorkspaceSyncConflictInspectActionInputV1Schema,
+  WorkspaceSyncRelationshipsListActionInputV1Schema,
+  WorkspaceSyncRelationshipCreateActionInputV1Schema,
   type HandoffWorkspaceActionV1,
 } from '../sessions/control/handoff/workspaceSyncSchemas.js';
 import {
@@ -285,6 +291,7 @@ import {
 } from '../teams/invitation.js';
 
 import type {
+  ActionCaller,
   ActionExecuteResult,
   ActionExecutorContext,
   ActionExecutorDeps,
@@ -1092,6 +1099,14 @@ async function prepareApprovalRequest(params: Readonly<{
     actionArgs: observedInput,
   };
 
+  // Declared live-only input custody: the durable record carries only this
+  // Action's own safe observation projection. `resolveActionApprovalRouting`
+  // keeps the admitted invocation as the blocking waiter, so the raw input
+  // never leaves it, and a replay without that invocation fails closed.
+  if (spec.approvalInputCustody === 'live_only') {
+    return { actionArgs: observedInput, preview };
+  }
+
   if (params.actionId !== 'teams.invitations.accept' || !params.deps.homeDomainAction) {
     return { actionArgs: params.actionArgs, preview };
   }
@@ -1169,6 +1184,53 @@ function resolvePolicyApprovalRequestingSessionId(
   return targetSessionId;
 }
 
+/**
+ * The one projection from the live `ActionCaller` union onto the durable
+ * approval-origin caller. It is exhaustive by construction: a new live caller
+ * arm is a compile error here, and an unmapped arm fails closed with `null`
+ * rather than being persisted as `host`. A durable approval must never lose the
+ * principal that replay currentness has to recheck.
+ */
+function projectApprovalExecutionOriginCaller(
+  rawCaller: ActionCaller,
+): ApprovalExecutionOriginCallerV1 | null {
+  switch (rawCaller.kind) {
+    case 'host':
+      return { kind: 'host' };
+    case 'plugin': {
+      const sourceCustody = PluginSourceCustodyV1Schema.safeParse(rawCaller.sourceCustody);
+      const pluginId = normalizeId(rawCaller.pluginId);
+      const contributionLocalId = normalizeId(rawCaller.contributionLocalId);
+      if (!pluginId || !contributionLocalId || !sourceCustody.success) return null;
+      return { kind: 'plugin', pluginId, contributionLocalId, sourceCustody: sourceCustody.data };
+    }
+    case 'automationRun':
+      return {
+        kind: 'automationRun',
+        runId: rawCaller.runId,
+        automationId: rawCaller.automationId,
+        cause: rawCaller.cause,
+      };
+    case 'workflowRun':
+      return {
+        kind: 'workflowRun',
+        runId: rawCaller.runId,
+        authorization: rawCaller.authorization,
+      };
+    default:
+      return refuseUnmappedApprovalCaller(rawCaller);
+  }
+}
+
+/**
+ * Compile-time exhaustiveness for the projection above: adding a live caller arm
+ * without mapping it is a type error here, and an untyped arm reaching this at
+ * runtime yields no durable approval at all.
+ */
+function refuseUnmappedApprovalCaller(_caller: never): null {
+  return null;
+}
+
 function buildApprovalExecutionOriginV1(params: Readonly<{
   actionId: ActionId;
   input: unknown;
@@ -1182,26 +1244,9 @@ function buildApprovalExecutionOriginV1(params: Readonly<{
   const serverId = normalizeId(params.context.serverId) || normalizeId(inputExecutionTarget.serverId);
   if (!requestedSurface || !serverId) return null;
 
-  const rawCaller = params.context.actionCaller ?? { kind: 'host' as const };
-  const caller = rawCaller.kind === 'plugin'
-    ? normalizeId(rawCaller.pluginId)
-      && normalizeId(rawCaller.contributionLocalId)
-      && normalizeId(rawCaller.immutableGenerationId)
-      ? {
-          kind: 'plugin' as const,
-          pluginId: normalizeId(rawCaller.pluginId),
-          contributionLocalId: normalizeId(rawCaller.contributionLocalId),
-          immutableGenerationId: normalizeId(rawCaller.immutableGenerationId),
-        }
-      : null
-    : rawCaller.kind === 'automationRun'
-      ? {
-          kind: 'automationRun' as const,
-          runId: rawCaller.runId,
-          automationId: rawCaller.automationId,
-          cause: rawCaller.cause,
-        }
-      : { kind: 'host' as const };
+  const caller = projectApprovalExecutionOriginCaller(
+    params.context.actionCaller ?? { kind: 'host' as const },
+  );
   if (!caller) return null;
 
   const recipient = readRecord(inputRecord.recipient);
@@ -1933,6 +1978,12 @@ function projectActionExecutionObservation(actionId: ActionId, result: ActionExe
   return result.ok && project ? { ...result, result: project(result.result) } : result;
 }
 
+/** The input-side sibling: this Action's own observation-safe view of its input. */
+function projectActionObservationInput(actionId: ActionId, input: unknown): unknown {
+  const project = getActionSpec(actionId).projectObservationInput;
+  return project ? project(input) : input;
+}
+
 function projectApprovalExecutionForDecisionObservation(
   request: ApprovalRequest,
 ): ApprovalRequest['execution'] {
@@ -2005,6 +2056,7 @@ function normalizeActionExecutorThrownError(error: unknown): Readonly<{ errorCod
   const protocolCode = rawCodes.find((value) => (
     SessionControlErrorCodeSchema.safeParse(value).success
     || SpawnSessionErrorCodeSchema.safeParse(value).success
+    || value === 'workspace_sync_update_required'
   )) ?? '';
   const rpcErrorCode = readRpcErrorCode(error);
   const typedRpcErrorCode = rpcErrorCode && RPC_ERROR_CODE_SET.has(rpcErrorCode)
@@ -2485,6 +2537,12 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
     ctx: ActionExecutorContext;
     observeExecution?: boolean;
     preExecutionFailure?: ActionExecuteFailure;
+    /**
+     * Raw input retained by the admitted invocation for an Action whose spec
+     * declares `approvalInputCustody: 'live_only'`. Only that Action reads it,
+     * because its durable record deliberately holds the redacted projection.
+     */
+    liveOnlyActionArgs?: unknown;
   }>): Promise<
     | Readonly<{ ok: true; request: ApprovalRequest; exec: ActionExecuteResult }>
     | Readonly<{ ok: false; errorCode: string; error: string }>
@@ -2546,6 +2604,22 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
     }
     if (args.preExecutionFailure) {
       return await persistPreExecutionFailure(args.request, args.preExecutionFailure);
+    }
+    // An Action with live-only input custody can only run while the admitted
+    // invocation still holds its raw input: the durable record deliberately
+    // carries the redacted projection. Any other replay path is stale and must
+    // never reconstruct the operation from durable approval state.
+    const custodyReplayActionId = ActionIdSchema.safeParse(args.request.actionId);
+    if (
+      custodyReplayActionId.success
+      && getActionSpec(custodyReplayActionId.data).approvalInputCustody === 'live_only'
+      && args.liveOnlyActionArgs === undefined
+    ) {
+      return await persistPreExecutionFailure(args.request, {
+        ok: false,
+        errorCode: 'approval_stale',
+        error: 'approval_stale',
+      });
     }
     // `approvalsUpdate` has already claimed the open→approved transition at
     // the Artifact owner. A stale/non-transactional read may still project the
@@ -2672,7 +2746,10 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           }
         : {}),
     };
-    const replayInput: unknown = request.actionArgs;
+    const replayInput: unknown = actionId !== null
+      && getActionSpec(actionId).approvalInputCustody === 'live_only'
+      ? args.liveOnlyActionArgs
+      : request.actionArgs;
     const exec = !originIsCurrent || !actionId
         ? { ok: false as const, errorCode: 'approval_stale', error: 'approval_stale' }
         : requestSurface
@@ -2690,12 +2767,9 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       && deps.observeActionExecution
     ) {
       try {
-        const replaySpec = getActionSpec(actionId);
         await deps.observeActionExecution({
           actionId,
-          input: replaySpec.projectObservationInput
-            ? replaySpec.projectObservationInput(replayInput)
-            : replayInput,
+          input: projectActionObservationInput(actionId, replayInput),
           context: executionContext,
           caller: replayCaller,
           result: projectActionExecutionObservation(actionId, exec),
@@ -2717,10 +2791,17 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       )
       ? projectActionExecutionObservation(actionId, exec)
       : exec;
+    // Settled approval input custody, the input-side sibling of `persistedExec`
+    // above. Deferred replay is the only reader of the raw arguments and it has
+    // already run, so the terminal record keeps this Action's own observation
+    // projection instead of retaining write-only secrets forever.
     const nextExecuted: ApprovalRequest = {
       ...request,
       status: exec.ok ? 'executed' : 'failed',
       updatedAtMs: executedAtMs,
+      ...(actionId !== null
+        ? { actionArgs: projectActionObservationInput(actionId, request.actionArgs) }
+        : {}),
       execution: persistedExec.ok
         ? { executedAtMs, ok: true, result: persistedExec.result }
         : request.v === 2
@@ -2732,11 +2813,19 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           : { executedAtMs, ok: false, errorCode: persistedExec.errorCode, error: persistedExec.error },
     };
 
-    const updated = await deps.approvalsUpdate({ artifactId: args.artifactId, request: nextExecuted, serverId: args.artifactServerId });
-    const updateFailure = readActionFailureEnvelope(updated);
     // The side effect ran after the durable execution claim. If its terminal
     // projection cannot be committed, the Artifact intentionally remains
-    // executing and no caller may infer failure or replay blindly.
+    // executing and no caller may infer failure or replay blindly. A thrown
+    // transport error is the same post-effect uncertainty as a returned
+    // failure envelope: it must never be reclassified by the callers' generic
+    // catch as an unreached `server_unreachable` request.
+    let updated: unknown;
+    try {
+      updated = await deps.approvalsUpdate({ artifactId: args.artifactId, request: nextExecuted, serverId: args.artifactServerId });
+    } catch {
+      return executionOutcomeUnknown();
+    }
+    const updateFailure = readActionFailureEnvelope(updated);
     if (updateFailure) return executionOutcomeUnknown();
     return { ok: true, request: nextExecuted, exec };
   }
@@ -3079,28 +3168,45 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
       : undefined;
     const handoffMayReplaceTarget = handoffWorkspaceAction?.kind === 'copy_once'
       || handoffWorkspaceAction?.kind === 'create_relationship';
-    if (!existingAdmission && actionId === 'session.handoff' && handoffMayReplaceTarget
+    // Both destination-choosing Action families reach the same target-daemon
+    // inspection. Linking has no Session, so it carries its destination intent
+    // and mode explicitly instead of a handoff workspace action.
+    const choosesWorkspaceDestination = (actionId === 'session.handoff' && handoffMayReplaceTarget)
+      || actionId === 'workspace.sync.relationship.create';
+    if (!existingAdmission && choosesWorkspaceDestination
       && !deps.sessionHandoffTargetReplacementApprovalPreflight) {
       return { ok: false, errorCode: 'workspace_sync_unavailable', error: 'workspace_sync_unavailable' };
     }
-    if (!existingAdmission && actionId === 'session.handoff' && handoffMayReplaceTarget && deps.sessionHandoffTargetReplacementApprovalPreflight) {
-      const sessionId = resolveSessionIdFromInput(admittedInput, ctx);
+    if (!existingAdmission && choosesWorkspaceDestination && deps.sessionHandoffTargetReplacementApprovalPreflight) {
+      const sessionId = actionId === 'session.handoff'
+        ? resolveSessionIdFromInput(admittedInput, ctx)
+        : null;
       const targetMachineId = normalizeId(data.targetMachineId);
-      const targetServerId = sessionId ? resolveServerIdForSession(deps, ctx, sessionId) : null;
+      const targetServerId = sessionId
+        ? resolveServerIdForSession(deps, ctx, sessionId)
+        : normalizeId(ctx.serverId) || null;
       const operationId = normalizeId(ctx.handoffTargetReplacementApproval?.operationId)
         || normalizeId(ctx.actionRequestId);
-      if (!sessionId || !targetMachineId || !operationId) {
+      if ((actionId === 'session.handoff' && !sessionId) || !targetMachineId || !operationId) {
         return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
       }
+      const destinationIntent = actionId === 'workspace.sync.relationship.create'
+        && (data.destinationIntent === 'use_existing' || data.destinationIntent === 'materialize_from_source_workspace')
+        ? data.destinationIntent
+        : undefined;
       let targetPreflight: Awaited<ReturnType<NonNullable<
         ActionExecutorDeps['sessionHandoffTargetReplacementApprovalPreflight']
       >>>;
       try {
         targetPreflight = await deps.sessionHandoffTargetReplacementApprovalPreflight({
-          sessionId,
+          ...(sessionId ? { sessionId } : {}),
           targetMachineId,
           ...(normalizeId(data.targetPath) ? { targetPath: normalizeId(data.targetPath)! } : {}),
           ...(data.workspaceAction ? { workspaceAction: data.workspaceAction as HandoffWorkspaceActionV1 } : {}),
+          ...(destinationIntent ? { destinationIntent } : {}),
+          ...(actionId === 'workspace.sync.relationship.create'
+            ? { activatesExactMirror: data.mode === 'mirror_exactly' }
+            : {}),
           ...(targetServerId ? { serverId: targetServerId } : {}),
           operationId,
           ...(ctx.signal ? { signal: ctx.signal } : {}),
@@ -3302,10 +3408,14 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
 
           if (decision.decision === 'reject' || decision.decision === 'canceled') {
             const nowRejected = Date.now();
+            // Settled approval input custody, the blocking sibling of the
+            // deferred settlement writes: a refused request has no replay left,
+            // so the durable record keeps only the observation projection.
             const nextRequest: ApprovalRequest = {
               ...decision.request,
               status: decision.decision === 'reject' ? 'rejected' : 'canceled',
               updatedAtMs: nowRejected,
+              actionArgs: projectActionObservationInput(actionId, decision.request.actionArgs),
               ...(decision.decision === 'reject'
                 ? { decision: { kind: 'reject' as const, decidedAtMs: nowRejected } }
                 : {}),
@@ -3336,10 +3446,18 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             if (approvalFailure) return approvalFailure;
           }
 
+          // Live-only input custody keeps the raw input here, on the admitted
+          // invocation, rather than in the Artifact the approver can read.
+          const liveOnlyCustody = spec.approvalInputCustody === 'live_only'
+            ? { liveOnlyActionArgs: admittedInput }
+            : {};
+
           if (options?.prepareOnly) {
             const approvedAdmission: PreparedCoreAdmission = {
               actionId,
-              input: approvedRequest.actionArgs,
+              input: spec.approvalInputCustody === 'live_only'
+                ? admittedInput
+                : approvedRequest.actionArgs,
               context: {},
             };
             return ready(approvedAdmission, async () => {
@@ -3348,6 +3466,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                 request: approvedRequest,
                 artifactServerId: effectiveServerId,
                 ctx,
+                ...liveOnlyCustody,
               });
               return executed.ok ? executed.exec : executed;
             });
@@ -3358,6 +3477,7 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
             request: approvedRequest,
             artifactServerId: effectiveServerId,
             ctx,
+            ...liveOnlyCustody,
           });
           return executed.ok ? executed.exec : executed;
         }
@@ -4223,10 +4343,10 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                     }
                   : {}),
                 launchOrigin: resolveExecutionRunLaunchOrigin(ctx),
-                ...(reviewInput.profileId && reviewInput.profileGenerationId
+                ...(reviewInput.profileId && reviewInput.profileSourceCustody
                   ? {
                       profileId: reviewInput.profileId,
-                      profileGenerationId: reviewInput.profileGenerationId,
+                      profileSourceCustody: reviewInput.profileSourceCustody,
                     }
                   : {}),
                 ...(reviewInput.secretReferenceOverlay
@@ -4379,10 +4499,10 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
                   runClass: data.runClass ?? 'bounded',
                   ioMode: data.ioMode ?? 'request_response',
                   launchOrigin: resolveExecutionRunLaunchOrigin(ctx),
-                  ...(typeof data.profileId === 'string' && typeof data.profileGenerationId === 'string'
+                  ...(typeof data.profileId === 'string' && data.profileSourceCustody
                     ? {
                         profileId: data.profileId,
-                        profileGenerationId: data.profileGenerationId,
+                        profileSourceCustody: data.profileSourceCustody,
                       }
                     : {}),
                   ...(teamCredentialModel.selection
@@ -5453,6 +5573,66 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
           const res = await deps.workspaceSyncConflictResolve({
             actionReceiptId: ctx.actionRequestId,
             input: WorkspaceSyncConflictResolveActionInputV1Schema.parse(parsed.data),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          return completeActionResult(res);
+        }
+
+        if (actionId === 'workspace.sync.relationship.create') {
+          if (!deps.workspaceSyncRelationshipCreate) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:workspace.sync.relationship.create' };
+          }
+          // Relationship identity is derived from the admitted Action request,
+          // never from a caller-supplied value: the target daemon re-derives
+          // the same rule to authorize a destructive destination.
+          const operationId = normalizeId(ctx.handoffTargetReplacementApproval?.operationId)
+            || normalizeId(ctx.actionRequestId);
+          if (!operationId) {
+            return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+          }
+          const res = await deps.workspaceSyncRelationshipCreate({
+            input: WorkspaceSyncRelationshipCreateActionInputV1Schema.parse(parsed.data),
+            operationId,
+            ...(normalizeId(ctx.serverId) ? { serverId: normalizeId(ctx.serverId) } : {}),
+            ...(ctx.handoffTargetReplacementApproval && ctx.handoffTargetReplacementApprovalReceiptId
+              ? {
+                  targetReplacementApproval: ctx.handoffTargetReplacementApproval,
+                  targetReplacementApprovalReceiptId: ctx.handoffTargetReplacementApprovalReceiptId,
+                }
+              : {}),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          return completeActionResult(res);
+        }
+
+        if (actionId === 'workspace.sync.relationships.list') {
+          if (!deps.workspaceSyncRelationshipsList) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:workspace.sync.relationships.list' };
+          }
+          const res = await deps.workspaceSyncRelationshipsList({
+            input: WorkspaceSyncRelationshipsListActionInputV1Schema.parse(parsed.data),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          return completeActionResult(res);
+        }
+
+        if (actionId === 'workspace.sync.conflicts.list') {
+          if (!deps.workspaceSyncConflictsList) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:workspace.sync.conflicts.list' };
+          }
+          const res = await deps.workspaceSyncConflictsList({
+            input: WorkspaceSyncConflictsListActionInputV1Schema.parse(parsed.data),
+            ...(ctx.signal ? { signal: ctx.signal } : {}),
+          });
+          return completeActionResult(res);
+        }
+
+        if (actionId === 'workspace.sync.conflict.inspect') {
+          if (!deps.workspaceSyncConflictInspect) {
+            return { ok: false, errorCode: 'unsupported_action', error: 'unsupported_action:workspace.sync.conflict.inspect' };
+          }
+          const res = await deps.workspaceSyncConflictInspect({
+            input: WorkspaceSyncConflictInspectActionInputV1Schema.parse(parsed.data),
             ...(ctx.signal ? { signal: ctx.signal } : {}),
           });
           return completeActionResult(res);
@@ -6751,6 +6931,13 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         // Approvals eligibility is policy-driven (settings/surface), not safety-driven.
         // Safety metadata remains useful for UI copy and defaults, but it is not a hard gate here.
         const targetSpec = getActionSpec(targetActionId);
+        // An Action whose input may only live on its admitted invocation has no
+        // durable queue form: the record could only hold the redacted
+        // projection, which can never be executed. Refuse it at the request
+        // boundary rather than persisting an approval nobody can settle.
+        if (targetSpec.approvalInputCustody === 'live_only') {
+          return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
+        }
         const parsedTargetArgs = targetSpec.inputSchema.safeParse(data.actionArgs ?? {});
         if (!parsedTargetArgs.success) {
           return { ok: false, errorCode: 'invalid_parameters', error: 'invalid_parameters' };
@@ -6911,10 +7098,14 @@ export function createActionExecutor(deps: ActionExecutorDeps): Readonly<{
         const now = Date.now();
 
         if (decision === 'reject') {
+          // Rejection is the other settlement, and a refused request has no
+          // replay left either: it keeps the same observation projection the
+          // executed/failed transition writes.
           const nextRejected: ApprovalRequest = {
             ...existing,
             status: 'rejected',
             updatedAtMs: now,
+            actionArgs: projectActionObservationInput(existing.actionId, existing.actionArgs),
             decision: { kind: 'reject', decidedAtMs: now },
           };
           const updated = await deps.approvalsUpdate({ artifactId, request: nextRejected, serverId: effectiveServerId });

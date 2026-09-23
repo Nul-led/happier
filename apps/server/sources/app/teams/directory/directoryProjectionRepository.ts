@@ -12,6 +12,7 @@ import {
     isDirectorySourceCompletedEvidenceAllowedInTx,
     isDirectorySourceKindAllowedInTx,
 } from "./directorySourcePolicy";
+import { publishDirectorySourceStatusTransitionInTx } from "./directorySourceService";
 
 export type DirectoryProjectionWriteResult =
     | Readonly<{ applied: true }>
@@ -505,12 +506,13 @@ type NativeDirectoryProjectionContext = Readonly<{
  */
 type NativeDirectoryProjectionScope = Readonly<{ accountIds: readonly string[] }>;
 
+/** Reports whether the delta it applied already woke the Team's readers. */
 async function applyNativeDirectoryFactsInTx(
     tx: Tx,
     current: NativeDirectoryProjectionContext,
     sourceId: string,
     scope?: NativeDirectoryProjectionScope,
-): Promise<void> {
+): Promise<boolean> {
     const identities = await tx.teamProvisionedIdentity.findMany({
         where: {
             directorySourceId: sourceId,
@@ -562,6 +564,11 @@ async function applyNativeDirectoryFactsInTx(
             if (applied.status === "source_not_found") {
                 throw new DirectoryProjectionInvariantError("bound identity lost its directory source");
             }
+            // Only a corrupt binding — an identity whose manager pointer names
+            // somebody else's membership — is an invariant here. A membership
+            // native administration or another directory owns answers
+            // `managed_elsewhere`: no lifetime change, and this source's own
+            // Group rosters are still materialized against it below.
             if (applied.status === "management_conflict") {
                 throw new DirectoryProjectionInvariantError("bound identity disagrees with its Team membership owner");
             }
@@ -621,9 +628,13 @@ async function applyNativeDirectoryFactsInTx(
                 where: {
                     directorySourceId: sourceId,
                     externalGroupId: binding.externalGroupId,
+                    // The bound Account is the whole address. Requiring this
+                    // source to also own the Team-membership lifetime would
+                    // drop every natively-managed and second-source person
+                    // from its rosters; the contribution owner below still
+                    // requires a current membership.
                     identity: {
                         boundAccountId: { not: null },
-                        teamMembershipId: { not: null },
                         state: { in: ["active", "suspended"] },
                     },
                 },
@@ -660,6 +671,11 @@ async function applyNativeDirectoryFactsInTx(
                 // projection stays current and a later active reconciliation
                 // may materialize the relationship after explicit restore.
                 if (contribution.status === "group_archived") continue;
+                // A projected person whose Team lifetime nobody has created —
+                // or whose owning source has just offboarded them — contributes
+                // nothing. Group rosters hang on the membership; they never
+                // invent one.
+                if (contribution.status === "not_team_member") continue;
                 if (contribution.status !== "ok") {
                     throw new DirectoryProjectionInvariantError("directory Group contribution lost its binding or Team membership");
                 }
@@ -690,12 +706,12 @@ async function applyNativeDirectoryFactsInTx(
             }
         }
     });
-    if (teamChanged) {
-        await publishTeamChangedInTx(tx, {
-            teamId: current.teamId,
-            additionalAccountIds: [...changedAccountIds],
-        });
-    }
+    if (!teamChanged) return false;
+    await publishTeamChangedInTx(tx, {
+        teamId: current.teamId,
+        additionalAccountIds: [...changedAccountIds],
+    });
+    return true;
 }
 
 /**
@@ -756,6 +772,8 @@ export async function commitActiveWorkosProjectionEvent(
             select: {
                 id: true,
                 teamId: true,
+                state: true,
+                lastErrorCode: true,
                 team: { select: { defaultSessionHistoryAccess: true } },
             },
         });
@@ -765,7 +783,7 @@ export async function commitActiveWorkosProjectionEvent(
             ...params,
             reconcileRunId: workosEventStageMarker(eventId, params.attemptId),
         }, eventId);
-        await applyNativeDirectoryFactsInTx(tx, current, params.sourceId);
+        const published = await applyNativeDirectoryFactsInTx(tx, current, params.sourceId);
         const advanced = await tx.teamDirectorySource.updateMany({
             where: sourceWhere,
             data: {
@@ -780,6 +798,13 @@ export async function commitActiveWorkosProjectionEvent(
             },
         });
         if (advanced.count !== 1) throw new StaleProjectionRunError();
+        if (!published) {
+            await publishDirectorySourceStatusTransitionInTx(tx, {
+                teamId: current.teamId,
+                before: current,
+                after: { state: current.state, lastErrorCode: null },
+            });
+        }
         return { applied: true };
     }).catch((error: unknown) => {
         if (error instanceof StaleProjectionRunError) return { applied: false, reason: "stale_run" };
@@ -800,15 +825,21 @@ export async function completeActiveWorkosEmptyPoll(params: Readonly<{
         if (!await isDirectorySourceKindAllowedInTx(tx, "workos_directory")) {
             return { applied: false, reason: "stale_run" };
         }
+        const where = {
+            id: params.sourceId,
+            kind: "workos_directory" as const,
+            state: "active" as const,
+            activeReconcileRunId: null,
+            manualSyncRequestedAt: null,
+            ...position,
+        };
+        const before = await tx.teamDirectorySource.findFirst({
+            where,
+            select: { teamId: true, state: true, lastErrorCode: true },
+        });
+        if (!before) return { applied: false, reason: "stale_run" };
         const updated = await tx.teamDirectorySource.updateMany({
-            where: {
-                id: params.sourceId,
-                kind: "workos_directory",
-                state: "active",
-                activeReconcileRunId: null,
-                manualSyncRequestedAt: null,
-                ...position,
-            },
+            where,
             data: {
                 lastSuccessAt: completedAt,
                 lastErrorCode: null,
@@ -816,7 +847,16 @@ export async function completeActiveWorkosEmptyPoll(params: Readonly<{
                 retryNotBefore: null,
             },
         });
-        return updated.count === 1 ? { applied: true } : { applied: false, reason: "stale_run" };
+        if (updated.count !== 1) return { applied: false, reason: "stale_run" };
+        // An identical poll that only moves the success horizon changes nothing
+        // a reader sees; clearing a recorded failure is the recovery an
+        // administrator is watching for.
+        await publishDirectorySourceStatusTransitionInTx(tx, {
+            teamId: before.teamId,
+            before,
+            after: { state: before.state, lastErrorCode: null },
+        });
+        return { applied: true };
     });
 }
 
@@ -847,6 +887,8 @@ export async function completeDirectoryProjection(params: Readonly<{
                 id: true,
                 teamId: true,
                 kind: true,
+                state: true,
+                lastErrorCode: true,
                 manualSyncRequestedAt: true,
                 team: { select: { defaultSessionHistoryAccess: true } },
             },
@@ -886,7 +928,7 @@ export async function completeDirectoryProjection(params: Readonly<{
             data: { state: "deleted" },
         });
 
-        await applyNativeDirectoryFactsInTx(tx, current, params.sourceId);
+        const published = await applyNativeDirectoryFactsInTx(tx, current, params.sourceId);
 
         const clearObservedManualRequest = params.observedManualSyncRequestedAt !== null
             && current.manualSyncRequestedAt !== null
@@ -910,6 +952,16 @@ export async function completeDirectoryProjection(params: Readonly<{
             },
         });
         if (completed.count !== 1) throw new StaleProjectionRunError();
+        // `initializing -> active` is always a status transition, so a complete
+        // reconciliation wakes the Team's readers even when the observation
+        // changed no native fact.
+        if (!published) {
+            await publishDirectorySourceStatusTransitionInTx(tx, {
+                teamId: current.teamId,
+                before: current,
+                after: { state: "active", lastErrorCode: null },
+            });
+        }
         return { applied: true };
     }).catch((error: unknown) => {
         if (error instanceof StaleProjectionRunError) return { applied: false, reason: "stale_run" };

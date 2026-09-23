@@ -31,8 +31,11 @@ function normalizeSeq(value: number): number {
 
 /**
  * The one viewer-read normalizer. It applies the visible publication ceiling
- * (L09B-I3) and hides a retained-but-inert cursor from an untracked viewer once,
- * here, instead of relying on every surface to remember a second check.
+ * (L09B-I3) once, here, instead of relying on every surface to remember a second
+ * check. It does not hide a retained cursor: the producer treats a reader that
+ * holds its own frontier as tracked, so a cursor-only reader projects
+ * `tracking`. Attention, badge membership and automatic stamping remain
+ * owner-or-Follow decisions made by their own owners.
  */
 export function projectViewerReadStateV1(params: Readonly<{
   tracked: boolean;

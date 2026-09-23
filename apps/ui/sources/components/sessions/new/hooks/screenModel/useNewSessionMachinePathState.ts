@@ -5,6 +5,7 @@ import { resolvePreferredMachineId } from '@/components/settings/pickers/resolve
 import { normalizeOptionalParam } from '@/profileRouteParams';
 import type { Machine, Session } from '@/sync/domains/state/storageTypes';
 import { isMachineOnline } from '@/utils/sessions/machineUtils';
+import { resolveDefaultDirectoryForMachine } from '@/utils/sessions/machineDefaultDirectory';
 import { useStableRecentPathsResolver } from '@/utils/sessions/useStableRecentPathsForMachine';
 
 type RecentMachinePathsList = Array<{ machineId: string; path: string }>;
@@ -40,6 +41,16 @@ export function useNewSessionMachinePathState(params: Readonly<{
 }>): Readonly<{
     executionTarget: SessionAuthoringExecutionTargetV2 | null;
     selectedMachineId: string | null;
+    /**
+     * The machine whose open Agent catalog this screen shows.
+     *
+     * It is the selected machine for an ordinary machine target. A Temporary
+     * computer has no machine of its own, and an Agent still has to be chosen
+     * for it, so the catalog comes from the creator's focused — or most
+     * recently used — machine, resolved through the same preferred-machine
+     * owner the screen already uses for its default target.
+     */
+    agentCatalogMachineId: string | null;
     setSelectedMachineId: React.Dispatch<React.SetStateAction<string | null>>;
     setSelectedMachineTarget: (target: Readonly<{
         machineId: string | null;
@@ -83,13 +94,13 @@ export function useNewSessionMachinePathState(params: Readonly<{
         });
     }, [params.machines, recentMachinePaths]);
 
-    const getBestPathForMachine = React.useCallback((machineId: string | null): string => {
-        if (!machineId) return '';
-        const recent = resolveRecentPathsForMachine(machineId);
-        if (recent.length > 0) return recent[0]!;
-        const machine = params.machines.find((m) => m.id === machineId);
-        return machine?.metadata?.homeDir ?? '';
-    }, [params.machines, resolveRecentPathsForMachine]);
+    const getBestPathForMachine = React.useCallback((machineId: string | null): string => (
+        resolveDefaultDirectoryForMachine({
+            machineId,
+            machines: params.machines,
+            recentPaths: resolveRecentPathsForMachine(machineId),
+        })
+    ), [params.machines, resolveRecentPathsForMachine]);
 
     const getPersistedPathForMachine = React.useCallback((machineId: string | null): string => {
         if (!machineId) return '';
@@ -147,6 +158,9 @@ export function useNewSessionMachinePathState(params: Readonly<{
         return machineTarget(resolvePersistedMachineId() ?? resolveMachineId(null));
     });
     const selectedMachineId = executionTarget?.kind === 'machine' ? executionTarget.target.machineId : null;
+    const agentCatalogMachineId = executionTarget?.kind === 'temporary_computer'
+        ? resolveMachineId(resolvePersistedMachineId())
+        : selectedMachineId;
     const executionTargetRef = React.useRef(executionTarget);
     executionTargetRef.current = executionTarget;
     const setSelectedMachineIdState = React.useCallback((machineId: string | null) => {
@@ -193,32 +207,56 @@ export function useNewSessionMachinePathState(params: Readonly<{
         setSelectedPathState(nextPath);
     }, []);
 
+    /**
+     * Is this selection a *qualified target change*?
+     *
+     * Only a different Home+Machine is. Re-selecting the Machine already
+     * authored — or resolving that same Machine through a Pool, which adds
+     * provenance and nothing else — is not, and must never reconcile the
+     * authored working directory: that directory is the user's unsaved work and
+     * decides where the Agent actually runs.
+     */
+    const isQualifiedMachineTargetChange = React.useCallback((machineId: string | null): boolean => {
+        const current = executionTargetRef.current;
+        if (current?.kind !== 'machine') return true;
+        return current.target.serverId !== params.serverId || current.target.machineId !== machineId;
+    }, [params.serverId]);
+
     const setSelectedMachineTarget = React.useCallback((target: Readonly<{
         machineId: string | null;
         selectionOrigin?: MachinePoolSelectionOriginV1 | null;
+        /** An explicitly authored directory. Callers do not pass a default here. */
         path?: string;
     }>) => {
         hasUserSelectedMachineRef.current = true;
         if (target.path !== undefined) {
             hasUserEditedPathRef.current = false;
             applyCommittedSelectedPath(target.path);
+        } else if (isQualifiedMachineTargetChange(target.machineId)) {
+            // The owner supplies the default, and only for a real target change.
+            hasUserEditedPathRef.current = false;
+            applyCommittedSelectedPath(
+                getPersistedPathForMachine(target.machineId) || getBestPathForMachine(target.machineId),
+            );
         }
         setExecutionTarget(() => {
             hasCommittedExactTargetRef.current = target.machineId !== null;
             return machineTarget(target.machineId, target.selectionOrigin ?? null);
         });
-    }, [applyCommittedSelectedPath, machineTarget]);
+    }, [
+        applyCommittedSelectedPath,
+        getBestPathForMachine,
+        getPersistedPathForMachine,
+        isQualifiedMachineTargetChange,
+        machineTarget,
+    ]);
 
     const setSelectedMachineId = React.useCallback<React.Dispatch<React.SetStateAction<string | null>>>((next) => {
         const machineId = typeof next === 'function'
             ? next(selectedMachineIdRef.current)
             : next;
-        setSelectedMachineTarget({
-            machineId,
-            selectionOrigin: null,
-            path: getBestPathForMachine(machineId),
-        });
-    }, [getBestPathForMachine, setSelectedMachineTarget]);
+        setSelectedMachineTarget({ machineId, selectionOrigin: null });
+    }, [setSelectedMachineTarget]);
 
     const setTemporaryComputerTarget = React.useCallback((target: Readonly<{
         serverId: string;
@@ -295,18 +333,22 @@ export function useNewSessionMachinePathState(params: Readonly<{
         lastAppliedMachineParamRef.current = { machineId, scopeKey };
         lastAppliedRouteOriginPoolIdRef.current = routeOriginPoolId;
         if (
-            machineId === selectedMachineId
-            && (!previousRouteTarget || previousRouteTarget.scopeKey === scopeKey)
-            && executionTarget?.kind === 'machine'
-            && (executionTarget.selectionOrigin?.poolId ?? null) === routeOriginPoolId
-        ) return;
+            (!previousRouteTarget || previousRouteTarget.scopeKey === scopeKey)
+            && !isQualifiedMachineTargetChange(machineId)
+        ) {
+            // The same Home+Machine came back, possibly with new Pool provenance.
+            // Let the origin update and leave the authored folder alone; the same
+            // decision the in-place pickers make.
+            setSelectedMachineIdState(machineId);
+            return;
+        }
         hasUserSelectedMachineRef.current = true;
         hasCommittedExactTargetRef.current = true;
         setSelectedMachineIdState(machineId);
         hasUserEditedPathRef.current = false;
         const trimmedPath = normalizePathParam(params.pathParam);
         applyCommittedSelectedPath(trimmedPath || getPersistedPathForMachine(machineId) || getBestPathForMachine(machineId));
-    }, [applyCommittedSelectedPath, executionTarget, getBestPathForMachine, getPersistedPathForMachine, hasMachine, params.cacheScopeKey, params.machineIdParam, params.pathParam, params.routeSelectionOrigin, selectedMachineId]);
+    }, [applyCommittedSelectedPath, getBestPathForMachine, getPersistedPathForMachine, hasMachine, isQualifiedMachineTargetChange, params.cacheScopeKey, params.machineIdParam, params.pathParam, params.routeSelectionOrigin, setSelectedMachineIdState]);
 
     React.useEffect(() => {
         const requestKey = params.executionTargetRequestKey ?? null;
@@ -489,6 +531,7 @@ export function useNewSessionMachinePathState(params: Readonly<{
     return {
         executionTarget,
         selectedMachineId,
+        agentCatalogMachineId,
         setSelectedMachineId,
         setSelectedMachineTarget,
         setTemporaryComputerTarget,

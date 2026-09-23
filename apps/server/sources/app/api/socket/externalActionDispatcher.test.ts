@@ -664,7 +664,7 @@ describe("createExternalActionDaemonDispatcher", () => {
         const io = {
             in: vi.fn((room: string) => ({
                 fetchSockets: async () => {
-                    expect(room).toBe("user:account-1");
+                    expect(room).toBe("session:session-1:account-1");
                     return [{ data: { sessionPublisherAuthority: currentProjection } }];
                 },
             })),
@@ -695,6 +695,55 @@ describe("createExternalActionDaemonDispatcher", () => {
         });
         expect(forwardRpc).toHaveBeenCalledWith(expect.objectContaining({
             method: `machine-2:${EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1}`,
+        }));
+    });
+
+    it("resolves a Session target hosted by a publisher that is not in the Account-wide room", async () => {
+        const envelope: ExternalActionRequestEnvelopeV1 = {
+            v: 1,
+            target: { kind: "session", sessionId: "session-1" },
+            input: {},
+        };
+        // A restricted Runner joins the per-account Session room but is
+        // deliberately excluded from `user:<accountId>`.
+        const runnerProjection = {
+            v: 1,
+            accountId: "account-1",
+            machineId: "runner-machine",
+            sessionId: "session-1",
+            committedFenceMs: 7,
+        };
+        const rooms: string[] = [];
+        const io = {
+            in: vi.fn((room: string) => ({
+                fetchSockets: async () => {
+                    rooms.push(room);
+                    return room === "session:session-1:account-1"
+                        ? [{ data: { sessionPublisherAuthority: runnerProjection } }]
+                        : [];
+                },
+            })),
+        };
+        const forwardRpc = vi.fn(async () => ({
+            ok: true as const,
+            result: relayResponse("session.message.send", envelope),
+        }));
+        const dispatch = createExternalActionDaemonDispatcher({
+            io: io as never,
+            forwardRpc: forwardRpc as never,
+            resolveMachine: async () => "available",
+            sessionPublisherPresence: { isCurrentPublisherProjection: async () => true } as never,
+        });
+
+        const result = await dispatch({
+            actionId: "session.message.send",
+            envelope,
+            principal,
+        });
+        expect(result).toEqual(dispatchedResponse(response("session.message.send", envelope)));
+        expect(rooms).toEqual(["session:session-1:account-1"]);
+        expect(forwardRpc).toHaveBeenCalledWith(expect.objectContaining({
+            method: `runner-machine:${EXTERNAL_ACTION_DAEMON_RPC_METHOD_V1}`,
         }));
     });
 

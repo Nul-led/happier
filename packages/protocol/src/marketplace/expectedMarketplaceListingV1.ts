@@ -5,6 +5,7 @@ import { NpmRegistryProfileIdV1Schema } from '../rpc/npmRegistryProfiles.js';
 import {
   MarketplaceIndexEntryV1Schema,
   MarketplaceIndexSourceSnapshotV1Schema,
+  type MarketplaceIndexItemV1,
 } from './marketplaceIndexV1.js';
 import {
   PluginUpdatePolicyV1Schema,
@@ -84,3 +85,71 @@ export const ExpectedMarketplaceListingV1Schema = z.union([
   }).strict(),
 ]);
 export type ExpectedMarketplaceListingV1 = z.infer<typeof ExpectedMarketplaceListingV1Schema>;
+
+/**
+ * Projects the one commitment every caller submits from the marketplace index
+ * listing a present user acted on.
+ *
+ * It lives beside its result type because more than one program produces the
+ * commitment — the daemon's own exact-install path and the Temporary-computer
+ * creator that seals a reviewed external Agent into a Runner launch — and a
+ * second projector would let those two disagree about what a listing commits
+ * to. The caller supplies the host-owned registry profile binding, which never
+ * comes from a catalog document.
+ */
+export function projectExpectedMarketplaceListing(
+  listing: MarketplaceIndexItemV1,
+  registryProfileId: string | null,
+): ExpectedMarketplaceListingV1 {
+  const distribution = {
+    pluginId: listing.pluginId,
+    publisher: listing.publisher,
+    packageName: listing.distribution.packageName,
+    registryOrigin: listing.distribution.registryOrigin,
+    version: listing.distribution.version,
+    integrity: listing.distribution.integrity,
+    manifestDigest: listing.manifestDigest,
+  } as const;
+  if (listing.source.kind === 'curated') {
+    return {
+      source: { id: listing.source.id, kind: 'curated', sourceUrl: listing.source.sourceUrl },
+      ...distribution,
+      ...(registryProfileId ? { registryProfileId } : {}),
+      review: {
+        status: 'approved',
+        reviewedAt: listing.review.reviewedAt!,
+        ...(listing.review.reason !== undefined ? { reason: listing.review.reason } : {}),
+      },
+      updatePolicy: listing.updatePolicy,
+    };
+  }
+  // The unreviewed listing's declared policy travels unchanged: first-install
+  // trust comes from the mandatory Install and Trust review, not from
+  // curation, so every declared policy — including `allowed` for later explicit
+  // updates — is submitted exactly as published.
+  const review = {
+    review: { status: 'unreviewed', reviewedAt: null },
+    updatePolicy: listing.updatePolicy,
+  } as const;
+  if (listing.source.kind === 'community-npm') {
+    // Community npm is the one synthesized source, never a persisted row, so
+    // it carries the constant id and no private registry binding.
+    return {
+      source: {
+        id: COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
+        kind: 'community-npm',
+        sourceUrl: listing.source.sourceUrl,
+      },
+      ...distribution,
+      ...review,
+    };
+  }
+  return {
+    source: { id: listing.source.id, kind: 'user', sourceUrl: listing.source.sourceUrl },
+    ...distribution,
+    // The persisted host binding travels with every persisted source kind: a
+    // user catalog can name a private registry just as a curated one can.
+    ...(registryProfileId ? { registryProfileId } : {}),
+    ...review,
+  };
+}

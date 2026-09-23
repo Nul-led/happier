@@ -43,7 +43,7 @@ const preparedAuthoring: RunnerPreparedAuthoringV1 = {
             artifactTarget: 'linux-x64',
             workspace: { kind: 'choose_on_endpoint' },
         },
-        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.codex', localId: 'codex' } },
+        agentTarget: { kind: 'agent', identity: { pluginId: 'happier.agent.codex', localId: 'codex' } },
         permissionMode: 'default',
         modelSelection: null,
         transcriptStorage: 'persisted',
@@ -67,6 +67,7 @@ const preparedAuthoring: RunnerPreparedAuthoringV1 = {
         primaryTeamId: null,
         organizationPlacement: { folderId: null, tagIds: [] },
     },
+    agentPluginDistribution: null,
     composer: { text: 'Inspect the project', references: [], attachments: [] },
     files: [],
     attachmentDestination: {
@@ -535,5 +536,96 @@ describe('prepareTemporaryComputerActivation creator recipient authority', () =>
             mcpMaterial: null,
             selectedAgentProviderOwnedEnvironmentKeys: ['HAPPIER_CODEX_PROVIDER_API_KEY'],
         })).rejects.toMatchObject({ code: 'runner_account_encryption_mismatch' });
+    });
+});
+
+describe('prepareTemporaryComputerActivation reviewed external Agent plugin', () => {
+    const externalAgentTarget = {
+        kind: 'agent' as const,
+        identity: { pluginId: 'acme.reviewed-external', localId: 'assistant' },
+    };
+    const externalListing = {
+        source: {
+            id: 'marketplace:community-npm' as const,
+            kind: 'community-npm' as const,
+            sourceUrl: 'https://registry.npmjs.org/',
+        },
+        pluginId: 'acme.reviewed-external',
+        publisher: { id: 'acme', displayName: 'Acme' },
+        packageName: '@acme/reviewed-external',
+        registryOrigin: 'https://registry.npmjs.org',
+        version: '1.2.3',
+        integrity: `sha512-${'A'.repeat(86)}==`,
+        manifestDigest: `sha256:${'b'.repeat(64)}`,
+        review: { status: 'unreviewed' as const, reviewedAt: null },
+        updatePolicy: 'allowed' as const,
+    };
+
+    function baseInput(overrides: Record<string, unknown>) {
+        return {
+            client: { readCreatorRecipient: vi.fn(async () => ({ mode: 'plain', creatorAccountId: 'creator-a' } as const)) } as never,
+            custody,
+            scope: { serverId: 'home-a', accountId: 'creator-a' },
+            credentials: { token: 'creator-token' },
+            encryption: null,
+            draftId: 'draft-a',
+            homeServerIdentityId: 'home-a',
+            artifact: {
+                identity: { product: 'happier-runner', version: '0.3.0', target: 'linux-x64', sha256: 'a'.repeat(64) },
+                channel: 'dev',
+                url: 'https://example.test/runner.zip',
+                checksumsUrl: 'https://example.test/checksums.txt',
+                checksumsSignatureUrl: 'https://example.test/checksums.txt.minisig',
+                sizeBytes: 123,
+                entries: [{ path: 'happier-runner', kind: 'file', sizeBytes: 100, mode: 0o755 }],
+            },
+            authoring: activationAuthoring,
+            composer: composerSnapshot,
+            files: preparedAuthoring.files,
+            attachmentDestination: preparedAuthoring.attachmentDestination,
+            actionsSettings: preparedAuthoring.actionsSettings,
+            mcpMaterial: null,
+            selectedAgentProviderOwnedEnvironmentKeys: [],
+            ...overrides,
+        } as Parameters<typeof prepareTemporaryComputerActivation>[0];
+    }
+
+    it('seals the exact reviewed distribution for an externally installed Agent', async () => {
+        const prepared = await prepareTemporaryComputerActivation(baseInput({
+            authoring: { ...activationAuthoring, agentTarget: externalAgentTarget },
+            agentPluginDistribution: externalListing,
+        }));
+
+        expect(prepared.preparedAuthoring.agentPluginDistribution).toMatchObject({
+            pluginId: 'acme.reviewed-external',
+            packageName: '@acme/reviewed-external',
+            version: '1.2.3',
+            integrity: externalListing.integrity,
+        });
+    });
+
+    it('refuses an externally installed Agent with no resolved distribution before Home access', async () => {
+        const readCreatorRecipient = vi.fn();
+
+        await expect(prepareTemporaryComputerActivation(baseInput({
+            client: { readCreatorRecipient } as never,
+            authoring: { ...activationAuthoring, agentTarget: externalAgentTarget },
+        }))).rejects.toMatchObject({ code: 'runner_agent_plugin_distribution_unavailable' });
+        expect(readCreatorRecipient).not.toHaveBeenCalled();
+    });
+
+    it('refuses a fabricated distribution for a bundled Agent before Home access', async () => {
+        const readCreatorRecipient = vi.fn();
+
+        await expect(prepareTemporaryComputerActivation(baseInput({
+            client: { readCreatorRecipient } as never,
+            agentPluginDistribution: { ...externalListing, pluginId: 'happier.agent.codex' },
+        }))).rejects.toMatchObject({ code: 'runner_agent_plugin_distribution_unexpected' });
+        expect(readCreatorRecipient).not.toHaveBeenCalled();
+    });
+
+    it('carries no distribution for a bundled Agent', async () => {
+        const prepared = await prepareTemporaryComputerActivation(baseInput({}));
+        expect(prepared.preparedAuthoring.agentPluginDistribution).toBeNull();
     });
 });

@@ -6,6 +6,10 @@ import {
     type SessionTeamCredentialSlotV1,
     type TeamCredentialRouteV1,
 } from "@happier-dev/protocol/teams";
+import {
+    TeamCredentialSourceBindingV1Schema,
+    type TeamCredentialSourceBindingV1,
+} from "@happier-dev/protocol/teams";
 import type { SessionTeamCredentialBindingConsequenceV1 } from "@happier-dev/protocol";
 import type { Tx } from "@/storage/inTx";
 import { isServerFeatureEnabledForRequest } from "@/app/features/catalog/serverFeatureGate";
@@ -18,8 +22,8 @@ import {
 import { resolveTeamCredentialBrokerMachineForSaveInTx } from "./brokerMachineEligibility";
 import {
     readTeamCredentialBrokerPlacement,
+    admitTeamCredentialBrokerMachineForResourceInTx,
     admitTeamCredentialBrokerPoolForBrokeredUseInTx,
-    isTeamCredentialBrokerPlacementBoundToMachineInTx,
     type TeamCredentialBrokerPlacementSelection,
 } from "./brokerPlacementResolver";
 import { resolveTeamCredentialEntitlementInTx, type TeamCredentialEntitlementDecision } from "./resourceAccess";
@@ -27,6 +31,25 @@ import { resolveTeamCredentialResourceSourceInTx, type TeamCredentialResourceSou
 
 export type SessionTeamCredentialBindingRejection =
     SessionTeamCredentialBindingRejectionV1;
+
+/**
+ * When this admission decides the Team authentication half of its answer.
+ *
+ * - `per_request` (default) — the caller presents its own verified credential
+ *   and the Team qualifier decides now.
+ * - `established` — the Home already qualified the initiator's real credential
+ *   when it admitted this operation, and repeats that decision at every
+ *   renewal of the operation's authority. The caller presenting *this*
+ *   admission holds no credential of its own, so re-qualifying here could only
+ *   ever refuse a restricted Team a member already satisfied. Membership,
+ *   entitlement, session-use policy, source currentness and the operation's
+ *   frozen broker target are still decided now, so losing access, the resource,
+ *   the source or the Machine still ends the operation immediately.
+ *
+ * It is the authentication sibling of `TeamCredentialBrokerPlacementSelection`:
+ * new *selection* is per-request, established *authority* is not re-derived.
+ */
+export type SessionTeamCredentialAuthenticationSelection = "per_request" | "established";
 
 export type SessionTeamCredentialBindingWriteResult =
     | Readonly<{ ok: true }>
@@ -242,7 +265,15 @@ export async function grantRequiredTeamVisibilityAndValidateBindingInTx(
 }
 
 type SessionTeamCredentialResourceValidationResult =
-    | Readonly<{ ok: true; binding: Readonly<{ resourceId: string; resourceRevision: number; teamId: string; deliveryMode: TeamCredentialRouteV1 }>; entitlement: Extract<TeamCredentialEntitlementDecision, { ok: true }>; source: Extract<TeamCredentialResourceSourceResolution, { status: "current" }> }>
+    | Readonly<{
+        ok: true;
+        binding: Readonly<{ resourceId: string; resourceRevision: number; teamId: string; deliveryMode: TeamCredentialRouteV1 }>;
+        entitlement: Extract<TeamCredentialEntitlementDecision, { ok: true }>;
+        source: Extract<TeamCredentialResourceSourceResolution, { status: "current" }>;
+        /** The resource's own current source binding, parsed once here so no caller reparses it. */
+        sourceBinding: TeamCredentialSourceBindingV1;
+        custodianAccountId: string;
+    }>
     | Readonly<{ ok: false; reason: SessionTeamCredentialBindingRejection }>;
 
 export type SessionTeamCredentialAdmissionResult =
@@ -270,6 +301,7 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         deliveryMode: TeamCredentialRouteV1;
         policy: SessionTeamCredentialPolicyContext;
         authentication: SessionAccessAuthentication;
+        authenticationSelection?: SessionTeamCredentialAuthenticationSelection;
     }>,
 ): Promise<SessionTeamCredentialResourceValidationResult> {
     if (!isServerFeatureEnabledForRequest("teams.credentialResources", process.env)) {
@@ -287,23 +319,15 @@ async function validateSessionTeamCredentialResourceForContextInTx(
     if (input.expectedResourceRevision !== undefined && resource.revision !== input.expectedResourceRevision) {
         return { ok: false, reason: "resource_changed" };
     }
-    if (
-        input.expectedBrokerMachineId !== undefined
-        && !await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
-            resource,
-            machineId: input.expectedBrokerMachineId,
-            ...(input.brokerSelection ? { selection: input.brokerSelection } : {}),
-        })
-    ) {
-        return { ok: false, reason: "broker_unavailable" };
-    }
     const entitlement = await resolveTeamCredentialEntitlementInTx(tx, { resourceId: resource.id, accountId: input.accountId });
     if (!entitlement.ok) return entitlement;
-    const qualification = await qualifySessionTeamAuthenticationInTx(tx, {
-        accountId: input.accountId,
-        team: { id: resource.teamId, authenticationPolicy: resource.team.authenticationPolicy },
-        authentication: input.authentication,
-    });
+    const qualification = input.authenticationSelection === "established"
+        ? { status: "satisfied" as const }
+        : await qualifySessionTeamAuthenticationInTx(tx, {
+            accountId: input.accountId,
+            team: { id: resource.teamId, authenticationPolicy: resource.team.authenticationPolicy },
+            authentication: input.authentication,
+        });
     if (qualification.status !== "satisfied") {
         return {
             ok: false,
@@ -334,9 +358,11 @@ async function validateSessionTeamCredentialResourceForContextInTx(
     } catch {
         return { ok: false, reason: "resource_corrupt" };
     }
+    const parsedSourceBinding = TeamCredentialSourceBindingV1Schema.safeParse(sourceValue);
+    if (!parsedSourceBinding.success) return { ok: false, reason: "resource_corrupt" };
     const source = await resolveTeamCredentialResourceSourceInTx(tx, {
         custodianAccountId: resource.custodianAccountId,
-        source: sourceValue,
+        source: parsedSourceBinding.data,
     });
     if (source.status === "unavailable") {
         return { ok: false, reason: source.reason === "invalid_source_binding" ? "resource_corrupt" : "source_replaced_or_missing" };
@@ -345,17 +371,47 @@ async function validateSessionTeamCredentialResourceForContextInTx(
         if (!entitlement.mayBroker) return { ok: false, reason: "access_removed" };
         const placement = readTeamCredentialBrokerPlacement(resource);
         if (!placement.ok || placement.placement === null) return { ok: false, reason: "resource_corrupt" };
-        const broker = placement.placement.kind === "machine"
-            ? await resolveTeamCredentialBrokerMachineForSaveInTx(tx, resource)
-            : await admitTeamCredentialBrokerPoolForBrokeredUseInTx(tx, {
-                custodianAccountId: resource.custodianAccountId,
-                poolId: placement.placement.poolId,
-            });
-        if (!broker.ok) return { ok: false, reason: broker.error };
+        // A presented broker Machine is this operation's already-selected
+        // target, so the one exact-Machine admission owner decides it: the
+        // placement still has to name or (for an established selection) have
+        // named that Machine, and the Machine's own resource, source and
+        // revocation authority is rechecked. Pool membership and priority are
+        // never re-ACLed for it, and no other member is ever substituted.
+        // Only a genuinely fresh open still asks the Pool for a candidate.
+        const broker = input.expectedBrokerMachineId !== undefined
+            ? await admitTeamCredentialBrokerMachineForResourceInTx(tx, {
+                resource,
+                brokerMachineId: input.expectedBrokerMachineId,
+                ...(input.brokerSelection ? { selection: input.brokerSelection } : {}),
+            })
+            : placement.placement.kind === "machine"
+                ? await resolveTeamCredentialBrokerMachineForSaveInTx(tx, resource)
+                : await admitTeamCredentialBrokerPoolForBrokeredUseInTx(tx, {
+                    custodianAccountId: resource.custodianAccountId,
+                    poolId: placement.placement.poolId,
+                });
+        if (!broker.ok) {
+            // The placement columns were already read above, so an unreadable
+            // row is corrupt; a placement that no longer names the presented
+            // Machine keeps this validator's `broker_unavailable` contract.
+            return {
+                ok: false,
+                reason: broker.error === "resource_unavailable"
+                    ? "resource_corrupt"
+                    : broker.error === "resource_changed" ? "broker_unavailable" : broker.error,
+            };
+        }
     } else if (!entitlement.mayReceiveDirect) {
         return { ok: false, reason: "access_removed" };
     }
-    return { ok: true, binding: { resourceId: resource.id, resourceRevision: resource.revision, teamId: resource.teamId, deliveryMode: input.deliveryMode }, entitlement, source };
+    return {
+        ok: true,
+        binding: { resourceId: resource.id, resourceRevision: resource.revision, teamId: resource.teamId, deliveryMode: input.deliveryMode },
+        entitlement,
+        source,
+        sourceBinding: parsedSourceBinding.data,
+        custodianAccountId: resource.custodianAccountId,
+    };
 }
 
 export async function validatePlannedSessionTeamCredentialResourceInTx(
@@ -363,12 +419,14 @@ export async function validatePlannedSessionTeamCredentialResourceInTx(
     input: Readonly<{
         accountId: string;
         resourceId: string;
-        expectedResourceRevision: number;
+        /** Omitted only when an established operation intentionally adopts the current resource revision. */
+        expectedResourceRevision?: number;
         expectedBrokerMachineId?: string;
         brokerSelection?: TeamCredentialBrokerPlacementSelection;
         deliveryMode: TeamCredentialRouteV1;
         plannedSession: PlannedSessionTeamCredentialContext;
         authentication: SessionAccessAuthentication;
+        authenticationSelection?: SessionTeamCredentialAuthenticationSelection;
     }>,
 ): Promise<SessionTeamCredentialResourceValidationResult> {
     const visibleTeamIds = new Set(input.plannedSession.teamVisibilityTeamIds);
@@ -378,6 +436,7 @@ export async function validatePlannedSessionTeamCredentialResourceInTx(
         expectedResourceRevision: input.expectedResourceRevision,
         expectedBrokerMachineId: input.expectedBrokerMachineId,
         ...(input.brokerSelection ? { brokerSelection: input.brokerSelection } : {}),
+        ...(input.authenticationSelection ? { authenticationSelection: input.authenticationSelection } : {}),
         deliveryMode: input.deliveryMode,
         authentication: input.authentication,
         policy: {
@@ -457,13 +516,6 @@ export async function resolvePlannedRunnerCredentialSelectionBindingInTx(
         // current member, while a later read of the established target is not
         // re-ACLed against membership edits made after the freeze.
         if (input.selectedBrokerMachineId === undefined) return { ok: false, reason: "broker_unavailable" };
-        if (!await isTeamCredentialBrokerPlacementBoundToMachineInTx(tx, {
-            resource,
-            machineId: input.selectedBrokerMachineId,
-            selection: input.selection ?? "per_request",
-        })) {
-            return { ok: false, reason: "broker_unavailable" };
-        }
         brokerMachineId = input.selectedBrokerMachineId;
     }
     const admitted = await validatePlannedSessionTeamCredentialResourceInTx(tx, {
@@ -491,8 +543,11 @@ export async function validateExistingSessionTeamCredentialResourceInTx(
         accountId: string;
         resourceId: string;
         expectedResourceRevision?: number;
+        expectedBrokerMachineId?: string;
+        brokerSelection?: TeamCredentialBrokerPlacementSelection;
         deliveryMode: TeamCredentialRouteV1;
         authentication: SessionAccessAuthentication;
+        authenticationSelection?: SessionTeamCredentialAuthenticationSelection;
     }>,
 ): Promise<SessionTeamCredentialResourceValidationResult> {
     const session = await tx.session.findUnique({
@@ -505,6 +560,11 @@ export async function validateExistingSessionTeamCredentialResourceInTx(
         accountId: input.accountId,
         resourceId: input.resourceId,
         expectedResourceRevision: input.expectedResourceRevision,
+        ...(input.expectedBrokerMachineId !== undefined
+            ? { expectedBrokerMachineId: input.expectedBrokerMachineId }
+            : {}),
+        ...(input.brokerSelection ? { brokerSelection: input.brokerSelection } : {}),
+        ...(input.authenticationSelection ? { authenticationSelection: input.authenticationSelection } : {}),
         authentication: input.authentication,
         deliveryMode: input.deliveryMode,
         policy: {
@@ -573,6 +633,10 @@ export async function admitSessionTeamCredentialBindingInTx(
         slot: SessionTeamCredentialSlotV1;
         deliveryMode: TeamCredentialRouteV1;
         authentication: SessionAccessAuthentication;
+        /** The broker Machine this operation already froze, when it has one. */
+        expectedBrokerMachineId?: string;
+        brokerSelection?: TeamCredentialBrokerPlacementSelection;
+        authenticationSelection?: SessionTeamCredentialAuthenticationSelection;
     }>,
 ): Promise<SessionTeamCredentialAdmissionResult> {
     const binding = await readSessionTeamCredentialBindingInTx(tx, input);
@@ -582,6 +646,11 @@ export async function admitSessionTeamCredentialBindingInTx(
         accountId: input.accountId,
         resourceId: binding.resourceId,
         expectedResourceRevision: binding.resourceRevision,
+        ...(input.expectedBrokerMachineId !== undefined
+            ? { expectedBrokerMachineId: input.expectedBrokerMachineId }
+            : {}),
+        ...(input.brokerSelection ? { brokerSelection: input.brokerSelection } : {}),
+        ...(input.authenticationSelection ? { authenticationSelection: input.authenticationSelection } : {}),
         deliveryMode: binding.deliveryMode,
         authentication: input.authentication,
     });

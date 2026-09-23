@@ -71,6 +71,8 @@ export type EphemeralRunnerNativeShellTransport = Readonly<{
   ): Promise<EphemeralRunnerNativeShellResponse>;
   subscribe(listener: (message: EphemeralRunnerNativeShellEvent) => void): () => void;
   publish?(message: EphemeralRunnerNativeShellPublication): void;
+  /** Releases the carrier's process resources. Idempotent. */
+  dispose?(): void;
 }>;
 
 function unexpectedResponse(response: EphemeralRunnerNativeShellResponse): never {
@@ -119,7 +121,7 @@ export function createEphemeralRunnerNativeShellUi(
       if (response.type !== 'directory_selected') return unexpectedResponse(response);
       return response.directory;
     },
-    async reviewAndRequestConsent({ review, signal }) {
+    async reviewAndRequestConsent({ review, pluginInstallation, signal }) {
       // Consent is opt-in: an absent endpoint never grants it.
       if (disconnected) return false;
       reviewedRuntimeSummary = resolveEphemeralRunnerReviewedRuntimeFacts({
@@ -136,6 +138,7 @@ export function createEphemeralRunnerNativeShellUi(
         review: resolveEphemeralRunnerConsentReviewPresentation({
           manifest: review.manifest,
           directory: review.directory,
+          pluginInstallation,
           locale,
         }),
       }, signal);
@@ -182,5 +185,11 @@ export function createEphemeralRunnerNativeShellUi(
         }),
       });
     },
+    /**
+     * Releases the carrier this surface was built on. The endpoint application
+     * calls it on every terminal outcome and before a retry builds a
+     * replacement, so the shell-owned stdin reader cannot outlive the run.
+     */
+    dispose() { transport.dispose?.(); },
   });
 }

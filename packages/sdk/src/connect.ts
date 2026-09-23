@@ -641,7 +641,13 @@ function createClient(
       // is the one thing that opens it, and that key is reachable only through
       // the creator-signed published binding — so an unresolvable Runner target
       // fails closed rather than downgrading to Account-only sealing.
-      const machineTargetId = target.data.kind === 'machine' ? target.data.machineId : null;
+      // A Runner is named either by its Machine id or by the exact Session it
+      // was activated for, and the bootstrap projection carries both facts, so
+      // both spellings reach the same resolution and the same per-credential
+      // memo. The two id spaces stay distinguishable in that memo key.
+      const runnerTargetKey = target.data.kind === 'machine'
+        ? `machine:${target.data.machineId}`
+        : `session:${target.data.sessionId}`;
       // The bootstrap projection is what names a Runner target. When an
       // endpoint does not serve it — a daemon-hosted Action API does not — the
       // released Account sealing stands: that request is still readable only by
@@ -650,34 +656,39 @@ function createClient(
       // happen is sealing a *known* Runner target with anything but that
       // Runner's verified content key, and that resolution throws instead.
       let material = accountMaterial;
-      if (machineTargetId !== null) {
-        try {
-          material = await encryption.getMachineMaterial(machineTargetId, async () => {
-            const rows = parseMachineBootstrapRows(await requestJson({
-              path: 'v1/machines',
-              method: 'GET',
-              signal: options.signal,
-              allowAfterClose,
-            }).catch((error: unknown) => {
-              throw isMachineBootstrapNotServed(error) ? MACHINE_BOOTSTRAP_UNAVAILABLE : error;
-            }));
-            const resolution = resolveMachineProtectedActionMaterial({
-              rows,
-              machineId: machineTargetId,
-              homeServerIdentityId: encryption.pins.serverIdentityId,
-              accountId: encryption.pins.accountId,
-              accountMaterial,
-            });
-            if (resolution.kind === 'unavailable') {
-              throw new HappierTransportError('The target Machine published no usable encryption key.', {
-                code: 'invalid_encrypted_envelope', requestId,
-              });
-            }
-            return resolution.kind === 'runner' ? resolution.material : accountMaterial;
+      try {
+        // The bootstrap read backs a promise shared by every caller targeting
+        // this Machine or Session, so it keeps the client's own lifetime
+        // exactly like the Account bootstrap above: one caller's cancellation
+        // must not cancel another caller's resolution, and a caller that
+        // cancels must still stop waiting.
+        const machineMaterialPromise = encryption.getMachineMaterial(runnerTargetKey, async () => {
+          const rows = parseMachineBootstrapRows(await requestJson({
+            path: 'v1/machines',
+            method: 'GET',
+            allowAfterClose,
+          }).catch((error: unknown) => {
+            throw isMachineBootstrapNotServed(error) ? MACHINE_BOOTSTRAP_UNAVAILABLE : error;
+          }));
+          const resolution = resolveMachineProtectedActionMaterial({
+            rows,
+            target: target.data,
+            homeServerIdentityId: encryption.pins.serverIdentityId,
+            accountId: encryption.pins.accountId,
+            accountMaterial,
           });
-        } catch (error) {
-          if (error !== MACHINE_BOOTSTRAP_UNAVAILABLE) throw error;
-        }
+          if (resolution.kind === 'unavailable') {
+            throw new HappierTransportError('The target Machine published no usable encryption key.', {
+              code: 'invalid_encrypted_envelope', requestId,
+            });
+          }
+          return resolution.kind === 'runner' ? resolution.material : accountMaterial;
+        });
+        material = allowAfterClose ? await machineMaterialPromise : await waitForClientMaterial(
+          machineMaterialPromise, combinedSignal(options.signal, lifecycle.controller.signal),
+        );
+      } catch (error) {
+        if (error !== MACHINE_BOOTSTRAP_UNAVAILABLE) throw error;
       }
       const binding = { serverIdentityId: encryption.pins.serverIdentityId,
         accountId: encryption.pins.accountId, credentialId: encryption.pins.tokenId,

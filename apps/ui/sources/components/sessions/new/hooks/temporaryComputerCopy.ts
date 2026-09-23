@@ -36,6 +36,8 @@ export function describeTemporaryComputerLaunchBlock(block: TemporaryComputerLau
     switch (block) {
         case 'agent_managed_install_undeclared':
             return t('newSession.temporaryComputer.blocked.agentUnsupported');
+        case 'agent_plugin_distribution_unacquirable':
+            return t('newSession.temporaryComputer.blocked.pluginUnacquirable');
         case 'team_credential_model_unselected':
             return t('newSession.temporaryComputer.blocked.modelUnselected');
         case 'team_credential_resource_unavailable':

@@ -1039,6 +1039,52 @@ describe('connectedServiceSchemas', () => {
         });
     });
 
+    // A released 0.2 client sends the scalar bundled service id in every
+    // switch field, not only in `bindings`. The new daemon must read the
+    // adjacent scalar identifiers through the same named legacy ingress.
+    it('accepts released scalar service identifiers across the whole auth-switch ingress', () => {
+        expect(SessionConnectedServiceAuthSwitchRpcParamsSchema.parse({
+            sessionId: 'sess_1',
+            agentId: 'claude',
+            bindings: {
+                v: 1,
+                bindingsByServiceId: {
+                    anthropic: { source: 'connected', selection: 'profile', profileId: 'work' },
+                },
+            },
+            rematerializeServiceId: 'anthropic',
+            expectedGroupGenerationByServiceId: { anthropic: 4 },
+        })).toEqual({
+            sessionId: 'sess_1',
+            agentId: 'claude',
+            bindings: {
+                v: 2,
+                bindingsByServiceId: {
+                    'happier.agent.claude/anthropic': {
+                        source: 'connected',
+                        selection: 'profile',
+                        profileId: 'work',
+                    },
+                },
+            },
+            rematerializeServiceId: 'happier.agent.claude/anthropic',
+            expectedGroupGenerationByServiceId: { 'happier.agent.claude/anthropic': 4 },
+        });
+
+        expect(SessionConnectedServiceAuthSwitchRpcParamsSchema.safeParse({
+            sessionId: 'sess_1',
+            agentId: 'claude',
+            bindings: { v: 2, bindingsByServiceId: {} },
+            rematerializeServiceId: 'not-a-known-service',
+        }).success).toBe(false);
+        expect(SessionConnectedServiceAuthSwitchRpcParamsSchema.safeParse({
+            sessionId: 'sess_1',
+            agentId: 'claude',
+            bindings: { v: 2, bindingsByServiceId: {} },
+            expectedGroupGenerationByServiceId: { 'not-a-known-service': 1 },
+        }).success).toBe(false);
+    });
+
     it('normalizes released bundled short service ids only at the named legacy ingress', () => {
         const normalized = BuiltInLegacyConnectedServiceBindingsV1IngressSchema.parse({
             v: 1,

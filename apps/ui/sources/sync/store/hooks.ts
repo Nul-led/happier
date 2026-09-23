@@ -1,4 +1,5 @@
 import React from 'react';
+import type { SessionMessagesTailBoundary } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
 import { isPendingMessageForRecipient } from '@/sync/domains/pending/pendingMessageRecipient';
 import { useShallow } from 'zustand/react/shallow';
 import type { MachinePoolViewV1, PrimaryTurnStatusV1 } from '@happier-dev/protocol';
@@ -8,6 +9,7 @@ import {
   resolveWorkflowRunRows,
   type WorkflowRunRow,
 } from '@/sync/store/domains/workflowRuns';
+import { isSessionRetiredForServer } from '@/sync/store/domains/sessions';
 import { normalizeSessionAddress, sessionAddressKey, type SessionAddress } from '@/sync/domains/session/sessionAddress';
 import { listSessionAddressesForSessionIdFromLocalState } from '@/sync/domains/session/resolveSessionAddressFromLocalState';
 
@@ -45,6 +47,7 @@ import { buildRealmQualifiedSessionCompanionPreferenceKey } from '@/components/s
 import { resolveSessionLocalPreferenceRealm } from '../domains/settings/sessionLocalPreferenceKey';
 import type { AgentTextMessage, Message } from '../domains/messages/messageTypes';
 import { messageAttentionImpact } from '../domains/messages/messageUserAttention';
+import { projectSidechainMessages } from '../reducer/reducer';
 import type {
   Settings,
   SettingsWriteDelta,
@@ -235,8 +238,9 @@ export type SessionReferenceTarget = Readonly<{
  * session route — which already answers a genuinely missing id with its own explicit
  * "Session isn't available" screen — owns the failure the client cannot predict.
  *
- * `deleted` therefore comes from `deletedSessionIds`, written only by `deleteSession`; a current
- * exact-Home row is positive evidence that a same-id deletion signal did not delete this target.
+ * `deleted` therefore comes from `deletedSessionIds`, written only by `deleteSession`, and is read
+ * for this reference's own Home: a deletion on another Home says nothing about this target. A
+ * current exact-Home row stays positive evidence that this Home's target exists.
  * `metadata` comes from the canonical exact-Home row (or the active Session record at the legacy
  * unqualified boundary), so a known session still shows its live title without cross-Home bleed.
  */
@@ -261,7 +265,7 @@ export function useSessionReferenceTarget(
         // even if the active-Home compatibility deletion map holds the same bare id.
         deleted: exactRow
           ? false
-          : state.deletedSessionIds[normalizedSessionId] === true,
+          : isSessionRetiredForServer(state.deletedSessionIds, normalizedSessionId, lookupServerId),
         metadata: exactRow?.metadata
           ?? (!normalizedServerId ? state.sessions[normalizedSessionId]?.metadata : null)
           ?? null,
@@ -725,11 +729,13 @@ function useSessionListRuntimePriorityNowMs(
 
 export function useSessionListRuntimePriorityRowKeysForItems(
   items: ReadonlyArray<SessionListIndexItem> | null | undefined,
+  options: Readonly<{ enabled?: boolean }> = {},
 ): ReadonlySet<string> {
-  const runtimeNowMs = useSessionListRuntimePriorityNowMs(items);
+  const activeItems = options.enabled === false ? null : items;
+  const runtimeNowMs = useSessionListRuntimePriorityNowMs(activeItems);
   const selector = React.useMemo(
-    () => createSessionListRuntimePriorityRowKeysSelector(items, runtimeNowMs),
-    [items, runtimeNowMs],
+    () => createSessionListRuntimePriorityRowKeysSelector(activeItems, runtimeNowMs),
+    [activeItems, runtimeNowMs],
   );
   return getStorage()(selector);
 }
@@ -1357,8 +1363,14 @@ export function useSessionSubagentSourceMessages(sessionId: string): readonly Me
   });
 }
 
+const sortedValuesByUpdatedAtDescendingCache = new WeakMap<object, readonly { updatedAt: number }[]>();
+
 function sortValuesByUpdatedAtDescending<T extends { updatedAt: number }>(values: Record<string, T>): T[] {
-  return Object.values(values).sort((left, right) => right.updatedAt - left.updatedAt);
+  const cached = sortedValuesByUpdatedAtDescendingCache.get(values) as T[] | undefined;
+  if (cached) return cached;
+  const sorted = Object.values(values).sort((left, right) => right.updatedAt - left.updatedAt);
+  sortedValuesByUpdatedAtDescendingCache.set(values, sorted);
+  return sorted;
 }
 
 export function useSessionMessages(
@@ -1515,11 +1527,8 @@ export function useSessionCatchingUpNewer(sessionId: string, enabled: boolean = 
  * Tail-contiguity floor for the session's MAIN chain (tail-reset discontinuity walk).
  * Null when the full loaded set is contiguous with the live tail.
  */
-export function useSessionTailContiguousFloorSeq(sessionId: string): number | null {
-  return getStorage()((state) => {
-    const floorSeq = state.sessionTailContiguousFloorSeq[sessionId];
-    return typeof floorSeq === 'number' && Number.isFinite(floorSeq) && floorSeq > 0 ? floorSeq : null;
-  });
+export function useSessionTailContiguousBoundary(sessionId: string): SessionMessagesTailBoundary | null {
+  return getStorage()((state) => state.sessionTailContiguousBoundary[sessionId] ?? null);
 }
 
 export function useSessionMessagesById(sessionId: string, enabled: boolean = true): Record<string, Message> {
@@ -1553,6 +1562,33 @@ export function useSessionMessagesVersion(sessionId: string, enabled: boolean = 
       return session?.messagesVersion ?? 0;
     })
   );
+}
+
+/**
+ * Committed rows of one sidechain, projected through the transcript reducer's
+ * own conversion.
+ *
+ * A Run whose profile does not materialize a parent tool marker still commits
+ * its transcript under the Run's sidechain id, so a surface that has the Run
+ * but no marker reads the rows here instead of re-deriving a transcript of its
+ * own. The reducer state mutates in place, so the projection is keyed by the
+ * same version counter the other transcript readers subscribe to.
+ */
+export function useSessionSidechainMessages(sessionId: string, sidechainId: string | null): readonly Message[] {
+  const normalizedSessionId = normalizeSessionId(sessionId);
+  const reducerState = useSessionMessagesReducerState(normalizedSessionId);
+  const version = useSessionMessagesVersion(normalizedSessionId, true);
+  const normalizedSidechainId = typeof sidechainId === 'string' && sidechainId.trim().length > 0
+    ? sidechainId.trim()
+    : null;
+
+  return React.useMemo(() => {
+    if (!reducerState || !normalizedSidechainId) return emptyArray as any as readonly Message[];
+    const projected = projectSidechainMessages(reducerState, normalizedSidechainId);
+    return projected.length > 0 ? projected : (emptyArray as any as readonly Message[]);
+    // `version` participates because the reducer state object is mutated in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [normalizedSidechainId, reducerState, version]);
 }
 
 export function useSessionMessagesReducerState(sessionId: string) {
@@ -2141,10 +2177,10 @@ export function useLaunchSelectionMachines(): Machine[] {
   });
 }
 
-export function useMachineRecordValues(): Machine[] {
+export function useMachineRecordValues(enabled = true): Machine[] {
   return getStorage()(
     useShallow((state) => {
-      if (!state.isDataReady) return emptyArray as Machine[];
+      if (!enabled || !state.isDataReady) return emptyArray as Machine[];
       return Object.values(state.machines);
     })
   );
@@ -2152,13 +2188,21 @@ export function useMachineRecordValues(): Machine[] {
 
 const EMPTY_MACHINE_LIST_BY_SERVER_ID: Record<string, Machine[] | null> = {};
 
+function selectVisibleMachines(machines: Machine[] | null): Machine[] | null {
+  if (!Array.isArray(machines)) return machines;
+  const visibleMachines = machines.filter(isMachineVisibleForSelection);
+  return visibleMachines.length === machines.length ? machines : visibleMachines;
+}
+
 /**
  * Raw server-scoped inventory for consumers that must retain unavailable
  * tombstones. Launch and session pickers should use `useMachineListByServerId`
  * instead, which intentionally removes revoked records.
  */
-export function useMachineRecordListsByServerId(): Record<string, Machine[] | null> {
-  const machineListByServerId = getStorage()(useShallow((state) => state.machineListByServerId));
+export function useMachineRecordListsByServerId(enabled = true): Record<string, Machine[] | null> {
+  const machineListByServerId = getStorage()(useShallow((state) => (
+    enabled ? state.machineListByServerId : EMPTY_MACHINE_LIST_BY_SERVER_ID
+  )));
   return React.useMemo(() => {
     return machineListByServerId && typeof machineListByServerId === 'object'
       ? (machineListByServerId as Record<string, Machine[] | null>)
@@ -2178,13 +2222,8 @@ export function useMachineListByServerId(): Record<string, Machine[] | null> {
     const nextByServerId: Record<string, Machine[] | null> = {};
 
     for (const [serverId, machines] of Object.entries(source)) {
-      if (!Array.isArray(machines)) {
-        nextByServerId[serverId] = machines;
-        continue;
-      }
-
-      const visibleMachines = machines.filter(isMachineVisibleForSelection);
-      if (visibleMachines.length !== machines.length) {
+      const visibleMachines = selectVisibleMachines(machines);
+      if (visibleMachines !== machines) {
         hasChanges = true;
         nextByServerId[serverId] = visibleMachines;
         continue;
@@ -2197,13 +2236,31 @@ export function useMachineListByServerId(): Record<string, Machine[] | null> {
   }, [machineListByServerId]);
 }
 
-export function useMachineListStatusByServerId(): Record<string, 'idle' | 'loading' | 'signedOut' | 'error'> {
-  const machineListStatusByServerId = getStorage()(useShallow((state) => state.machineListStatusByServerId));
+/**
+ * Visible machine inventory for one Home. This keeps always-mounted consumers
+ * off the whole multi-Home map while preserving the list hook's tombstone
+ * filtering and source-array identity for unchanged inventory.
+ */
+export function useMachineListForServer(serverId: string): Machine[] | null {
+  const machines = getStorage()((state) => state.machineListByServerId?.[serverId] ?? null);
+  return React.useMemo(() => selectVisibleMachines(machines), [machines]);
+}
+
+const EMPTY_MACHINE_LIST_STATUS_BY_SERVER_ID: Record<string, 'idle' | 'loading' | 'signedOut' | 'error'> = {};
+
+export function useMachineListStatusByServerId(enabled = true): Record<string, 'idle' | 'loading' | 'signedOut' | 'error'> {
+  const machineListStatusByServerId = getStorage()(useShallow((state) => (
+    enabled ? state.machineListStatusByServerId : EMPTY_MACHINE_LIST_STATUS_BY_SERVER_ID
+  )));
   return React.useMemo(() => {
     return machineListStatusByServerId && typeof machineListStatusByServerId === 'object'
       ? (machineListStatusByServerId as unknown as Record<string, 'idle' | 'loading' | 'signedOut' | 'error'>)
       : {};
   }, [machineListStatusByServerId]);
+}
+
+export function useMachineListStatusForServer(serverId: string): 'idle' | 'loading' | 'signedOut' | 'error' {
+  return getStorage()((state) => state.machineListStatusByServerId?.[serverId] ?? 'idle');
 }
 
 const EMPTY_MACHINE_POOL_LIST_BY_SERVER_ID: Record<string, MachinePoolViewV1[] | null> = {};

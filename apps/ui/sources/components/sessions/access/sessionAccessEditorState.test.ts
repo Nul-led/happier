@@ -2,6 +2,9 @@ import { describe,expect,it } from 'vitest';
 import type { SessionAccessGrantsListResponseV1 } from '@happier-dev/protocol';
 import {createSessionAccessEditorState,reduceSessionAccessEditorState} from './sessionAccessEditorState';
 const snapshot:SessionAccessGrantsListResponseV1={visibility:'self',owner:{kind:'account',accountId:'owner',firstName:'Owner',lastName:null,username:null,avatarUrl:null},primaryTeamId:null,grants:[],effectiveAccess:{v:1,level:'view',sources:[],capabilities:{readTranscript:true,submitAgentInput:false,editSessionRecords:false,approveRuntimePermissions:false,manageAccess:false,managePermissionDelegation:false,managePublicLink:false,archiveSession:false,renameSession:false,assignResponsibility:false,stopSession:false,deleteSession:false}}};
+const managerSnapshot:SessionAccessGrantsListResponseV1={...snapshot,visibility:'complete',
+ effectiveAccess:{...snapshot.effectiveAccess,level:'admin',
+  capabilities:{...snapshot.effectiveAccess.capabilities,manageAccess:true}}};
 describe('access acknowledged state',()=>{
  it('retains acknowledged topology during refresh and failed removal, but clears it on access denial',()=>{
   let state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot});
@@ -64,12 +67,14 @@ describe('access acknowledged state',()=>{
   });
   let state=createSessionAccessEditorState('a');
   expect(state.recipients).toMatchObject({view:'exceptions',rows:[],loading:false});
+  // Only a manager sees recipient rows at all, so discovery follows the authoritative snapshot.
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
   // Discovery hands its exception rows straight to the default view: nothing was opened first.
   state=reduceSessionAccessEditorState(state,{type:'recipientsPage',scopeKey:'a',view:'exceptions',rows:[row('first')],nextCursor:'page-two',append:false});
   expect(state.recipients).toMatchObject({view:'exceptions',nextCursor:'page-two'});
   expect(state.recipients.rows.map((item)=>item.recipientAccountId)).toEqual(['first']);
   // An authoritative grant refresh keeps the last-known exceptions until discovery replaces them.
-  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot});
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
   expect(state.recipients.rows.map((item)=>item.recipientAccountId)).toEqual(['first']);
   // Asking for everyone clears the rows it is about to replace, then pages within that view.
   state=reduceSessionAccessEditorState(state,{type:'recipientsLoading',scopeKey:'a',view:'all'});
@@ -81,7 +86,55 @@ describe('access acknowledged state',()=>{
   state=reduceSessionAccessEditorState(state,{type:'recipientsPage',scopeKey:'a',view:'exceptions',rows:[row('late')],nextCursor:null,append:true});
   expect(state.recipients.rows.map((item)=>item.recipientAccountId)).toEqual(['first','second']);
   // An authoritative refresh discards the open all-people view; discovery follows it.
+  state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  expect(state.recipients).toMatchObject({view:'exceptions',rows:[],nextCursor:null});
+ });
+ it('lets a recipient page refresh the settled summary without overwriting a running or failed pass',()=>{
+  const row=(recipientAccountId:string)=>({
+   recipientAccountId,envelopeState:'missing' as const,
+   contentKey:{status:'available' as const,accountSigningPublicKey:'s',contentPublicKey:'c',contentPublicKeySignature:'g'},
+  });
+  const summary={prepared:1,pending:2,invalid:0,recipientKeyUnavailable:0,total:3};
+  let state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  state=reduceSessionAccessEditorState(state,{type:'preparing',scopeKey:'a',preparedCount:1,actionableTotal:4});
+  // Opening `Show all people` mid-pass is a collection read, not an operation
+  // transition: the progress the Home committed stays on screen.
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',
+   preparation:{kind:'settled',status:'incomplete',summary}});
+  state=reduceSessionAccessEditorState(state,{type:'recipientsPage',scopeKey:'a',view:'all',rows:[row('first')],nextCursor:null,append:false});
+  expect(state.preparation).toMatchObject({kind:'preparing',preparedCount:1,actionableTotal:4});
+
+  // The pass's own outcome is the transition that settles it.
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'pass',
+   preparation:{kind:'settled',status:'incomplete',summary}});
+  expect(state.preparation).toMatchObject({kind:'settled',status:'incomplete'});
+
+  // A failed pass keeps its recovery reason through a later collection page.
+  state=reduceSessionAccessEditorState(state,{type:'preparationFailed',scopeKey:'a',origin:'pass',
+   error:{code:'network',message:'Offline',retryable:true}});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',
+   preparation:{kind:'settled',status:'complete',summary}});
+  expect(state.preparation).toMatchObject({kind:'failed',origin:'pass'});
+ });
+ it('drops manager-only recipient diagnostics the moment the authoritative snapshot says this viewer no longer manages access',()=>{
+  const row=(recipientAccountId:string)=>({
+   recipientAccountId,envelopeState:'missing' as const,
+   contentKey:{status:'available' as const,accountSigningPublicKey:'s',contentPublicKey:'c',contentPublicKeySignature:'g'},
+  });
+  let state=reduceSessionAccessEditorState(createSessionAccessEditorState('a'),{type:'snapshot',scopeKey:'a',snapshot:managerSnapshot});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',preparation:{kind:'settled',status:'incomplete',summary:null}});
+  state=reduceSessionAccessEditorState(state,{type:'recipientsPage',scopeKey:'a',view:'exceptions',rows:[row('first')],nextCursor:null,append:false});
+  expect(state.recipients.rows).toHaveLength(1);
+
+  // The same Session, re-read after this manager was downgraded to a reader.
   state=reduceSessionAccessEditorState(state,{type:'snapshot',scopeKey:'a',snapshot});
   expect(state.recipients).toMatchObject({view:'exceptions',rows:[],nextCursor:null});
+  expect(state.preparation.kind).toBe('idle');
+
+  // A manager-era page that settles after the downgrade cannot restore them.
+  state=reduceSessionAccessEditorState(state,{type:'recipientsPage',scopeKey:'a',view:'exceptions',rows:[row('late')],nextCursor:null,append:false});
+  state=reduceSessionAccessEditorState(state,{type:'prepared',scopeKey:'a',origin:'discovery',preparation:{kind:'settled',status:'incomplete',summary:null}});
+  expect(state.recipients.rows).toEqual([]);
+  expect(state.preparation.kind).toBe('idle');
  });
 });

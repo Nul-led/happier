@@ -18,6 +18,7 @@ import {
 } from './qualifiedConnectedAccountsV4.js';
 import { ConnectedServiceIdSchema } from './connectedServiceBindings.js';
 import { asProtocolZod } from "../plugins/actions/internalProtocolZodAdapter.js";
+import { PluginSourceCustodyV1Schema } from '../plugins/runtime/sourceCustody.js';
 
 type ReadonlyArrayProperties<T> = T extends object
   ? {
@@ -383,8 +384,8 @@ export const ConnectedAccountDaemonControlResponseSchema =
       status: z.literal('described'),
       service: asProtocolZod(PluginContributionIdentityV1Schema),
       descriptor: PluginConnectedAccountDescriptorContributionV2Schema,
-      generation: BoundedIdentitySchema,
-      immutableGenerationId: z.string().min(1).max(512),
+      occurrenceId: BoundedIdentitySchema,
+      sourceCustody: PluginSourceCustodyV1Schema,
       // Relayed from the same server list as the V4 accounts response, which is
       // bounded at its writer rather than in the projection it produces.
       accounts: z.array(QualifiedConnectedAccountProfileV4Schema),
@@ -395,16 +396,16 @@ export const ConnectedAccountDaemonControlResponseSchema =
       status: z.literal('configuration'),
       target: ConnectedAccountConfigurationTargetSchema,
       mode: PluginConnectedAccountAuthenticationModeV2Schema,
-      generation: BoundedIdentitySchema,
-      immutableGenerationId: z.string().min(1).max(512),
+      occurrenceId: BoundedIdentitySchema,
+      sourceCustody: PluginSourceCustodyV1Schema,
       configuration: ConnectedAccountConfigurationControlViewSchema,
     }).strict(),
     z.object({
       status: z.literal('configurationCommitted'),
       target: ConnectedAccountConfigurationTargetSchema,
       mode: PluginConnectedAccountAuthenticationModeV2Schema,
-      generation: BoundedIdentitySchema,
-      immutableGenerationId: z.string().min(1).max(512),
+      occurrenceId: BoundedIdentitySchema,
+      sourceCustody: PluginSourceCustodyV1Schema,
       configuration: ConnectedAccountConfigurationControlViewSchema,
     }).strict(),
     z.object({

@@ -41,6 +41,52 @@ function describeSchemaIssues(error: z.ZodError): string {
     .join('; ');
 }
 
+/** A schema's declared fields, through Zod's public object shape. */
+function readObjectShape(schema: z.ZodTypeAny): Record<string, z.ZodTypeAny> | null {
+  const shape: unknown = (schema as { shape?: unknown }).shape;
+  return shape !== null && typeof shape === 'object' && !Array.isArray(shape)
+    ? shape as Record<string, z.ZodTypeAny>
+    : null;
+}
+
+/**
+ * Validates one composition source as a partial: each supplied field against
+ * its own declared schema, and nothing against the fields it did not supply.
+ *
+ * When whole-input JSON and friendly flags are composed, neither source is a
+ * complete Action input on its own — the JSON may omit what a flag supplies and
+ * the flags may omit what the JSON supplies — so demanding either shape's whole
+ * set would reject exactly the composition the precedence rule promises. Field
+ * membership is still enforced, which is what keeps a surface schema's omitted
+ * fields (a public caller may not author plugin source or attachments)
+ * unreachable. Cross-field rules are deliberately not evaluated here — they
+ * cannot be decided from a partial source, and the canonical schema owns the
+ * same rules and validates the merged input once at the end.
+ */
+function parsePartialInputFields(
+  shape: Readonly<Record<string, z.ZodTypeAny>>,
+  supplied: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | ActionCliParseFailure {
+  const parsed: Record<string, unknown> = {};
+  const issues: string[] = [];
+  for (const [field, value] of Object.entries(supplied)) {
+    const fieldSchema = shape[field];
+    if (!fieldSchema) {
+      issues.push(`${field}: unrecognized field`);
+      continue;
+    }
+    const result = fieldSchema.safeParse(value);
+    if (result.success) parsed[field] = result.data;
+    else {
+      issues.push(...result.error.issues.map((issue) => {
+        const path = [field, ...issue.path].join('.');
+        return `${path}: ${issue.message}`;
+      }));
+    }
+  }
+  return issues.length > 0 ? failure(issues.slice(0, 4).join('; ')) : Object.freeze(parsed);
+}
+
 /**
  * Validates and composes the parser's two intentional sources. Whole-input JSON
  * is canonical already; only the friendly overlay reaches the caller binder.
@@ -55,33 +101,60 @@ export function composeActionCliInput(params: Readonly<{
   bindInput?: ActionCliBindInput | null;
   context: ActionCliBindContext;
 }>): ComposedActionCliInput {
-  const canonicalBase = params.parsed.canonicalBase === null
-    ? null
-    : (params.wholeInputSchema ?? params.canonicalSchema).safeParse(params.parsed.canonicalBase);
-  if (canonicalBase !== null && !canonicalBase.success) {
-    return failure(describeSchemaIssues(canonicalBase.error));
-  }
-
   // With no whole-input JSON, an empty argv is still the friendly caller shape:
   // binders may own established defaults (for example list page size). When a
   // canonical base is present, an empty overlay must not run the friendly binder
   // and manufacture fields that replace caller-supplied canonical values.
   const hasCallerOverlay = params.parsed.canonicalBase === null
     || Object.keys(params.parsed.callerOverlay).length > 0;
-  const callerParsed = hasCallerOverlay
-    ? params.callerSchema.safeParse(params.parsed.callerOverlay)
+
+  // Whole-input JSON alone is a complete Action input and keeps whole-input
+  // validation. Composed with friendly flags it is only the base of one input
+  // the flags complete, so it is validated field by field and completeness plus
+  // the cross-field rules are decided once, at the end, by the canonical schema.
+  const baseSchema = params.wholeInputSchema ?? params.canonicalSchema;
+  const baseShape = params.parsed.canonicalBase !== null && hasCallerOverlay
+    ? readObjectShape(baseSchema)
     : null;
-  if (callerParsed !== null && !callerParsed.success) {
-    return failure(describeSchemaIssues(callerParsed.error));
+  let baseRecord: Readonly<Record<string, unknown>> = Object.freeze({});
+  if (params.parsed.canonicalBase !== null) {
+    if (baseShape === null) {
+      const whole = baseSchema.safeParse(params.parsed.canonicalBase);
+      if (!whole.success) return failure(describeSchemaIssues(whole.error));
+      if (!whole.data || typeof whole.data !== 'object' || Array.isArray(whole.data)) {
+        return failure('Canonical Action input must be an object.');
+      }
+      baseRecord = whole.data as Readonly<Record<string, unknown>>;
+    } else {
+      const partialBase = parsePartialInputFields(baseShape, params.parsed.canonicalBase);
+      if (isParseFailure(partialBase)) return partialBase;
+      baseRecord = partialBase;
+    }
+  }
+
+  const callerShape = params.parsed.canonicalBase === null
+    ? null
+    : readObjectShape(params.callerSchema);
+  let callerValue: unknown = undefined;
+  if (hasCallerOverlay) {
+    if (callerShape === null) {
+      const whole = params.callerSchema.safeParse(params.parsed.callerOverlay);
+      if (!whole.success) return failure(describeSchemaIssues(whole.error));
+      callerValue = whole.data;
+    } else {
+      const overlay = parsePartialInputFields(callerShape, params.parsed.callerOverlay);
+      if (isParseFailure(overlay)) return overlay;
+      callerValue = overlay;
+    }
   }
 
   let boundOverlay: Readonly<Record<string, unknown>> = Object.freeze({});
   try {
-    const candidate = callerParsed === null
+    const candidate = !hasCallerOverlay
       ? {}
       : params.bindInput
-        ? params.bindInput(callerParsed.data, params.context)
-        : callerParsed.data;
+        ? params.bindInput(callerValue, params.context)
+        : callerValue;
     if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) {
       return failure('CLI input binder must return an object.');
     }
@@ -91,12 +164,28 @@ export function composeActionCliInput(params: Readonly<{
     throw error;
   }
 
-  const baseValue = canonicalBase?.success ? canonicalBase.data : {};
-  if (!baseValue || typeof baseValue !== 'object' || Array.isArray(baseValue)) {
-    return failure('Canonical Action input must be an object.');
+  // A binder is a projection of what the caller typed. Over a canonical base
+  // the overlay is partial, so an absent caller field surfaces as `undefined`
+  // and is not a contribution at all. Of what remains, a key the caller named
+  // — or that the binder normalized out of a named field into a different
+  // canonical name — is a caller source and must be rejected rather than
+  // silently merged when the base already carries it. A key that is itself a
+  // declared caller field the caller did not type is the binder's own default,
+  // and §6.4 requires it to preserve, not overwrite, an already valid
+  // canonical field.
+  const callerFieldNames = new Set(Object.keys(readObjectShape(params.callerSchema) ?? {}));
+  const overlayFieldNames = new Set(Object.keys(params.parsed.callerOverlay));
+  const contributed: Record<string, unknown> = {};
+  const binderDefaults: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(boundOverlay)) {
+    if (value === undefined) continue;
+    if (overlayFieldNames.has(field) || !callerFieldNames.has(field)) contributed[field] = value;
+    else binderDefaults[field] = value;
   }
-  const baseRecord = baseValue as Readonly<Record<string, unknown>>;
-  const duplicateCanonicalFields = Object.keys(boundOverlay).filter((field) => (
+  // The parser already refused a field the caller spelled both ways. What is
+  // left to decide here is the binder's own renaming: a caller field the binder
+  // normalizes into a different canonical name the base already carries.
+  const duplicateCanonicalFields = Object.keys(contributed).filter((field) => (
     Object.prototype.hasOwnProperty.call(baseRecord, field)
   ));
   if (duplicateCanonicalFields.length > 0) {
@@ -105,7 +194,11 @@ export function composeActionCliInput(params: Readonly<{
     );
   }
 
-  const canonical = params.canonicalSchema.safeParse({ ...baseRecord, ...boundOverlay });
+  const canonical = params.canonicalSchema.safeParse({
+    ...binderDefaults,
+    ...baseRecord,
+    ...contributed,
+  });
   if (!canonical.success) return failure(describeSchemaIssues(canonical.error));
   if (!canonical.data || typeof canonical.data !== 'object' || Array.isArray(canonical.data)) {
     return failure('Canonical Action input must be an object.');
@@ -113,8 +206,8 @@ export function composeActionCliInput(params: Readonly<{
   return {
     ok: true,
     input: canonical.data as Readonly<Record<string, unknown>>,
-    callerInput: callerParsed?.success
-      ? callerParsed.data as Readonly<Record<string, unknown>>
+    callerInput: callerValue && typeof callerValue === 'object' && !Array.isArray(callerValue)
+      ? callerValue as Readonly<Record<string, unknown>>
       : Object.freeze({}),
   };
 }

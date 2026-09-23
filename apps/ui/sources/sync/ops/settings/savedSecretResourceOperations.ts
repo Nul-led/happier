@@ -2,6 +2,7 @@ import {
     computeContentPublicKeyFingerprint,
     formatSavedSecretCatalogReferenceV1,
     listAccountSettingsSavedSecretReferences,
+    type AccountSettingsSavedSecretReference,
     openSavedSecretResourceStoredContentV1,
     promotePersonalSavedSecretReference,
     sealSavedSecretResourceStoredContentV1,
@@ -45,6 +46,19 @@ function isHealthySavedSecretResourceMaterialV1(
 export type SavedSecretResourceOperationResult =
     | Readonly<{ ok: true }>
     | Readonly<{ ok: false; reason: 'changed' | 'unavailable' | 'failed' | 'outcome_unknown' }>;
+
+/**
+ * Deleting a shared Saved Secret additionally reports the owner's own current
+ * references, so the surface can name where it is still used instead of
+ * offering a delete that would leave those bindings dangling.
+ */
+export type SavedSecretResourceDeleteResult =
+    | SavedSecretResourceOperationResult
+    | Readonly<{
+        ok: false;
+        reason: 'in_use';
+        references: readonly AccountSettingsSavedSecretReference[];
+    }>;
 
 export type SavedSecretPromotionResult =
     | Readonly<{ ok: true; resourceRef: string }>
@@ -492,12 +506,26 @@ export async function promotePersonalSavedSecretResource(params: Readonly<{
     }
 }
 
+/**
+ * Rewrites an owned shared resource through the one update Action: its name,
+ * its value, and — when the owner explicitly asks — the mode it is stored in.
+ *
+ * A conversion is the same write as a rotation: the content is opened in the
+ * current mode and resealed in the requested one, so the resource keeps its id,
+ * reference, recipients and revision line. Converting into E2EE seals a new
+ * resource data key and carries the owner's own envelope, exactly as creation
+ * does; the remaining recipients are then prepared by the existing census pass.
+ * Converting into Plain discloses the value to the Home, which is why its
+ * caller confirms the trust change before reaching this operation.
+ */
 export async function updateSavedSecretResource(params: Readonly<{
     scope: ServerAccountScope;
     resourceId: string;
     expectedRevision: number;
     nextName?: string;
     nextValue?: string;
+    /** Explicit mode conversion; absent keeps the resource's current mode. */
+    toMode?: 'plain' | 'e2ee';
     decryptDataKeyEnvelope: (encryptedDataKey: string) => Promise<Uint8Array | null>;
 }> & SavedSecretApprovalHandlers<SavedSecretMutationOutput>): Promise<SavedSecretResourceOperationResult> {
     const catalog = await readSavedSecretCatalog(params.scope);
@@ -513,6 +541,7 @@ export async function updateSavedSecretResource(params: Readonly<{
     if (!resource.storedContent) return { ok: false, reason: 'unavailable' };
 
     let resourceDataKey: Uint8Array | null = null;
+    let convertedResourceDataKey: Uint8Array | null = null;
     try {
         if (resource.encryptionMode === 'e2ee') {
             if (!resource.recipientEnvelope) return { ok: false, reason: 'unavailable' };
@@ -533,15 +562,52 @@ export async function updateSavedSecretResource(params: Readonly<{
             ...(params.nextName === undefined ? {} : { name: params.nextName }),
             ...(params.nextValue === undefined ? {} : { value: params.nextValue }),
         };
-        const storedContent = resource.encryptionMode === 'plain'
+        const encryption = getSyncSingleton().encryption;
+        const nextMode = params.toMode ?? resource.encryptionMode;
+        if (nextMode === 'e2ee' && resource.encryptionMode === 'plain') {
+            // A Plain resource holds no data key, so the conversion seals one
+            // and the owner's envelope travels with it.
+            if (!encryption) return { ok: false, reason: 'unavailable' };
+            convertedResourceDataKey = getRandomBytes(32);
+        }
+        const sealingDataKey = convertedResourceDataKey ?? resourceDataKey;
+        const storedContent = nextMode === 'plain'
             ? sealSavedSecretResourceStoredContentV1({ resourceId: resource.resourceId, mode: 'plain', content })
             : sealSavedSecretResourceStoredContentV1({
                 resourceId: resource.resourceId,
                 mode: 'e2ee',
-                resourceDataKey: resourceDataKey!,
+                resourceDataKey: sealingDataKey!,
                 content,
                 randomBytes: getRandomBytes,
             });
+        const keyEnvelopes = convertedResourceDataKey && encryption
+            ? [{
+                recipientAccountId: params.scope.accountId,
+                encryptedDataKey: encryptDataKeyForRecipientV0(
+                    convertedResourceDataKey,
+                    encodeBase64(encryption.contentDataKey, 'base64'),
+                ),
+                recipientContentPublicKeyFingerprint: computeContentPublicKeyFingerprint(
+                    encryption.contentDataKey,
+                ),
+            }]
+            : [];
+        // An approved-later conversion re-derives its data key from the
+        // committed resource, since this call's copy is zeroed on return.
+        const onApprovalSucceeded = convertedResourceDataKey && encryption
+            ? async (value: SavedSecretMutationOutput) => {
+                await repairApprovedSavedSecretResourceEnvelopesBestEffort({
+                    scope: params.scope,
+                    resourceId: resource.resourceId,
+                    expectedRevision: value.revision,
+                    decryptDataKeyEnvelope: (encryptedDataKey) => encryption.decryptEncryptionKey(
+                        encryptedDataKey,
+                        params.scope,
+                    ),
+                }).catch(() => undefined);
+                await params.onApprovalSucceeded?.(value);
+            }
+            : params.onApprovalSucceeded;
         const outcome = await runTeamAction({
             scope: params.scope,
             actionId: 'secrets.shared.update',
@@ -551,19 +617,31 @@ export async function updateSavedSecretResource(params: Readonly<{
                 displayName: content.name,
                 kind: content.kind,
                 storedContent,
+                ...(params.toMode ? { toMode: params.toMode } : {}),
+                ...(keyEnvelopes.length > 0 ? { keyEnvelopes } : {}),
             },
             parse: (value) => SharedSavedSecretMutationOutputV1Schema.parse(value),
-            ...(params.onApprovalSucceeded ? { onApprovalSucceeded: params.onApprovalSucceeded } : {}),
+            ...(onApprovalSucceeded ? { onApprovalSucceeded } : {}),
             ...(params.onApprovalFailed ? { onApprovalFailed: params.onApprovalFailed } : {}),
         });
-        return outcome.kind === 'succeeded'
-            ? { ok: true }
-            : { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+        if (outcome.kind !== 'succeeded') {
+            return { ok: false, reason: operationFailureReason(outcome.failure.kind) };
+        }
+        if (convertedResourceDataKey) {
+            await repairSavedSecretResourceEnvelopesBestEffort({
+                scope: params.scope,
+                resourceId: resource.resourceId,
+                expectedRevision: outcome.value.revision,
+                resourceDataKey: convertedResourceDataKey,
+            }).catch(() => undefined);
+        }
+        return { ok: true };
     } catch (error) {
         if (isTeamActionApprovalPendingError(error)) throw error;
         return { ok: false, reason: 'failed' };
     } finally {
         resourceDataKey?.fill(0);
+        convertedResourceDataKey?.fill(0);
     }
 }
 
@@ -571,8 +649,33 @@ export async function deleteSavedSecretResource(params: Readonly<{
     scope: ServerAccountScope;
     resourceId: string;
     expectedRevision: number;
+    /** Owner's current Account Settings version; the reference census reads at it. */
+    expectedSettingsVersion: number;
     confirmedByPresentUser?: true;
-}> & SavedSecretApprovalHandlers<SavedSecretDeleteOutput>): Promise<SavedSecretResourceOperationResult> {
+}> & SavedSecretApprovalHandlers<SavedSecretDeleteOutput>): Promise<SavedSecretResourceDeleteResult> {
+    // Plan 10.08 §11.6: the owner client runs the canonical reference census
+    // before the resource content, grants and envelopes go. The Home cannot
+    // semantically inspect E2EE Account Settings, so a promoted MCP, Voice,
+    // Provider, ACP or plugin binding can only be kept from dangling here.
+    // The census reads the authoritative Settings baseline through the one
+    // Account Settings writer and leaves it unchanged.
+    const resourceRef = formatSavedSecretCatalogReferenceV1({ kind: 'shared_resource', id: params.resourceId });
+    let references: readonly AccountSettingsSavedSecretReference[];
+    try {
+        const census = await getSyncSingleton().mutateAccountSettingsOnce({
+            expectedSettingsScope: params.scope,
+            expectedSettingsVersion: params.expectedSettingsVersion,
+            mutate: (raw) => ({
+                settings: { ...raw },
+                value: listAccountSettingsSavedSecretReferences(raw, resourceRef),
+            }),
+        });
+        if (census.status !== 'applied') return { ok: false, reason: 'changed' };
+        references = census.value;
+    } catch {
+        return { ok: false, reason: 'failed' };
+    }
+    if (references.length > 0) return { ok: false, reason: 'in_use', references };
     const outcome = await runTeamAction({
         scope: params.scope,
         actionId: 'secrets.shared.delete',

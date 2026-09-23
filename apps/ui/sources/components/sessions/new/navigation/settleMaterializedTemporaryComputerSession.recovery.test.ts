@@ -247,6 +247,7 @@ describe('materialized Runner attachment recovery integration', () => {
             v: 1,
             actionsSettings: { v: 1, actions: {} },
             mcpMaterial: null,
+            agentPluginDistribution: null,
             authoring: {
                 targetType: 'new_session',
                 executionTarget: { kind: 'temporary_computer', serverId: scope.serverId, artifactTarget: 'linux-x64', workspace: { kind: 'choose_on_endpoint' } },

@@ -1,5 +1,5 @@
 import type { FeaturesPayloadDelta } from './types';
-import { readTeamsFeatureEnv } from './catalog/readFeatureEnv';
+import { readPeerMediationFeatureEnv, readTeamsFeatureEnv } from './catalog/readFeatureEnv';
 import {
     TEAM_CREDENTIAL_EXTERNAL_PROVIDER_API_BASE_PATH_V1,
     TEAM_CREDENTIAL_EXTERNAL_PROVIDER_PROTOCOLS_V1,
@@ -18,6 +18,9 @@ function resolveExternalApiDeploymentAvailability(env: NodeJS.ProcessEnv) {
     const parsed = new URL(publicServerUrl);
     if (parsed.protocol !== 'https:') {
         return { available: false as const, reason: 'home_not_public_https' as const };
+    }
+    if (!readPeerMediationFeatureEnv(env).substrateEnabled) {
+        return { available: false as const, reason: 'deployment_readiness_unavailable' as const };
     }
     return {
         available: true as const,

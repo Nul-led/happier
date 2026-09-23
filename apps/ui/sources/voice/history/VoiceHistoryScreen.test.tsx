@@ -536,7 +536,10 @@ describe('VoiceHistoryScreen', () => {
       'voice-history-session',
       { key: 'server-a/account-a' },
     );
-    expect(retireLocalSession).toHaveBeenCalledWith('voice-history-session');
+    expect(retireLocalSession).toHaveBeenCalledWith(
+      'voice-history-session',
+      { key: 'server-a/account-a' },
+    );
     expect(screen.findByTestId('voice-history-empty')).not.toBeNull();
     expect(screen.findByTestId('voice-history-action-message')?.props.children)
       .toBe('Voice History was cleared.');

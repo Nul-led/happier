@@ -1,4 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import { Readable } from "node:stream";
 import Fastify from "fastify";
 import * as privacyKit from "privacy-kit";
 
@@ -22,6 +24,22 @@ import {
 } from "./registerExternalProviderApiRoutes";
 import { formatTeamCredentialExternalApiKeyV1, createTeamCredentialExternalApiKeyDisplayPrefixV1 } from "@happier-dev/protocol/teams";
 import { resolveTeamCredentialExternalBrokerPlacement } from "@/app/teams/credentials/externalBrokerPlacement";
+
+/**
+ * A Home that can actually serve this API also has the route-grant signing
+ * material the broker dispatcher mints direct route grants with
+ * (`externalProviderBrokerDispatcher.ts` → `resolvePeerMediationGrantSigningConfig`),
+ * which is why `teamsFeature.ts` reports `deployment_readiness_unavailable`
+ * without it and the route then answers 404. These cases are about what a ready
+ * Home serves, so they configure it; the readiness decision itself is owned by
+ * `apps/server/sources/app/features/teamsFeature.spec.ts`.
+ */
+const DEPLOYED_ROUTE_GRANT_SIGNING_ENV = {
+    HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_KEY_ID: "route-grant-key",
+    HAPPIER_PEER_MEDIATION_ROUTE_GRANT_SIGNING_PRIVATE_KEY: privacyKit
+        .encodeBase64(new Uint8Array(32).fill(9), "base64url")
+        .replace(/=+$/u, ""),
+} as const;
 
 const TEST_AUTHENTICATION = {
     env: process.env,
@@ -143,6 +161,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
                 HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
                 HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+                ...DEPLOYED_ROUTE_GRANT_SIGNING_ENV,
             },
             dispatch,
             readCurrentBrokerPresence: async () => ({
@@ -305,6 +324,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
             HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
             HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
             HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            ...DEPLOYED_ROUTE_GRANT_SIGNING_ENV,
         };
         const dispatch = vi.fn(async (_input: Parameters<ExternalProviderBrokerDispatch>[0]) => ({
             ok: true as const,
@@ -316,7 +336,15 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
         }));
 
         const app = Fastify();
-        registerExternalProviderApiRoutes(app as never, { env: enabledEnv, dispatch: dispatch as never });
+        // The custodian's broker Machine must be currently connected before the
+        // Home forwards anything to it; this stands in for the Socket.IO room
+        // the route reads through `getMachineDaemonPresenceInventory`.
+        const connectedBrokerMachineIds = new Set<string>();
+        registerExternalProviderApiRoutes(app as never, {
+            env: enabledEnv,
+            dispatch: dispatch as never,
+            readCurrentBrokerPresence: async () => ({ state: "known", machineIds: connectedBrokerMachineIds }),
+        });
         await app.ready();
         try {
             const manager = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
@@ -336,6 +364,7 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                     operationProtocolCapabilitiesRevision: 1,
                 },
             });
+            connectedBrokerMachineIds.add(broker.id);
             const resource = await db.teamCredentialResource.create({
                 data: {
                     teamId: team.id,
@@ -602,19 +631,41 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                 if (!extra.ok || !extra.usageEventId || !extra.terminalRequestId) throw new Error("expected extra admission");
                 extraAdmissions.push({ requestId: `ingress-request-${suffix}`, usageEventId: extra.usageEventId, terminalRequestId: extra.terminalRequestId });
             }
+            // A public external call has no Session turn and no Agent publisher, so the
+            // broker's own observation of the admitted response is its only token fact.
+            const reportedTerminalUsage = {
+                v: 1 as const,
+                admissionUsageEventId: admission.usageEventId as string,
+                requestId: admission.terminalRequestId as string,
+                brokerMachineId: broker.id,
+                completedAtMs: admittedAt.getTime() + 250,
+                outcome: "succeeded" as const,
+                measurement: "reported" as const,
+                actualModelId: "model-1-2026-01",
+                tokens: { input: 120, output: 45, reasoning: 30, cacheRead: 80, cacheWrite: 0, total: 165 },
+            };
             const succeeded = await inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
                 authenticatedBrokerAccountId: manager.id,
-                request: {
-                    v: 1,
-                    admissionUsageEventId: admission.usageEventId as string,
-                    requestId: admission.terminalRequestId as string,
-                    brokerMachineId: broker.id,
-                    completedAtMs: admittedAt.getTime() + 250,
-                    outcome: "succeeded",
-                    measurement: "unavailable",
-                },
+                request: reportedTerminalUsage,
             }));
             expect(succeeded).toMatchObject({ ok: true, created: true });
+            expect(await db.usageEvent.findUniqueOrThrow({ where: { id: succeeded.usageEventId as string } }))
+                .toMatchObject({
+                    source: "team_credential_external_terminal",
+                    requestCount: 0,
+                    modelId: "model-1-2026-01",
+                    inputTokens: 120,
+                    outputTokens: 45,
+                    reasoningTokens: 30,
+                    cacheReadTokens: 80,
+                    cacheWriteTokens: 0,
+                    totalTokens: 165,
+                    // Cost stays unknown: no canonical price covers these routes,
+                    // and an unknown cost is never recorded as a zero-cost request.
+                    costSource: null,
+                    reportedCostUsd: 0,
+                    estimatedCostUsd: 0,
+                });
             const failedAdmission = extraAdmissions[0];
             if (!failedAdmission) throw new Error("expected failed admission");
             const failed = await inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
@@ -627,6 +678,8 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                     completedAtMs: admittedAt.getTime() + 350,
                     outcome: "failed",
                     measurement: "unavailable",
+                    actualModelId: null,
+                    tokens: null,
                 },
             }));
             expect(failed).toMatchObject({ ok: true, created: true });
@@ -642,22 +695,25 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
                     completedAtMs: admittedAt.getTime() + 450,
                     outcome: "cancelled",
                     measurement: "unavailable",
+                    actualModelId: null,
+                    tokens: null,
                 },
             }));
             expect(cancelled).toMatchObject({ ok: true, created: true });
             // Duplicate terminal report is idempotent, not a second fact.
             await expect(inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
                 authenticatedBrokerAccountId: manager.id,
-                request: {
-                    v: 1,
-                    admissionUsageEventId: admission.usageEventId as string,
-                    requestId: admission.terminalRequestId as string,
-                    brokerMachineId: broker.id,
-                    completedAtMs: admittedAt.getTime() + 250,
-                    outcome: "succeeded",
-                    measurement: "unavailable",
-                },
+                request: reportedTerminalUsage,
             }))).resolves.toMatchObject({ ok: true, created: false });
+            // A second, disagreeing token fact for the same request fails closed
+            // rather than overwriting the observation already recorded.
+            await expect(inTx((tx) => recordTeamCredentialExternalProviderTerminalUsageInTx(tx, {
+                authenticatedBrokerAccountId: manager.id,
+                request: {
+                    ...reportedTerminalUsage,
+                    tokens: { ...reportedTerminalUsage.tokens, output: 46, total: 166 },
+                },
+            }))).resolves.toEqual({ ok: false, reasonCode: "terminal_usage_mismatch" });
 
             // Disabled resource is currentness-denied at the edge with the same opaque 401.
             dispatch.mockClear();
@@ -726,5 +782,262 @@ describe("external Provider broker ingress network vertical (SQLite)", () => {
         } finally {
             await app.close();
         }
+    }, 180_000);
+
+    /**
+     * Route-shape cases that used to live in `registerExternalProviderApiRoutes.spec.ts`
+     * with a fabricated `verify` result. The route now always resolves the real
+     * broker placement before dispatch, so a key that names no stored resource
+     * or Machine fails before the boundary these cases are about. They belong
+     * here, where the key, resource and broker Machine exist: only the broker
+     * transport and the daemon presence room stay substituted, and the request
+     * is driven at the handler so client disconnect and late-response
+     * publication are observable.
+     */
+    async function createDirectBrokerIngressFixture(label: string): Promise<Readonly<{
+        custodianAccountId: string;
+        brokerMachineId: string;
+        resourceId: string;
+        token: string;
+        register: (dependencies: Readonly<Record<string, unknown>>) => Record<string, unknown>[];
+    }>> {
+        const custodian = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const recipient = await db.account.create({ data: { publicKey: crypto.randomUUID(), encryptionMode: "plain" } });
+        const team = await db.team.create({ data: { name: `Route shape ${label}` } });
+        await db.teamMembership.create({ data: { teamId: team.id, accountId: custodian.id, role: "owner" } });
+        const membership = await db.teamMembership.create({
+            data: { teamId: team.id, accountId: recipient.id, role: "member" },
+        });
+        const broker = await db.machine.create({
+            data: {
+                id: `route-shape-broker-${label}-${custodian.id}`,
+                accountId: custodian.id,
+                metadata: "{}",
+                kind: "persistent",
+                active: true,
+                operationProtocolCapabilities: { providerBrokerIngress: { protocolVersions: [1] } },
+                operationProtocolCapabilitiesRevision: 1,
+            },
+        });
+        const resource = await db.teamCredentialResource.create({
+            data: {
+                teamId: team.id,
+                custodianAccountId: custodian.id,
+                displayName: `Route shape provider ${label}`,
+                disclosureCeiling: "brokered_only",
+                sessionUsePolicy: "personal_allowed",
+                sourceBindingJson: JSON.stringify({
+                    v: 1,
+                    kind: "provider_connection",
+                    connectionId: `route-shape-connection-${label}`,
+                    connectionSecurityFingerprint: `connection-security:v1:route-shape-${label}`,
+                    credentialSlotId: "apiKey",
+                }),
+                brokerMachineId: broker.id,
+                memberGrants: { create: { teamMembershipId: membership.id, deliveryMode: "brokered" } },
+            },
+        });
+        const created = await inTx((tx) => createTeamCredentialExternalApiKeyInTx(tx, {
+            authentication: TEST_AUTHENTICATION,
+            actorAccountId: custodian.id,
+            resourceId: resource.id,
+            teamMembershipId: membership.id,
+            label: `Route shape ${label}`,
+            expiresAt: null,
+        }));
+        if (!created.ok) throw new Error("route-shape fixture requires a real external API key");
+        return {
+            custodianAccountId: custodian.id,
+            brokerMachineId: broker.id,
+            resourceId: resource.id,
+            token: created.token,
+            register: (dependencies) => {
+                const routes: Record<string, unknown>[] = [];
+                registerExternalProviderApiRoutes(
+                    { route: (route: Record<string, unknown>) => routes.push(route) } as never,
+                    {
+                        env: {
+                            ...process.env,
+                            HAPPIER_FEATURE_TEAMS__ENABLED: "1",
+                            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES__ENABLED: "1",
+                            HAPPIER_FEATURE_TEAMS_CREDENTIAL_RESOURCES_EXTERNAL_API__ENABLED: "1",
+                            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+                            ...DEPLOYED_ROUTE_GRANT_SIGNING_ENV,
+                        },
+                        readCurrentBrokerPresence: async () => ({ state: "known", machineIds: new Set([broker.id]) }),
+                        ...dependencies,
+                    } as never,
+                );
+                return routes;
+            },
+        };
+    }
+
+    it("authenticates at the edge and dispatches a strict target-free application DTO", async () => {
+        const fixture = await createDirectBrokerIngressFixture("dto");
+        const dispatch = vi.fn(async (_input: Parameters<ExternalProviderBrokerDispatch>[0]) => ({
+            ok: true as const,
+            statusCode: 200,
+            headers: { "content-type": "text/event-stream", authorization: "never-forward" },
+            body: (async function* () { yield Buffer.from("data: done\n\n"); })(),
+        }));
+        const routes = fixture.register({ dispatch });
+        const selected = routes.find((route) => route.url === "/api/provider-broker/v1/chat/completions");
+        const responseHeaders: Record<string, string> = {};
+        const reply = {
+            raw: new EventEmitter(),
+            header(name: string, value: string) { responseHeaders[name] = value; return this; },
+            code: vi.fn(() => reply),
+            send: vi.fn((body: unknown) => body),
+        };
+        await (selected?.handler as (request: unknown, reply: unknown) => Promise<unknown>)({
+            // The documented self-hosted deployment puts Nginx in front of this
+            // route, so a real public call arrives carrying the forwarding
+            // headers that sample adds. They must reach dispatch as a normal
+            // request and stay out of the DTO the allowlist builds below.
+            headers: {
+                authorization: `Bearer ${fixture.token}`,
+                "content-type": "application/json",
+                forwarded: "for=203.0.113.7;proto=https",
+                "x-forwarded-for": "203.0.113.7",
+                "x-forwarded-proto": "https",
+                "x-forwarded-host": "api.example.com",
+                "x-real-ip": "203.0.113.7",
+            },
+            url: "/api/provider-broker/v1/chat/completions",
+            body: { model: "gpt-test", stream: true },
+            raw: new EventEmitter(),
+        }, reply);
+        expect(dispatch).toHaveBeenCalledOnce();
+        const call = dispatch.mock.calls[0]?.[0] as Readonly<{
+            request: Readonly<Record<string, unknown>>;
+        }> | undefined;
+        expect(call).toMatchObject({
+            target: { custodianAccountId: fixture.custodianAccountId, brokerMachineId: fixture.brokerMachineId },
+            request: {
+                resourceId: fixture.resourceId,
+                caller: { kind: "external_api_key" },
+                pathAndQuery: "/v1/chat/completions",
+            },
+        });
+        expect(call?.request).not.toHaveProperty("machineId");
+        expect(call?.request).not.toHaveProperty("host");
+        expect(call?.request).not.toHaveProperty("bearer");
+        expect(call?.request.headers).toEqual({ "content-type": "application/json" });
+        expect(Buffer.from(String(call?.request.bodyBase64), "base64").toString("utf8"))
+            .toBe(JSON.stringify({ model: "gpt-test", stream: true }));
+        expect(responseHeaders.authorization).toBeUndefined();
+        expect(responseHeaders["content-type"]).toBe("text/event-stream");
+    }, 180_000);
+
+    it("returns the stable public 429 code and Retry-After only for a deterministic exhaustion reset", async () => {
+        const fixture = await createDirectBrokerIngressFixture("retry-after");
+        const routes = fixture.register({
+            nowMs: () => 0,
+            dispatch: vi.fn(async () => ({ ok: false as const, error: "team_credential_usage_limit" as const, retryAtMs: 2_000 })),
+        });
+        const selected = routes.find((route) => route.url === "/api/provider-broker/v1/responses");
+        const headers: Record<string, string> = {};
+        const reply = {
+            raw: new EventEmitter(),
+            header(name: string, value: string) { headers[name] = value; return this; },
+            code: vi.fn(() => reply), send: vi.fn((body: unknown) => body),
+        };
+        await (selected?.handler as (request: unknown, reply: unknown) => Promise<unknown>)({
+            headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
+            url: "/api/provider-broker/v1/responses", body: { model: "gpt-test", input: "hello" },
+            raw: new EventEmitter(),
+        }, reply);
+        expect(reply.code).toHaveBeenCalledWith(429);
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
+            error: expect.objectContaining({ code: "team_credential_usage_limit" }),
+        }));
+        expect(headers["Retry-After"]).toBe("2");
+    }, 180_000);
+
+    it("streams broker bytes without eager buffering and cancels the broker request when the client disconnects", async () => {
+        const fixture = await createDirectBrokerIngressFixture("streaming");
+        const raw = new EventEmitter();
+        const replyRaw = new EventEmitter();
+        let yieldedChunks = 0;
+        let dispatchSignal: AbortSignal | undefined;
+        const dispatch = vi.fn(async (input: Readonly<{ signal: AbortSignal }>) => {
+            dispatchSignal = input.signal;
+            return {
+                ok: true as const,
+                statusCode: 200,
+                headers: { "content-type": "text/event-stream" },
+                body: (async function* () {
+                    yieldedChunks += 1;
+                    yield Buffer.from("data: first\n\n");
+                    yieldedChunks += 1;
+                    yield Buffer.from("data: second\n\n");
+                })(),
+            };
+        });
+        let sent: unknown;
+        const reply = {
+            raw: replyRaw,
+            header() { return this; },
+            code: vi.fn(() => reply),
+            send: vi.fn((body: unknown) => { sent = body; return body; }),
+        };
+        const routes = fixture.register({ dispatch });
+        const selected = routes.find((route) => route.url === "/api/provider-broker/v1/chat/completions");
+        await (selected?.handler as (request: unknown, reply: unknown) => Promise<unknown>)({
+            headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
+            url: "/api/provider-broker/v1/chat/completions",
+            body: { model: "gpt-test", stream: true },
+            raw,
+        }, reply);
+
+        expect(sent).toBeInstanceOf(Readable);
+        expect(yieldedChunks).toBe(0);
+        raw.emit("aborted");
+        expect(dispatchSignal?.aborted).toBe(true);
+        expect(raw.listenerCount("aborted")).toBe(0);
+        expect(replyRaw.listenerCount("close")).toBe(0);
+    }, 180_000);
+
+    it("does not publish a late broker response after the external caller aborts", async () => {
+        const fixture = await createDirectBrokerIngressFixture("late-response");
+        const raw = new EventEmitter();
+        type LateDispatchResult = {
+            ok: true;
+            statusCode: number;
+            headers: Record<string, string>;
+            body: AsyncIterable<Uint8Array>;
+        };
+        let resolveDispatch: ((value: LateDispatchResult) => void) | undefined;
+        const dispatch = vi.fn(() => new Promise<LateDispatchResult>((resolve) => { resolveDispatch = resolve; }));
+        const reply = {
+            raw: new EventEmitter(),
+            header() { return this; },
+            code: vi.fn(() => reply),
+            send: vi.fn(),
+        };
+        const routes = fixture.register({ dispatch });
+        const selected = routes.find((route) => route.url === "/api/provider-broker/v1/responses");
+        const handling = (selected?.handler as (request: unknown, reply: unknown) => Promise<unknown>)({
+            headers: { authorization: `Bearer ${fixture.token}`, "content-type": "application/json" },
+            url: "/api/provider-broker/v1/responses",
+            body: { model: "gpt-test", input: "hello" },
+            raw,
+        }, reply);
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+        raw.emit("aborted");
+        resolveDispatch?.({
+            ok: true,
+            statusCode: 200,
+            headers: { "content-type": "application/json" },
+            body: (async function* () { yield Buffer.from("late"); })(),
+        });
+        await handling;
+        expect(reply.code).toHaveBeenCalledWith(499);
+        expect(reply.send).toHaveBeenCalledWith(expect.objectContaining({
+            error: expect.objectContaining({ code: "request_cancelled" }),
+        }));
+        expect(reply.send).not.toHaveBeenCalledWith(expect.any(Readable));
+        expect(raw.listenerCount("aborted")).toBe(0);
     }, 180_000);
 });

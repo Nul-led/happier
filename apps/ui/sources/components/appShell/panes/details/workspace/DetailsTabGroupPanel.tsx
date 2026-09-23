@@ -77,7 +77,7 @@ const DetailsTabSurface = React.memo((props: Readonly<{
     return (
         <AccessibleTabPanelView
             nativeID={detailsTabPanelNativeId(props.groupId, props.tabKey)}
-            accessibilityRole="tabpanel"
+            role="tabpanel"
             accessibilityLabelledBy={detailsTabNativeId(props.groupId, props.tabKey)}
             aria-labelledby={detailsTabNativeId(props.groupId, props.tabKey)}
             {...(Platform.OS === 'web' && !props.isActive ? { inert: true } : {})}
@@ -110,7 +110,19 @@ export type DetailsTabGroupPanelProps = Readonly<{
     }> & DetailsTabStripTestIds;
     resolveTabIconName?: ((tab: DetailsTabState) => string | null | undefined) | null;
     resolveTabPresentation?: ((tab: DetailsTabState) => DetailsTabPresentation | null | undefined) | null;
-    renderTabContent: (tab: DetailsTabState) => React.ReactNode;
+    /**
+     * Whether the workspace is showing this group at all. A maximized group is
+     * the only one on screen, and the others stay mounted behind it — the same
+     * definition the Board's own visibility owner uses. Absent means "the only
+     * group", so a panel rendered on its own keeps presenting its active tab.
+     */
+    presented?: boolean;
+    /**
+     * The group knows which of its retained tabs is actually presented, so it
+     * hands that fact to the content it renders. A surface that owns an editor,
+     * a draft or an executable frame cannot infer it from being mounted.
+     */
+    renderTabContent: (tab: DetailsTabState, presentation: Readonly<{ active: boolean }>) => React.ReactNode;
     renderHeaderLeadingActions?: (() => React.ReactNode) | null;
     renderHeaderActions?: (() => React.ReactNode) | null;
     renderEmptyState?: (() => React.ReactNode) | null;
@@ -192,6 +204,10 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
                 <View style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
                     {props.group.tabs.map((tab) => {
                         const isActive = effectiveActiveKey ? tab.key === effectiveActiveKey : false;
+                        // Tab chrome keeps answering for this group's own strip, while the
+                        // content is told whether the WORKSPACE is presenting it: a group
+                        // hidden behind a maximized sibling presents none of its tabs.
+                        const presented = isActive && props.presented !== false;
                         return (
                             <DetailsTabSurface
                                 key={tab.key}
@@ -200,7 +216,7 @@ export const DetailsTabGroupPanel = React.memo((props: DetailsTabGroupPanelProps
                                 isActive={isActive}
                             >
                                 <React.Suspense fallback={renderLoadingFallback()}>
-                                    {props.renderTabContent(tab)}
+                                    {props.renderTabContent(tab, { active: presented })}
                                 </React.Suspense>
                             </DetailsTabSurface>
                         );

@@ -12,10 +12,12 @@ import {
 } from "@/app/auth/providers/managed/identityProviderInstanceLifecycle";
 import type { TeamOperationAuthenticationContext } from "@/app/teams/actorContext";
 import { authorizeTeamIdentityAdministrationInTx } from "@/app/teams/identity/teamIdentityAdministrationAuthority";
+import type { TeamIdentityErrorCodeV1 } from "@happier-dev/protocol/teams";
 import { resolveManagedIdentityNetworkPolicyInTx } from "@/app/auth/providers/managed/managedIdentityNetworkPolicy";
 import { readHomeGovernancePolicyInTx } from "@/app/home/governance/governancePolicy";
 import { db } from "@/storage/db";
 import { inTx, type Tx } from "@/storage/inTx";
+import type { TeamDirectorySourceState } from "@/storage/enums.generated";
 import { getActivePrismaRuntime } from "@/storage/prisma";
 import {
     applyGitHubAppSecretReplacementV1,
@@ -189,6 +191,24 @@ export type GitHubAppManagementAuthorizationInput =
     }>;
 
 /**
+ * Why a GitHub App management effect was refused.
+ *
+ * `forbidden` is the capability answer. The two authentication codes are the
+ * canonical Team identity-administration authority's own recovery outcomes and
+ * travel to the client unchanged, exactly as the Home's managed identity
+ * providers already forward them: a Team owner whose sign-in did not use an
+ * accepted method must be told to re-authenticate, not that they are not
+ * allowed to administer their own App.
+ */
+export type GitHubAppManagementRefusal =
+    | "forbidden"
+    | Extract<TeamIdentityErrorCodeV1, "team_authentication_required" | "team_authentication_unavailable">;
+
+export type GitHubAppManagementAuthorization = Readonly<{
+    status: "authorized" | GitHubAppManagementRefusal;
+}>;
+
+/**
  * The one authorization every GitHub App management effect asks.
  *
  * Home-owned Apps are Home authentication administration and stay independent.
@@ -202,9 +222,13 @@ export type GitHubAppManagementAuthorizationInput =
 export async function authorizeGitHubAppManagementInTx(
     tx: Tx,
     input: GitHubAppManagementAuthorizationInput,
-): Promise<boolean> {
+): Promise<GitHubAppManagementAuthorization> {
     if (input.owner.kind === "home") {
-        return await authorizeHomeAuthenticationManagementInTx(tx, input.actorAccountId);
+        return {
+            status: await authorizeHomeAuthenticationManagementInTx(tx, input.actorAccountId)
+                ? "authorized"
+                : "forbidden",
+        };
     }
     const authority = await authorizeTeamIdentityAdministrationInTx(tx, {
         teamId: input.owner.teamId,
@@ -214,7 +238,13 @@ export async function authorizeGitHubAppManagementInTx(
         authenticationAuthority: input.authenticationAuthority,
         legacyHomeCredential: input.legacyHomeCredential,
     });
-    return authority.ok;
+    if (authority.ok) return { status: "authorized" };
+    return {
+        status: authority.error === "team_authentication_required"
+            || authority.error === "team_authentication_unavailable"
+            ? authority.error
+            : "forbidden",
+    };
 }
 
 /**
@@ -294,7 +324,7 @@ const registrationSelect = {
 
 export type CreateHomeGitHubAppRegistrationResult =
     | Readonly<{ status: "created"; registration: GitHubAppRegistrationView }>
-    | Readonly<{ status: "forbidden" | "github_enterprise_origin_not_approved" }>;
+    | Readonly<{ status: GitHubAppManagementRefusal | "github_enterprise_origin_not_approved" }>;
 
 export async function createGitHubAppRegistration(params: GitHubAppManagementAuthorizationInput & Readonly<{
     input: Readonly<{
@@ -313,8 +343,9 @@ export async function createGitHubAppRegistration(params: GitHubAppManagementAut
     }
     const githubHost = normalizeGitHubHost(params.input.githubHost);
     return await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         if (!isManagedGitHubHostApprovedByHome(await readHomeGovernancePolicyInTx(tx), githubHost)) {
             return { status: "github_enterprise_origin_not_approved" };
@@ -363,14 +394,15 @@ export type ListGitHubAppRegistrationsResult =
         registrations: readonly GitHubAppRegistrationView[];
         installations: readonly GitHubAppInstallationAdministrationView[];
     }>
-    | Readonly<{ status: "forbidden" }>;
+    | Readonly<{ status: GitHubAppManagementRefusal }>;
 
 export async function listGitHubAppRegistrations(
     params: GitHubAppManagementAuthorizationInput,
 ): Promise<ListGitHubAppRegistrationsResult> {
     return await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const rows = await tx.gitHubAppRegistration.findMany({
             where: { ownerTeamId: ownerTeamId(params.owner) },
@@ -438,7 +470,7 @@ export async function listGitHubAppRegistrations(
 
 export type UpdateHomeGitHubAppRegistrationResult =
     | Readonly<{ status: "updated"; registration: GitHubAppRegistrationView }>
-    | Readonly<{ status: "not_found" | "forbidden" | "github_enterprise_origin_not_approved" }>
+    | Readonly<{ status: "not_found" | GitHubAppManagementRefusal | "github_enterprise_origin_not_approved" }>
     | Readonly<{ status: "revision_conflict"; registration: GitHubAppRegistrationView }>;
 
 export async function updateGitHubAppRegistration(params: GitHubAppManagementAuthorizationInput & Readonly<{
@@ -452,8 +484,9 @@ export async function updateGitHubAppRegistration(params: GitHubAppManagementAut
     }>;
 }>): Promise<UpdateHomeGitHubAppRegistrationResult> {
     return await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const current = await tx.gitHubAppRegistration.findUnique({
             where: { id: params.registrationId },
@@ -573,21 +606,37 @@ export interface GitHubAppInstallationAdministrationView extends GitHubAppInstal
 
 /**
  * The consumers an installation actually carries decide what it must be granted:
- * an identity connection always presents organization evidence, and a directory
- * source always reads members. Both answers come from the readiness owner's
- * requirement table, never from a copy kept here.
+ * an identity provider instance bound to it always presents organization evidence — exactly
+ * the purpose `githubManagedIdentityProvider` resolves readiness with, whether the
+ * instance signs in through the Home or through Team connections — and a directory
+ * source that the sync path can still claim always reads members. Both answers come from
+ * the readiness owner's requirement table, never from a copy kept here.
+ *
+ * The instance, not its connections, is the identity consumer: a Home-owned managed-GitHub
+ * sign-in provider carries no Team connection at all, and deriving the purpose per connection
+ * reported an empty requirement set for exactly the installation an administrator is trying
+ * to repair.
+ *
+ * Binding a consumer to the installation is what creates the requirement, not switching it
+ * on: an instance cannot be enabled and a connection cannot be created until this exact
+ * permission is already granted (`githubManagedIdentityProvider#resolveManagedGitHubIdentityProviderReadinessInTx`),
+ * so a repair list that waited for `enabled` would hide the grant an administrator needs to
+ * get there. A removed consumer stops contributing by being deleted, and a paused directory
+ * source contributes nothing because `findNextDirectorySourceDueForSync` can no longer claim it.
  */
 function projectGitHubAppInstallationRequirements(input: Readonly<{
     verifiedPermissions: unknown;
     verifiedEvents: unknown;
-    identityProviderInstances: readonly Readonly<{ connections: readonly unknown[] }>[];
-    directorySources: readonly unknown[];
+    identityProviderInstances: readonly unknown[];
+    directorySources: readonly Readonly<{ state: TeamDirectorySourceState }>[];
 }>): ReturnType<typeof projectGitHubAppInstallationRequirementsV1> {
     const purposes: GitHubAppConsumerPurposeV1[] = [
-        ...input.identityProviderInstances.flatMap((provider) => provider.connections.map(() => (
+        ...input.identityProviderInstances.map(() => (
             { kind: "identity" as const, requiresOrganizationEvidence: true }
-        ))),
-        ...input.directorySources.map(() => ({ kind: "directorySync" as const })),
+        )),
+        ...input.directorySources
+            .filter((source) => source.state !== "paused")
+            .map(() => ({ kind: "directorySync" as const })),
     ];
     let permissions: Readonly<Record<string, "read" | "write">>;
     try {
@@ -663,7 +712,7 @@ export type VerifyHomeGitHubAppInstallationResult =
         installation: GitHubAppInstallationView;
     }>
     | Readonly<{
-        status: "forbidden" | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
+        status: GitHubAppManagementRefusal | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
     }>
     | Readonly<{ status: "installation_revision_conflict"; currentRevision: number | null }>
     | Readonly<{ status:
@@ -680,7 +729,7 @@ export type VerifyHomeGitHubAppInstallationResult =
 export type BeginGitHubAppInstallationVerificationResult =
     | Readonly<{ status: "ready"; authorizeUrl: string; attemptId: string }>
     | Readonly<{
-        status: "forbidden" | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
+        status: GitHubAppManagementRefusal | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
     }>
     | Readonly<{ status: "github_app_not_configured" | "github_network_policy_changed" }>;
 
@@ -698,7 +747,7 @@ export type GitHubAppInstallationVerificationBinding = Readonly<{
 export type ResolveGitHubAppInstallationVerificationOAuthResult =
     | Readonly<{ status: "ready"; provider: OAuthFlowProvider }>
     | Readonly<{
-        status: "forbidden" | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
+        status: GitHubAppManagementRefusal | "not_found" | "registration_revision_conflict" | "github_enterprise_origin_not_approved";
     }>
     | Readonly<{ status: "github_app_not_configured" | "github_network_policy_changed" }>;
 
@@ -721,8 +770,9 @@ export async function resolveGitHubAppInstallationVerificationOAuth(
     const publicServerUrl = resolveConfiguredPublicServerUrl(params.env);
     if (!publicServerUrl) return { status: "github_app_not_configured" };
     const prepared = await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, { ...params, owner: params.binding.owner })) {
-            return { status: "forbidden" as const };
+        const authority = await authorizeGitHubAppManagementInTx(tx, { ...params, owner: params.binding.owner });
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const registration = await tx.gitHubAppRegistration.findUnique({
             where: { id: params.binding.registrationId },
@@ -777,8 +827,9 @@ export async function beginGitHubAppInstallationVerification(params: GitHubAppMa
     const publicServerUrl = resolveConfiguredPublicServerUrl(params.env);
     if (!publicServerUrl) return { status: "github_app_not_configured" };
     const prepared = await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" as const };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const registration = await tx.gitHubAppRegistration.findUnique({
             where: { id: params.registrationId },
@@ -857,8 +908,9 @@ async function verifyGitHubAppInstallationWithAdministrator(params: GitHubAppMan
         throw new RangeError("GitHub identifiers must be positive");
     }
     const prepared = await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" as const };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const registration = await tx.gitHubAppRegistration.findUnique({
             where: { id: params.registrationId },
@@ -966,8 +1018,9 @@ async function verifyGitHubAppInstallationWithAdministrator(params: GitHubAppMan
     if (!administrator.ok) return { status: administrator.code };
 
     return await inTx(async (tx): Promise<VerifyHomeGitHubAppInstallationResult> => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const currentRegistration = await tx.gitHubAppRegistration.findUnique({
             where: { id: params.registrationId },
@@ -1112,7 +1165,7 @@ export async function verifyHomeGitHubAppInstallation(params: Readonly<{
 
 export type RemoveHomeGitHubAppInstallationResult =
     | Readonly<{ status: "removed" }>
-    | Readonly<{ status: "forbidden" | "not_found" | "revision_conflict" }>
+    | Readonly<{ status: GitHubAppManagementRefusal | "not_found" | "revision_conflict" }>
     | Readonly<{
         status: "blocked";
         blockers: Readonly<{ identityProviderInstances: number; directorySources: number }>;
@@ -1123,8 +1176,9 @@ export async function removeGitHubAppInstallation(params: GitHubAppManagementAut
     expectedRevision: number;
 }>): Promise<RemoveHomeGitHubAppInstallationResult> {
     return await inTx(async (tx) => {
-        if (!await authorizeGitHubAppManagementInTx(tx, params)) {
-            return { status: "forbidden" };
+        const authority = await authorizeGitHubAppManagementInTx(tx, params);
+        if (authority.status !== "authorized") {
+            return { status: authority.status };
         }
         const installation = await tx.gitHubAppInstallation.findUnique({
             where: { id: params.installationId },

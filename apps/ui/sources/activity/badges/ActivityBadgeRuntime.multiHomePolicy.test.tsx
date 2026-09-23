@@ -243,6 +243,19 @@ describe('ActivityBadgeRuntime multi-Home policy identity', () => {
         await act(async () => { tree.unmount(); });
     });
 
+    it('leaves the OS badge alone when the active Home is bootstrapped but another Home has not answered', async () => {
+        corpusReadiness.isDataReady = true;
+        corpusReadiness.coverageComplete = false;
+
+        const tree = await renderBadgeRuntime();
+
+        // `isDataReady` is the ACTIVE Home's bootstrap flag, not cross-Home coverage. A
+        // warm active Home still knows a number that is short for a corpus spanning Homes,
+        // which is exactly the write the coverage rule withholds.
+        expect(applyExpoNativeBadgeState).not.toHaveBeenCalled();
+        await act(async () => { tree.unmount(); });
+    });
+
     it('still writes a warm count when the corpus is one Home', async () => {
         corpusReadiness.isDataReady = false;
         corpusReadiness.coverageComplete = false;

@@ -174,11 +174,12 @@ describe('useSavedSecretCatalog exact shared feature gate', () => {
             repair: { kind: 'delete_resource', resourceId: 'opaque-row-id', expectedRevision: -3 },
         } as const;
 
-        await expect(hook.getCurrent().deleteCorruptResource(entry)).resolves.toBe(true);
+        await expect(hook.getCurrent().deleteCorruptResource(entry)).resolves.toEqual({ ok: true });
         expect(resourceMutationSpies.deleteResource).toHaveBeenCalledWith({
             scope: { serverId: 'home-1', accountId: 'account-1' },
             resourceId: 'opaque-row-id',
             expectedRevision: -3,
+            expectedSettingsVersion: 1,
             confirmedByPresentUser: true,
         });
         expect(catalogSpies.refresh).toHaveBeenCalledWith({ serverId: 'home-1', accountId: 'account-1' });

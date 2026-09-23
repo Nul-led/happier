@@ -84,6 +84,7 @@ const contribution: ResolvedProviderContribution = {
 const registry = {
   providersByContributionKey: new Map([[contributionKey, contribution]]),
   runtimeRegistryGeneration: 9,
+  providerActivationOccurrenceIdsByPluginId: new Map([['acme.gateway', 'gateway-occurrence-1']]),
 };
 const dnsEvidenceByEndpointUrl = new Map([['https://gateway.example/v1', ['1.1.1.1']]]);
 const sharedSecretRef = 'happier:shared-secret:v1:resource-provider';
@@ -102,7 +103,7 @@ const sharedSecretResource = {
   materialStatus: 'ready' as const,
 };
 
-function accountSettings() {
+function accountSettings(activeRegistry = registry) {
   const initial = ProviderSettingsV1Schema.parse({
     ...DEFAULT_PROVIDER_SETTINGS_V1,
     connections: [{
@@ -113,7 +114,7 @@ function accountSettings() {
   });
   const resolution = resolveProviderConnectionForMachine({
     connectionId, machineId: 'machine-a', accountSettings: { providerSettingsV1: initial },
-    registry, dnsEvidenceByEndpointUrl,
+    registry: activeRegistry, dnsEvidenceByEndpointUrl,
   });
   if (resolution.status !== 'resolved') throw new Error('expected resolved connection');
   const settings = AccountSettingsSchema.parse({
@@ -156,10 +157,10 @@ function snapshot(settings = accountSettings()): ActiveAccountSettingsSnapshot {
   };
 }
 
-function resourceSource(settings = accountSettings()) {
+function resourceSource(settings = accountSettings(), activeRegistry = registry) {
   const resolution = resolveProviderConnectionForMachine({
     connectionId, machineId: 'machine-a', accountSettings: settings,
-    registry, dnsEvidenceByEndpointUrl,
+    registry: activeRegistry, dnsEvidenceByEndpointUrl,
   });
   if (resolution.status !== 'resolved') throw new Error('expected current connection');
   return {
@@ -265,6 +266,7 @@ describe('Provider Connection Team broker source', () => {
       resolveExactSelection,
     });
     const sourceOwner = createTeamCredentialBrokerSourceOwner({
+      custody: { retire: async () => true },
       machineId: 'machine-a',
       openConnectedServicesSource: async () => null,
       openProviderConnectionSource,
@@ -281,6 +283,7 @@ describe('Provider Connection Team broker source', () => {
     const streamLifetime = createPrivateProviderBrokerStreamLifetime({
       sourceOwner,
       application,
+      operation: { kind: 'session', sessionId: 'session-a' },
     });
     const access = await streamLifetime.acquireSource({
       resourceId: 'resource-a',
@@ -306,7 +309,11 @@ describe('Provider Connection Team broker source', () => {
       modelId: 'gateway-model',
       sourceRevision: 'source-revision-a',
     }));
-    const staleLifetime = createPrivateProviderBrokerStreamLifetime({ sourceOwner, application });
+    const staleLifetime = createPrivateProviderBrokerStreamLifetime({
+      sourceOwner,
+      application,
+      operation: { kind: 'session', sessionId: 'session-stale' },
+    });
     await expect(staleLifetime.acquireSource({
       resourceId: 'resource-a',
       brokerMachineId: 'machine-a',
@@ -467,7 +474,9 @@ describe('Provider Connection Team broker source', () => {
     expect(source).toMatchObject({
       ok: true,
       snapshot: {
-        connectionRevision: 3, machineId: 'machine-a', runtimeRegistryGeneration: 9,
+        connectionRevision: 3,
+        machineId: 'machine-a',
+        activationOccurrenceId: 'gateway-occurrence-1',
         provider: { identity: contribution.identity, definitionRevision: definition.v },
         endpoint: { normalizedUrl: 'https://gateway.example/v1', publicHeaders: { 'x-client': 'happ' } },
         credentialRef: { transport: { destination: { kind: 'httpHeader', name: 'authorization', format: 'bearer' } } },
@@ -480,6 +489,48 @@ describe('Provider Connection Team broker source', () => {
       getAccountSettingsSnapshot: () => snapshot(settings),
     });
     expect(materialized).toMatchObject({ ok: true, lease: { credential: { name: 'authorization', value: 'Bearer source-secret' } } });
+    if (materialized.ok) materialized.lease.close();
+  });
+
+  // A contribution may publish several runtime header transports for one
+  // protocol. The resource pins exactly one, so final materialization must
+  // carry that selection instead of re-deriving a unique transport.
+  it('materializes the selected header transport when a Provider publishes several', async () => {
+    const ambiguousDefinition = ProviderContributionV1Schema.parse({
+      ...definition,
+      credential: {
+        kind: 'apiKey',
+        required: true,
+        transports: [
+          definition.credential!.transports[0]!,
+          {
+            id: 'x-api-key', protocols: ['openai-responses'], uses: ['runtime'],
+            destination: { kind: 'httpHeader', name: 'x-api-key', format: 'raw' },
+          },
+        ],
+      },
+    });
+    const ambiguousRegistry = {
+      ...registry,
+      providersByContributionKey: new Map([[contributionKey, { ...contribution, definition: ambiguousDefinition }]]),
+    };
+    const settings = accountSettings(ambiguousRegistry);
+    const resolved = resolveProviderConnectionBrokerSource({
+      source: resourceSource(settings, ambiguousRegistry),
+      machineId: 'machine-a', protocol: 'openai-responses', endpointTemplateId: 'responses',
+      expectedCredentialTransport: ambiguousDefinition.credential!.transports[0]!,
+      accountSettings: settings, registry: ambiguousRegistry, dnsEvidenceByEndpointUrl,
+    });
+    if (!resolved.ok) throw new Error(JSON.stringify(resolved.error));
+
+    const materialized = await materializeProviderConnectionBrokerSource({
+      expected: resolved.snapshot, registry: ambiguousRegistry, dnsEvidenceByEndpointUrl,
+      getAccountSettingsSnapshot: () => snapshot(settings),
+    });
+    expect(materialized).toMatchObject({
+      ok: true,
+      lease: { credential: { name: 'authorization', value: 'Bearer source-secret' } },
+    });
     if (materialized.ok) materialized.lease.close();
   });
 
@@ -565,7 +616,7 @@ describe('Provider Connection Team broker source', () => {
     if (materialized.ok) materialized.lease.close();
   });
 
-  it('fails closed when an external Provider contribution is replaced before materialization', async () => {
+  it('keeps an external Provider source current across an unrelated registry replacement', async () => {
     const settings = accountSettings();
     const resolved = resolveProviderConnectionBrokerSource({
       source: resourceSource(settings), machineId: 'machine-a', protocol: 'openai-responses',
@@ -577,10 +628,7 @@ describe('Provider Connection Team broker source', () => {
       registry: { ...registry, runtimeRegistryGeneration: 10 },
       dnsEvidenceByEndpointUrl,
       getAccountSettingsSnapshot: () => snapshot(settings),
-    })).resolves.toMatchObject({
-      ok: false,
-      error: { code: 'provider_authorization_changed' },
-    });
+    })).resolves.toMatchObject({ ok: true });
   });
 
   it('offers a credential-free currentness check over the exact Provider snapshot', async () => {
@@ -599,6 +647,16 @@ describe('Provider Connection Team broker source', () => {
     await expect(isProviderConnectionBrokerSourceCurrent({
       expected: resolved.snapshot,
       registry: { ...registry, runtimeRegistryGeneration: 10 },
+      dnsEvidenceByEndpointUrl,
+      getAccountSettingsSnapshot: () => snapshot(settings),
+    })).resolves.toBe(true);
+    await expect(isProviderConnectionBrokerSourceCurrent({
+      expected: resolved.snapshot,
+      registry: {
+        ...registry,
+        runtimeRegistryGeneration: 10,
+        providerActivationOccurrenceIdsByPluginId: new Map([['acme.gateway', 'gateway-occurrence-2']]),
+      },
       dnsEvidenceByEndpointUrl,
       getAccountSettingsSnapshot: () => snapshot(settings),
     })).resolves.toBe(false);

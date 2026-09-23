@@ -302,6 +302,83 @@ describe('DetailsSplitWorkspace', () => {
         expect(findFocusEligibilityProbe(screen.root, 'details-tab-focus-file:b').props.eligible).toBe(true);
     });
 
+    it('tells each rendered tab whether its group is actually presenting it', async () => {
+        // Every tab stays mounted for content, scroll and view continuity, so a
+        // surface that owns an editor, a draft or an executable frame cannot infer
+        // presentation from being mounted. Both split groups present one tab each.
+        const { DetailsSplitWorkspace } = await import('./DetailsSplitWorkspace');
+        const firstGroup = pane.scopeState!.details.groups![0]!;
+        const retainedTab = {
+            ...firstGroup.tabs[0]!,
+            key: 'file:c',
+            title: 'c.txt',
+            resource: { kind: 'file' as const, path: 'c.txt' },
+        };
+        const presentation = new Map<string, boolean>();
+
+        await renderScreen(
+            <DetailsSplitWorkspace
+                pane={{
+                    ...pane,
+                    scopeState: {
+                        ...pane.scopeState!,
+                        details: {
+                            ...pane.scopeState!.details,
+                            groups: [
+                                {
+                                    ...firstGroup,
+                                    tabKeys: ['file:a', 'file:c'],
+                                    tabs: [firstGroup.tabs[0]!, retainedTab],
+                                    activeTabKey: 'file:a',
+                                },
+                                pane.scopeState!.details.groups![1]!,
+                            ],
+                        },
+                    },
+                }}
+                renderTabContent={(tab, tabPresentation) => {
+                    presentation.set(tab.key, tabPresentation.active);
+                    return React.createElement('TabContent', { tabKey: tab.key });
+                }}
+            />,
+        );
+
+        expect(Object.fromEntries(presentation)).toEqual({
+            'file:a': true,
+            'file:c': false,
+            'file:b': true,
+        });
+    });
+
+    it('reports no tab presented for a group hidden behind a maximized sibling', async () => {
+        // A maximized group is the only one on screen — the same definition the
+        // Board's own visibility owner uses. Its siblings stay mounted for
+        // continuity, so their active tab must not keep owning an editor.
+        const { DetailsSplitWorkspace } = await import('./DetailsSplitWorkspace');
+        const presentation = new Map<string, boolean>();
+
+        await renderScreen(
+            <DetailsSplitWorkspace
+                pane={{
+                    ...pane,
+                    scopeState: {
+                        ...pane.scopeState!,
+                        details: { ...pane.scopeState!.details, maximizedGroupId: 'group:2' },
+                    },
+                }}
+                renderTabContent={(tab, tabPresentation) => {
+                    presentation.set(tab.key, tabPresentation.active);
+                    return React.createElement('TabContent', { tabKey: tab.key });
+                }}
+            />,
+        );
+
+        expect(Object.fromEntries(presentation)).toEqual({
+            'file:a': false,
+            'file:b': true,
+        });
+    });
+
     it('exposes split requests for the focused details group through the shared split canvas host', async () => {
         const { DetailsSplitWorkspace } = await import('./DetailsSplitWorkspace');
 

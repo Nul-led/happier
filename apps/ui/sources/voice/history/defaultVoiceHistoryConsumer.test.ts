@@ -79,7 +79,10 @@ describe('resolveVoiceHistoryProviderTitleKey', () => {
 describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
   it('exposes only safe canonical initial-load stage facts while preserving existing typed and code-compatible failures', async () => {
     const scope = { serverId: 'server-1', accountId: 'account-a' } as const;
-    const authority = { scope } as unknown as ServerAccountRequestAuthority;
+    // `release` is part of the captured authority contract and production releases
+    // the captured scope through it; a fixture without it fails the release, not the
+    // behaviour under test.
+    const authority = { scope, release: async () => {} } as unknown as ServerAccountRequestAuthority;
     const registry = {
       list: () => [],
       get: () => null,
@@ -301,11 +304,13 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         encryption: {},
       },
       request: async () => new Response(null, { status: 200 }),
+      release: async () => {},
     } as unknown as ServerAccountRequestAuthority;
     const calls: Array<Readonly<{
       operation: 'lookup' | 'hydrate' | 'refresh' | 'page' | 'delete';
       authority: ServerAccountRequestAuthority;
     }>> = [];
+    const retirements: Array<Readonly<{ sessionId: string; serverId: string | null }>> = [];
     const runtime: DefaultVoiceHistoryRuntime = {
       readActiveScope: () => scopeA,
       captureAuthority: async () => authorityA,
@@ -343,7 +348,9 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         calls.push({ operation: 'delete', authority });
         return { success: true };
       },
-      retireLocalSession: () => undefined,
+      retireLocalSession: (sessionId, serverId) => {
+        retirements.push({ sessionId, serverId });
+      },
     };
     const registry = {
       list: () => [],
@@ -363,6 +370,9 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
       'delete',
     ]);
     expect(calls.every((call) => call.authority === authorityA)).toBe(true);
+    // The local half of the deletion is addressed to the same Home the scoped
+    // DELETE used, so a same-id carrier cached from another Home survives it.
+    expect(retirements).toEqual([{ sessionId: 'voice-history', serverId: 'server-1' }]);
   });
 
   it('rejects a same-server account switch while every in-flight request remains bound to the captured account', async () => {
@@ -386,6 +396,7 @@ describe('createDefaultVoiceHistoryConsumerFromRuntime', () => {
         encryption: {},
       },
       request: async () => new Response(null, { status: 200 }),
+      release: async () => {},
     } as unknown as ServerAccountRequestAuthority;
     const seenAuthorities: ServerAccountRequestAuthority[] = [];
     const runtime: DefaultVoiceHistoryRuntime = {

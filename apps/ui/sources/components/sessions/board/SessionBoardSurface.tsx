@@ -451,21 +451,39 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     const recoveredRowsY = React.useRef(0);
     const [, setGeometryRevision] = React.useState(0);
     /**
-     * A first measurement is new information about where a card actually is.
+     * A measurement is new information about where a card actually is.
      *
      * Rects stay in refs because drag geometry reads them synchronously mid-gesture, but the
-     * body window has to be recomputed when one arrives: before layout the window can only
+     * body window has to be recomputed whenever one MOVES: before layout the window can only
      * estimate, and a wrapped grid's estimate is the one that leaves a visible card blank.
-     * Only the first rect per item bumps, so this is bounded by the number of cards drawn.
+     * A responsive reflow is the same problem one step later — the pane widens, the grid
+     * re-wraps, and a card measured far below the fold is suddenly on screen. Reacting only
+     * to the first rect left it showing chrome over a blank body until an unrelated scroll.
+     * Identical rects are ignored, so a layout pass that settles stops here; React batches
+     * the burst of `onLayout` calls, so no coalescing of its own is needed.
      */
     const recordItemRect = React.useCallback((
         rects: Map<string, SessionBoardItemRect>,
         itemId: string,
         rect: SessionBoardItemRect,
     ) => {
-        const firstMeasurement = !rects.has(itemId);
+        const previous = rects.get(itemId);
         rects.set(itemId, rect);
-        if (firstMeasurement) setGeometryRevision((revision) => revision + 1);
+        const moved = previous === undefined
+            || previous.x !== rect.x
+            || previous.y !== rect.y
+            || previous.width !== rect.width
+            || previous.height !== rect.height;
+        if (moved) setGeometryRevision((revision) => revision + 1);
+    }, []);
+    /** A section origin moves every rect measured against it, so it bumps the same way. */
+    const recordSectionOrigin = React.useCallback((
+        origin: { current: number },
+        y: number,
+    ) => {
+        if (origin.current === y) return;
+        origin.current = y;
+        setGeometryRevision((revision) => revision + 1);
     }, []);
     const viewRects = React.useRef(new Map<string, SessionBoardItemRect>());
     const viewsRowY = React.useRef(0);
@@ -496,9 +514,9 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
     });
     const onGridLayout = React.useCallback((event: LayoutChangeEvent) => {
         const width = Math.trunc(event.nativeEvent.layout.width);
-        gridContentY.current = event.nativeEvent.layout.y;
+        recordSectionOrigin(gridContentY, event.nativeEvent.layout.y);
         setGridWidth((current) => (current === width ? current : width));
-    }, []);
+    }, [recordSectionOrigin]);
     const capturePresentationPosition = React.useCallback((offset: number) => {
         continuity?.presentationPositions.write(presentationKey, captureSessionBoardPresentationPosition({
             orderedItemIds: orderedPresentationItemIds.current,
@@ -662,7 +680,9 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                 item={projected}
                 host={props.host}
                 primaryHost={props.resolvePrimaryHost(itemId)}
-                density={props.navigationOnly ? 'preview' : props.density}
+                // Navigation-only withholds authoring chrome (every mutating handler below
+                // is gated on `mutationControls`); it does not decide executability.
+                density={props.density}
                 canEdit={mutationControls ? snapshot.canEdit : false}
                 executableCurrentness={resolveSessionBoardExecutableCurrentness(
                     snapshot,
@@ -1016,7 +1036,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                             {visibleRecovered.length > 0 ? (
                                 <View
                                     testID={`${testID}-recovered`}
-                                    onLayout={(event) => { recoveredSectionY.current = event.nativeEvent.layout.y; }}
+                                    onLayout={(event) => { recordSectionOrigin(recoveredSectionY, event.nativeEvent.layout.y); }}
                                 >
                                     <View style={styles.section}>
                                         <Text style={styles.sectionTitle} accessibilityRole="header">
@@ -1027,7 +1047,7 @@ export function SessionBoardSurface(props: SessionBoardSurfaceProps): React.Reac
                                     <View
                                         testID={`${testID}-recovered-rows`}
                                         style={styles.single}
-                                        onLayout={(event) => { recoveredRowsY.current = event.nativeEvent.layout.y; }}
+                                        onLayout={(event) => { recordSectionOrigin(recoveredRowsY, event.nativeEvent.layout.y); }}
                                     >
                                         {visibleRecovered.map((itemId, index) => (
                                             <View

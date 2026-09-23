@@ -16,6 +16,7 @@ import {
     deleteSavedSecretResource,
     repairCustodiedSavedSecretResourceEnvelopesBestEffort,
     updateSavedSecretResource,
+    type SavedSecretResourceDeleteResult,
 } from '@/sync/ops/settings/savedSecretResourceOperations';
 import type { SavedSecret } from '@/sync/domains/settings/savedSecretTypes';
 import { isTeamActionApprovalPendingError } from '@/sync/ops/teams/teamActionClient';
@@ -68,7 +69,7 @@ export default React.memo(function SecretsSettingsScreen() {
 
     const updateResource = React.useCallback(async (
         entry: SavedSecretCatalogEntryV1,
-        update: Readonly<{ nextName?: string; nextValue?: string }>,
+        update: Readonly<{ nextName?: string; nextValue?: string; toMode?: 'plain' | 'e2ee' }>,
     ) => {
         const parsed = parseSavedSecretCatalogReferenceV1(entry.ref);
         const encryption = getSyncSingleton().encryption;
@@ -135,9 +136,50 @@ export default React.memo(function SecretsSettingsScreen() {
         await updateResource(entry, { nextValue });
     }, [updateResource]);
 
+    // Changing where a shared secret is kept is an explicit owner intent on the
+    // same resource, carried by the one update flow rather than by a second
+    // write path. Handing an end-to-end encrypted value to the Home lowers its
+    // trust level, so that direction is confirmed first; raising protection is
+    // not a disclosure and asks nothing.
+    const convertSharedMode = React.useCallback(async (entry: SavedSecretCatalogEntryV1) => {
+        if (entry.encryptionMode === null) return;
+        const toMode = entry.encryptionMode === 'e2ee' ? 'plain' : 'e2ee';
+        if (toMode === 'plain') {
+            const confirmed = await Modal.confirm(
+                t('secrets.catalog.convertToPlainTitle'),
+                t('secrets.catalog.convertToPlainBody'),
+                {
+                    cancelText: t('common.cancel'),
+                    confirmText: t('secrets.catalog.convertToPlainConfirm'),
+                },
+            );
+            if (!confirmed) return;
+        }
+        await updateResource(entry, { toMode });
+    }, [updateResource]);
+
+    // One presentation for the owner reference census's refusal, so the ordinary
+    // delete and the corrupt-resource repair name the same bindings.
+    const alertDeleteRefusal = React.useCallback((
+        result: Exclude<SavedSecretResourceDeleteResult, Readonly<{ ok: true }>>,
+    ) => {
+        if (result.reason === 'in_use') {
+            Modal.alert(t('secrets.catalog.inUseTitle'), t('secrets.catalog.inUseBody', {
+                places: result.references.map((reference) => reference.path).join('\n'),
+            }));
+            return;
+        }
+        Modal.alert(t('common.error'), result.reason === 'outcome_unknown'
+            ? t('secrets.catalog.outcomeUnknown')
+            : t('secrets.catalog.operationFailed'));
+    }, []);
+
     const removeShared = React.useCallback(async (entry: SavedSecretCatalogEntryV1) => {
         const parsed = parseSavedSecretCatalogReferenceV1(entry.ref);
         if (!scope || parsed?.kind !== 'shared_resource' || entry.revision === null) return;
+        // Deleting runs the owner reference census, which reads the owner's own
+        // current Account Settings; without a known version it cannot run.
+        if (settingsVersion === null) return;
         if (sharedMutationPending || approval.approvalPending) return;
         const confirmed = await Modal.confirm(
             t('secrets.prompts.deleteTitle'),
@@ -149,7 +191,8 @@ export default React.memo(function SecretsSettingsScreen() {
         setSharedMutationPending(true);
         try {
         const result = await deleteSavedSecretResource({
-            scope, resourceId: parsed.id, expectedRevision: entry.revision, confirmedByPresentUser: true,
+            scope, resourceId: parsed.id, expectedRevision: entry.revision,
+            expectedSettingsVersion: settingsVersion, confirmedByPresentUser: true,
             onApprovalSucceeded: async () => {
                 if (currentScopeKey.current !== requestedScopeKey) return;
                 setSharedMutationPending(false);
@@ -165,9 +208,7 @@ export default React.memo(function SecretsSettingsScreen() {
         setSharedMutationPending(false);
         if (!result.ok) {
             if (result.reason === 'outcome_unknown') await catalog.reload().catch(() => {});
-            Modal.alert(t('common.error'), result.reason === 'outcome_unknown'
-                ? t('secrets.catalog.outcomeUnknown')
-                : t('secrets.catalog.operationFailed'));
+            alertDeleteRefusal(result);
         } else await catalog.reload();
         } catch (cause) {
             if (currentScopeKey.current !== requestedScopeKey) return;
@@ -178,7 +219,7 @@ export default React.memo(function SecretsSettingsScreen() {
             setSharedMutationPending(false);
             Modal.alert(t('common.error'), t('secrets.catalog.operationFailed'));
         }
-    }, [approval, catalog, scope, scopeKey, sharedMutationPending]);
+    }, [alertDeleteRefusal, approval, catalog, scope, scopeKey, settingsVersion, sharedMutationPending]);
 
     const removeCorruptShared = React.useCallback(async (
         entry: Extract<SavedSecretCatalogCorruptEntryV1, { relationship: 'owner' }>,
@@ -193,7 +234,7 @@ export default React.memo(function SecretsSettingsScreen() {
         setSharedMutationPending(true);
         try {
             const deleted = await catalog.deleteCorruptResource(entry);
-            if (!deleted) Modal.alert(t('common.error'), t('secrets.catalog.operationFailed'));
+            if (!deleted.ok) alertDeleteRefusal(deleted);
         } catch (cause) {
             if (isTeamActionApprovalPendingError(cause)) {
                 approval.requestApproval(cause.registration);
@@ -203,7 +244,7 @@ export default React.memo(function SecretsSettingsScreen() {
         } finally {
             setSharedMutationPending(false);
         }
-    }, [approval, catalog, sharedMutationPending]);
+    }, [alertDeleteRefusal, approval, catalog, sharedMutationPending]);
 
     if (catalog.sharedEnabled && scope && settingsVersion !== null && sharingPersonal) {
         return (
@@ -287,6 +328,7 @@ export default React.memo(function SecretsSettingsScreen() {
             ) : undefined}
             onRenameShared={catalog.sharedEnabled ? (entry) => { void renameShared(entry); } : undefined}
             onRotateShared={catalog.sharedEnabled ? (entry) => { void rotateShared(entry); } : undefined}
+            onConvertShared={catalog.sharedEnabled ? (entry) => { void convertSharedMode(entry); } : undefined}
             onManageAccessShared={catalog.sharedEnabled && scopeKey ? (entry) => setAccessSelection({ scopeKey, ref: entry.ref }) : undefined}
             onDeleteShared={catalog.sharedEnabled ? (entry) => { void removeShared(entry); } : undefined}
             onDeleteCorruptShared={catalog.sharedEnabled ? (entry) => { void removeCorruptShared(entry); } : undefined}

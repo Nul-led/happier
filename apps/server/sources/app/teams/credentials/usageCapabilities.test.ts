@@ -86,8 +86,11 @@ describe('resolveTeamCredentialUsageCapabilities', () => {
                 exactPrice: false,
             },
             {
+                // A bounded non-inference probe consumes no token or cost
+                // ceiling, so it cannot withhold one either: the contract says
+                // `not_applicable`, not `unavailable`.
                 id: 'resource_test',
-                tokenObservation: 'unavailable',
+                tokenObservation: 'not_applicable',
                 exactPrice: false,
             },
         ]);

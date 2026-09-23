@@ -196,7 +196,11 @@ evidence.
 Tokens. Only `active` Accounts may mint or verify either kind. Verification
 rereads the Account even when cryptographic verification or external-provider
 eligibility is cached. `suspended` and `disabled` both fail credential
-verification opaquely; PAT introspection reports `{ active: false }`.
+verification opaquely. PAT introspection has no "inactive" success shape: a
+token whose Account is not `active` fails verification and the route answers
+`401 { error: "invalid_token" }`, exactly as it does for an unknown, expired or
+revoked token. A success body names the Account, principal, credential, expiry
+and authority only.
 
 Home administration displays reversible `suspended` as **Disabled**, while
 terminal `disabled` means **Retired**. Re-enable requires fresh authentication:

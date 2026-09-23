@@ -13,6 +13,7 @@ import {
     type SessionAuthoringValueV1,
 } from '@happier-dev/protocol';
 import { createCanonicalJsonSigningInput } from '@happier-dev/protocol/crypto/canonicalJson';
+import type { ExpectedMarketplaceListingV1 } from '@happier-dev/protocol/marketplace/internal';
 import { RunnerEndpointFactsRecipientV1Schema, type RunnerEndpointFactsRecipientV1 } from '@happier-dev/protocol/ephemeralRunner/activation';
 import type { RunnerMcpMaterialV1 } from '@happier-dev/protocol/ephemeralRunner/runnerMcpMaterial';
 
@@ -22,6 +23,7 @@ import {
     isTokenOnlyAuthCredentials,
     type AuthCredentials,
 } from '@/auth/storage/tokenStorage';
+import { resolveBundledAgentIdFromContributionIdentity } from '@/agents/catalog/catalog';
 import { decodeBase64, encodeBase64 } from '@/encryption/base64';
 import sodium from '@/encryption/libsodium.lib';
 import type { RunnerActivationClient } from '@/sync/api/ephemeralRunner/runnerActivationClient';
@@ -38,6 +40,25 @@ export type PreparedTemporaryComputerActivation = Readonly<{
     custody: RunnerActivationKeyCustody;
     preparedAuthoring: RunnerPreparedAuthoringV1;
 }>;
+
+export type RunnerAgentPluginDistributionErrorCode =
+    /** The Agent comes from an installed plugin the endpoint cannot acquire exactly. */
+    | 'runner_agent_plugin_distribution_unavailable'
+    /** A distribution was supplied for an Agent the Runner artifact already carries. */
+    | 'runner_agent_plugin_distribution_unexpected';
+
+/**
+ * A Temporary computer starts with only the bundled Runner generation. An
+ * external Agent therefore reaches it exactly once — as the reviewed
+ * distribution commitment the endpoint acquires through the canonical plugin
+ * change owner. Neither half may be fabricated or omitted here.
+ */
+export class RunnerAgentPluginDistributionError extends Error {
+    constructor(readonly code: RunnerAgentPluginDistributionErrorCode) {
+        super(code);
+        this.name = 'RunnerAgentPluginDistributionError';
+    }
+}
 
 export type RunnerCreatorRecipientAuthorityErrorCode =
     | 'runner_creator_scope_mismatch'
@@ -70,6 +91,31 @@ function assertRunnerAuthoringMaterializationAvailable(
 ): void {
     const field = findRunnerUnsupportedAuthoringField(authoring, selectedAgentProviderOwnedEnvironmentKeys);
     if (field !== null) throw new RunnerAuthoringIncompatibilityError(field);
+}
+
+/**
+ * A Temporary computer carries the bundled Runner generation and nothing else,
+ * so provenance decides whether an acquisition commitment belongs in the sealed
+ * submission: a bundled Agent must carry none, and an Agent contributed by an
+ * installed plugin must carry exactly the one the creator resolved.
+ */
+function assertRunnerAgentPluginDistribution(
+    agentTarget: SessionAuthoringValueV1['agentTarget'],
+    distribution: ExpectedMarketplaceListingV1 | null,
+): ExpectedMarketplaceListingV1 | null {
+    // An absent Agent target is the reviewed submission's own error; it is
+    // rejected by the strict schema below rather than misreported here.
+    if (agentTarget === null) return null;
+    if (resolveBundledAgentIdFromContributionIdentity(agentTarget.identity) !== null) {
+        if (distribution !== null) {
+            throw new RunnerAgentPluginDistributionError('runner_agent_plugin_distribution_unexpected');
+        }
+        return null;
+    }
+    if (distribution === null) {
+        throw new RunnerAgentPluginDistributionError('runner_agent_plugin_distribution_unavailable');
+    }
+    return distribution;
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -181,6 +227,12 @@ export async function prepareTemporaryComputerActivation(input: Readonly<{
     mcpMaterial: RunnerMcpMaterialV1 | null;
     /** Canonical provider-owned keys declared by the exact selected Agent. */
     selectedAgentProviderOwnedEnvironmentKeys: readonly string[];
+    /**
+     * Exact reviewed distribution for an Agent contributed by an installed
+     * external plugin, resolved from the marketplace index of the machine whose
+     * Agent catalog the creator chose from. Omitted for a bundled Agent.
+     */
+    agentPluginDistribution?: ExpectedMarketplaceListingV1 | null;
     /** One-shot explicit creator consent for this exact activation only. */
     authorizeUnattendedTeamAccess?: boolean;
     /** Preparation cancellation. It reaches only the safe Home currentness read. */
@@ -189,6 +241,10 @@ export async function prepareTemporaryComputerActivation(input: Readonly<{
     assertRunnerAuthoringMaterializationAvailable(
         input.authoring,
         input.selectedAgentProviderOwnedEnvironmentKeys,
+    );
+    const agentPluginDistribution = assertRunnerAgentPluginDistribution(
+        input.authoring.agentTarget,
+        input.agentPluginDistribution ?? null,
     );
     const preparedAuthoring = RunnerPreparedAuthoringV1Schema.parse({
         v: 1,
@@ -217,6 +273,7 @@ export async function prepareTemporaryComputerActivation(input: Readonly<{
             primaryTeamId: input.authoring.primaryTeamId,
             organizationPlacement: input.authoring.organizationPlacement,
         },
+        agentPluginDistribution,
         composer: {
             text: input.composer.text,
             references: input.composer.references,

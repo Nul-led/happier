@@ -28,6 +28,8 @@ import {
     createHomeGitHubAppRegistration,
 } from "@/app/integrations/github/githubManagedAppLifecycle";
 import { registerOAuthCallbackRoute } from "./registerOAuthCallbackRoute";
+import { createExternalAuthorizeUrl } from "./createExternalAuthorizeUrl";
+import { resolveOAuthRuntimeById } from "@/app/auth/providers/identityProviderCatalog";
 import { beginGitHubAppManifestSetup } from "@/app/integrations/github/githubManagedAppManifest";
 import { registerManagedGitHubAppRoutes } from "@/app/integrations/github/githubManagedAppRoutes";
 import { hashPasswordMaterial } from "@/app/auth/password/passwordMaterialVerifier";
@@ -360,8 +362,111 @@ describe("OAuth callback GitHub App installation verification", () => {
         await app.close();
 
         expect(refused.statusCode).toBe(403);
-        expect(refused.json()).toEqual({ error: "forbidden" });
+        // The persisted facts no longer satisfy the Team's accepted method, and
+        // that is recoverable: the finalizer says so instead of collapsing the
+        // outcome into a generic refusal the person cannot act on.
+        expect(refused.json()).toEqual({ error: "team_authentication_required" });
         await expect(db.gitHubAppRegistration.count({ where: { ownerTeamId: team.id } })).resolves.toBe(1);
         await expect(db.gitHubAppInstallation.count()).resolves.toBe(0);
+    });
+    it("keeps no managed-GitHub user token in the sign-in continuation it persists", async () => {
+        harness.resetEnv({
+            HAPPIER_PUBLIC_SERVER_URL: "https://home.example.test",
+            HAPPIER_WEBAPP_URL: "https://app.example.test",
+        });
+        const account = await db.account.create({
+            data: { publicKey: "github-app-owner", homeRole: "owner", status: "active" },
+            select: { id: true },
+        });
+        const created = await createHomeGitHubAppRegistration({
+            actorAccountId: account.id,
+            input: {
+                githubHost: "https://github.com",
+                githubAppId: 44n,
+                githubClientId: "Iv1.client",
+                secrets: { v: 1, clientSecret: "client-secret", privateKey: "private-key" },
+            },
+        });
+        if (created.status !== "created") throw new Error("expected registration");
+        const started = await beginGitHubAppInstallationVerification({
+            actorAccountId: account.id,
+            owner: { kind: "home" },
+            registrationId: created.registration.id,
+            expectedRegistrationRevision: created.registration.revision,
+            expectedInstallationRevision: 0,
+            githubInstallationId: 301n,
+            githubOrganizationId: 401n,
+            env: process.env,
+        });
+        if (started.status !== "ready") throw new Error(`unexpected start: ${started.status}`);
+        transport.fetch
+            .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "ephemeral-user-token" }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ id: 501, login: "github-admin-1" }), { status: 200 }));
+        const verifyApp = Fastify({ logger: false });
+        verifyApp.setValidatorCompiler(validatorCompiler);
+        verifyApp.setSerializerCompiler(serializerCompiler);
+        registerOAuthCallbackRoute(verifyApp.withTypeProvider<ZodTypeProvider>());
+        const verified = await verifyApp.inject({
+            method: "GET",
+            url: `/v1/oauth/github/callback?state=${encodeURIComponent(
+                new URL(started.authorizeUrl).searchParams.get("state")!,
+            )}&code=one-time-code`,
+        });
+        await verifyApp.close();
+        expect(verified.statusCode).toBe(302);
+
+        // Verification materializes the Home's managed-GitHub sign-in provider.
+        const instance = await db.identityProviderInstance.findFirstOrThrow({
+            where: { kind: "github_app_identity" },
+            select: { id: true },
+        });
+        await db.identityProviderInstance.update({
+            where: { id: instance.id },
+            data: { enabled: true, firstEnabledAt: new Date() },
+        });
+        const resolved = await resolveOAuthRuntimeById(process.env, instance.id);
+        if (!resolved) throw new Error("expected a managed GitHub sign-in runtime");
+        const authorizeUrl = await createExternalAuthorizeUrl({
+            flow: "auth",
+            providerId: instance.id,
+            provider: resolved.provider,
+            reference: resolved.reference,
+            env: process.env,
+            publicKeyHex: "b".repeat(64),
+            proofHash: null,
+        });
+        expect(authorizeUrl).toBeTruthy();
+
+        transport.fetch
+            .mockResolvedValueOnce(new Response(JSON.stringify({ access_token: "sign-in-user-token" }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ id: 777, login: "member-1" }), { status: 200 }));
+        const app = Fastify({ logger: false });
+        app.setValidatorCompiler(validatorCompiler);
+        app.setSerializerCompiler(serializerCompiler);
+        registerOAuthCallbackRoute(app.withTypeProvider<ZodTypeProvider>());
+        const response = await app.inject({
+            method: "GET",
+            // A managed GitHub sign-in provider registers its callback under the shared
+            // `github-app` route; the consumed attempt still carries the exact instance id.
+            url: `/v1/oauth/github-app/callback?state=${encodeURIComponent(
+                new URL(authorizeUrl!).searchParams.get("state")!,
+            )}&code=sign-in-code`,
+        });
+        await app.close();
+
+        expect(response.statusCode).toBe(302);
+        const redirect = new URL(response.headers.location as string);
+        expect(redirect.searchParams.get("error")).toBeNull();
+        const pendingKey = redirect.searchParams.get("pending");
+        expect(pendingKey).toBeTruthy();
+        const pending = JSON.parse(
+            (await db.repeatKey.findUniqueOrThrow({ where: { key: pendingKey! } })).value,
+        ) as Record<string, unknown>;
+        // The managed GitHub user token proved the identity during this callback and
+        // nothing after it reads one, so the continuation retains neither token.
+        expect(pending.profileEnc).toEqual(expect.any(String));
+        expect(pending).not.toHaveProperty("accessTokenEnc");
+        expect(pending).not.toHaveProperty("refreshTokenEnc");
+        expect(JSON.stringify(pending)).not.toContain("sign-in-user-token");
     });
 });

@@ -469,9 +469,16 @@ export class ScmStatusSync {
     /**
      * Clear source-control status for a session when it's deleted.
      * Similar to stop() but also clears any stored repository status.
+     *
+     * `serverId` is the deleted carrier's Home. Live registrations are mixed: most
+     * callers pass the exact Home (`serverId\u0000sessionId`), a few still register
+     * bare, so both keys are stopped. Omitting it clears only the bare key, which is
+     * correct only when the caller genuinely has no Home in hand.
      */
-    clearForSession(sessionId: string): void {
+    clearForSession(sessionId: string, serverId?: string | null): void {
         const state = storage.getState();
+        const exactServerId = serverId?.trim();
+        if (exactServerId) this.stop(sessionId, exactServerId);
         this.stop(sessionId);
         state.applyScmStatus(sessionId, null);
         state.updateSessionProjectScmSnapshot(sessionId, null);

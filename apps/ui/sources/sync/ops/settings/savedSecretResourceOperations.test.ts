@@ -341,12 +341,16 @@ describe('savedSecretResourceOperations', () => {
 
     it('routes delete through the canonical shared Saved Secret Action', async () => {
         runTeamAction.mockResolvedValueOnce({ kind: 'succeeded', value: { resourceId: 'resource-a' } });
+        mutateAccountSettingsOnce.mockImplementationOnce(async ({ mutate }: { mutate: (raw: Record<string, unknown>) => { value: unknown } }) => ({
+            status: 'applied', settingsVersion: 8, value: mutate({}).value,
+        }));
         const { deleteSavedSecretResource } = await import('./savedSecretResourceOperations');
 
         await expect(deleteSavedSecretResource({
             scope: { serverId: 'home-a', accountId: 'owner-a' },
             resourceId: 'resource-a',
             expectedRevision: 4,
+            expectedSettingsVersion: 8,
             confirmedByPresentUser: true,
         })).resolves.toEqual({ ok: true });
 
@@ -367,13 +371,45 @@ describe('savedSecretResourceOperations', () => {
         });
         const { deleteSavedSecretResource } = await import('./savedSecretResourceOperations');
 
+        mutateAccountSettingsOnce.mockImplementationOnce(async ({ mutate }: { mutate: (raw: Record<string, unknown>) => { value: unknown } }) => ({
+            status: 'applied', settingsVersion: 8, value: mutate({}).value,
+        }));
         await expect(deleteSavedSecretResource({
             scope: { serverId: 'home-a', accountId: 'owner-a' }, resourceId: 'resource-a', expectedRevision: 4,
-            confirmedByPresentUser: true, onApprovalSucceeded: approved, onApprovalFailed: failed,
+            expectedSettingsVersion: 8, confirmedByPresentUser: true,
+            onApprovalSucceeded: approved, onApprovalFailed: failed,
         })).rejects.toMatchObject({ name: 'TeamActionApprovalPendingError' });
         expect(approved).toHaveBeenCalledWith({ resourceId: 'resource-a' });
         expect(failed).toHaveBeenCalledWith('approval_canceled');
         expect(runTeamAction).toHaveBeenCalledOnce();
+    });
+
+    // Plan 10.08 §11.6: the owner client is the only place that can see an
+    // E2EE Account's own references, so a promoted MCP/Voice/Provider binding
+    // must block the shared delete instead of being left dangling.
+    it('refuses to delete a shared Saved Secret the owner Settings still reference', async () => {
+        mutateAccountSettingsOnce.mockImplementationOnce(async ({ mutate }: { mutate: (raw: Record<string, unknown>) => { value: unknown } }) => ({
+            status: 'applied',
+            settingsVersion: 8,
+            value: mutate({
+                mcpServersSettingsV1: {
+                    servers: [{
+                        id: 'srv',
+                        env: { TOKEN: { t: 'savedSecret', secretId: 'happier:shared-secret:v1:resource-a' } },
+                    }],
+                },
+            }).value,
+        }));
+        const { deleteSavedSecretResource } = await import('./savedSecretResourceOperations');
+
+        await expect(deleteSavedSecretResource({
+            scope: { serverId: 'home-a', accountId: 'owner-a' },
+            resourceId: 'resource-a',
+            expectedRevision: 4,
+            expectedSettingsVersion: 8,
+            confirmedByPresentUser: true,
+        })).resolves.toMatchObject({ ok: false, reason: 'in_use' });
+        expect(runTeamAction).not.toHaveBeenCalled();
     });
 
     it('routes plain audience replacement through the canonical shared Saved Secret Action', async () => {

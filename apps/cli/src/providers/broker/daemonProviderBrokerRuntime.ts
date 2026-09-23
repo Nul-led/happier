@@ -6,6 +6,7 @@ import type {
   ProviderBrokerRequestAdmissionResponseV1,
   PeerTcpTunnelRelayAuthorizationV2,
   SignedProviderBrokerRouteGrantV1,
+  UsageObservationTokens,
 } from '@happier-dev/protocol';
 import { encodeProviderBrokerAuthorityV1 } from '@happier-dev/protocol';
 import {
@@ -41,6 +42,7 @@ import type { ManagedServiceRequest, ManagedServiceResponse } from '@happier-dev
 import type { ManagedProviderEndpointHttpAccess } from '@/plugins/runtime/invocation/services/managedServicesAdapter';
 import {
   teamCredentialBrokerPlacementAcceptsMachine,
+  type TeamCredentialBrokerOperation,
   type TeamCredentialBrokerSourceOwner,
 } from './teamCredentialBrokerSourceOwner';
 
@@ -169,7 +171,6 @@ function expectedBinding(authority: SignedProviderBrokerRouteGrantV1) {
   return {
     teamId: authority.payload.teamId,
     resourceId: authority.payload.resourceId,
-    expectedResourceRevision: authority.payload.expectedResourceRevision,
     modelId: authority.payload.modelId,
     sourceRevision: authority.payload.sourceRevision,
     initiator: authority.payload.initiator,
@@ -221,13 +222,19 @@ async function responseWithCleanup(
   };
 }
 
-/** One private application stream owns one operation-scoped managed Provider
- * projection. Home still admits every request. Connected Pools re-enter their
- * canonical selector before each admission so normal source-owner switching
- * does not strand the stream on a stale member. */
+/** One private application stream owns one *joined view* of the operation's
+ * managed Provider projection. The operation itself — the signed Session or
+ * Execution Run — outlives every one of its request streams: an Agent keeps
+ * several connections alive and opens more between turns. Closing a stream
+ * therefore releases only that join; retiring the operation's semantic custody
+ * is the separate explicit act below. Home still admits every request, and
+ * Connected Pools re-enter their canonical selector before each admission so
+ * normal source-owner switching does not strand the stream on a stale member. */
 export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
   sourceOwner: TeamCredentialBrokerSourceOwner;
   application: ProviderBrokerApplicationBindingV1;
+  /** The Session or Execution Run the verified authority names. */
+  operation: TeamCredentialBrokerOperation;
 }>): ProviderBrokerApplicationStreamLifetime {
   const lifetimeController = new AbortController();
   let bindingKey: string | null = null;
@@ -265,11 +272,11 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
       if (currentPoolSource) {
         const acquired = currentPoolSource;
         currentPoolSource = null;
-        await retireAcquired(acquired);
+        await releaseProjection(acquired);
         return;
       }
       const acquired = await projectionPromise?.catch(() => null);
-      if (acquired?.ok) await retireAcquired(acquired);
+      if (acquired?.ok) await releaseProjection(acquired);
     })().then(
       () => {
         released = true;
@@ -340,7 +347,13 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
             }).catch(() => null);
           }
           if (retired || !acquired?.ok || !acquired.projection.isCurrent()) {
-            if (acquired?.ok) await retireAcquired(acquired).catch(() => undefined);
+            // A stale Pool member A is deliberately retired so B can establish.
+            // A stream that closed while this refresh ran retires nothing: its
+            // operation may still be serving other streams.
+            if (acquired?.ok) {
+              await (retired ? releaseProjection(acquired) : retireAcquired(acquired))
+                .catch(() => undefined);
+            }
             return;
           }
           const previous = currentPoolSource;
@@ -382,6 +395,17 @@ export function createPrivateProviderBrokerStreamLifetime(input: Readonly<{
       return selectedResult;
     },
     close,
+    async retire() {
+      // The authorized explicit close. It arrives on its own carrier stream,
+      // which has acquired nothing, so the operation named by the verified
+      // authority — not a projection this stream happens to hold — is what is
+      // retired. Releasing this stream's own join stays part of closing it.
+      await close();
+      await input.sourceOwner.retireOperation({
+        operation: input.operation,
+        application: input.application,
+      });
+    },
   });
 }
 
@@ -561,7 +585,11 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
         const terminalUsage = admissionUsageEventId && terminalRequestId
           && input.recordExternalTerminalUsage
           ? {
-              record: async ({ outcome }: Readonly<{ outcome: 'succeeded' | 'failed' | 'cancelled' }>) => {
+              record: async ({ outcome, actualModelId, tokens }: Readonly<{
+                outcome: 'succeeded' | 'failed' | 'cancelled';
+                actualModelId: string | null;
+                tokens: UsageObservationTokens | null;
+              }>) => {
                 const result = await input.recordExternalTerminalUsage!({
                   v: 1,
                   admissionUsageEventId,
@@ -569,7 +597,11 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
                   brokerMachineId: admitted.brokerMachineId,
                   completedAtMs: input.nowMs(),
                   outcome,
-                  measurement: 'unavailable',
+                  // The observed token fact is the measurement; there is no
+                  // separate claim the Home could believe without it.
+                  measurement: tokens ? 'reported' : 'unavailable',
+                  actualModelId,
+                  tokens,
                 });
                 if (!result.ok) throw new Error(`External terminal usage rejected: ${result.reasonCode}`);
               },
@@ -649,10 +681,17 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
             : 'resource_unavailable' as const,
         };
         let cleaned = false;
+        // A resource test is genuinely one request: its operation is keyed by
+        // that request id and nothing else will ever join it, so the response
+        // ending is the operation ending.
         const cleanup = async (): Promise<void> => {
           if (cleaned) return;
           cleaned = true;
-          await acquired.projection.cleanup();
+          try {
+            await acquired.retire();
+          } finally {
+            await acquired.projection.cleanup();
+          }
         };
         return {
           ok: true as const,
@@ -728,6 +767,7 @@ export async function startDaemonProviderBrokerRuntime(input: Readonly<{
         streamLifetime: createPrivateProviderBrokerStreamLifetime({
           sourceOwner: input.sourceOwner,
           application: authoritative.authority.payload.application,
+          operation: authoritative.authority.payload.consumer,
         }),
       }, request.signal);
     },

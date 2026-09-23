@@ -21,7 +21,7 @@ vi.mock('react-native-mmkv', () => {
     return { MMKV };
 });
 
-import { createSessionsDomain } from './sessions';
+import { createSessionsDomain, isSessionRetiredForServer } from './sessions';
 import { clearPersistence } from '@/sync/domains/state/persistence';
 
 const SESSION_ID = 's_shared';
@@ -140,7 +140,13 @@ describe('sessions domain: deleteSession addresses one Home', () => {
         expect(state.sessions[SESSION_ID]).toBeUndefined();
         expect(state.sessionMessages[SESSION_ID]).toBeUndefined();
         expect(state.sessionScmStatus[SESSION_ID]).toBeUndefined();
-        expect(state.deletedSessionIds[SESSION_ID]).toBe(true);
+        // The tombstone records the Home that was retired, so the surviving Home B
+        // carrier for the same id is not answered as deleted.
+        expect(state.deletedSessionIds[SESSION_ID]).toBe(HOME_A);
+        expect(isSessionRetiredForServer(state.deletedSessionIds, SESSION_ID, HOME_A)).toBe(true);
+        expect(isSessionRetiredForServer(state.deletedSessionIds, SESSION_ID, HOME_B)).toBe(false);
+        // A reader holding no Home at all stays at the unqualified boundary.
+        expect(isSessionRetiredForServer(state.deletedSessionIds, SESSION_ID, null)).toBe(true);
     });
 
     it('keeps the unqualified whole-id teardown for a Home-agnostic deletion', () => {
@@ -153,6 +159,9 @@ describe('sessions domain: deleteSession addresses one Home', () => {
         expect(state.sessionListRowsByServerId[HOME_B][SESSION_ID]).toBeUndefined();
         expect(state.sessions[SESSION_ID]).toBeUndefined();
         expect(state.sessionMessages[SESSION_ID]).toBeUndefined();
+        // No Home was addressed and every Home's row went, so the tombstone answers
+        // for all of them.
         expect(state.deletedSessionIds[SESSION_ID]).toBe(true);
+        expect(isSessionRetiredForServer(state.deletedSessionIds, SESSION_ID, HOME_B)).toBe(true);
     });
 });

@@ -302,4 +302,59 @@ describe('SessionBoardSurface near-viewport body window', () => {
         expect(measured).not.toContain('note-21');
         expect(measured.length + countBySuffix(screen, '-deferred')).toBe(60);
     });
+
+    it('rebuilds the body window when a responsive reflow moves a measured card into view', async () => {
+        // Thirty `compact` cards: one per row in a narrow pane, three per row once it widens.
+        const screen = await renderScreen(<Harness layout="grid" width="compact" present={itemIds(30)} />);
+        const scroll = scrollNode(screen);
+
+        await act(async () => {
+            (scroll?.props as { onLayout?: (event: unknown) => void }).onLayout?.({
+                nativeEvent: { layout: { x: 0, y: 0, width: 320, height: 600 } },
+            });
+            publishLayout(screen, 'session-board-items', { x: 0, y: 0, width: 320, height: 6000 });
+        });
+        await act(async () => {
+            itemIds(30).forEach((itemId, ordinal) => {
+                publishLayout(screen, `session-board-placement-${itemId}`, {
+                    x: 0, y: ordinal * 200, width: 320, height: 200,
+                });
+            });
+        });
+        // Measured at y=1600, more than a viewport below a 600px window.
+        expect(deferredItemIds(screen)).toContain('note-8');
+
+        // The pane widens. The same cards wrap three to a row, so this one is now in the
+        // third row — on screen at y=400 — and the person has not scrolled.
+        await act(async () => {
+            (scroll?.props as { onLayout?: (event: unknown) => void }).onLayout?.({
+                nativeEvent: { layout: { x: 0, y: 0, width: 1200, height: 600 } },
+            });
+            publishLayout(screen, 'session-board-items', { x: 0, y: 0, width: 1200, height: 2000 });
+        });
+        await act(async () => {
+            itemIds(30).forEach((itemId, ordinal) => {
+                publishLayout(screen, `session-board-placement-${itemId}`, {
+                    x: (ordinal % 3) * 400, y: Math.floor(ordinal / 3) * 200, width: 380, height: 200,
+                });
+            });
+        });
+
+        expect(mountedBodyItemIds(screen)).toContain('note-8');
+        // A card a viewport below the reflowed grid still waits, so the window moved
+        // rather than collapsing into "build everything".
+        expect(deferredItemIds(screen)).toContain('note-29');
+
+        // Control: the later scroll must not be what admits it.
+        await act(async () => {
+            (scroll?.props as { onScroll?: (event: unknown) => void }).onScroll?.({
+                nativeEvent: {
+                    contentOffset: { y: 96 },
+                    contentSize: { width: 1200, height: 2000 },
+                    layoutMeasurement: { width: 1200, height: 600 },
+                },
+            });
+        });
+        expect(mountedBodyItemIds(screen)).toContain('note-8');
+    });
 });

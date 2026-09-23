@@ -74,6 +74,30 @@ describe('repository scope snapshot publication and reuse', () => {
         syncer.stop('same', 'a');
     });
 
+    it('clears only the deleted carrier Home when the same Session id lives on another Home', () => {
+        const machine = createMachineFixture({ id: 'm', active: true, activeAt: 1 });
+        const base = createSessionFixture();
+        const session = createSessionFixture({ id: 'same', metadata: { ...base.metadata!, machineId: 'm', path: '/repo' } });
+        storage.setState({
+            machines: { m: machine },
+            machineListByServerId: { a: [machine], b: [machine] },
+            sessions: { same: session },
+            sessionListRowsByServerId: { a: { same: session }, b: { same: session } },
+        });
+        const syncer = new ScmStatusSync();
+        const a = syncer.getSync('same', 'a');
+        const b = syncer.getSync('same', 'b');
+
+        // The canonical deletion owner knows the retired carrier's Home; clearing by
+        // bare id alone leaves the exact-Home mapping and its project sync alive.
+        syncer.clearForSession('same', 'a');
+
+        expect(syncer.getSync('same', 'a')).not.toBe(a);
+        expect(syncer.getSync('same', 'b')).toBe(b);
+        syncer.stop('same', 'a');
+        syncer.stop('same', 'b');
+    });
+
     it.each([
         { root: 'c:/users/alice/repo', home: 'C:\\Users\\Alice\\', member: 'C:\\Users\\Alice\\Repo/src', late: '\\\\?\\C:\\USERS\\ALICE\\repo\\late', sibling: 'C:\\Users\\Alice\\repo2' },
         { root: '//server/share/repo', home: '\\\\Server\\Share\\', member: '\\\\?\\UNC\\SERVER\\SHARE\\Repo\\src', late: '\\\\server\\SHARE\\repo/late', sibling: '\\\\server\\share\\repo2' },

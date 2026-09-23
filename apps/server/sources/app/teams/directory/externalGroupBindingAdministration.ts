@@ -242,7 +242,6 @@ export async function setExternalGroupBindingForActor(
                         identity: {
                             state: { in: ["active", "suspended"] },
                             boundAccountId: { not: null },
-                            teamMembershipId: { not: null },
                         },
                     },
                     select: {
@@ -256,14 +255,16 @@ export async function setExternalGroupBindingForActor(
                     },
                 })
                 : [];
-            // A bound Account ID is only an address. The directory identity's
-            // persisted membership binding is the source evidence, and both
-            // sides must still identify the same Account before this transaction
-            // creates a binding or materializes native access.
+            // A bound Account ID is only an address. When the identity also
+            // manages a Team-membership lifetime, both sides must identify the
+            // same Account before this transaction creates a binding. An
+            // identity that manages no lifetime is not an error: the person may
+            // be natively invited or admitted by another directory, and the
+            // contribution owner below still requires a current membership.
             if (members.some(({ identity }) => (
                 identity.boundAccountId === null
-                || identity.teamMembershipId === null
-                || identity.teamMembership?.accountId !== identity.boundAccountId
+                || (identity.teamMembershipId !== null
+                    && identity.teamMembership?.accountId !== identity.boundAccountId)
             ))) {
                 return { ok: false, error: "directory_group_mapping_invalid" };
             }

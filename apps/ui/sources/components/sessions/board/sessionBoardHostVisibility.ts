@@ -5,6 +5,8 @@ import {
 
 import type { SessionCompanionPlacement } from '@/components/sessions/companion/layout/resolveSessionCompanionPlacement';
 
+import { SESSION_BOARD_DESTINATION } from './sessionBoardDestination';
+
 /**
  * The ONE place a Session shell answers "which placement runs this item".
  *
@@ -30,6 +32,18 @@ export type SessionBoardPaneVisibilityFacts = Readonly<{
      * supply the exact fact.
      */
     detailsShowsBoard?: boolean;
+    /**
+     * A GENERIC Board destination (the view grid, not one item's expanded tab) is the
+     * active tab of some visible Details group. Only that destination can draw an
+     * arbitrary item, so it is what makes Details a candidate host for one.
+     */
+    detailsShowsGenericBoard?: boolean;
+    /**
+     * Items whose own `board:<itemId>` destination is the active tab of a visible
+     * Details group. The generic Board tab and an expanded destination are both
+     * `details`, so this is what distinguishes the two physical copies.
+     */
+    detailsExpandedItemIds?: readonly string[];
     /** Incumbent pane focus mode, which is also what selects the focused Details renderer. */
     detailsFocusModeActive: boolean;
     rightOpen: boolean;
@@ -54,9 +68,29 @@ export type SessionBoardHostVisibility = Readonly<{
     foreground: boolean;
     visibleHosts: readonly SessionBoardMountHost[];
     focusedHost: SessionBoardMountHost | null;
+    /** Items whose expanded Details destination is on screen, from the typed groups. */
+    detailsExpandedItemIds: readonly string[];
+    /** A generic Board destination is on screen, so Details can draw an arbitrary item. */
+    detailsShowsGenericBoard: boolean;
 }>;
 
-const SIDEBAR_BOARD_TAB_ID = 'board';
+/** The Details placement asking which copy of an item physically runs. */
+export type SessionBoardDetailsDestination = Readonly<{
+    /** The expanded item this destination is, or `null` for the generic Board tab. */
+    detailsDestinationItemId: string | null;
+}>;
+
+/**
+ * The resolver the mounted Session shell hands to every Board placement.
+ *
+ * Details placements also say WHICH destination is asking, because two of them can
+ * be visible at once and both are the `details` host.
+ */
+export type SessionBoardPlacementPrimaryMountResolver = (
+    itemId: string,
+    destination?: SessionBoardDetailsDestination,
+) => SessionBoardMountHost | null;
+
 
 export function resolveSessionBoardHostVisibility(
     facts: SessionBoardHostVisibilityFacts,
@@ -75,17 +109,20 @@ export function resolveSessionBoardHostVisibility(
             foreground: facts.foreground,
             visibleHosts: Object.freeze([mobileHost]),
             focusedHost: null,
+            detailsExpandedItemIds: Object.freeze([]),
+            detailsShowsGenericBoard: false,
         });
     }
 
     const visibleHosts: SessionBoardMountHost[] = [];
+    let detailsRendersBoard = false;
 
     if (facts.panes) {
-        const detailsRendersBoard = facts.panes.detailsOpen
+        detailsRendersBoard = facts.panes.detailsOpen
             && (facts.panes.detailsShowsBoard ?? true);
         if (detailsRendersBoard) visibleHosts.push('details');
         if (detailsRendersBoard && facts.panes.detailsFocusModeActive) visibleHosts.push('focusedDetails');
-        if (facts.panes.rightOpen && facts.panes.rightActiveTabId === SIDEBAR_BOARD_TAB_ID) {
+        if (facts.panes.rightOpen && facts.panes.rightActiveTabId === SESSION_BOARD_DESTINATION.id) {
             visibleHosts.push('sidebar');
         }
     }
@@ -101,6 +138,11 @@ export function resolveSessionBoardHostVisibility(
         foreground: facts.foreground,
         visibleHosts: Object.freeze(visibleHosts),
         focusedHost,
+        detailsExpandedItemIds: Object.freeze(
+            detailsRendersBoard ? [...(facts.panes?.detailsExpandedItemIds ?? [])] : [],
+        ),
+        detailsShowsGenericBoard: detailsRendersBoard
+            && (facts.panes?.detailsShowsGenericBoard ?? true),
     });
 }
 
@@ -117,16 +159,45 @@ export function resolveSessionBoardHostVisibility(
 export function resolveSessionBoardItemPrimaryMountHost(input: Readonly<{
     visibility: SessionBoardHostVisibility;
     itemVisibleInCompanion: boolean;
+    /** The exact item; only a Details placement needs it. */
+    itemId?: string;
+    /**
+     * Which Details destination is asking: the item it expands, or `null` for the
+     * generic Board tab. Omitted by every non-Details placement, which keeps the
+     * host answer as it was.
+     */
+    detailsDestination?: SessionBoardDetailsDestination;
 }>): SessionBoardMountHost | null {
-    const visibleHosts = input.itemVisibleInCompanion
-        ? input.visibility.visibleHosts
-        : input.visibility.visibleHosts.filter((host) => host !== 'companion');
-    const focusedHost = input.visibility.focusedHost === 'companion' && !input.itemVisibleInCompanion
-        ? null
-        : input.visibility.focusedHost;
-    return resolveSessionBoardPrimaryMountHost({
+    // Details is a candidate for THIS item only when a destination that actually draws
+    // it is on screen: the generic Board grid, or the item's own expanded tab. A
+    // Details pane presenting only `board:item-a` renders nothing for item B, so
+    // electing it there left B an inert preview with no live copy anywhere.
+    const detailsDrawsItem = input.itemId === undefined
+        || input.visibility.detailsShowsGenericBoard
+        || input.visibility.detailsExpandedItemIds.includes(input.itemId);
+    const visibleHosts = input.visibility.visibleHosts.filter((host) => {
+        if (host === 'companion') return input.itemVisibleInCompanion;
+        if (host === 'details' || host === 'focusedDetails') return detailsDrawsItem;
+        return true;
+    });
+    const focusedHost = input.visibility.focusedHost !== null
+        && visibleHosts.includes(input.visibility.focusedHost)
+        ? input.visibility.focusedHost
+        : null;
+    const host = resolveSessionBoardPrimaryMountHost({
         foreground: input.visibility.foreground,
         visibleHosts,
         focusedHost,
     });
+    if (host !== 'details' && host !== 'focusedDetails') return host;
+    const destination = input.detailsDestination;
+    if (!destination || input.itemId === undefined) return host;
+    // Two Details destinations are both the `details` host, and both draw the item
+    // at full density. The item's own expanded destination is the one a person
+    // opened FOR it, so it runs and the generic Board tab previews the same item;
+    // close it and the generic tab takes the mount straight back.
+    if (destination.detailsDestinationItemId !== null) {
+        return destination.detailsDestinationItemId === input.itemId ? host : null;
+    }
+    return input.visibility.detailsExpandedItemIds.includes(input.itemId) ? null : host;
 }

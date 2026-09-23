@@ -80,6 +80,37 @@ describe('reconcileTeamCredentialDirectMaterial', () => {
     expect(upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({ expectedPublishedSourceVersion: 'source-v2' }));
   });
 
+  // The Home advances the resource's published source version on the first
+  // tuple of a run, so the remaining recipients of the same page must be
+  // fenced against the version this run just published, not the one captured
+  // before it.
+  it('carries the version this run published into the remaining recipients of the page', async () => {
+    let publishedSourceVersion: string | null = null;
+    const page = () => TeamCredentialDirectMaterialPreparationResponseV1Schema.parse({
+      homeServerIdentityId: 'home', teamId: 'team', resourceId: 'resource', resourceRevision: 4,
+      source: { v: 1, kind: 'provider_connection', connectionId: sourceMember.connectionId, connectionSecurityFingerprint: ProviderConnectionSecurityFingerprintV1Schema.parse('connection-security:v1:test'), credentialSlotId: 'apiKey' },
+      sourceMember, sourceCredentialIncarnation: null, publishedSourceVersion,
+      recipients: [
+        { recipientAccountId: 'a', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null },
+        { recipientAccountId: 'b', recipientMode: 'plain', recipientContentPublicKeyFingerprint: null, recipientContentPublicKey: null, expectedStoredSourceVersion: null },
+      ],
+      nextCursor: null,
+    });
+    const upsert = vi.fn(async (item: Readonly<{ sourceVersion: string }>) => {
+      publishedSourceVersion = item.sourceVersion;
+      return { ok: true as const };
+    });
+
+    await expect(reconcileTeamCredentialDirectMaterial({
+      teamId: 'team', resourceId: 'resource', sourceMemberKey,
+      fetchPreparation: vi.fn(async () => page()),
+      resolveSourceSnapshot: vi.fn(async () => sourceSnapshot),
+      upsert,
+    })).resolves.toEqual({ ok: true, prepared: 2 });
+    expect(upsert).toHaveBeenNthCalledWith(1, expect.objectContaining({ expectedPublishedSourceVersion: null }));
+    expect(upsert).toHaveBeenNthCalledWith(2, expect.objectContaining({ expectedPublishedSourceVersion: 'source-v2' }));
+  });
+
   it('fails closed when the preparation source member differs from the canonical snapshot', async () => {
     const upsert = vi.fn();
     await expect(reconcileTeamCredentialDirectMaterial({

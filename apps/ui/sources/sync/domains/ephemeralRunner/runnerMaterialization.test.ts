@@ -52,6 +52,7 @@ const preparedAuthoring: RunnerPreparedAuthoringV1 = {
         access: null, primaryTeamId: null,
         organizationPlacement: { folderId: null, tagIds: [] },
     },
+    agentPluginDistribution: null,
     composer: { text: 'Inspect the project', references: [], attachments: [] },
     files: [],
     attachmentDestination: { uploadLocation: 'workspace', workspaceRelativeDir: '.happier/uploads', vcsIgnoreStrategy: 'git_info_exclude', vcsIgnoreWritesEnabled: true },

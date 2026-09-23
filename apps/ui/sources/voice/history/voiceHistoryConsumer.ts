@@ -102,7 +102,12 @@ export type VoiceHistoryConsumerDeps<
     sessionId: string,
     scope: TScope,
   ): Promise<SessionDeleteResult>;
-  retireLocalSession(sessionId: string): void;
+  /**
+   * Retires the local half of the deletion the scoped server DELETE above just
+   * performed, by the same exact address: the same Session id can be cached from
+   * another Home, whose carrier this clear never touched.
+   */
+  retireLocalSession(sessionId: string, scope: TScope): void;
   runCarrierOperation<T>(operation: () => Promise<T>): Promise<T>;
   now(): Date;
 }>;
@@ -510,7 +515,7 @@ export function createVoiceHistoryConsumer<
         const retireExactDeletedBinding = (): boolean => {
           if (!isExactDeletedBindingCurrent()) return false;
           try {
-            deps.retireLocalSession(deletingSessionId);
+            deps.retireLocalSession(deletingSessionId, deletingScope);
           } finally {
             if (isExactDeletedBindingCurrent()) {
               resetBinding();

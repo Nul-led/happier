@@ -120,6 +120,11 @@ vi.mock('@/utils/ui/promptUnsavedChangesAlert', () => ({
     },
 }));
 
+import {
+    resolveSessionBoardHostVisibility,
+    resolveSessionBoardItemPrimaryMountHost,
+    type SessionBoardDetailsDestination,
+} from './sessionBoardHostVisibility';
 import { SessionBoardContinuityProvider, useMountedSessionBoardContinuity } from './SessionBoardContinuity';
 import { SessionBoardControllerOwner, useMountedSessionBoardController } from './SessionBoardControllerProvider';
 import { SessionBoardDetailsSurface } from './SessionBoardDetailsSurface';
@@ -592,5 +597,126 @@ describe('retained Details Board tabs', () => {
         const upsert = actions.calls[0];
         expect(upsert?.kind === 'upsert' && JSON.stringify(upsert.input.item)).toContain('<main>final</main>');
         expect(screen.findAllHostsByTestId('session-board-hosted-html-editor')).toHaveLength(0);
+    });
+});
+
+/**
+ * The generic Board destination and an item's expanded destination are different
+ * tabs on purpose, so a split Details workspace can present both at once. Both are
+ * the `details` host and both draw the item at full density: comparing host kinds
+ * alone gave one executable item two live frames.
+ */
+function DestinationOwner(props: Readonly<{
+    binding: MountedBinding;
+    actions: SessionBoardActionsPort;
+    expandedVisible: boolean;
+}>): React.ReactElement {
+    const visibility = resolveSessionBoardHostVisibility({
+        foreground: true,
+        panes: {
+            detailsOpen: true,
+            detailsShowsBoard: true,
+            detailsExpandedItemIds: props.expandedVisible ? ['item-2'] : [],
+            detailsFocusModeActive: false,
+            rightOpen: false,
+            rightActiveTabId: null,
+        },
+        companionPlacement: { kind: 'hidden' },
+        mobileSurface: null,
+    });
+    const resolvePrimaryHost = (itemId: string, destination?: SessionBoardDetailsDestination) => (
+        resolveSessionBoardItemPrimaryMountHost({
+            visibility,
+            itemVisibleInCompanion: false,
+            itemId,
+            ...(destination ? { detailsDestination: destination } : {}),
+        })
+    );
+    return (
+        <SessionBoardControllerOwner
+            address={ADDRESS}
+            input={{
+                sessionId: ADDRESS.sessionId,
+                serverId: ADDRESS.serverId,
+                binding: props.binding,
+                actions: props.actions,
+                confirmDestructive: async () => true,
+                callerHostedHtmlAvailable: true,
+            }}
+            binding={props.binding}
+            actions={props.actions}
+            pluginRuntime={PLUGIN_RUNTIME}
+            callerHostedHtmlRuntime={HOSTED_HTML_RUNTIME}
+        >
+            <SessionBoardDetailsSurface
+                sessionId={ADDRESS.sessionId}
+                serverId={ADDRESS.serverId}
+                paneScopeId="pane-details"
+                host="details"
+                active
+                resolvePrimaryHost={resolvePrimaryHost}
+                pluginRuntime={PLUGIN_RUNTIME}
+                callerHostedHtmlRuntime={HOSTED_HTML_RUNTIME}
+            />
+            {props.expandedVisible ? (
+                <SessionBoardDetailsSurface
+                    sessionId={ADDRESS.sessionId}
+                    serverId={ADDRESS.serverId}
+                    paneScopeId="pane-details"
+                    host="details"
+                    active
+                    focusedItemId="item-2"
+                    resolvePrimaryHost={resolvePrimaryHost}
+                    pluginRuntime={PLUGIN_RUNTIME}
+                    callerHostedHtmlRuntime={HOSTED_HTML_RUNTIME}
+                />
+            ) : null}
+        </SessionBoardControllerOwner>
+    );
+}
+
+describe('two visible Details Board destinations', () => {
+    beforeEach(() => {
+        standardCleanup();
+        retainedPaneHarness.companionItems = [{ kind: 'widget', widgetId: 'item-1' }];
+        retainedPaneHarness.companionAvailable = false;
+    });
+
+    async function mountDestinations(expandedVisible: boolean) {
+        const binding: MountedBinding = {
+            status: 'ready',
+            snapshot: mutationRichSnapshot(),
+            refresh: () => undefined,
+        };
+        const screen = await renderScreen(
+            <SessionBoardContinuityProvider sessionId={ADDRESS.sessionId} serverId={ADDRESS.serverId}>
+                <DestinationOwner
+                    binding={binding}
+                    actions={recordingActions().port}
+                    expandedVisible={expandedVisible}
+                />
+            </SessionBoardContinuityProvider>,
+        );
+        return screen.tree.root.findAllByType(SessionWidgetHost)
+            .filter((node) => (node.props as SessionWidgetHostProps).item.itemId === 'item-2')
+            .map((node) => node.props as SessionWidgetHostProps);
+    }
+
+    it('runs the executable item in exactly one of the two presented destinations', async () => {
+        const copies = await mountDestinations(true);
+
+        expect(copies).toHaveLength(2);
+        const executable = copies.filter((copy) => copy.primaryHost === copy.host);
+        expect(executable).toHaveLength(1);
+        // The destination a person opened FOR the item is the one that runs it.
+        expect(copies.filter((copy) => copy.expanded === true).map((copy) => copy.primaryHost))
+            .toEqual(['details']);
+    });
+
+    it('hands the mount back to the Board when the expanded destination is not presented', async () => {
+        const copies = await mountDestinations(false);
+
+        expect(copies).toHaveLength(1);
+        expect(copies[0]?.primaryHost).toBe('details');
     });
 });

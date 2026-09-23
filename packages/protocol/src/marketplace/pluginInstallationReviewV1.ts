@@ -418,14 +418,14 @@ export const PluginInstallationReviewSchema: z.ZodType<PluginInstallationReview>
  * daemon has not been allowed to read that root. The locator is the whole
  * security payload, so it is carried verbatim and shown verbatim.
  */
-export type PluginDevelopmentSourceRootReview = Readonly<{
+export type PluginDevelopmentProjectTrustReview = Readonly<{
   source: Readonly<{
     kind: 'path';
     locator: string;
   }>;
 }>;
 
-export const PluginDevelopmentSourceRootReviewSchema: z.ZodType<PluginDevelopmentSourceRootReview> = z.object({
+export const PluginDevelopmentProjectTrustReviewSchema: z.ZodType<PluginDevelopmentProjectTrustReview> = z.object({
   source: z.object({
     kind: z.literal('path'),
     locator: ReviewNonEmptyStringSchema,
@@ -442,15 +442,28 @@ export const PluginDevelopmentSourceRootReviewSchema: z.ZodType<PluginDevelopmen
  * continuation paths — uses this one envelope, so the decision a screen offers
  * can never disagree with the stage the daemon is actually at.
  */
-export const PluginChangePendingReviewResultSchema = z.discriminatedUnion('kind', [
+export const PluginChangePendingReviewResultSchema = z.union([
   z.object({
-    kind: z.literal('sourceRootReviewRequired'),
+    kind: z.literal('reviewRequired'),
+    reviewKind: z.literal('projectTrust'),
     pendingChangeId: z.string().trim().min(1).max(256),
-    review: PluginDevelopmentSourceRootReviewSchema,
+    review: PluginDevelopmentProjectTrustReviewSchema,
   }).strict(),
   z.object({
     kind: z.literal('reviewRequired'),
+    reviewKind: z.literal('installation'),
     pendingChangeId: z.string().trim().min(1).max(256),
+    reason: z.enum(['firstInstall', 'authorityExpansion']),
+    currentVersion: ReviewNonEmptyStringSchema.nullable(),
+    authorityExpansion: z.array(z.enum([
+      'executableRealms',
+      'requiredHostAccess',
+      'selectedOptionalHostAccess',
+      'connectedAccountPurpose',
+      'declaredIntegration',
+      'requestInterceptor',
+      'rawCredentialAccess',
+    ])).max(7).refine((values) => new Set(values).size === values.length),
     review: PluginInstallationReviewSchema,
   }).strict(),
 ]);

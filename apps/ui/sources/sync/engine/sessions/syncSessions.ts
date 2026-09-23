@@ -379,14 +379,19 @@ export async function buildNewSessionFromSocketUpdate(params: {
 export function handleDeleteSessionSocketUpdate(params: {
     sessionId: string;
     serverId: string | null;
-    /** Socket owns its queued/coalesced work; callers inject its per-session teardown. */
-    dropSocketSessionWork?: (sessionId: string) => void;
+    /**
+     * Socket owns its queued/coalesced work; callers inject its per-session teardown.
+     * `retireActiveCarrier` tells it whether this deletion owns the carrier those
+     * bare-id queues belong to: a non-carrier Home must not drop another Home's
+     * admitted-but-unflushed work for the same Session id.
+     */
+    dropSocketSessionWork?: (sessionId: string, retireActiveCarrier: boolean) => void;
     invalidateSessionHydration?: (sessionId: string) => void;
     resetSessionTranscriptState?: (sessionId: string) => void;
     deleteSession: (sessionId: string, serverId: string | null) => void;
     removeSessionEncryption: (sessionId: string) => void;
     removeProjectManagerSession: (sessionId: string) => void;
-    clearScmStatusForSession: (sessionId: string) => void;
+    clearScmStatusForSession: (sessionId: string, serverId: string | null) => void;
     log: { log: (message: string) => void };
 }) {
     const {
@@ -402,15 +407,17 @@ export function handleDeleteSessionSocketUpdate(params: {
         log,
     } = params;
 
-    const retireActiveCarrier = shouldRetireSessionCarrierForServer(
-        storage.getState().sessions[sessionId]?.serverId,
-        serverId,
-    );
+    // Read before `deleteSession` removes the record: the carrier's own Home is the
+    // key the SCM owner registered this Session under, and an unaddressed deletion
+    // has no other Home to clear it by.
+    const carrierServerId = storage.getState().sessions[sessionId]?.serverId ?? null;
+    const retireActiveCarrier = shouldRetireSessionCarrierForServer(carrierServerId, serverId);
 
     // Drop admitted socket work before it can flush back into the just-deleted
-    // carrier. The socket module owns this queue/raw-normalization inventory and
-    // already addresses it per Home.
-    dropSocketSessionWork?.(sessionId);
+    // carrier. The socket module owns this queue/raw-normalization inventory; the
+    // address-qualified half answers for the named Home, the bare-id half answers
+    // for the carrier, so it is told which of the two this deletion retires.
+    dropSocketSessionWork?.(sessionId, retireActiveCarrier);
 
     if (retireActiveCarrier) {
         // Fence older by-id responses before removing local state or encryption.
@@ -432,8 +439,10 @@ export function handleDeleteSessionSocketUpdate(params: {
         // Remove from project manager
         removeProjectManagerSession(sessionId);
 
-        // Clear any cached git status
-        clearScmStatusForSession(sessionId);
+        // Clear any cached git status. The SCM owner keys an exact mapping by Home,
+        // so the addressed Home leads and the carrier's own Home answers for an
+        // unaddressed retirement.
+        clearScmStatusForSession(sessionId, serverId ?? carrierServerId);
     }
 
     log.log(`🗑️ Session ${sessionId} deleted from local storage${serverId ? ` for Home ${serverId}` : ''}`);

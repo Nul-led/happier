@@ -155,9 +155,13 @@ import {
 } from '@/sync/runtime/sessionMessagesPagination';
 import {
     applyTailDiscontinuityOlderPage,
+    applyTailDiscontinuityOpaqueOlderPage,
+    applyTailDiscontinuityOpaqueForwardPage,
     openTailDiscontinuityFromSnapshot,
+    openTailDiscontinuityFromOpaqueSnapshot,
     type SessionMessagesTailDiscontinuity,
 } from '@/sync/runtime/sessionMessagesTailDiscontinuity';
+import { makeExternalSessionHistoricalImportLocalId } from '@happier-dev/protocol';
 import {
     createInactiveSessionMessagesWindowState,
     resetSessionMessagesWindowForLiveTail,
@@ -409,8 +413,8 @@ import {
     createActivePluginAccountAvailabilityProjectionHydrator,
 } from './api/plugins/availability/pluginAvailabilityProjection';
 import {
+    applyPluginAccountAvailabilityProjectionRefresh,
     clearPluginAccountAvailabilityProjection,
-    replacePluginAccountAvailabilityProjection,
 } from './domains/plugins/availability/projection';
 import {
     publishActiveScopedPluginSettingsChanges,
@@ -1287,6 +1291,7 @@ class Sync {
       private externalSessionTailStateBySessionId = new Map<string, {
           cursor: string | null;
           readonly recoveryRequired: boolean;
+          lastSourceMessageIds?: readonly string[];
       }>();
       private externalSessionTailCursorListenersBySessionId =
           new Map<string, Set<() => void>>();
@@ -1541,7 +1546,7 @@ class Sync {
             this.pluginAvailabilitySync = new InvalidateSync(limitSnapshotAttempt(async () => {
                 const projection = await this.pluginAvailabilityProjectionHydrator.refresh();
                 if (!projection) return;
-                replacePluginAccountAvailabilityProjection(projection);
+                applyPluginAccountAvailabilityProjectionRefresh(projection);
             }), { onError, onSuccess, onRetry, pause, backoff, shouldRetry });
 
             this.activityAccumulator = new ActivityUpdateAccumulator(
@@ -1830,9 +1835,17 @@ class Sync {
           const generation = this.serverScopeGeneration;
           const lifetime = captureActiveServerAccountScopeCurrentness();
           const serverId = authority?.scope.serverId ?? resolvePreferredServerIdForSessionId(sessionId);
+          const readTranscriptAuthorityKey = () => {
+              const session = storage.getState().sessions[sessionId] ?? null;
+              return session ? externalSessionTranscriptAuthorityKey(
+                  this.resolveTranscriptAuthority(session, readExternalSessionLinkFromSession(session)),
+              ) : null;
+          };
+          const transcriptAuthorityKey = readTranscriptAuthorityKey();
           const isCurrent = (): boolean => generation === this.serverScopeGeneration
               && encryption === this.encryption
               && lifetime.isCurrent()
+              && readTranscriptAuthorityKey() === transcriptAuthorityKey
               && (!authority || this.isServerAccountSessionReadCurrent(authority, sessionId));
           return {
               isCurrent,
@@ -2746,7 +2759,7 @@ class Sync {
         this.sessionMessagesBeforeSeqByKey.clear();
         this.sessionMessagesHasMoreOlderByKey.clear();
         for (const sessionId of [...this.sessionMessagesTailDiscontinuityBySessionId.keys()]) {
-            storage.getState().setSessionTailContiguousFloorSeq(sessionId, null);
+            storage.getState().setSessionTailContiguousBoundary(sessionId, null);
         }
         this.sessionMessagesTailDiscontinuityBySessionId.clear();
         this.sessionMessagesFetchLatestInFlightByKey.clear();
@@ -3408,49 +3421,20 @@ class Sync {
                             'unknown',
                         );
                     }
-                    const hydratedSessionEncryptionMode = result.session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
                     const hydratedServerId = String(result.session?.serverId ?? '').trim();
-                    // A captured scoped authority hydrates through its own
-                    // encryption instance inside fetchSessionByIdWithServerScope.
-                    // Mirroring those keys into the focused Account would mix
-                    // two Account owners for the same bare Session id.
-                    if (
-                        hydratedSessionEncryptionMode === 'e2ee'
-                        && this.encryption
-                        && !options?.authority
-                        && prefersActiveServer
-                    ) {
-                        const hydration = result.sessionDataKeyHydration;
-                        const sessionScope = hydratedServerId
-                            ? { serverId: hydratedServerId }
-                            : undefined;
-                        if (hydration && !hydration.stale) {
-                            for (const sessionId of hydration.sessionEncryptionClears) {
-                                this.encryption.removeSessionEncryption(sessionId);
-                            }
-                            if (hydration.sessionKeys.size > 0) {
-                                await this.encryption.initializeSessions(hydration.sessionKeys, {
-                                    ...sessionScope,
-                                    shouldContinue: isHydrationCurrent,
-                                });
-                            }
-                        }
-                        if (
-                            !isHydrationCurrent()
-                        ) {
-                            return createRetryableSessionRouteResult(
-                                normalized,
-                                preferredServerId,
-                                'unknown',
-                            );
-                        }
-                    }
+                    // The active-Account keys this route needs are already committed by
+                    // the canonical by-ID owner, which received this exact encryption
+                    // instance as `activeEncryption`. Re-applying its result here made a
+                    // second decision-maker for one committed hydration; a captured
+                    // scoped authority still hydrates through its own instance inside
+                    // `fetchSessionByIdWithServerScope`, so nothing mixes two Account
+                    // owners for the same bare Session id.
 
                     if (!hydratedServerId || areServerProfileIdentifiersEquivalent(hydratedServerId, activeServerId)) {
                         this.activeServerSessionIds.add(normalized);
                     }
                     if (DEBUG_SESSION_HYDRATE) {
-                        const hasEncryption = hydratedSessionEncryptionMode === 'plain'
+                        const hasEncryption = result.session?.encryptionMode === 'plain'
                             ? false
                             : Boolean(this.encryption?.getSessionEncryption(normalized));
                         log.log(`[sessionHydrate] hydration ok ${normalized} hasEncryption=${hasEncryption}`);
@@ -4402,7 +4386,7 @@ class Sync {
         }>,
     ): Promise<void> {
         assertValidPendingMessageId(localId);
-        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, serverWireMode }) => {
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, serverWireMode, isCurrent }) => {
             await updatePendingRequestedActionV2({
                 sessionId,
                 localId,
@@ -4412,6 +4396,7 @@ class Sync {
                     : {}),
                 request,
                 outboxScope,
+                isOutboxScopeCurrent: isCurrent,
             });
             if (options?.resumeWhenAvailable !== undefined && !options.accountLifetime) {
                 await this.refreshSessionForSubmit(sessionId, {
@@ -5012,10 +4997,10 @@ class Sync {
         ));
     }
 
-    private async publishExternalSessionObservedProgress(
+    private publishExternalSessionObservedProgress(
         sessionId: string,
         items: ReadonlyArray<ExternalSessionTranscriptRawMessageV1>,
-    ): Promise<void> {
+    ): void {
         const session = storage.getState().sessions[sessionId] ?? null;
         const ownerMetadata = session ? readSessionOwnerMetadataView(session) : null;
         if (!ownerMetadata || !readExternalSessionLink(ownerMetadata)) return;
@@ -5073,7 +5058,8 @@ class Sync {
             this.setExternalSessionTailCursor(sessionId, options.nextCursor ?? null);
         }
 
-        await this.publishExternalSessionObservedProgress(sessionId, items);
+        this.recordExternalSessionSourcePage(sessionId, items, externalSessionLink);
+        this.publishExternalSessionObservedProgress(sessionId, items);
         return true;
     }
 
@@ -5083,7 +5069,7 @@ class Sync {
      * relink during staged replacement at either the prior accepted transcript
      * or the complete replacement; it cannot expose an intermediate page.
      */
-    private async applyExternalSessionTranscriptPages(
+    private applyExternalSessionTranscriptPages(
         sessionId: string,
         pages: ReadonlyArray<Readonly<{
             items: ReadonlyArray<ExternalSessionTranscriptRawMessageV1>;
@@ -5091,21 +5077,21 @@ class Sync {
         }>>,
         expectedAuthorityKey: string,
         options?: Readonly<{ replaceExisting?: boolean }>,
-    ): Promise<boolean> {
+    ): Readonly<{ changedMessageIds: readonly string[]; sourceMessageIds: readonly string[] }> | null {
         if (options?.replaceExisting !== true
-            && this.externalSessionTailStateBySessionId.get(sessionId)?.recoveryRequired) return false;
+            && this.externalSessionTailStateBySessionId.get(sessionId)?.recoveryRequired) return null;
         const session = storage.getState().sessions[sessionId] ?? null;
         const externalSessionLink = readExternalSessionLink(
             session ? readSessionOwnerMetadataView(session) : null,
         );
-        if (!session || !externalSessionLink) return false;
+        if (!session || !externalSessionLink) return null;
         if (
             this.isExternalSessionTranscriptAuthorityFenced(sessionId, expectedAuthorityKey) ||
             externalSessionTranscriptAuthorityKey(
                 this.resolveTranscriptAuthority(session, externalSessionLink),
             ) !== expectedAuthorityKey
         ) {
-            return false;
+            return null;
         }
 
         const items = pages.flatMap((page) => page.items);
@@ -5113,12 +5099,13 @@ class Sync {
             agentId: externalSessionLink.agentId,
             remoteSessionId: externalSessionLink.remoteSessionId,
         });
+        let changedMessageIds: readonly string[] = [];
         if (normalizedMessages.length > 0 || options?.replaceExisting === true) {
-            this.applyMessages(sessionId, normalizedMessages, {
+            changedMessageIds = this.applyMessages(sessionId, normalizedMessages, {
                 notifyVoice: false,
                 notifyActivity: true,
                 replaceExisting: options?.replaceExisting === true,
-            });
+            }).changed;
         }
         if (pages.length > 0) {
             this.setExternalSessionTailCursor(
@@ -5126,8 +5113,10 @@ class Sync {
                 pages[pages.length - 1]?.nextCursor ?? null,
             );
         }
-        await this.publishExternalSessionObservedProgress(sessionId, items);
-        return true;
+        const sourceMessageIds = this.recordExternalSessionSourcePage(sessionId, items, externalSessionLink);
+        const materializedMessageIds = this.readExternalSessionPageMaterializedIds(sessionId, normalizedMessages, changedMessageIds);
+        this.publishExternalSessionObservedProgress(sessionId, items);
+        return { changedMessageIds: materializedMessageIds, sourceMessageIds };
     }
 
     async publishSessionPermissionModeToMetadata(params: {
@@ -5636,12 +5625,13 @@ class Sync {
     }
 
     async deletePendingMessage(sessionId: string, pendingId: string, options?: PendingQueueOwnerOptions): Promise<void> {
-        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request }) => {
+        await this.withPendingQueueOwnerContext(sessionId, async ({ outboxScope, request, isCurrent }) => {
         await deletePendingMessageV2({
             sessionId,
             pendingId,
             request,
             outboxScope,
+            isOutboxScopeCurrent: isCurrent,
         });
         }, undefined, options?.serverId);
     }
@@ -6123,7 +6113,11 @@ class Sync {
             },
             log,
         });
-        if (!shouldContinue()) return;
+        // A canceled acquisition applied no rows, so it must not advance this
+        // Home's frontier either — otherwise the cursor moves past a page that
+        // was never stored and no later refresh recovers it. Same guard the
+        // concurrent-cache owner already applies before publishing a page.
+        if (!result.current || !shouldContinue()) return;
         const fetchedSessionIdSet = new Set(result.sessionIds);
         const missingRequiredHydrationSessionIds = requiredHydrationSessionIds.filter(
             (sessionId) => !fetchedSessionIdSet.has(sessionId),
@@ -6235,6 +6229,9 @@ class Sync {
             }),
             serverId,
             source: page.source,
+            // Each membership is a distinct reader of this Home: an ad-hoc row-only
+            // read must not abort the mounted list's in-flight hydration.
+            sessionListReadScopeId: page.membership,
             sessionListPageSize: page.limit ?? (page.source.kind === 'query' ? page.source.body.limit : undefined),
             sessionListCursor: page.cursor,
             sessionListAttentionCursor: page.attentionCursor,
@@ -7995,6 +7992,7 @@ class Sync {
         const authorityKey = externalSessionTranscriptAuthorityKey(authority);
         const stagedMessages: NormalizedMessage[] = [];
         let stagedPage: ApiSessionMessagesResponse | null = null;
+        const pageOptions = this.getSessionMessagesPageOptions(session.id);
         await fetchAndApplyMessages({
             sessionId: session.id,
             serverId: resolvePreferredServerIdForSessionId(session.id),
@@ -8010,10 +8008,11 @@ class Sync {
             onMessagesPage: (page) => {
                 stagedPage = page;
             },
-            ...this.getSessionMessagesPageOptions(session.id),
+            ...pageOptions,
             log,
         });
 
+        if (!pageOptions.isCurrent()) return false;
         const currentSession = storage.getState().sessions[session.id] ?? null;
         if (!currentSession) return false;
         const currentLink = readExternalSessionLinkFromSession(currentSession);
@@ -8112,6 +8111,7 @@ class Sync {
           const previousAuthorityKey = this.transcriptAuthorityKeyBySessionId.get(sessionId) ?? null;
           const loadedTranscript = storage.getState().sessionMessages[sessionId];
           const hasMaterializedMessages = Object.keys(loadedTranscript?.messagesById ?? {}).length > 0;
+          const pageOptions = this.getSessionMessagesPageOptions(sessionId);
 
           if (this.isExternalSessionTranscriptAuthorityFenced(sessionId, authorityKey)) {
               storage.getState().setSessionTranscriptLoadIssue(sessionId, {
@@ -8135,8 +8135,14 @@ class Sync {
               // catch-up reads only deltas and cannot recover the initial window, leaving the
               // reader with the blank list that a target jump appears to fix.
               if (!hasLoadedMessages || !hasMaterializedMessages) {
+                  // A target/sidechain page can accept rows before initial loading
+                  // completes. Retire that authority through the staged handoff too.
+                  const replacesAcceptedAuthority = previousAuthorityKey !== authorityKey
+                      && ((loadedTranscript?.reducerState.messageIds.size ?? 0) > 0
+                          || this.getSessionTargetWindowState(sessionId).isWindowMode);
                   const fetchInitialAuthorityWindow = () =>
-                      this.fetchExternalSessionMessages(sessionId, externalSessionLink);
+                      this.fetchExternalSessionMessages(sessionId, externalSessionLink,
+                          replacesAcceptedAuthority ? { mode: 'replace' } : undefined);
                   const didApplyCurrentAuthority = await (hasLoadedMessages
                       ? this.withSessionCatchUpNewer(sessionId, fetchInitialAuthorityWindow)
                       : fetchInitialAuthorityWindow());
@@ -8156,7 +8162,7 @@ class Sync {
                   didApplyCurrentAuthority = await this.fetchExternalSessionMessages(
                       sessionId,
                       externalSessionLink,
-                      { replaceExisting: true },
+                      { mode: 'replace' },
                   );
               } else {
                   didApplyCurrentAuthority = await this.catchUpExternalSessionMessages(sessionId, externalSessionLink);
@@ -8224,7 +8230,7 @@ class Sync {
                           allowHasMoreInference: true, deferHistoryStartCoverage: true,
                       });
                   },
-                  ...this.getSessionMessagesPageOptions(sessionId),
+                  ...pageOptions,
                   log,
               });
               // A loaded zero-row transcript is warm state, not a first-ever load. When the
@@ -8263,7 +8269,7 @@ class Sync {
           // the first-ever snapshot load (handled earlier) are intentionally not bracketed.
           const isCatchUpWork = decision.kind === 'incremental_batched' || decision.kind === 'tail_reset_latest_page';
           const isCatchUpSessionCurrent = (): boolean => (
-              this.isSessionKnownOnResolvedOwnerServer(sessionId)
+              this.isSessionKnownOnResolvedOwnerServer(sessionId) && pageOptions.isCurrent()
           );
           const canRefreshLiveTail = () => (
               (this.sessionViewport.get(sessionId)?.isPinned ?? true)
@@ -8305,7 +8311,7 @@ class Sync {
                               afterSeq: cursor, expectedGap, page,
                           });
                       },
-                      ...this.getSessionMessagesPageOptions(sessionId),
+                      ...pageOptions,
                       log,
                   });
 
@@ -8355,7 +8361,7 @@ class Sync {
                               afterSeq: prefixMaxSeqBeforeSnapshot, expectedGap, page,
                           });
                       },
-                      ...this.getSessionMessagesPageOptions(sessionId),
+                      ...pageOptions,
                       log,
                   });
               },
@@ -8559,9 +8565,9 @@ class Sync {
       private async fetchExternalSessionMessages(
           sessionId: string,
           externalSessionLink: ReturnType<typeof readExternalSessionLink> extends infer T ? Exclude<T, null> : never,
-          options?: Readonly<{ replaceExisting?: boolean }>,
+          options?: Readonly<{ mode: 'replace' | 'merge_latest' }>,
       ): Promise<boolean> {
-          if (options?.replaceExisting === true && !this.isExternalSessionLiveTail(sessionId)) {
+          if (options && !this.isExternalSessionLiveTail(sessionId)) {
               this.deferredForwardLoadingSessions.add(sessionId);
               return false;
           }
@@ -8573,6 +8579,9 @@ class Sync {
           );
           const acceptedCursor = this.getExternalSessionTailCursor(sessionId);
           const acceptedWindow = this.externalSessionTailStateBySessionId.get(sessionId);
+          const prefixMessageIds = options?.mode === 'merge_latest' ? this.readExternalSessionPrefixMessageIds(sessionId) : [];
+          const prefixMaterializedMessageIds = options?.mode === 'merge_latest'
+              ? storage.getState().sessionMessages[sessionId]?.messageIdsOldestFirst ?? [] : [];
           const authorityIsCurrent = () => {
               if (!serverScopeIsCurrent()) return false;
               if (this.isExternalSessionTranscriptAuthorityFenced(sessionId, expectedAuthorityKey)) {
@@ -8667,28 +8676,40 @@ class Sync {
               return false;
           }
 
-          if (options?.replaceExisting === true) {
+          if (options) {
               if (!shouldContinue()) return false;
               if (!this.isExternalSessionLiveTail(sessionId)) {
                   this.deferredForwardLoadingSessions.add(sessionId);
                   return false;
               }
-              this.resetSessionTranscriptState(sessionId, { resetMessages: false });
+              if (options.mode === 'replace') this.resetSessionTranscriptState(sessionId, { resetMessages: false });
           }
           // The request was admitted above; its own replacement retires the old
           // cursor record. Keep the authority fence without rejecting that commit.
           if (!authorityIsCurrent()) return false;
-          if (!await this.applyExternalSessionTranscriptPages(
+          const applied = this.applyExternalSessionTranscriptPages(
               sessionId,
               stagedPages,
               expectedAuthorityKey,
-              { replaceExisting: options?.replaceExisting === true },
-          )) {
-              return false;
+              { replaceExisting: options?.mode === 'replace' },
+          );
+          if (!applied) return false;
+          if (options?.mode === 'merge_latest') {
+              const previous = this.sessionMessagesTailDiscontinuityBySessionId.get(sessionId);
+              this.commitSessionTailDiscontinuity(sessionId, openTailDiscontinuityFromOpaqueSnapshot({
+                  prev: previous?.kind === 'opaque' ? previous : null,
+                  prefixMessageIds, prefixMaterializedMessageIds,
+                  snapshotMessageIds: applied.sourceMessageIds,
+                  snapshotMaterializedMessageIds: applied.changedMessageIds,
+                  nextCursor: initialWindow.hasMoreOlder ? initialWindow.olderCursor : null,
+              }));
+          } else {
+              this.externalSessionOlderCursorBySessionId.set(sessionId, initialWindow.olderCursor);
+              this.externalSessionHasMoreOlderBySessionId.set(sessionId, initialWindow.hasMoreOlder);
           }
-          this.externalSessionOlderCursorBySessionId.set(sessionId, initialWindow.olderCursor);
-          this.externalSessionHasMoreOlderBySessionId.set(sessionId, initialWindow.hasMoreOlder);
-          if (options?.replaceExisting !== true) {
+          const nextWindow = this.externalSessionTailStateBySessionId.get(sessionId);
+          if (nextWindow) this.externalSessionTailStateBySessionId.set(sessionId, { ...nextWindow, recoveryRequired: false });
+          if (options?.mode !== 'replace') {
               storage.getState().applyMessagesLoaded(sessionId);
           }
           storage.getState().setSessionTranscriptLoadIssue(sessionId, null);
@@ -8699,6 +8720,51 @@ class Sync {
       private isExternalSessionLiveTail(sessionId: string): boolean {
           return this.getSessionViewport(sessionId)?.isPinned !== false
               && !this.getSessionTargetWindowState(sessionId).isWindowMode;
+      }
+
+      private readExternalSessionSourceMessageIds(
+          items: ReadonlyArray<ExternalSessionTranscriptRawMessageV1>,
+          sourceIdentity: Readonly<{ agentId: string; remoteSessionId: string }>,
+      ): readonly string[] {
+          return items.map((item) => makeExternalSessionHistoricalImportLocalId({ ...sourceIdentity, directItemId: item.id }));
+      }
+
+      private recordExternalSessionSourcePage(
+          sessionId: string,
+          items: ReadonlyArray<ExternalSessionTranscriptRawMessageV1>,
+          sourceIdentity: Readonly<{ agentId: string; remoteSessionId: string }>,
+      ): readonly string[] {
+          const ids = this.readExternalSessionSourceMessageIds(items, sourceIdentity);
+          const accepted = this.externalSessionTailStateBySessionId.get(sessionId);
+          if (accepted && ids.length > 0) accepted.lastSourceMessageIds = ids;
+          return ids;
+      }
+
+      private readExternalSessionPrefixMessageIds(sessionId: string): readonly string[] {
+          const receipt = this.externalSessionTailStateBySessionId.get(sessionId)?.lastSourceMessageIds;
+          if (receipt?.length) return receipt;
+          const reducer = storage.getState().sessionMessages[sessionId]?.reducerState;
+          if (!reducer) return [];
+          // Warm caches retain canonical source-namespaced IDs, not raw provider
+          // IDs. These use the same Protocol identity as new page receipts.
+          const ids = new Set(reducer.messageIds.keys());
+          for (const message of reducer.messages.values()) if (message.realID) ids.add(message.realID);
+          return [...ids];
+      }
+
+      private readExternalSessionPageMaterializedIds(
+          sessionId: string,
+          messages: readonly NormalizedMessage[],
+          changed: readonly string[],
+      ): readonly string[] {
+          const reducer = storage.getState().sessionMessages[sessionId]?.reducerState;
+          const ids = new Set(changed);
+          for (const message of messages) {
+              const id = reducer?.messageIds.get(message.id)
+                  ?? (message.localId ? reducer?.localIds.get(message.localId) : undefined);
+              if (id) ids.add(id);
+          }
+          return [...ids];
       }
 
       /**
@@ -8735,7 +8801,7 @@ class Sync {
           // so overlapping flows for one session compose correctly and release on every return path.
           return await this.withSessionCatchUpNewer(sessionId, async () => {
               if (this.externalSessionTailStateBySessionId.get(sessionId)?.recoveryRequired) {
-                  return await this.fetchExternalSessionMessages(sessionId, externalSessionLink, { replaceExisting: true });
+                  return await this.fetchExternalSessionMessages(sessionId, externalSessionLink, { mode: 'replace' });
               }
               const serverScopeIsCurrent = this.createServerScopeGuard();
               const initialSession = storage.getState().sessions[sessionId] ?? null;
@@ -8818,10 +8884,10 @@ class Sync {
               if (tail.truncated === true) {
                   this.deferredForwardLoadingSessions.add(sessionId);
                   return await this.fetchExternalSessionMessages(sessionId, externalSessionLink, {
-                      replaceExisting: true,
+                      mode: recoveryRequired ? 'replace' : 'merge_latest',
                   });
               }
-              const didApply = await this.applyExternalSessionTranscriptPages(
+              const didApply = this.applyExternalSessionTranscriptPages(
                   sessionId,
                   stagedPages,
                   expectedAuthorityKey,
@@ -8830,7 +8896,7 @@ class Sync {
                   if (hasMore) this.deferredForwardLoadingSessions.add(sessionId);
                   else this.deferredForwardLoadingSessions.delete(sessionId);
               }
-              return didApply;
+              return didApply !== null;
           });
       }
 
@@ -8903,7 +8969,7 @@ class Sync {
                       };
                   }
                   if (this.externalSessionTailStateBySessionId.get(params.sessionId)?.recoveryRequired) {
-                      await this.fetchExternalSessionMessages(params.sessionId, externalSessionLink, { replaceExisting: true });
+                      await this.fetchExternalSessionMessages(params.sessionId, externalSessionLink, { mode: 'replace' });
                       return {
                           loaded: 0,
                           hasMore: this.externalSessionHasMoreOlderBySessionId.get(params.sessionId) ?? true,
@@ -8920,11 +8986,13 @@ class Sync {
                   }
 
                   const knownHasMore = this.externalSessionHasMoreOlderBySessionId.get(params.sessionId);
-                  if (knownHasMore === false) {
+                  const recordedGap = this.sessionMessagesTailDiscontinuityBySessionId.get(params.sessionId);
+                  const opaqueGap = recordedGap?.kind === 'opaque' ? recordedGap : null;
+                  if (opaqueGap ? opaqueGap.walkCursor === null : knownHasMore === false) {
                       return { loaded: 0, hasMore: false, status: 'no_more' };
                   }
 
-                  const cursor = this.externalSessionOlderCursorBySessionId.get(params.sessionId) ?? null;
+                  const cursor = opaqueGap?.walkCursor ?? this.externalSessionOlderCursorBySessionId.get(params.sessionId) ?? null;
                   if (!cursor) {
                       return { loaded: 0, hasMore: knownHasMore ?? false, status: 'not_ready' };
                   }
@@ -8984,7 +9052,7 @@ class Sync {
                       if (page.truncated === true) {
                           this.markExternalSessionTranscriptRecoveryRequired(params.sessionId);
                           await this.fetchExternalSessionMessages(params.sessionId, externalSessionLink, {
-                              replaceExisting: true,
+                              mode: 'replace',
                           });
                           return {
                               loaded: 0,
@@ -8995,12 +9063,31 @@ class Sync {
                           };
                       }
 
+                      const sourceMessageIds = this.readExternalSessionSourceMessageIds(page.items, externalSessionLink);
+                      if (opaqueGap && page.hasMore === true && page.nextCursor === cursor
+                          && applyTailDiscontinuityOpaqueOlderPage({
+                              prev: opaqueGap, pageMessageIds: sourceMessageIds, pageMaterializedMessageIds: [], nextCursor: cursor,
+                          }) !== null) {
+                          console.error('Failed to load older external session messages: page cursor did not advance');
+                          return { loaded: 0, hasMore: true, status: 'not_ready' };
+                      }
                       const normalizedMessages = normalizeExternalSessionTranscriptMessages(page.items, {
                           agentId: externalSessionLink.agentId,
                           remoteSessionId: externalSessionLink.remoteSessionId,
                       });
+                      let changedMessageIds: readonly string[] = [];
                       if (normalizedMessages.length > 0) {
-                          this.applyMessages(params.sessionId, normalizedMessages, { notifyVoice: false });
+                          changedMessageIds = this.applyMessages(params.sessionId, normalizedMessages, { notifyVoice: false }).changed;
+                      }
+                      if (opaqueGap) {
+                          const nextGap = applyTailDiscontinuityOpaqueOlderPage({
+                              prev: opaqueGap, pageMessageIds: sourceMessageIds,
+                              pageMaterializedMessageIds: this.readExternalSessionPageMaterializedIds(params.sessionId, normalizedMessages, changedMessageIds),
+                              nextCursor: page.hasMore ? page.nextCursor ?? null : null,
+                          });
+                          this.commitSessionTailDiscontinuity(params.sessionId, nextGap);
+                          const hasMore = nextGap ? nextGap.walkCursor !== null : knownHasMore ?? false;
+                          return { loaded: normalizedMessages.length, hasMore, status: hasMore ? 'loaded' : 'no_more' };
                       }
 
                       this.externalSessionOlderCursorBySessionId.set(params.sessionId, page.nextCursor ?? null);
@@ -9051,9 +9138,10 @@ class Sync {
           // monotone-min cursor — that cursor still points below the pre-gap prefix and
           // paging from it skipped the hole forever. Cursor-override loads (fork parent
           // context) keep legacy behavior and never advance the walk.
-          const tailDiscontinuity = params.scope === 'main' && normalizedBeforeSeqOverride === null
+          const recordedDiscontinuity = params.scope === 'main' && normalizedBeforeSeqOverride === null
               ? this.sessionMessagesTailDiscontinuityBySessionId.get(params.sessionId) ?? null
               : null;
+          const tailDiscontinuity = recordedDiscontinuity?.kind === 'seq' ? recordedDiscontinuity : null;
           if (
               knownHasMore === false
               && (
@@ -9080,6 +9168,7 @@ class Sync {
           const requestMessages = this.createSessionMessagesRequest(params.sessionId);
           const session = storage.getState().sessions[params.sessionId] ?? null;
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+          const pageOptions = this.getSessionMessagesPageOptions(params.sessionId);
           try {
               const result = await fetchAndApplyOlderMessages({
                   sessionId: params.sessionId,
@@ -9094,14 +9183,14 @@ class Sync {
                   request: requestMessages,
                   sessionReceivedMessages: this.sessionReceivedMessages,
                   applyMessages: (sid, messages) => this.applyMessages(sid, messages, { notifyVoice: false }),
-                  ...this.getSessionMessagesPageOptions(params.sessionId),
+                  ...pageOptions,
                   log,
               });
 
               // The page pipeline can return its missing-session sentinel after
               // decrypt. Do not reinterpret that empty page as terminal history:
               // delete-wins must leave pagination and deferred state absent.
-              if (!this.isSessionKnownOnResolvedOwnerServer(params.sessionId)) {
+              if (!this.isSessionKnownOnResolvedOwnerServer(params.sessionId) || !pageOptions.isCurrent()) {
                   return { loaded: 0, hasMore: knownHasMore ?? true, status: 'not_ready' };
               }
 
@@ -9527,6 +9616,7 @@ class Sync {
           const requestMessages = this.createSessionMessagesRequest(normalizedSessionId);
           const session = storage.getState().sessions[normalizedSessionId] ?? null;
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+          const pageOptions = this.getSessionMessagesPageOptions(normalizedSessionId);
           try {
               await fetchAndApplyMessages({
                   sessionId: normalizedSessionId,
@@ -9548,9 +9638,10 @@ class Sync {
                           { allowHasMoreInference: true },
                       );
                   },
-                  ...this.getSessionMessagesPageOptions(normalizedSessionId),
+                  ...pageOptions,
                   log,
               });
+              if (!pageOptions.isCurrent()) return 'not_ready';
               this.sessionMessagesFetchedLatestByKey.add(pagingKey);
               return 'loaded';
           } catch (error) {
@@ -9915,6 +10006,7 @@ class Sync {
           const requestMessages = this.createSessionMessagesRequest(sessionId);
           const session = storage.getState().sessions[sessionId] ?? null;
           const sessionEncryptionMode = session?.encryptionMode === 'plain' ? 'plain' : 'e2ee';
+          const pageOptions = this.getSessionMessagesPageOptions(sessionId);
           try {
               const expectedGap = readTranscriptGap(this.deferredTranscriptState, sessionId);
               const pageServerId = resolvePreferredServerIdForSessionId(sessionId);
@@ -9937,10 +10029,11 @@ class Sync {
                           afterSeq, expectedGap, page,
                       });
                   },
-                  ...this.getSessionMessagesPageOptions(sessionId),
+                  ...pageOptions,
                   log,
               });
 
+              if (!pageOptions.isCurrent()) return { loaded: 0, hasMore: true, status: 'not_ready' };
               if (result.page.messages.length === 0) {
                   this.deferredForwardLoadingSessions.delete(sessionId);
                   return { loaded: 0, hasMore: false, status: 'no_more' };
@@ -10132,16 +10225,24 @@ class Sync {
        * id on every Home, which is only correct when the caller has no Home in hand.
        */
       public retireLocalSession(sessionId: string, serverId?: string | null): void {
+          const normalizedServerId = String(serverId ?? '').trim() || null;
           handleDeleteSessionSocketUpdate({
               sessionId,
-              serverId: String(serverId ?? '').trim() || null,
-              dropSocketSessionWork,
+              serverId: normalizedServerId,
+              // The socket teardown is addressed by the same Home this retirement is:
+              // without it the socket falls back to the active Home and clears the
+              // wrong addresses.
+              dropSocketSessionWork: (targetSessionId, retireActiveCarrier) => dropSocketSessionWork(
+                  targetSessionId,
+                  normalizedServerId,
+                  retireActiveCarrier,
+              ),
               invalidateSessionHydration: this.invalidateDeletedSessionHydration,
               resetSessionTranscriptState: (targetSessionId) => this.resetSessionTranscriptState(targetSessionId),
               deleteSession: (targetSessionId, targetServerId) => storage.getState().deleteSession(targetSessionId, targetServerId),
               removeSessionEncryption: (targetSessionId) => this.encryption?.removeSessionEncryption(targetSessionId),
               removeProjectManagerSession: (targetSessionId) => projectManager.removeSession(targetSessionId),
-              clearScmStatusForSession: (targetSessionId) => scmStatusSync.clearForSession(targetSessionId),
+              clearScmStatusForSession: (targetSessionId, carrierServerId) => scmStatusSync.clearForSession(targetSessionId, carrierServerId),
               log,
           });
       }
@@ -10635,6 +10736,7 @@ class Sync {
           await handleSocketUpdate({
               update,
               encryption: this.encryption,
+              credentials: this.credentials ?? null,
               settingsSecretsKey: this.settingsSecretsKey,
               settingsSecretsReadKeys: this.settingsSecretsReadKeys,
               settingsScope: this.pendingSettingsScope,
@@ -10879,7 +10981,7 @@ class Sync {
             return;
         }
         if (this.externalSessionTailStateBySessionId.get(binding.sessionId)?.recoveryRequired) {
-            await this.fetchExternalSessionMessages(binding.sessionId, externalSessionLink, { replaceExisting: true });
+            await this.fetchExternalSessionMessages(binding.sessionId, externalSessionLink, { mode: 'replace' });
             return;
         }
         const resolvedServerId =
@@ -10943,7 +11045,7 @@ class Sync {
         }
         if (decision.reason === 'resync_required') {
             await this.fetchExternalSessionMessages(binding.sessionId, currentLink, {
-                replaceExisting: true,
+                mode: this.externalSessionTailStateBySessionId.get(binding.sessionId)?.recoveryRequired ? 'replace' : 'merge_latest',
             });
             return;
         }
@@ -11002,6 +11104,12 @@ class Sync {
         const result = options?.replaceExisting === true
             ? storage.getState().replaceSessionMessages(sessionId, authorityFilteredMessages)
             : storage.getState().applyMessages(sessionId, authorityFilteredMessages);
+        const gap = this.sessionMessagesTailDiscontinuityBySessionId.get(sessionId);
+        if (gap?.kind === 'opaque') {
+            this.commitSessionTailDiscontinuity(sessionId, applyTailDiscontinuityOpaqueForwardPage({
+                prev: gap, pageMaterializedMessageIds: result.changed,
+            }));
+        }
         let receivedCommittedUserLocalIds: Set<string> | null = null;
         for (const message of authorityFilteredMessages) {
             if (message.role === 'user' && typeof message.localId === 'string' && message.localId.length > 0) {
@@ -11151,13 +11259,25 @@ class Sync {
             this.sessionMessagesTailDiscontinuityBySessionId.set(sessionId, record);
             // While a hole is open there IS more older content by construction (the hole
             // and the prefix), regardless of page-size inference on individual walk pages.
-            const pagingKey = this.buildSessionMessagesPaginationKey({ sessionId, scope: 'main' });
-            this.sessionMessagesHasMoreOlderByKey.set(pagingKey, true);
+            if (record.kind === 'seq') {
+                const pagingKey = this.buildSessionMessagesPaginationKey({ sessionId, scope: 'main' });
+                this.sessionMessagesHasMoreOlderByKey.set(pagingKey, true);
+            }
         } else {
             this.sessionMessagesTailDiscontinuityBySessionId.delete(sessionId);
         }
         if (previous === record) return;
-        storage.getState().setSessionTailContiguousFloorSeq(sessionId, record ? record.walkCursor : null);
+        storage.getState().setSessionTailContiguousBoundary(sessionId, record
+            ? record.kind === 'seq' ? { kind: 'seq', seq: record.walkCursor } : { kind: 'messageIds', messageIds: record.boundaryMessageIds }
+            : null);
+    }
+
+    getSessionTailDiscontinuityOlderAvailability(sessionId: string): boolean | null {
+        if (this.getSessionTargetWindowState(sessionId).isWindowMode) return null;
+        const gap = this.sessionMessagesTailDiscontinuityBySessionId.get(sessionId);
+        if (!gap) return null;
+        if (gap.kind === 'opaque') return gap.walkCursor !== null;
+        return this.sessionMessagesHasMoreOlderByKey.get(this.buildSessionMessagesPaginationKey({ sessionId, scope: 'main' })) ?? true;
     }
 
     /**
@@ -11182,7 +11302,7 @@ class Sync {
         if (!Number.isFinite(snapshotMinSeq)) return;
         const prev = this.sessionMessagesTailDiscontinuityBySessionId.get(sessionId) ?? null;
         const next = openTailDiscontinuityFromSnapshot({
-            prev,
+            prev: prev?.kind === 'seq' ? prev : null,
             prefixMaxSeq: prefixMaxSeqBeforeSnapshot,
             snapshotMinSeq,
         });

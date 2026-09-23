@@ -62,7 +62,15 @@ export type ExternalMembershipResult =
         teamMembershipId: string | null;
         accountId: string;
     }>
-    /** A native or differently-sourced lifetime would have been seized. */
+    /**
+     * The membership exists and is managed by native administration or by a
+     * different source. This source contributes no lifetime change, and the
+     * membership it names stays exactly as it is. It is deliberately not a
+     * conflict: a second directory that observes the same person still has
+     * valid Group evidence for that membership.
+     */
+    | Readonly<{ status: "managed_elsewhere"; teamMembershipId: string }>
+    /** The source's own binding is corrupt — it names somebody else's row. */
     | Readonly<{ status: "management_conflict" }>
     | Readonly<{ status: "team_archived" }>
     | Readonly<{ status: "source_not_found" }>;
@@ -152,13 +160,28 @@ export async function applyExternalTeamMembershipInTx(
     });
 
     if (existing) {
+        // A manager pointer that names a different Account's membership is a
+        // corrupt binding, not a second manager, and must not be written past.
+        if (
+            input.source.kind === "directory_source"
+            && identity!.teamMembershipId !== null
+            && identity!.teamMembershipId !== existing.id
+        ) return { status: "management_conflict" };
         const ownsLifetime = input.source.kind === "directory_source"
             ? existing.id === identity?.teamMembershipId
                 && existing.identityConnectionManagement === null
             : existing.provisionedIdentity === null
                 && existing.identityConnectionManagement?.teamIdentityConnectionId
                     === input.source.teamIdentityConnectionId;
-        if (!ownsLifetime) return { status: "management_conflict" };
+        // Somebody else owns this lifetime. The source neither seizes it nor
+        // ends it: a source cannot offboard a person it did not admit. It
+        // reports the membership so the caller can still consume the source's
+        // own Group evidence against it.
+        if (!ownsLifetime) {
+            return input.desired === "absent"
+                ? { status: "unchanged", teamMembershipId: existing.id, accountId: input.accountId }
+                : { status: "managed_elsewhere", teamMembershipId: existing.id };
+        }
     }
 
     return withTeamSessionAccessEffectsInTx(tx, {
@@ -353,8 +376,11 @@ export async function applyExternalGroupContributionInTx(
     if (binding.directorySourceId !== null && input.desired === "present") {
         // Structural Team membership is only the target address. For a
         // directory-owned binding, the source's exact person/Group projection
-        // must still bind that membership lifetime to this Account before the
-        // adapter can materialize native authorization. This consumes Lane 03
+        // must still bind this Account before the adapter can materialize
+        // native authorization. Whether this source also manages the Team
+        // lifetime is a separate question and deliberately not asked here: a
+        // natively invited person, or one a second directory admitted, still
+        // has exact Group evidence from this source. This consumes Lane 03
         // evidence without making it an authorization store: the resulting
         // TeamGroupMembership remains the only fact Lane 04 reads.
         const projectedMember = await tx.teamDirectoryGroupMember.findFirst({
@@ -363,7 +389,6 @@ export async function applyExternalGroupContributionInTx(
                 externalGroupId: binding.externalGroupId,
                 identity: {
                     boundAccountId: input.accountId,
-                    teamMembershipId: membership.id,
                     state: { in: ["active", "suspended"] },
                 },
             },

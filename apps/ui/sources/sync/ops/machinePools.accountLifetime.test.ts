@@ -7,6 +7,7 @@ import { retireActiveServerAccountScopeLifetime } from '@/sync/domains/scope/act
 import { upsertAndActivateServer } from '@/sync/domains/server/serverRuntime';
 import { upsertServerProfile } from '@/sync/domains/server/serverProfiles';
 import { getStorage } from '@/sync/domains/state/storage';
+import { switchConnectionToActiveServer } from '@/sync/runtime/orchestration/connectionManager';
 import { resetRuntimeFetch, setRuntimeFetch } from '@/utils/system/runtimeFetch';
 import { refreshMachinePools } from './machinePools';
 
@@ -67,6 +68,11 @@ describe('machine pool Account lifetime', () => {
         getStorage().setState(initialStorageState, true);
         boundary.activeServerId = (await upsertAndActivateServer({ serverUrl: 'https://home-a.test', name: 'Focused Home' })).id;
         boundary.backgroundServerId = (await upsertServerProfile({ serverUrl: 'https://home-b.test', name: 'Background Home' })).id;
+        // Selecting a Home is not applying it: the Account lifetime this suite
+        // switches only exists once the real connection owner has published an
+        // applied runtime. The credential store is still untouched here, so the
+        // genuine switch lifecycle runs without starting authenticated Sync.
+        await switchConnectionToActiveServer();
         boundary.pendingResponses.length = 0;
         transportBoundary.delayRelease = false;
         transportBoundary.pendingReleases.length = 0;

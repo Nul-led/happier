@@ -86,7 +86,11 @@ describe('useMachinePoolSelection', () => {
                 machines: { ...features.features.machines, pools: { enabled: true } },
             },
         })));
+        // Both Homes are primed: the cases that select a background Home's row
+        // need that Home's own Pools capability, exactly as the sibling
+        // Account-lifetime fixture primes both.
         await getServerFeaturesSnapshot({ serverId: boundary.serverId, force: true });
+        await getServerFeaturesSnapshot({ serverId: boundary.backgroundServerId, force: true });
         setRuntimeFetch(async (url, init) => {
             if (String(url).endsWith('/v1/account/encryption')) {
                 return Response.json({ mode: 'plain', updatedAt: 1 });

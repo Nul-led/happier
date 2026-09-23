@@ -11,10 +11,14 @@ const testState = vi.hoisted(() => ({
     corruptEntries: [] as Array<Record<string, unknown>>,
     modalPrompt: vi.fn(),
     modalConfirm: vi.fn(),
+    modalAlert: vi.fn(),
     deleteCorruptResource: vi.fn(),
     updateSavedSecretResource: vi.fn(),
     promotePersonalSavedSecretResource: vi.fn(),
-    repairCustodiedSavedSecretResourceEnvelopesBestEffort: vi.fn(async () => undefined),
+    repairCustodiedSavedSecretResourceEnvelopesBestEffort: vi.fn(async (_params: Readonly<{
+        scope: Readonly<{ serverId: string; accountId: string }>;
+        decryptDataKeyEnvelope: (envelope: string) => Promise<Uint8Array | null>;
+    }>) => undefined),
     encryption: null as null | Readonly<{ decryptEncryptionKey: (value: string, scope: unknown) => Promise<Uint8Array | null> }>,
 }));
 
@@ -78,7 +82,7 @@ vi.mock('@/sync/ops/teams/teamActionClient', () => ({
     isTeamActionApprovalPendingError: () => false,
 }));
 vi.mock('@/modal', () => ({
-    Modal: { alert: vi.fn(), confirm: testState.modalConfirm, prompt: testState.modalPrompt },
+    Modal: { alert: testState.modalAlert, confirm: testState.modalConfirm, prompt: testState.modalPrompt },
 }));
 
 describe('SecretsSettingsScreen shared feature decision', () => {
@@ -89,6 +93,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         testState.corruptEntries = [];
         testState.modalPrompt.mockReset();
         testState.modalConfirm.mockReset();
+        testState.modalAlert.mockReset();
         testState.deleteCorruptResource.mockReset();
         testState.updateSavedSecretResource.mockReset();
         testState.promotePersonalSavedSecretResource.mockReset();
@@ -193,6 +198,56 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         }));
     });
 
+    // Plan 10.08 §18.3(3): an end-to-end encrypted value is decrypted and handed
+    // to the Home only after a confirmation that names the trust change; raising
+    // protection needs no such disclosure.
+    it('confirms the trust change before an end-to-end encrypted secret becomes Home-managed', async () => {
+        testState.sharedEnabled = true;
+        const sharedEntry = (encryptionMode: 'plain' | 'e2ee') => ({
+            ref: 'happier:shared-secret:v1:resource-a',
+            source: 'shared_resource',
+            relationship: 'owner',
+            name: 'Shared token',
+            kind: 'token',
+            encryptionMode,
+            ownerAccountId: 'account-a',
+            revision: 3,
+            materialStatus: 'ready',
+            capabilities: { use: true, rename: true, rotate: true, manageAccess: true, delete: true },
+        });
+        testState.sharedEntries = [sharedEntry('e2ee')];
+        testState.updateSavedSecretResource.mockResolvedValue({ ok: true });
+        testState.modalConfirm.mockResolvedValue(false);
+        const Screen = (await import('./secrets')).default;
+        const { tree } = await renderScreen(<Screen />);
+        const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
+
+        await props.onConvertShared(testState.sharedEntries[0]);
+        expect(testState.modalConfirm).toHaveBeenCalledTimes(1);
+        expect(testState.updateSavedSecretResource).not.toHaveBeenCalled();
+
+        testState.modalConfirm.mockResolvedValue(true);
+        await props.onConvertShared(testState.sharedEntries[0]);
+        await vi.waitFor(() => expect(testState.updateSavedSecretResource).toHaveBeenCalledTimes(1));
+        expect(testState.updateSavedSecretResource).toHaveBeenLastCalledWith(expect.objectContaining({
+            resourceId: 'resource-a',
+            expectedRevision: 3,
+            toMode: 'plain',
+        }));
+
+        testState.sharedEntries = [sharedEntry('plain')];
+        const plainScreen = await renderScreen(<Screen />);
+        const plainProps = plainScreen.tree.root.findByProps({ testID: 'secrets-list' }).props;
+        await plainProps.onConvertShared(testState.sharedEntries[0]);
+        await vi.waitFor(() => expect(testState.updateSavedSecretResource).toHaveBeenCalledTimes(2));
+        expect(testState.updateSavedSecretResource).toHaveBeenLastCalledWith(expect.objectContaining({
+            resourceId: 'resource-a',
+            expectedRevision: 3,
+            toMode: 'e2ee',
+        }));
+        expect(testState.modalConfirm).toHaveBeenCalledTimes(2);
+    });
+
     it('confirms owner corrupt-row deletion and forwards its exact opaque identity and revision through the catalog callback', async () => {
         testState.sharedEnabled = true;
         const ownerCorrupt = {
@@ -203,7 +258,7 @@ describe('SecretsSettingsScreen shared feature decision', () => {
             materialStatus: 'resource_corrupt', relationship: 'recipient', repair: null,
         }];
         testState.modalConfirm.mockResolvedValue(true);
-        testState.deleteCorruptResource.mockResolvedValue(true);
+        testState.deleteCorruptResource.mockResolvedValue({ ok: true });
         const Screen = (await import('./secrets')).default;
         const { tree } = await renderScreen(<Screen />);
         const props = tree.root.findByProps({ testID: 'secrets-list' }).props;
@@ -217,6 +272,38 @@ describe('SecretsSettingsScreen shared feature decision', () => {
         );
         expect(testState.deleteCorruptResource).toHaveBeenCalledWith(ownerCorrupt);
     });
+
+    // A corrupt row the owner's own Settings still bind cannot be repaired by
+    // deleting it, and the person must learn which bindings hold it rather than
+    // a nameless failure.
+    it('names the bindings when the owner reference census refuses a corrupt-row deletion', async () => {
+        testState.sharedEnabled = true;
+        const ownerCorrupt = {
+            materialStatus: 'resource_corrupt', relationship: 'owner',
+            repair: { kind: 'delete_resource', resourceId: 'opaque-corrupt-row', expectedRevision: -3 },
+        } as const;
+        testState.corruptEntries = [ownerCorrupt];
+        testState.modalConfirm.mockResolvedValue(true);
+        testState.deleteCorruptResource.mockResolvedValue({
+            ok: false,
+            reason: 'in_use',
+            references: [{ owner: 'mcp', path: 'mcpServersSettingsV1.servers.srv.env.TOKEN' }],
+        });
+        const Screen = (await import('./secrets')).default;
+        const { tree } = await renderScreen(<Screen />);
+
+        await act(async () => {
+            tree.root.findByProps({ testID: 'secrets-list' }).props.onDeleteCorruptShared(ownerCorrupt);
+        });
+        await vi.waitFor(() => expect(testState.modalAlert).toHaveBeenCalled());
+
+        expect(testState.deleteCorruptResource).toHaveBeenCalledWith(ownerCorrupt);
+        expect(testState.modalAlert).toHaveBeenCalledWith(
+            expect.any(String),
+            expect.stringContaining('mcpServersSettingsV1.servers.srv.env.TOKEN'),
+        );
+    });
+
     it('prepares the envelopes this custodian owes when the surface is opened', async () => {
         testState.sharedEnabled = true;
         const decryptEncryptionKey = vi.fn(async () => new Uint8Array(32).fill(3));

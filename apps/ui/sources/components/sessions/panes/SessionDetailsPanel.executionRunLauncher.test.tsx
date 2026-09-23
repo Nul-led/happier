@@ -62,11 +62,11 @@ vi.mock('@/components/appShell/panes/hooks/useAppPaneScope', () => ({
 vi.mock('@/components/appShell/panes/details/workspace/DetailsSplitWorkspace', () => ({
     DetailsSplitWorkspace: (props: Readonly<{
         pane: { scopeState: { details: { tabs: readonly unknown[] } } };
-        renderTabContent: (tab: unknown) => React.ReactNode;
+        renderTabContent: (tab: unknown, presentation: Readonly<{ active: boolean }>) => React.ReactNode;
     }>) => React.createElement(
         React.Fragment,
         null,
-        props.renderTabContent(props.pane.scopeState.details.tabs[0]),
+        props.renderTabContent(props.pane.scopeState.details.tabs[0], { active: true }),
     ),
 }));
 
@@ -76,7 +76,7 @@ vi.mock('@/components/appShell/panes/details/surfaces', () => ({
         tab: Record<string, unknown>;
         scope: Record<string, unknown>;
         region: string;
-        renderers: readonly Array<{
+        renderers: ReadonlyArray<{
             canRender: (input: Record<string, unknown>) => boolean;
             render: (input: Record<string, unknown>) => React.ReactNode;
         }>;

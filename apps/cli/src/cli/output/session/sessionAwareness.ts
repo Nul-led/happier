@@ -3,7 +3,9 @@ import { isAgentStateRequestCoveredByCompletedRequests, resolveAgentStateRequest
 import {
   projectSessionAwarenessV1,
   resolveAgentRequestKind,
+  readSessionTerminalControlServiceabilityStateV1,
   readSessionWorkStateV1FromMetadata,
+  resolveAwarenessCurrentnessV1,
   SessionWorkflowActivityHeadlineV1Schema,
   type AccountEncryptionCurrentnessResponse,
   type ProjectSessionAwarenessV1Input,
@@ -91,6 +93,12 @@ function buildCliSessionAwarenessInputFromPresentationV1(
   const fork = metadata?.forkV1 && typeof metadata.forkV1 === 'object' && !Array.isArray(metadata.forkV1)
     ? metadata.forkV1 as Readonly<Record<string, unknown>>
     : null;
+  const terminal = metadata?.terminal && typeof metadata.terminal === 'object' && !Array.isArray(metadata.terminal)
+    ? metadata.terminal as Readonly<Record<string, unknown>>
+    : null;
+  // The daemon writes control serviceability into the owner metadata this boundary just decrypted,
+  // so the CLI forwards the same evidence the UI does; absent or unreadable evidence stays unknown.
+  const controlServiceability = readSessionTerminalControlServiceabilityStateV1(terminal?.controlServiceabilityV1);
   const forkParentSessionId = fork?.v === 1 ? readText(fork.parentSessionId) : null;
   const path = readText(metadata?.path);
   const machineId = readText(metadata?.machineId);
@@ -114,27 +122,33 @@ function buildCliSessionAwarenessInputFromPresentationV1(
     }))
     .map(([, request]) => resolveAgentRequestKind({ toolName: request.tool, requestKind: request.kind })) : null;
 
+  const lifecycle = {
+    archivedAtMs: readNumber(row.archivedAt),
+    // `undefined` (the producer projected no turn status at all) and an explicit `null` are
+    // different facts here: the first is absent lifecycle evidence, the second is observed.
+    latestTurnStatus: row.latestTurnStatus,
+    latestTurnStatusObservedAtMs: readNumber(row.latestTurnStatusObservedAt),
+    latestReadyEventSeq: readNumber(row.latestReadyEventSeq),
+    latestReadyEventAtMs: readNumber(row.latestReadyEventAt),
+    meaningfulActivityAtMs: readNumber(row.meaningfulActivityAt),
+  } as const;
+  const runtime = {
+    presence,
+    active: readBoolean(row.active),
+    lastObservedAtMs: readNumber(row.activeAt),
+    thinking: readBoolean(row.thinking),
+    thinkingAtMs: readNumber(row.thinkingAt),
+    activityState: row.runtimeActivityState ?? null,
+    activityActiveCount: readNumber(row.runtimeActivityActiveCount),
+    controlServiceability: controlServiceability === 'unknown' ? null : controlServiceability,
+  } as const;
+
   return {
     nowMs: params.nowMs,
     sessionId: row.id.trim(),
     title: readText(summary?.text) ?? readText(metadata?.name),
-    lifecycle: {
-      archivedAtMs: readNumber(row.archivedAt),
-      latestTurnStatus: row.latestTurnStatus ?? null,
-      latestTurnStatusObservedAtMs: readNumber(row.latestTurnStatusObservedAt),
-      latestReadyEventSeq: readNumber(row.latestReadyEventSeq),
-      latestReadyEventAtMs: readNumber(row.latestReadyEventAt),
-      meaningfulActivityAtMs: readNumber(row.meaningfulActivityAt),
-    },
-    runtime: {
-      presence,
-      active: readBoolean(row.active),
-      lastObservedAtMs: readNumber(row.activeAt),
-      thinking: readBoolean(row.thinking),
-      thinkingAtMs: readNumber(row.thinkingAt),
-      activityState: row.runtimeActivityState ?? null,
-      activityActiveCount: readNumber(row.runtimeActivityActiveCount),
-    },
+    lifecycle,
+    runtime,
     pending: {
       hasPendingPermissionRequests: requestKinds ? requestKinds.includes('permission') : (readNumber(row.pendingPermissionRequestCount) ?? 0) > 0,
       hasPendingUserActionRequests: requestKinds ? requestKinds.includes('user_action') : (readNumber(row.pendingUserActionRequestCount) ?? 0) > 0,
@@ -150,13 +164,17 @@ function buildCliSessionAwarenessInputFromPresentationV1(
       ...(path ? { path } : {}),
       ...(machineId ? { machineId } : {}),
     } } : {}),
-    currentness: {
-      lifecycle: row.archivedAt != null || row.latestTurnStatus !== undefined ? 'observed' : 'unavailable',
-      runtime: 'observed',
+    currentness: resolveAwarenessCurrentnessV1({
+      lifecycle,
+      runtime,
       // An older producer that projects no pending counts must not read as "nothing pending".
       pending: hasPendingProjection || requestKinds !== null ? 'observed' : 'unavailable',
+      // The metadata field is required on the wire, so an empty or unparsable string is
+      // admitted and decodes to nothing: the work state is unknown, not absent. Readable
+      // metadata carrying no work state stays observed.
+      work: metadata ? 'observed' : 'unavailable',
       observedAtMs: readNumber(row.updatedAt),
-    },
+    }),
   };
 }
 

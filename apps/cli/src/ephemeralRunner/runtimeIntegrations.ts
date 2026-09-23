@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 
 import { resolvePlatformFromNodePlatform } from '@happier-dev/cli-common/agents';
+import { readHomeApplicationCarrierEligibilityFromEnv } from '@happier-dev/cli-common/homeEnrollment';
 import { readIrohRelayConfigFromEnv } from '@happier-dev/iroh-native/node';
 import { decodeBase64 } from '@happier-dev/protocol/crypto/base64';
 import { openBoxBundleWithSecretKey } from '@happier-dev/protocol/crypto/boxBundle';
@@ -24,6 +25,8 @@ import { createCliActionExecutorFromCredentials } from '@/session/actions/create
 import { bindAgentCliLaunchSpec } from '@/packagedRuntime/managedTools/agentCliLaunchSpec';
 import { createScopedRuntimeActionSettingsProvider } from '@/settings/scopedRuntimeActionSettingsProvider';
 import { createDaemonMachineIrohRuntime } from '@/daemon/peer/iroh/daemonMachineIrohRuntime';
+import { createDaemonPluginChangeService } from '@/plugins/daemon/changeService';
+import { createDaemonNpmPluginChangePreparer } from '@/plugins/daemon/npmChangePreparer';
 import { createProviderBrokerMachineCarrierTunnelOpen } from '@/daemon/peer/iroh/providerBrokerMachineCarrierTunnelOpen';
 import { resolvePeerMediationTrustRoots } from '@/daemon/peer/mediation/resolvePeerMediationTrustRoots';
 import { fetchServerFeaturesSnapshot } from '@/features/serverFeaturesClient';
@@ -39,7 +42,7 @@ import {
   createEphemeralRunnerHttpControlConnection,
   EphemeralRunnerControlHttpError,
 } from './controlClient';
-import type { EphemeralRunnerDependencies } from './controlPlane';
+import type { EphemeralRunnerDependencies, ReviewedRunnerPluginAcquisition } from './controlPlane';
 import { createEphemeralRunnerTerminalUi } from './endpointTerminalUi';
 import { createEphemeralRunnerNativeShellUi } from './endpointNativeShellUi';
 import { createEphemeralRunnerNativeShellStdioTransport } from './nativeShellStdioTransport';
@@ -118,6 +121,31 @@ async function requestJson(origin: string, path: string, init: RequestInit, sign
   return await response.json();
 }
 
+/**
+ * The bundled answer: the Runner artifact already carries the reviewed
+ * generation, so the endpoint acquires nothing. Leg 4 of the ratified
+ * mechanism — built-in and external Agents take the identical endpoint path,
+ * and only this result differs.
+ */
+const NO_RUNNER_PLUGIN_ACQUISITION: ReviewedRunnerPluginAcquisition = Object.freeze({
+  review: null,
+  apply: async () => undefined,
+  release: async () => undefined,
+});
+
+/**
+ * The install lands before the Runner's plugin runtime lease opens the
+ * registry, so no serving runtime exists to swap. The canonical registry state
+ * store still requires a lifecycle owner; this is the established no-op for a
+ * home where nothing is serving yet.
+ */
+const RUNNER_INERT_PLUGIN_RUNTIME_LIFECYCLE = Object.freeze({
+  prepare: async () => Object.freeze({
+    abort: async () => undefined,
+    adopt: async () => undefined,
+  }),
+});
+
 /** Real standalone composition over the reviewed activation, readiness, and ordinary Session owners. */
 export async function createProductionEphemeralRunnerApplication(input: Readonly<{
   activationFilePath: string;
@@ -184,6 +212,68 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
           await acquired.close().catch(() => undefined);
         }
       }
+    },
+    prepareReviewedPluginAcquisition: async ({ manifest, homeDirectory, signal }) => {
+      const distribution = manifest.preparedAuthoring.agentPluginDistribution;
+      if (distribution === null) return NO_RUNNER_PLUGIN_ACQUISITION;
+      signal.throwIfAborted();
+      // The canonical plugin change owner performs the whole acquisition in the
+      // activation-local Home: it revalidates the committed listing against the
+      // freshly resolved one, stages the artifact, and produces the same
+      // installation review every other Happier surface decides on.
+      const changeService = createDaemonPluginChangeService({
+        prepare: createDaemonNpmPluginChangePreparer({
+          happyHomeDir: homeDirectory,
+          runtimeLifecycle: RUNNER_INERT_PLUGIN_RUNTIME_LIFECYCLE,
+        }),
+      });
+      let requested;
+      try {
+        requested = await changeService.requestPluginChange({
+          kind: 'installNpm',
+          packageName: distribution.packageName,
+          selector: distribution.version,
+          registryOrigin: distribution.registryOrigin,
+          expectedMarketplaceListing: distribution,
+        });
+      } catch (error) {
+        await changeService.shutdown().catch(() => undefined);
+        throw error;
+      }
+      if (requested.kind !== 'reviewRequired' || requested.reviewKind !== 'installation') {
+        // Every Runner acquisition is a first install into a fresh home and
+        // must reach Install and Trust. Anything else is refused rather than
+        // installed without the endpoint user deciding.
+        await changeService.shutdown().catch(() => undefined);
+        throw new Error(`runner_reviewed_plugin_acquisition_${requested.kind}`);
+      }
+      const pendingChangeId = requested.pendingChangeId;
+      let settled = false;
+      return Object.freeze({
+        review: requested.review,
+        apply: async ({ signal: applySignal }) => {
+          applySignal.throwIfAborted();
+          settled = true;
+          let decided;
+          try {
+            decided = await changeService.decidePluginChange({ pendingChangeId, decision: 'installAndTrust' });
+          } finally {
+            await changeService.shutdown().catch(() => undefined);
+          }
+          if (decided.kind !== 'committed') {
+            throw new Error(`runner_reviewed_plugin_acquisition_${decided.kind}`);
+          }
+        },
+        release: async () => {
+          if (settled) return;
+          settled = true;
+          try {
+            await changeService.decidePluginChange({ pendingChangeId, decision: 'cancel' }).catch(() => undefined);
+          } finally {
+            await changeService.shutdown().catch(() => undefined);
+          }
+        },
+      });
     },
     prepareAgent: async ({ manifest, environment, homeDirectory, signal }) => {
       const platform = resolvePlatformFromNodePlatform(process.platform);
@@ -334,7 +424,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
         throw error;
       }
     },
-    startSession: async ({ binding, manifest, materialized, preparation, localState, installationPrivateKey, signal, onRuntimeStopReady }) => {
+    startSession: async ({ binding, manifest, materialized, preparation, localState, installationPrivateKey, signal, onRuntimeStopReady, onRuntimeConnectionState }) => {
       const executionTarget = manifest.preparedAuthoring.authoring.executionTarget;
       if (executionTarget?.kind !== 'temporary_computer') {
         throw new Error('runner_execution_target_invalid');
@@ -343,6 +433,13 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
       // Once materialization has committed, cancellation is an ordinary
       // Session/process Stop. This controller cancels only construction work;
       // semantic Session end remains owned by the ordinary Session client.
+      const resolveExactRunnerSessionEncryptionMaterial = (requestedSessionId: string) => (
+        requestedSessionId === binding.sessionId
+          ? (materialized.bootstrap.mode === 'plain'
+            ? { mode: 'plain' as const }
+            : { mode: 'e2ee' as const, dataEncryptionKey: materialized.bootstrap.sessionDataEncryptionKey })
+          : null
+      );
       const postMaterializationStartupAbortController = new AbortController();
       const postMaterializationSignal = postMaterializationStartupAbortController.signal;
       const connectedAccountMaterializationAbortController = new AbortController();
@@ -402,6 +499,12 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
 
       try {
       throwIfCancelled(postMaterializationSignal);
+      // The isolated child environment excludes operator policy. Keep this
+      // decision inside the existing post-materialization terminalization
+      // owner and before any native endpoint or checkout is acquired.
+      if (readHomeApplicationCarrierEligibilityFromEnv(process.env) === 'standard_only') {
+        throw new Error('runner_provider_machine_runtime_unavailable');
+      }
       const reviewedProviderSelection = manifest.reviewedProviderModel.selection;
       if (reviewedProviderSelection.deliveryMode !== 'brokered') {
         // Temporary-computer execution is defined around Lane 10's exact
@@ -478,7 +581,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
           runtimeOrigin: materialized.runtimeOrigin,
           runtimeToken: materialized.runtimeToken,
           transportEnvironment: localState.environment,
-          irohEndpointId: providerMachineRuntime.endpoint.endpointId,
+          irohEndpoint: providerMachineRuntime.endpoint,
           installationProof: materialized.installationProof,
           transport: materialized.bootstrap.mode === 'plain'
             ? { encryptionMode: 'plain' }
@@ -518,6 +621,10 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
             if (installationPrivateKey) {
               registerExternalActionRpcHandler(rpc, {
                 machineId: binding.machineId,
+                // This Runner executes inside exactly one Session, so a
+                // foreign Session target is refused before its envelope is
+                // opened, symmetric to the Machine arm.
+                sessionId: binding.sessionId,
                 currentServerId: runnerServerId,
                 resolveAccountId: async () => materialized.principal.accountId,
                 // A Runner executes inside its own Session and nowhere else:
@@ -534,6 +641,13 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
                 },
                 executor: createCliActionExecutorFromCredentials({
                   credentials: { token: materialized.runtimeToken, encryption: null },
+                  // A Runner's runtime token is Session-scoped, so these
+                  // credentials carry no Account encryption material at all and
+                  // the Session's own stored content — its Board and its
+                  // discussions — would be unreadable to it. The bootstrap key
+                  // this process already holds is the material that opens them,
+                  // offered for this one Session id and refused for any other.
+                  resolveExactSessionEncryptionMaterial: resolveExactRunnerSessionEncryptionMaterial,
                   serverId: runnerServerId,
                   serverApiUrl: materialized.runtimeOrigin,
                   machineId: binding.machineId,
@@ -566,6 +680,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
             }
           },
           onTerminalConnectionFailure: requestStopAfterMaterialization,
+          onConnectionState: onRuntimeConnectionState,
         });
       } catch (error) {
         await disposeMachineServicesIfCreated().catch(() => undefined);
@@ -684,7 +799,7 @@ export async function createProductionEphemeralRunnerApplication(input: Readonly
             // The reviewed plugin runtime is leased before this point, so its occurrence id
             // is always registered; a missing id means the lease and the registry disagree,
             // which fails closed here rather than scoping credential files to `undefined`.
-            const selectedPluginOccurrenceId = materialized.pluginRuntime.lease.registry.readPluginOccurrenceId(
+            const selectedPluginOccurrenceId = materialized.pluginRuntime.lease.registry.readPluginOccurrenceId?.(
               materialized.pluginRuntime.selected.pluginId,
             ) ?? null;
             if (selectedPluginOccurrenceId === null) {

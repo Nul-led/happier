@@ -8,19 +8,20 @@ export {
 export {
   COMMUNITY_NPM_MARKETPLACE_SOURCE_ID_V1,
   ExpectedMarketplaceListingV1Schema,
+  projectExpectedMarketplaceListing,
   type ExpectedMarketplaceListingV1,
 } from './expectedMarketplaceListingV1.js';
 
 export {
   MAX_PLUGIN_INSTALLATION_REVIEW_STRING_LENGTH,
   PluginChangePendingReviewResultSchema,
-  PluginDevelopmentSourceRootReviewSchema,
+  PluginDevelopmentProjectTrustReviewSchema,
   PluginInstallationReviewCompatibilityDiagnosticSchema,
   PluginInstallationReviewRawCredentialAccessSchema,
   PluginInstallationReviewRequestInterceptorSchema,
   PluginInstallationReviewSchema,
   type PluginChangePendingReviewResult,
-  type PluginDevelopmentSourceRootReview,
+  type PluginDevelopmentProjectTrustReview,
   type PluginInstallationReview,
   type PluginInstallationReviewCompatibilityDiagnostic,
   type PluginInstallationReviewRawCredentialAccess,
