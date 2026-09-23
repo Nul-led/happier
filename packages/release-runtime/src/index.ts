@@ -16,6 +16,7 @@ export type { ReleaseManifestRecordV1, ReleaseManifestV1 } from './releaseManife
 export { resolveReleaseArtifactArchiveName, resolveReleaseAssetBundle } from './assets.js';
 export {
   extractArchivePayloadToDirectory,
+  extractFirstPartyReleaseArchiveToDirectory,
   inspectTarArchiveEntries,
 } from './archiveExtraction.js';
 export { downloadVerifiedReleaseAssetBundle } from './verifiedDownload.js';

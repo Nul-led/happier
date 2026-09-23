@@ -42,6 +42,18 @@ export const DEFAULT_ARCHIVE_EXTRACTION_LIMITS: ArchiveExtractionLimits = Object
   timeoutMs: 120_000,
 });
 
+// Checksum-verified Happier payloads include their bundled runtime dependency trees.
+// Preserve the predecessor's first-party budget; generic/provider archives retain
+// the stricter defaults above.
+export const FIRST_PARTY_RELEASE_ARCHIVE_EXTRACTION_LIMITS: ArchiveExtractionLimits = Object.freeze({
+  ...DEFAULT_ARCHIVE_EXTRACTION_LIMITS,
+  maxArchiveBytes: 1024 * 1024 * 1024,
+  maxEntries: 250_000,
+  maxFiles: 100_000,
+  maxExpandedBytes: 4 * 1024 * 1024 * 1024,
+  timeoutMs: 10 * 60_000,
+});
+
 type ArchiveEntryKind = 'directory' | 'file';
 /**
  * Kinds the entry-path validator understands. `symlink` is a ZIP-only kind: a macOS `.app` bundle
@@ -835,6 +847,11 @@ async function extractTarArchiveToDirectory(params: Readonly<{
     filter: (_path, entry) => 'meta' in entry ? validateEntry.accept(entry) : true,
     maxDecompressionRatio: params.limits.maxCompressionRatio,
     maxMetaEntrySize: MAX_TAR_METADATA_ENTRY_BYTES,
+    // Every accepted path and entry type has already passed the canonical
+    // archive validator, and extraction targets a fresh private staging tree.
+    // Let node-tar use recursive mkdir instead of re-statting every parent for
+    // every file; link entries never reach the filesystem.
+    preservePaths: true,
     preserveOwner: false,
     strict: true,
   };
@@ -1678,7 +1695,7 @@ async function extractZipArchiveToDirectory(params: Readonly<{
   }
 }
 
-export async function extractArchivePayloadToDirectory(params: Readonly<{
+export type ArchiveExtractionParams = Readonly<{
   allowedEntryRoots?: readonly string[];
   archivePath: string;
   archiveName: string;
@@ -1688,7 +1705,17 @@ export async function extractArchivePayloadToDirectory(params: Readonly<{
   limits?: Partial<ArchiveExtractionLimits>;
   signal?: AbortSignal;
   tarLinkPolicy?: TarLinkPolicy;
-}>): Promise<void> {
+}>;
+
+export async function extractFirstPartyReleaseArchiveToDirectory(params: ArchiveExtractionParams): Promise<void> {
+  await extractArchivePayloadToDirectory({
+    ...params,
+    tarLinkPolicy: params.tarLinkPolicy ?? 'skip',
+    limits: { ...FIRST_PARTY_RELEASE_ARCHIVE_EXTRACTION_LIMITS, ...params.limits },
+  });
+}
+
+export async function extractArchivePayloadToDirectory(params: ArchiveExtractionParams): Promise<void> {
   const archiveName = params.archiveName.toLowerCase();
   const archiveType = archiveName.endsWith('.zip')
     ? 'zip'

@@ -1,17 +1,19 @@
 import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { extractArchivePayloadToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
+import { extractFirstPartyReleaseArchiveToDirectory } from '@happier-dev/release-runtime/archiveExtraction';
 
 export async function extractReleasePayloadRootFromArchive(params: Readonly<{
   archivePath: string;
   archiveName: string;
   extractDir: string;
+  signal?: AbortSignal;
 }>): Promise<string> {
-  await extractArchivePayloadToDirectory({
+  await extractFirstPartyReleaseArchiveToDirectory({
     archiveName: params.archiveName,
     archivePath: params.archivePath,
     extractDir: params.extractDir,
+    signal: params.signal,
   });
 
   const entries = (await readdir(params.extractDir)).filter((entry) => !entry.startsWith('.'));
