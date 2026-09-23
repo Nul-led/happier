@@ -76,7 +76,7 @@ export const PluginAvailabilityIntentReadActionInputV1Schema = z.object({
 }).strict();
 export type PluginAvailabilityIntentReadActionInputV1 = z.infer<typeof PluginAvailabilityIntentReadActionInputV1Schema>;
 
-export const PluginAvailabilityIntentReadActionOutputV1Schema =
+export const PluginAvailabilityIntentReadActionOutputV1Schema: typeof PluginAccountAvailabilityIntentReadResponseV1Schema =
   PluginAccountAvailabilityIntentReadResponseV1Schema;
 export type PluginAvailabilityIntentReadActionOutputV1 = z.infer<typeof PluginAvailabilityIntentReadActionOutputV1Schema>;
 
@@ -148,7 +148,7 @@ export const PluginAvailabilityReleaseReadActionInputV1Schema = z.object({
 export type PluginAvailabilityReleaseReadActionInputV1 =
   z.infer<typeof PluginAvailabilityReleaseReadActionInputV1Schema>;
 
-export const PluginAvailabilityReleaseReadActionOutputV1Schema =
+export const PluginAvailabilityReleaseReadActionOutputV1Schema: typeof PluginAccountAvailabilityReleaseReadResponseV1Schema =
   PluginAccountAvailabilityReleaseReadResponseV1Schema;
 export type PluginAvailabilityReleaseReadActionOutputV1 =
   z.infer<typeof PluginAvailabilityReleaseReadActionOutputV1Schema>;

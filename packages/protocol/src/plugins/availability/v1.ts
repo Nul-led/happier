@@ -63,7 +63,7 @@ export {
  * already rejects source/private locator fields; source verification remains at the
  * acquisition owner and is deliberately not persisted here.
  */
-export const PluginPortableReleaseManifestV1Schema = PluginManifestV2Schema;
+export const PluginPortableReleaseManifestV1Schema: typeof PluginManifestV2Schema = PluginManifestV2Schema;
 export type PluginPortableReleaseManifestV1 = z.infer<typeof PluginPortableReleaseManifestV1Schema>;
 
 /**
