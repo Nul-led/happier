@@ -17,4 +17,14 @@ describe('scripts/childProcessOptions.cjs', () => {
     };
     expect(mod.withWindowsHide({ foo: 'bar' }, 'darwin')).toEqual({ foo: 'bar' });
   });
+
+  it('maps signal-only child termination to an unsuccessful exit code', () => {
+    const mod = require('../childProcessOptions.cjs') as {
+      normalizeChildProcessExitCode: (code: number | null) => number;
+    };
+
+    expect(mod.normalizeChildProcessExitCode(null)).toBe(1);
+    expect(mod.normalizeChildProcessExitCode(0)).toBe(0);
+    expect(mod.normalizeChildProcessExitCode(7)).toBe(7);
+  });
 });

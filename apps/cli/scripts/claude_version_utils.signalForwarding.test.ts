@@ -1,4 +1,8 @@
+import { spawnSync } from 'node:child_process';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -63,5 +67,26 @@ describe('claude_version_utils attachChildSignalForwarding', () => {
     attachChildSignalForwarding(child, proc);
 
     expect(handlers.has('SIGHUP')).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('exits unsuccessfully when the Claude binary is terminated by a signal', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'happier-claude-exit-'));
+    const harnessPath = join(root, 'run-claude.cjs');
+    await writeFile(
+      harnessPath,
+      `require(${JSON.stringify(require.resolve('./claude_version_utils.cjs'))}).runClaudeCli(process.execPath);\n`,
+      'utf8',
+    );
+    try {
+      const result = spawnSync(
+        process.execPath,
+        [harnessPath, '-e', "process.kill(process.pid, 'SIGTERM')"],
+        { encoding: 'utf8' },
+      );
+
+      expect(result.status).toBe(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

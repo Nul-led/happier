@@ -18,6 +18,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { normalizeChildProcessExitCode } = require('./childProcessOptions.cjs');
 
 const VARIANTS = {
   stable: {
@@ -89,4 +90,4 @@ const proc = spawn(process.execPath, [binPath, command, ...args], {
   stdio: 'inherit'
 });
 
-proc.on('exit', (code) => process.exit(code || 0));
+proc.on('exit', (code) => process.exit(normalizeChildProcessExitCode(code)));

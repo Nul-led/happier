@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 const wrapperSource = join(dirname(fileURLToPath(import.meta.url)), '..', 'env-wrapper.cjs');
+const childProcessOptionsSource = join(dirname(wrapperSource), 'childProcessOptions.cjs');
 
 const roots: string[] = [];
 
@@ -44,6 +45,11 @@ async function createWrapperTree(): Promise<{
   await mkdir(dirname(binPath), { recursive: true });
   await mkdir(homeDir, { recursive: true });
   await writeFile(wrapperPath, await readFile(wrapperSource, 'utf8'), 'utf8');
+  await writeFile(
+    join(dirname(wrapperPath), 'childProcessOptions.cjs'),
+    await readFile(childProcessOptionsSource, 'utf8'),
+    'utf8',
+  );
   await writeFile(
     binPath,
     [
@@ -116,4 +122,17 @@ describe('apps/cli/scripts/env-wrapper.cjs', () => {
 
     expect(JSON.parse(await readFile(tree.reportPath, 'utf8'))).toEqual(['auth', ...userArgs]);
   }, 30_000);
+
+  it.skipIf(process.platform === 'win32')('exits unsuccessfully when the CLI is terminated by a signal', async () => {
+    const tree = await createWrapperTree();
+    await writeFile(tree.binPath, "process.kill(process.pid, 'SIGTERM');\n", 'utf8');
+
+    const result = spawnSync(
+      process.execPath,
+      [tree.wrapperPath, 'dev', 'auth'],
+      { env: { ...process.env, HOME: tree.homeDir }, encoding: 'utf8' },
+    );
+
+    expect(result.status).toBe(1);
+  });
 });

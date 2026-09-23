@@ -16,7 +16,7 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { withWindowsHide } = require('./childProcessOptions.cjs');
+const { normalizeChildProcessExitCode, withWindowsHide } = require('./childProcessOptions.cjs');
 
 /**
  * Safely resolve symlink or return path if it exists
@@ -728,7 +728,7 @@ function runClaudeCli(cliPath) {
         attachChildSignalForwarding(child);
 
         child.on('exit', (code) => {
-            process.exit(code || 0);
+            process.exit(normalizeChildProcessExitCode(code));
         });
     }
 }
