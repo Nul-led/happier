@@ -50,6 +50,20 @@ function createManagedPypiWheelDescriptor(key = 'pypi-wheel-tool') {
 }
 
 describe('installables catalog', () => {
+  it.each([
+    ['local-embeddings', 'happier-memory-runtime'],
+    ['local-voice-runtime', 'happier-voice-runtime'],
+    ['difftastic', 'happier-difftastic'],
+  ])('exposes %s through the verified first-party runtime owner', (key, componentId) => {
+    const entry = BUILT_IN_INSTALLABLE_CONTRIBUTIONS.find((value) => value.descriptor.key === key);
+    expect(entry?.descriptor).toMatchObject({
+      capabilityId: `dep.${key}`,
+      source: { kind: 'first_party_runtime', componentId },
+      defaultPolicy: { autoInstallWhenNeeded: true, autoUpdateMode: 'off' },
+    });
+    expect(installables.InstallableSourceSchema.safeParse({ kind: 'first_party_runtime', componentId: 'happier-cli' }).success).toBe(false);
+  });
+
   it('does not register provider-owned Codex ACP as a protocol/core built-in', () => {
     expect(BUILT_IN_INSTALLABLE_CONTRIBUTIONS.map((entry) => [
       entry.owner.ownerId,

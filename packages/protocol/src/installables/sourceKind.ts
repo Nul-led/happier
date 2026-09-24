@@ -5,6 +5,7 @@ export const InstallableSourceKindSchema = z.enum([
   'managed_package',
   'managed_pypi_wheel_asset',
   'pinned_archive',
+  'first_party_runtime',
   'vendor_recipe',
   'manual_only',
 ]);
@@ -116,7 +117,14 @@ export const ManualOnlyInstallableSourceSchema = z.object({
   instructionsKey: z.string().trim().min(1).optional(),
 }).strict();
 
+/** Host-owned optional runtimes use the verified release matching the running CLI. */
+export const FirstPartyRuntimeInstallableSourceSchema = z.object({
+  kind: z.literal('first_party_runtime'),
+  componentId: z.enum(['happier-memory-runtime', 'happier-voice-runtime', 'happier-difftastic']),
+}).strict();
+
 export const InstallableSourceSchema = z.discriminatedUnion('kind', [
+  FirstPartyRuntimeInstallableSourceSchema,
   GitHubReleaseBinaryInstallableSourceSchema,
   ManagedPackageInstallableSourceSchema,
   ManagedPypiWheelAssetInstallableSourceSchema,

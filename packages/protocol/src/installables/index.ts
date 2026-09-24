@@ -4,6 +4,9 @@ import {
   type InstallableKey,
 } from './codexAcp.js';
 import {
+  LOCAL_EMBEDDINGS_INSTALLABLE_DESCRIPTOR,
+  LOCAL_VOICE_RUNTIME_INSTALLABLE_DESCRIPTOR,
+  DIFFTASTIC_INSTALLABLE_DESCRIPTOR,
   AZ_BINARY_NAME,
   AZ_CLI_SETUP_URL,
   AZ_DEP_ID,
@@ -39,6 +42,7 @@ export {
   type InstallableKind,
 } from './descriptor.js';
 export {
+  FirstPartyRuntimeInstallableSourceSchema,
   GitHubReleaseBinaryInstallableSourceSchema,
   InstallableSourceKindSchema,
   InstallableSourceSchema,
@@ -88,6 +92,18 @@ export {
 export * from './definitions/index.js';
 
 export const BUILT_IN_INSTALLABLE_CONTRIBUTIONS = Object.freeze([
+  {
+    owner: { provenance: 'built_in', ownerId: 'happier.core' },
+    descriptor: LOCAL_EMBEDDINGS_INSTALLABLE_DESCRIPTOR,
+  },
+  {
+    owner: { provenance: 'built_in', ownerId: 'happier.core' },
+    descriptor: LOCAL_VOICE_RUNTIME_INSTALLABLE_DESCRIPTOR,
+  },
+  {
+    owner: { provenance: 'built_in', ownerId: 'happier.core' },
+    descriptor: DIFFTASTIC_INSTALLABLE_DESCRIPTOR,
+  },
   {
     owner: {
       provenance: 'built_in',
