@@ -103,6 +103,9 @@ describe('apps/cli package publish contract', () => {
     expect(cliPackageJson.dependencies?.['tweetnacl']).toBeTruthy();
     expect(cliPackageJson.dependencies?.['base64-js']).toBeFalsy();
     expect(cliPackageJson.dependencies?.['@noble/hashes']).toBeFalsy();
+    for (const packageName of ['ai', '@stablelib/base64', 'http-proxy-middleware', 'tmp']) {
+      expect(cliPackageJson.dependencies?.[packageName]).toBeFalsy();
+    }
     expect(cliPackageJson.dependencies?.['@happier-dev/plugin-sdk']).toBeTruthy();
     expect(cliPackageJson.dependencies?.['@happier-dev/peer-mediation']).toBeTruthy();
     expect(cliPackageJson.dependencies?.typescript).toBe('5.9.3');

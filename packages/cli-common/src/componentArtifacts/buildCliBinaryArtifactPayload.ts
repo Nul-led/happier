@@ -16,7 +16,7 @@ import {
   resolveCliSharedDepsBuildLockPath,
   withWorkspaceBundleLock,
 } from '../../workspaceBundleLock.mjs';
-import { CLI_BINARY_TARGETS, resolveCurrentBinaryTarget, resolveExecutableName, type BinaryTarget } from './targets.js';
+import { CLI_BINARY_TARGETS, resolveCliToolsPlatformDir, resolveCurrentBinaryTarget, resolveExecutableName, type BinaryTarget } from './targets.js';
 import { commandExists, compileBunBinary, ensureFileExists, execOrThrow, resolveBunCommand, resolveYarnCommand, type RunCommand } from './commands.js';
 import {
   bundleInstalledPackageWithRuntimeDependencies,
@@ -69,7 +69,7 @@ const CLIPROXYAPI_MANAGED_RUNTIME_RELATIVE_PATH = join(
 );
 
 type CliToolUnpackModule = {
-  unpackTools?: (options: Readonly<{ platformDir: string; toolsDir: string }>) => Promise<unknown> | unknown;
+  unpackTools?: (options: Readonly<{ platformDir: string; toolsDir: string; tools: readonly string[] }>) => Promise<unknown> | unknown;
 };
 
 type CliPackageJson = Readonly<{
@@ -97,21 +97,6 @@ function isExactStringList(value: unknown, expected: readonly string[]): boolean
 
 function normalizeNodePlatform(platform: string): string {
   return platform === 'win32' ? 'windows' : platform;
-}
-
-function resolveCliToolsPlatformDir(target: BinaryTarget): string {
-  const targetKey = `${target.arch}-${target.os}`;
-  switch (targetKey) {
-    case 'arm64-darwin':
-    case 'x64-darwin':
-    case 'arm64-linux':
-    case 'x64-linux':
-      return targetKey;
-    case 'x64-windows':
-      return 'x64-win32';
-    default:
-      throw new Error(`[component-artifacts] unsupported CLI tools binary target: ${targetKey}`);
-  }
 }
 
 function assertCliNativeRuntimeTargetMatchesHost(target: BinaryTarget): void {
@@ -428,6 +413,8 @@ export function readCliBinaryArtifactSupportIdentity({
     'packages/cli-common/src/componentArtifacts/buildCliBinaryArtifactPayload.ts',
     'packages/cli-common/src/componentArtifacts/copyCliNodeRuntimePayload.ts',
     'packages/cli-common/src/componentArtifacts/finalizeRuntimeArtifactPayload.ts',
+    'packages/cli-common/src/componentArtifacts/targets.ts',
+    'packages/cli-common/nodePtySpawnHelperPermissions.cjs',
     'packages/cli-common/src/componentArtifacts/stageCliProxyApiManagedRuntime.ts',
     'packages/cli-common/src/componentArtifacts/stageProcessCustodyRuntime.ts',
     'packages/cli-common/src/componentArtifacts/deferredVoiceRuntimePackages.ts',
@@ -487,6 +474,7 @@ async function copyCliRuntimeTools(repoRoot: string, payloadDir: string, target:
   await unpackToolsModule.unpackTools({
     platformDir: resolveCliToolsPlatformDir(target),
     toolsDir: targetToolsDir,
+    tools: target.os === 'windows' ? ['ripgrep'] : ['ripgrep', 'zellij'],
   });
   await rm(targetArchivesDir, { recursive: true, force: true });
 }
@@ -866,7 +854,7 @@ async function stageCliBinaryArtifactSupportPayload({
       'utf8',
     );
   }
-  await finalizeRuntimeArtifactPayload(payloadDir);
+  await finalizeRuntimeArtifactPayload(payloadDir, target);
 
   if (expectedSupportFingerprint) {
     const after = readCliBinaryArtifactSupportIdentity({

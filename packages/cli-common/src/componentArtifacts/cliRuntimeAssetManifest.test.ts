@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import cliDistBuildManifest from '../../cliDistBuildManifest.cjs';
+import { finalizeRuntimeArtifactPayload } from './finalizeRuntimeArtifactPayload.js';
+import { writeCliBinaryArtifactRuntimeAssetBuildManifest } from './refreshCliBinaryArtifactRuntimeAssetBuildManifest.js';
 
 const tempDirs: string[] = [];
 
@@ -40,6 +42,57 @@ describe('CLI runtime asset build manifest', () => {
     await Promise.all(tempDirs.splice(0).map(async (dir) => {
       await rm(dir, { recursive: true, force: true });
     }));
+  });
+
+  it('refreshes the projected CLI closure before recording runtime identity and preserves build metadata', async () => {
+    const runtime = await createRuntimeRoot({ executableName: 'happier-cliproxyapi-managed' });
+    const dist = join(runtime.runtimeRoot, 'package-dist');
+    await writeFile(join(dist, 'index.cjs'), 'module.exports = true;\n');
+    await writeFile(join(dist, 'index.d.mts'), 'declare const value: boolean;\n');
+    await writeFile(join(dist, 'index.mjs.map'), '{}');
+    const { manifestPath } = cliDistBuildManifest.writeCliDistBuildManifest(runtime.entrypoint, {
+      builtAt: '2026-09-23T00:00:00.000Z',
+      inputFingerprint: 'a'.repeat(64),
+      workspaceRuntimeIdentity: 'b'.repeat(64),
+      workspaceRuntimePackages: ['@happier-dev/sdk', '@happier-dev/protocol'],
+    });
+    cliDistBuildManifest.writeCliRuntimeAssetBuildManifest({
+      runtimeRoot: runtime.runtimeRoot, entrypoint: runtime.entrypoint, relativePath: runtime.relativePath,
+    });
+    const previous = JSON.parse(await readFile(manifestPath, 'utf8'));
+    previous.buildVersion = '0.3.0-preview.1';
+    await writeFile(manifestPath, JSON.stringify(previous));
+    await finalizeRuntimeArtifactPayload(runtime.runtimeRoot, {
+      os: 'linux', arch: 'x64', bunTarget: 'bun-linux-x64-baseline', exeExt: '',
+    });
+    expect(cliDistBuildManifest.readCliDistBuildManifest(runtime.entrypoint).reason)
+      .toBe('build_manifest_file_count_mismatch');
+
+    writeCliBinaryArtifactRuntimeAssetBuildManifest({
+      payloadDir: runtime.runtimeRoot,
+      relativePath: runtime.relativePath,
+      workspaceRuntimeIdentity: previous.workspaceRuntimeIdentity,
+    });
+    const refreshed = cliDistBuildManifest.readCliDistBuildManifest(runtime.entrypoint);
+    expect(refreshed.ok).toBe(true);
+    const { fingerprint: _fingerprint, fileCount: _fileCount, ...metadata } = previous;
+    expect(refreshed.manifest).toMatchObject(metadata);
+    expect(refreshed.fileCount).toBe(1);
+    expect(cliDistBuildManifest.readCliRuntimeAssetIntegrity({
+      runtimeRoot: runtime.runtimeRoot, relativePath: runtime.relativePath,
+    }).ok).toBe(true);
+  });
+
+  it('does not repair an unrelated invalid manifest while recording a projected runtime asset', async () => {
+    const runtime = await createRuntimeRoot({ executableName: 'happier-cliproxyapi-managed' });
+    const manifestPath = join(runtime.runtimeRoot, 'package-dist', cliDistBuildManifest.CLI_DIST_BUILD_MANIFEST);
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const invalid = JSON.stringify({ ...manifest, toolVersion: 'unsupported' });
+    await writeFile(manifestPath, invalid);
+    expect(() => writeCliBinaryArtifactRuntimeAssetBuildManifest({
+      payloadDir: runtime.runtimeRoot, relativePath: runtime.relativePath,
+    })).toThrow('unsupported_build_manifest_version');
+    expect(await readFile(manifestPath, 'utf8')).toBe(invalid);
   });
 
   it('records and verifies the exact Windows executable leaf in the existing manifest', async () => {
